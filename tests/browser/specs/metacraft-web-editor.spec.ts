@@ -316,9 +316,8 @@ test.describe("metacraft-web IsoNim editor consumer", () => {
       await expect(page.locator("[data-foundation-impact]")).toContainText(
         "space.table.cell",
       );
-      await page
-        .getByRole("button", { name: "Save foundation source edits" })
-        .click();
+      // Saving is automatic (editor spec "Saving"; the Save control is gone):
+      // the token commit is written without a further gesture.
       await expect.poll(() => page.evaluate(() => (window as any).__isonimEditor.pendingSourceEdits())).toBe(0);
       await expect(page.locator('[data-save-error="true"]')).toBeHidden();
       await expect
@@ -330,9 +329,6 @@ test.describe("metacraft-web IsoNim editor consumer", () => {
         .fill("0.75rem");
       await page
         .getByRole("button", { name: "Apply foundation token value" })
-        .click();
-      await page
-        .getByRole("button", { name: "Save foundation source edits" })
         .click();
       await expect
         .poll(() => readFileSync(devBridgeTokenFile, "utf8"))
@@ -1344,8 +1340,16 @@ test.describe("metacraft-web IsoNim editor consumer", () => {
     await expect.poll(() => iframeReloadGeneration(previewFrame)).toBe(0);
     await expect(schemaBadge).toHaveClass(/bo-status-neutral/);
     const neutralBackground = await computedBackground(schemaBadge);
-    const historyLength = () => page.evaluate(() =>
-      (window as any).__isonimEditorVm.inspector.undoStack.value.length);
+    // A component-property edit is recorded in the component-property
+    // history (`variants.undoStack`), not the inspector's; the editor's undo
+    // walks both. Counting both keeps the oracle "exactly one history entry
+    // per commit" (corrected 2026-10-14: this probe read only the inspector
+    // stack, which a component-property commit never touches).
+    const historyLength = () => page.evaluate(() => {
+      const vm = (window as any).__isonimEditorVm;
+      return vm.inspector.undoStack.value.length +
+        vm.variants.undoStack.value.length;
+    });
     const beforeHistory = await historyLength();
 
     const success = propertyPanel.getByRole("button", {
@@ -1495,6 +1499,11 @@ test.describe("metacraft-web IsoNim editor consumer", () => {
     // Live preview while typing: patched in place, no frame reload.
     await expect(panelHeaderTitle).toHaveText("Accounts");
     expect(await iframeReloadGeneration(previewFrame)).toBe(0);
+    // Typing previews; Enter commits (the text field commits on change, as
+    // every text field does). The retired Save click used to supply this
+    // commit implicitly by taking focus out of the field (corrected
+    // 2026-10-14).
+    await labelInput.press("Enter");
 
     try {
       // The staged plan is written automatically: one transaction, one plan.

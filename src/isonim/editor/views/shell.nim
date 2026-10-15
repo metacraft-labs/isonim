@@ -2747,9 +2747,9 @@ const inspectorPlaceholderSections* = [
   ## user-decided order. Each entry is ``(slug, displayName)``.
   ## Phase C wires real expansion state + conditional visibility
   ## (Typography only when text element, Component properties only
-  ## for instances). Phase G progressively extracts per-section
-  ## content from ``populateInspectorManualBody`` in
-  ## ``component_edit.nim`` into per-section widget files.
+  ## for instances). Phase G moved per-section content into
+  ## per-section widget files; the retired single-body manual
+  ## inspector they were extracted from has been removed.
 
 const inspectorSectionsWithPlusAction = [
   ("fill", "Adding another fill layer from this header is unavailable."),
@@ -2998,8 +2998,7 @@ proc renderSectionFrame[R, E](r: R; vm: EditorVM;
   ## mirrors the live expanded state into ``data-expanded`` /
   ## ``aria-expanded`` on the header, the body's ``display``
   ## (``flex`` vs ``none``), and the chevron glyph (``▾`` vs
-  ## ``▸``). Phase G fills the body — the section frame doesn't
-  ## reach into ``populateInspectorManualBody``.
+  ## ``▸``). Phase G fills the body from per-section widget files.
   ##
   ## The header right slot is reserved per the section catalogue. In
   ## Phase B only Fill / Stroke / Effects / Export carry a ``+`` plus
@@ -3232,9 +3231,8 @@ proc renderInspectorPanel*[R, E](r: R; vm: EditorVM): E =
   ##   * Keep the sidebar root's ``data-test-id="property-panel"``
   ##     contract (existing e2e tests resolve the sidebar by it).
   ##   * Keep the left-edge drag-resize handle.
-  ##   * STILL skip ``populateInspectorManualBody`` — that proc is
-  ##     preserved in ``component_edit.nim`` for Phase G content
-  ##     extraction but is not mounted here.
+  ##   * Mount no single-body manual inspector; section content comes
+  ##     from the per-section widget files.
   ##
   ## All section bodies render as visible (empty) for Phase B. Every
   ## frame ships with ``data-expanded="true"`` so Phase C can flip

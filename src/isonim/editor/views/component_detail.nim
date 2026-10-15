@@ -509,8 +509,6 @@ proc populateComponentPropertyPanel[R, E](r: R; vm: EditorVM; panel, frame: E;
   vm.variants.stateDiagnostics.val = coverage
   r.setStyle(panel, "display", "flex")
 
-  var saveButton: E
-  var revertButton: E
   let header = ui(r):
     tdiv(display = "flex", justify_content = "space-between",
           align_items = "baseline", gap = "12px",
@@ -530,28 +528,9 @@ proc populateComponentPropertyPanel[R, E](r: R; vm: EditorVM; panel, frame: E;
           text ($coverage.len & " diagnostics")
         span(font_size = "10px", color = textDim):
           text ($pendingCount & " component plan(s) staged")
-        tdiv(ref = revertButton, role = "button", tabindex = "0",
-              padding = "4px 7px", border_radius = "4px",
-              background_color = bgCard, color = textMuted,
-              font_size = "10px", cursor = "pointer"):
-          text "Revert"
-        tdiv(ref = saveButton, role = "button", tabindex = "0",
-              padding = "4px 7px", border_radius = "4px",
-              background_color = accent, color = textPrimary,
-              font_size = "10px", font_weight = "600", cursor = "pointer"):
-          text "Save"
+        # No Save or Revert control: a property choice is written
+        # automatically (editor spec "Saving"); Mod+Z takes it back.
   r.appendChild(panel, header)
-  r.setAttribute(saveButton, "aria-label", "Save component property source edits")
-  r.setAttribute(revertButton, "aria-label",
-    "Revert component property source edits")
-  r.addEventListener(saveButton, "click", proc() =
-    discard vm.runEditorCommand(eckSave))
-  r.addEventListener(saveButton, "keydown", proc() =
-    discard vm.runEditorCommand(eckSave))
-  r.addEventListener(revertButton, "click", proc() =
-    discard vm.runEditorCommand(eckRevert))
-  r.addEventListener(revertButton, "keydown", proc() =
-    discard vm.runEditorCommand(eckRevert))
 
   # Property cards: show the first 3 by default; gate the rest behind a
   # native <details> disclosure so the panel stays compact.

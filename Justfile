@@ -1649,7 +1649,16 @@ test-editor-source-write-receipts:
     nim js -d:nodejs --out:build/test_editor_source_write_receipts.js tests/test_editor_source_write_receipts.nim
     python3 tools/run_nim_js_test.py build/test_editor_source_write_receipts.js
 
-test-editor-c4a: test-editor-selection-keys test-editor-source-write-receipts test-editor-c4a-headless test-editor-c4a-compounds test-editor-c4a-properties test-editor-c4a-remaining test-editor-inline-preview test-editor-c4a-gestures test-editor-c4a-color test-editor-c4a-grip
+# Every commit path (component property/state, foundation token, vector,
+# canvas command) schedules the automatic write, and a write keeps those
+# histories: undo after it restores exactly the written lines. Native and
+# strict executed Node JS.
+test-editor-save-pipeline:
+    nim c -r --out:build/test_editor_save_pipeline tests/test_editor_save_pipeline.nim
+    nim js -d:nodejs --out:build/test_editor_save_pipeline.js tests/test_editor_save_pipeline.nim
+    python3 tools/run_nim_js_test.py build/test_editor_save_pipeline.js
+
+test-editor-c4a: test-editor-selection-keys test-editor-source-write-receipts test-editor-save-pipeline test-editor-c4a-headless test-editor-c4a-compounds test-editor-c4a-properties test-editor-c4a-remaining test-editor-inline-preview test-editor-c4a-gestures test-editor-c4a-color test-editor-c4a-grip
 
 # Source ownership presentation; real native/JS signals and shell, no transports.
 test-editor-source-labels: build-tailwind

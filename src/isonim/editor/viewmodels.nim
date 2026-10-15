@@ -149,7 +149,11 @@ type
     undoStack*: Signal[seq[CSSPropertyEditTransaction]]
     redoStack*: Signal[seq[CSSPropertyEditTransaction]]
     lastHistoryId*: int
-      ## Last ``SourceEditPlan.historyId`` handed to a history entry.
+      ## Last ``SourceEditPlan.historyId`` handed to a history entry. One
+      ## counter for the inspector, component-property, foundation and vector
+      ## histories, so ids order every entry on one timeline.
+    lastWriteSequence*: int
+      ## Last ``SourceWriteReceipt.sequence`` handed out.
     hasElement*: Memo[bool]
     properties*: Memo[seq[PropertyInfo]]
     filteredLayers*: Memo[seq[ElementLayerRow]]
@@ -927,8 +931,8 @@ func commandDescription*(kind: EditorCommandKind): string =
   of eckFocusInspector: "Move focus to the inspector section search."
   of eckIncrementProperty: "Increase the first numeric selected property."
   of eckDecrementProperty: "Decrease the first numeric selected property."
-  of eckUndo: "Undo the last inspector or vector edit."
-  of eckRedo: "Redo the last inspector or vector edit."
+  of eckUndo: "Undo the most recent edit."
+  of eckRedo: "Redo the most recently undone edit."
   of eckToggleSidebar: "Show or hide the left sidebar."
   of eckToggleInspector: "Show or hide the right inspector or chat panel."
   of eckOpenCommandPalette: "Open the command palette."
@@ -3273,6 +3277,120 @@ proc redoFoundationTokenEdit*(editor: EditorVM): bool {.discardable.}
 proc undoComponentVariantEdit*(editor: EditorVM): bool {.discardable.}
 proc redoComponentVariantEdit*(editor: EditorVM): bool {.discardable.}
 proc clearSourceEditJournal*(inspector: InspectorVM)
+proc noteCommitForAutoSave*(editor: EditorVM)
+
+proc scheduleStagedWrite(editor: EditorVM) =
+  ## Schedule the automatic write for a commit that staged a plan outside the
+  ## inspector row path (component properties and states, foundation tokens,
+  ## vector edits, canvas commands, and the undo/redo of those).
+  ##
+  ## The inspector row path schedules from `commitInspectorValue`; these paths
+  ## stage into the same journal and used to schedule nothing, so the edit sat
+  ## pending until somebody pressed a Save control the spec says does not
+  ## exist (editor spec "Saving": every commit stages, the browser layer
+  ## debounces and writes).
+  ##
+  ## Gated like the row path: an edit staged with no adapter ready is reported
+  ## where it was made, and scheduling it would only send the status bar
+  ## through a failure for something the user was already told about.
+  if editor.sourceAdapterReady.val:
+    editor.noteCommitForAutoSave()
+
+func historyEntryOnDisk[T](entry: T): bool =
+  entry.lastWrite.recorded and entry.lastWriteApplied
+
+func splitUnsavedHistory[T](undo, redo: seq[T]): tuple[kept, unsaved,
+    reapply: seq[T]] =
+  ## What Revert/Discard throws away from a component-property, foundation or
+  ## vector history now that it survives writes.
+  ##
+  ## ``unsaved``: undo-stack entries above the last one whose write is on
+  ## disk, top first; their model changes are reverted. ``reapply``: redo-stack
+  ## entries whose undo never reached disk, most recently undone first; the
+  ## discarded undo is reversed so the model again matches the file. Everything
+  ## else on the redo stack stops being redoable, which is what discarding it
+  ## means. Same rule as `discardCssPropertyEdits`: written work is kept.
+  var top = undo.len
+  while top > 0 and not undo[top - 1].historyEntryOnDisk:
+    dec top
+  result.kept = undo[0 ..< top]
+  for i in countdown(undo.high, top):
+    result.unsaved.add undo[i]
+  var r = redo.high
+  while r >= 0 and redo[r].historyEntryOnDisk:
+    result.reapply.add redo[r]
+    dec r
+
+type
+  EditorHistoryKind* = enum
+    ## Which history the next undo/redo acts on. See `nextHistoryKind`.
+    ehkNone, ehkInspector, ehkVector, ehkFoundation, ehkVariant
+
+func topHistoryId[T](stack: seq[T]): int =
+  if stack.len == 0: -1 else: stack[^1].sourceEdit.historyId
+
+proc newestUndoId(editor: EditorVM): int =
+  max([editor.inspector.undoStack.val.topHistoryId,
+    editor.vectorEditor.undoStack.val.topHistoryId,
+    editor.foundations.undoStack.val.topHistoryId,
+    editor.variants.undoStack.val.topHistoryId])
+
+func liveRedo[T](stack: seq[T]; newestUndo: int): seq[T] =
+  ## A redo entry older than the newest undo entry was cut off by a later
+  ## edit (in any history) and is no longer redoable.
+  for entry in stack:
+    let id = entry.sourceEdit.historyId
+    if id <= 0 or id > newestUndo:
+      result.add entry
+
+proc nextHistoryKind*(editor: EditorVM; redo: bool): EditorHistoryKind =
+  ## The four histories are one timeline (editor spec "Saving"): every entry's
+  ## plan carries a ``historyId`` from one counter, so undo takes the newest
+  ## top entry and redo the most recently undone, whichever history holds it.
+  ##
+  ## Ties (entries without an id) keep the old order: inspector, vector,
+  ## foundation, component property.
+  result = ehkNone
+  if not redo:
+    var best = -1
+    for (kind, id) in [
+        (ehkInspector, editor.inspector.undoStack.val.topHistoryId),
+        (ehkVector, editor.vectorEditor.undoStack.val.topHistoryId),
+        (ehkFoundation, editor.foundations.undoStack.val.topHistoryId),
+        (ehkVariant, editor.variants.undoStack.val.topHistoryId)]:
+      if id > best:
+        best = id
+        result = kind
+    return
+  let newest = editor.newestUndoId()
+  var best = high(int)
+  var found = false
+  for (kind, id) in [
+      (ehkInspector, editor.inspector.redoStack.val.liveRedo(newest).topHistoryId),
+      (ehkVector, editor.vectorEditor.redoStack.val.liveRedo(newest).topHistoryId),
+      (ehkFoundation, editor.foundations.redoStack.val.liveRedo(newest).topHistoryId),
+      (ehkVariant, editor.variants.redoStack.val.liveRedo(newest).topHistoryId)]:
+    if id < 0:
+      continue
+    let rank = if id == 0: high(int) - 1 else: id
+    if not found or rank < best:
+      best = rank
+      result = kind
+      found = true
+
+proc pruneCutOffRedo(editor: EditorVM) =
+  ## Drop redo entries a later edit cut off (see `liveRedo`). Each history's
+  ## own edits already clear its redo stack; this is what makes an edit in
+  ## one history end redo in the others.
+  let newest = editor.newestUndoId()
+  template prune(stack: untyped) =
+    let live = stack.val.liveRedo(newest)
+    if live.len != stack.val.len:
+      stack.val = live
+  prune(editor.inspector.redoStack)
+  prune(editor.vectorEditor.redoStack)
+  prune(editor.foundations.redoStack)
+  prune(editor.variants.redoStack)
 proc evaluateCommand*(editor: EditorVM;
     kind: EditorCommandKind): EditorCommandState
 
@@ -3369,18 +3487,12 @@ proc commandRequirementFailure(editor: EditorVM;
     return ""
 
   if kind == eckUndo:
-    if editor.inspector.undoStack.val.len == 0 and
-        editor.vectorEditor.undoStack.val.len == 0 and
-        editor.foundations.undoStack.val.len == 0 and
-        editor.variants.undoStack.val.len == 0:
+    if editor.nextHistoryKind(redo = false) == ehkNone:
       return "There is no edit to undo."
     return ""
 
   if kind == eckRedo:
-    if editor.inspector.redoStack.val.len == 0 and
-        editor.vectorEditor.redoStack.val.len == 0 and
-        editor.foundations.redoStack.val.len == 0 and
-        editor.variants.redoStack.val.len == 0:
+    if editor.nextHistoryKind(redo = true) == ehkNone:
       return "There is no edit to redo."
     return ""
 
@@ -3594,6 +3706,8 @@ proc discardCssPropertyEdits*(inspector: InspectorVM)
 proc runEditorCommand*(editor: EditorVM;
     kind: EditorCommandKind): EditorCommandState {.discardable.} =
   ## Dispatch a framework-owned editor command with deterministic state.
+  if kind in {eckUndo, eckRedo}:
+    editor.pruneCutOffRedo()
   let available = editor.evaluateCommand(kind)
   if available.status == ecsDisabled:
     return editor.failCommand(kind, available.diagnostic)
@@ -3623,42 +3737,66 @@ proc runEditorCommand*(editor: EditorVM;
     # apart the moment the history started surviving saves: the inlined copy
     # kept reverting to the start of the SESSION and throwing away edits that
     # were already on disk.
+    #
+    # The other three histories follow the same rule for the same reason:
+    # they survive writes now, so "revert to the first entry" would throw
+    # away values that are already on disk. See `splitUnsavedHistory`.
     editor.inspector.discardCssPropertyEdits()
-    let foundationStack = editor.foundations.undoStack.val
-    if foundationStack.len > 0:
+    let foundationSplit = splitUnsavedHistory(editor.foundations.undoStack.val,
+      editor.foundations.redoStack.val)
+    if foundationSplit.unsaved.len > 0 or foundationSplit.reapply.len > 0:
       var updatedTokens = editor.foundations.tokens.val
-      for historyIndex in countdown(foundationStack.len - 1, 0):
-        let history = foundationStack[historyIndex]
+      var selectedKey = ""
+      for history in foundationSplit.unsaved:
         for i, token in updatedTokens:
           if token.key.toLowerAscii() == history.key.toLowerAscii():
             updatedTokens[i] = history.beforeToken
             break
+        selectedKey = history.key
+      for history in foundationSplit.reapply:
+        for i, token in updatedTokens:
+          if token.key.toLowerAscii() == history.key.toLowerAscii():
+            updatedTokens[i] = history.afterToken
+            break
+        selectedKey = history.key
       editor.foundations.tokens.val = updatedTokens
-      editor.foundations.selectedTokenKey.val = foundationStack[0].key
-    let variantStack = editor.variants.undoStack.val
-    if variantStack.len > 0:
+      editor.foundations.selectedTokenKey.val = selectedKey
+    let variantSplit = splitUnsavedHistory(editor.variants.undoStack.val,
+      editor.variants.redoStack.val)
+    if variantSplit.unsaved.len > 0 or variantSplit.reapply.len > 0:
       var updatedVariants = editor.variants.variants.val
-      for historyIndex in countdown(variantStack.len - 1, 0):
-        let history = variantStack[historyIndex]
+      var selected = editor.variants.selectedVariant.val
+      for history in variantSplit.unsaved:
         for i, variant in updatedVariants:
           if variant.component == history.beforeVariant.component and
               variant.variantKey == history.beforeVariant.variantKey:
             updatedVariants[i] = history.beforeVariant
             break
+        selected = history.selectedBefore
+      for history in variantSplit.reapply:
+        for i, variant in updatedVariants:
+          if variant.component == history.afterVariant.component and
+              variant.variantKey == history.afterVariant.variantKey:
+            updatedVariants[i] = history.afterVariant
+            break
+        selected = history.selectedAfter
       editor.variants.variants.val = updatedVariants
-      editor.variants.selectedVariant.val = variantStack[0].selectedBefore
-    let vectorStack = editor.vectorEditor.undoStack.val
-    if vectorStack.len > 0:
-      editor.vectorEditor.document.val = vectorStack[0].beforeDocument
-    editor.foundations.undoStack.val = @[]
+      editor.variants.selectedVariant.val = selected
+    let vectorSplit = splitUnsavedHistory(editor.vectorEditor.undoStack.val,
+      editor.vectorEditor.redoStack.val)
+    if vectorSplit.unsaved.len > 0:
+      editor.vectorEditor.document.val = vectorSplit.unsaved[^1].beforeDocument
+    if vectorSplit.reapply.len > 0:
+      editor.vectorEditor.document.val = vectorSplit.reapply[^1].afterDocument
+    editor.foundations.undoStack.val = foundationSplit.kept & foundationSplit.reapply
     editor.foundations.redoStack.val = @[]
     editor.foundations.impacts.val = @[]
     editor.foundations.diagnostics.val = @[]
-    editor.variants.undoStack.val = @[]
+    editor.variants.undoStack.val = variantSplit.kept & variantSplit.reapply
     editor.variants.redoStack.val = @[]
     editor.variants.diagnostics.val = @[]
     editor.variants.stateDiagnostics.val = @[]
-    editor.vectorEditor.undoStack.val = @[]
+    editor.vectorEditor.undoStack.val = vectorSplit.kept & vectorSplit.reapply
     editor.vectorEditor.redoStack.val = @[]
     editor.inspector.conflicts.val = @[]
     editor.inspector.editDiagnostics.val = @[]
@@ -3712,28 +3850,35 @@ proc runEditorCommand*(editor: EditorVM;
     discard editor.nudgeFirstNumericProperty(1)
   of eckDecrementProperty:
     discard editor.nudgeFirstNumericProperty(-1)
-  of eckUndo:
-    if editor.inspectorSourceHistory != nil and editor.inspectorSourceHistory(false):
+  of eckUndo, eckRedo:
+    # One timeline: act on the most recent edit (undo) or the most recently
+    # undone one (redo), whichever history holds it. It used to try the
+    # inspector first, then vector, foundation and component property, so
+    # Ctrl+Z after a component edit undid an older inspector edit instead.
+    let redo = kind == eckRedo
+    let target = editor.nextHistoryKind(redo)
+    if target == ehkInspector and editor.inspectorSourceHistory != nil and
+        editor.inspectorSourceHistory(redo):
       discard
     else:
-      let refusal = editor.inspectorHistoryRefusal(redo = false)
+      let refusal = editor.inspectorHistoryRefusal(redo)
       if refusal.message.len > 0:
         return editor.refuseInspectorHistory(kind, refusal)
-      if not editor.inspector.undoCssPropertyEdit():
-        if not editor.undoVectorEdit():
-          if not editor.undoFoundationTokenEdit():
-            discard editor.undoComponentVariantEdit()
-  of eckRedo:
-    if editor.inspectorSourceHistory != nil and editor.inspectorSourceHistory(true):
-      discard
-    else:
-      let refusal = editor.inspectorHistoryRefusal(redo = true)
-      if refusal.message.len > 0:
-        return editor.refuseInspectorHistory(kind, refusal)
-      if not editor.inspector.redoCssPropertyEdit():
-        if not editor.redoVectorEdit():
-          if not editor.redoFoundationTokenEdit():
-            discard editor.redoComponentVariantEdit()
+      case target
+      of ehkInspector:
+        if redo: discard editor.inspector.redoCssPropertyEdit()
+        else: discard editor.inspector.undoCssPropertyEdit()
+      of ehkVector:
+        if redo: discard editor.redoVectorEdit()
+        else: discard editor.undoVectorEdit()
+      of ehkFoundation:
+        if redo: discard editor.redoFoundationTokenEdit()
+        else: discard editor.undoFoundationTokenEdit()
+      of ehkVariant:
+        if redo: discard editor.redoComponentVariantEdit()
+        else: discard editor.undoComponentVariantEdit()
+      of ehkNone:
+        discard
   of eckToggleSidebar:
     editor.togglePanel(epSidebar)
   of eckToggleInspector:
@@ -4125,9 +4270,15 @@ func replacesJournaledPlan(plan, existing: SourceEditPlan): bool =
   ## disk while the model says it is gone.
   plan.sameSourceJournalSlot(existing) and not existing.restoreWrite.recorded
 
+proc inheritUnwrittenExpectation(inspector: InspectorVM;
+    plan: var SourceEditPlan)
+
 proc journalSourceEdit*(inspector: InspectorVM; plan: SourceEditPlan;
     replaceExisting = true) =
   ## Single source-edit journal used by manual controls and accepted AI plans.
+  var plan = plan
+  if replaceExisting and not plan.restoreWrite.recorded:
+    inspector.inheritUnwrittenExpectation(plan)
   var displaced: seq[int] = @[]
   var kept: seq[SourceEditPlan] = @[]
   for existing in inspector.pendingSourceEdits.val:
@@ -4162,6 +4313,24 @@ proc stampHistoryEntry(inspector: InspectorVM; plan: var SourceEditPlan) =
   if plan.historyId == 0:
     inc inspector.lastHistoryId
     plan.historyId = inspector.lastHistoryId
+
+proc inheritUnwrittenExpectation(inspector: InspectorVM;
+    plan: var SourceEditPlan) =
+  ## A value-verified plan that will replace a still-unwritten plan for the
+  ## same slot is checked against what the FILE says -- which is what the
+  ## replaced plan expected -- not against the value the replaced plan would
+  ## have written and never did. Without this, two choices made within the
+  ## auto-save debounce (``tone=success`` then ``tone=warning``) staged a plan
+  ## expecting ``success`` against a file still saying ``neutral``, and the
+  ## write was refused as a source conflict. Applied by `journalSourceEdit`
+  ## to every replacing plan; history-recording paths also call it first so
+  ## the entry they keep carries the same expectation as the journal.
+  if plan.expectedOldValue.len == 0:
+    return
+  for existing in inspector.pendingSourceEdits.val:
+    if plan.replacesJournaledPlan(existing) and
+        existing.expectedOldValue.len > 0:
+      plan.expectedOldValue = existing.expectedOldValue
 
 proc dropPendingHistoryPlans(inspector: InspectorVM; historyId: int) =
   inspector.pendingSourceEdits.val =
@@ -4378,6 +4547,8 @@ proc acceptPreparedPropertyEdit*(inspector: InspectorVM; prepared: PreparedPrope
     saved = false; applySelection = true) =
   if prepared.outcome.status != pesAccepted: return
   var transaction = prepared.transaction
+  if not saved:
+    inspector.inheritUnwrittenExpectation(transaction.sourceEdit)
   inspector.stampHistoryEntry(transaction.sourceEdit)
   # A completed source write belongs to its captured element. Changing selection
   # while a build runs must not write the result into the new element's controls.
@@ -4641,7 +4812,10 @@ type
     plan*: SourceEditPlan
     message*: string
 
-func restorePlan(txn: CSSPropertyEditTransaction; redo: bool): SourceEditPlan =
+func restorePlan[T](txn: T; redo: bool): SourceEditPlan =
+  ## The plan that inverts ``txn.lastWrite`` exactly. Shared by every history
+  ## entry type that carries a write receipt (inspector, component property,
+  ## foundation token, vector).
   result = txn.sourceEdit
   if not redo:
     result.oldValue = txn.sourceEdit.newValue
@@ -4650,6 +4824,31 @@ func restorePlan(txn: CSSPropertyEditTransaction; redo: bool): SourceEditPlan =
     result.previewAfter = txn.sourceEdit.previewBefore
   result.expectedOldValue = ""
   result.restoreWrite = txn.lastWrite
+
+func staleRedoReceipt[T](undo: seq[T]; entry: T): tuple[stale: bool;
+    diskValue: string] =
+  ## Whether ``entry``'s redo receipt still describes the file.
+  ##
+  ## The receipt is the write that undid ``entry``. Undoing it also re-stages
+  ## the previous edit to the same slot when that edit's plan had been
+  ## replaced before it was written (two choices inside the debounce). Once
+  ## that edit is written, the lines the receipt restored are gone, so
+  ## restoring the receipt is refused even though nobody else touched the
+  ## file. Then the slot holds the previous edit's value, which is exactly
+  ## what a value-verified replay of ``entry`` expects to replace.
+  for i in countdown(undo.high, 0):
+    if undo[i].sourceEdit.sameSourceJournalSlot(entry.sourceEdit):
+      if undo[i].historyEntryOnDisk and
+          undo[i].lastWrite.sequence > entry.lastWrite.sequence:
+        return (true, undo[i].sourceEdit.newValue)
+      return
+
+func replayOverDiskValue(plan: SourceEditPlan; diskValue: string): SourceEditPlan =
+  ## ``plan`` again, verified against the value the file now holds.
+  result = plan
+  result.oldValue = diskValue
+  result.expectedOldValue = diskValue
+  result.restoreWrite = SourceWriteReceipt()
 
 proc inspectorHistoryStep*(inspector: InspectorVM;
     redo: bool): InspectorHistoryStep =
@@ -4684,6 +4883,10 @@ proc inspectorHistoryStep*(inspector: InspectorVM;
   if txn.sourceEdit.expectedOldValue.len == 0:
     return InspectorHistoryStep(kind: ihsReplayPlan, plan: txn.sourceEdit)
   if txn.lastWrite.recorded and not txn.lastWriteApplied:
+    let stale = inspector.undoStack.val.staleRedoReceipt(txn)
+    if stale.stale:
+      return InspectorHistoryStep(kind: ihsReplayPlan,
+        plan: txn.sourceEdit.replayOverDiskValue(stale.diskValue))
     return InspectorHistoryStep(kind: ihsRestoreWrite,
       plan: txn.restorePlan(redo = true))
   InspectorHistoryStep(kind: ihsReplayPlan, plan: txn.sourceEdit)
@@ -4827,44 +5030,48 @@ proc redoCssPropertyEdit*(inspector: InspectorVM): bool {.discardable.} =
                                 txn.sourceEdit.newValue, txn.sourceEdit.sourceScope)
   true
 
+proc nextWriteReceipt(inspector: InspectorVM;
+    patch: WorkspaceFilePatch): SourceWriteReceipt =
+  result = sourceWriteReceipt(patch.file, patch.beforeContent,
+    patch.afterContent)
+  inc inspector.lastWriteSequence
+  result.sequence = inspector.lastWriteSequence
+
+proc creditInspectorWrite(inspector: InspectorVM; id: int;
+    receipt: SourceWriteReceipt): bool =
+  ## Credit one write to the inspector entry whose plan produced it. An entry
+  ## on the undo stack was written forwards (an edit or a redo); one on the
+  ## redo stack was written backwards (an undo).
+  var undo = inspector.undoStack.val
+  for i in countdown(undo.high, 0):
+    if undo[i].sourceEdit.historyId == id:
+      undo[i].lastWrite = receipt
+      undo[i].lastWriteApplied = true
+      undo[i].superseded = false
+      inspector.undoStack.val = undo
+      return true
+  var redo = inspector.redoStack.val
+  for i in countdown(redo.high, 0):
+    if redo[i].sourceEdit.historyId == id:
+      redo[i].lastWrite = receipt
+      redo[i].lastWriteApplied = false
+      inspector.redoStack.val = redo
+      return true
+  false
+
 proc recordSourceWrites*(inspector: InspectorVM;
     patches: seq[WorkspaceFilePatch]) =
   ## Credit each completed write to the history entry whose plan produced it.
   ##
-  ## Called by the workspace transaction once the bytes are on disk. An entry
-  ## on the undo stack was written forwards (an edit or a redo); one on the
-  ## redo stack was written backwards (an undo). The receipt is what the next
-  ## undo/redo of that entry inverts.
-  var undo = inspector.undoStack.val
-  var redo = inspector.redoStack.val
-  var changedUndo, changedRedo = false
+  ## Called by the workspace transaction once the bytes are on disk. The
+  ## receipt is what the next undo/redo of that entry inverts. Inspector-only;
+  ## the editor transaction uses `recordHistoryWrites`, which covers every
+  ## history with the same receipt sequence.
   for patch in patches:
     let id = patch.plan.historyId
     if id <= 0:
       continue
-    let receipt = sourceWriteReceipt(patch.file, patch.beforeContent,
-      patch.afterContent)
-    var credited = false
-    for i in countdown(undo.high, 0):
-      if undo[i].sourceEdit.historyId == id:
-        undo[i].lastWrite = receipt
-        undo[i].lastWriteApplied = true
-        undo[i].superseded = false
-        changedUndo = true
-        credited = true
-        break
-    if credited:
-      continue
-    for i in countdown(redo.high, 0):
-      if redo[i].sourceEdit.historyId == id:
-        redo[i].lastWrite = receipt
-        redo[i].lastWriteApplied = false
-        changedRedo = true
-        break
-  if changedUndo:
-    inspector.undoStack.val = undo
-  if changedRedo:
-    inspector.redoStack.val = redo
+    discard inspector.creditInspectorWrite(id, inspector.nextWriteReceipt(patch))
 
 proc discardCssPropertyEdits*(inspector: InspectorVM) =
   ## Throw the work away: the element, the journal AND the history.
@@ -4910,6 +5117,151 @@ proc markCssPropertyEditsSaved*(inspector: InspectorVM) =
     result = prev
     for i in 0 ..< result.len:
       result[i].saved = true
+
+# ---------------------------------------------------------------------------
+# Component-property, foundation-token and vector history across writes
+# ---------------------------------------------------------------------------
+#
+# These three histories used to be emptied by every successful write. That was
+# survivable while saving was a gesture; once saving became automatic it meant
+# Ctrl+Z after any edit arrived ~900ms too late and did nothing, while the
+# file kept the value (editor spec "Universal Patterns": full operation
+# history). They now follow the inspector's rule: an entry whose plan is still
+# pending is undone by withdrawing the plan; an entry that was written is
+# undone by a new plan that restores exactly the lines its write replaced
+# (its receipt), which auto-save then writes like any other edit.
+
+proc creditHistoryWrite[T](undo, redo: var seq[T]; id: int;
+    receipt: SourceWriteReceipt): tuple[undoChanged, redoChanged: bool] =
+  for i in countdown(undo.high, 0):
+    if undo[i].sourceEdit.historyId == id:
+      undo[i].lastWrite = receipt
+      undo[i].lastWriteApplied = true
+      return (true, false)
+  for i in countdown(redo.high, 0):
+    if redo[i].sourceEdit.historyId == id:
+      redo[i].lastWrite = receipt
+      redo[i].lastWriteApplied = false
+      return (false, true)
+
+proc recordHistoryWrites(editor: EditorVM; patches: seq[WorkspaceFilePatch]) =
+  ## Credit each completed write to the history entry, in whichever history,
+  ## whose plan produced it. History ids are handed out by one counter, so an
+  ## id names exactly one entry across all four histories.
+  var vecUndo = editor.vectorEditor.undoStack.val
+  var vecRedo = editor.vectorEditor.redoStack.val
+  var fndUndo = editor.foundations.undoStack.val
+  var fndRedo = editor.foundations.redoStack.val
+  var varUndo = editor.variants.undoStack.val
+  var varRedo = editor.variants.redoStack.val
+  var vecChanged, fndChanged, varChanged = false
+  for patch in patches:
+    let id = patch.plan.historyId
+    if id <= 0:
+      continue
+    let receipt = editor.inspector.nextWriteReceipt(patch)
+    if editor.inspector.creditInspectorWrite(id, receipt):
+      continue
+    var credited = creditHistoryWrite(varUndo, varRedo, id, receipt)
+    if credited.undoChanged or credited.redoChanged:
+      varChanged = true
+      continue
+    credited = creditHistoryWrite(fndUndo, fndRedo, id, receipt)
+    if credited.undoChanged or credited.redoChanged:
+      fndChanged = true
+      continue
+    credited = creditHistoryWrite(vecUndo, vecRedo, id, receipt)
+    if credited.undoChanged or credited.redoChanged:
+      vecChanged = true
+  if varChanged:
+    editor.variants.undoStack.val = varUndo
+    editor.variants.redoStack.val = varRedo
+  if fndChanged:
+    editor.foundations.undoStack.val = fndUndo
+    editor.foundations.redoStack.val = fndRedo
+  if vecChanged:
+    editor.vectorEditor.undoStack.val = vecUndo
+    editor.vectorEditor.redoStack.val = vecRedo
+
+proc pendingHistoryPlan(inspector: InspectorVM; id: int): bool =
+  id > 0 and inspector.pendingSourceEdits.val.anyIt(it.historyId == id)
+
+proc sourceHistoryStep[T](inspector: InspectorVM; undoStack, redoStack: seq[T];
+    redo: bool): InspectorHistoryStep =
+  ## How the top entry of a component-property, foundation or vector history
+  ## is undone or redone. The same decision as `inspectorHistoryStep`, minus
+  ## the inspector-only cases.
+  let stack = if redo: redoStack else: undoStack
+  if stack.len == 0:
+    return InspectorHistoryStep(kind: ihsNone)
+  let entry = stack[^1]
+  if inspector.pendingHistoryPlan(entry.sourceEdit.historyId):
+    # Its last plan never reached disk; withdrawing it is the whole step.
+    return InspectorHistoryStep(kind: ihsDropPending, plan: entry.sourceEdit)
+  if not redo:
+    if entry.lastWrite.recorded and entry.lastWriteApplied:
+      return InspectorHistoryStep(kind: ihsRestoreWrite,
+        plan: entry.restorePlan(redo = false))
+    # Neither pending nor written: a later edit to the same slot replaced its
+    # plan before it was written, so nothing of it is on disk to restore.
+    return InspectorHistoryStep(kind: ihsDropPending, plan: entry.sourceEdit)
+  if entry.lastWrite.recorded and not entry.lastWriteApplied:
+    let stale = undoStack.staleRedoReceipt(entry)
+    if stale.stale and entry.sourceEdit.expectedOldValue.len > 0:
+      return InspectorHistoryStep(kind: ihsReplayPlan,
+        plan: entry.sourceEdit.replayOverDiskValue(stale.diskValue))
+    return InspectorHistoryStep(kind: ihsRestoreWrite,
+      plan: entry.restorePlan(redo = true))
+  InspectorHistoryStep(kind: ihsReplayPlan, plan: entry.sourceEdit)
+
+proc applySourceHistoryStep(editor: EditorVM; step: InspectorHistoryStep;
+    entryPlan: SourceEditPlan; replaceExisting: bool) =
+  case step.kind
+  of ihsDropPending:
+    if entryPlan.historyId > 0:
+      editor.inspector.dropPendingHistoryPlans(entryPlan.historyId)
+    else:
+      editor.inspector.removeJournaledSourceEdit(entryPlan)
+  of ihsRestoreWrite:
+    editor.inspector.journalSourceEdit(step.plan, replaceExisting = false)
+  of ihsInvertPlan, ihsReplayPlan:
+    editor.inspector.journalSourceEdit(step.plan,
+      replaceExisting = replaceExisting)
+  of ihsNone, ihsRefuse:
+    discard
+  editor.workspaceEditStage.val =
+    if editor.inspector.pendingSourceEdits.val.len == 0: wesClean else: wesDirty
+  editor.scheduleStagedWrite()
+
+proc journalSupersededHistoryBelow[T](editor: EditorVM; stack: seq[T];
+    plan: SourceEditPlan) =
+  ## After undoing an entry, the previous entry for the same slot is current
+  ## again. If its plan was replaced in the journal before it was written, its
+  ## value is not on disk, so stage it again.
+  for i in countdown(stack.high, 0):
+    if stack[i].sourceEdit.sameSourceJournalSlot(plan):
+      let below = stack[i]
+      let id = below.sourceEdit.historyId
+      if id > 0 and not (below.lastWrite.recorded and below.lastWriteApplied) and
+          not editor.inspector.pendingHistoryPlan(id):
+        editor.inspector.journalSourceEdit(below.sourceEdit)
+        editor.workspaceEditStage.val = wesDirty
+        editor.scheduleStagedWrite()
+      return
+
+proc withdrawPendingHistoryBelow[T](editor: EditorVM; stack: seq[T];
+    plan: SourceEditPlan) =
+  ## Before redoing an entry whose write is (or will again be) on disk,
+  ## withdraw a still-unwritten forward plan of the previous entry for the
+  ## same slot: the redone entry wins the slot, and that plan's expected old
+  ## value no longer describes the file.
+  for i in countdown(stack.high, 0):
+    if stack[i].sourceEdit.sameSourceJournalSlot(plan):
+      let id = stack[i].sourceEdit.historyId
+      if id > 0 and editor.inspector.pendingSourceEdits.val.anyIt(
+          it.historyId == id and not it.restoreWrite.recorded):
+        editor.inspector.dropPendingHistoryPlans(id)
+      return
 
 proc actualConflictMatchesPlan(actual: CSSSourceConflict;
     plan: SourceEditPlan): bool =
@@ -5524,6 +5876,7 @@ proc stageDirectCanvasPlan(editor: EditorVM; operation: DirectCanvasOperation;
     editOrigin: peoInspector,
     sourcePlanKind: plan.planKind)
   var plan = plan
+  editor.inspector.inheritUnwrittenExpectation(plan)
   editor.inspector.stampHistoryEntry(plan)
   editor.inspector.selectedElement.val = afterElement
   editor.inspector.journalSourceEdit(plan)
@@ -5612,8 +5965,8 @@ proc planOwnedDirectSourceEdit(editor: EditorVM; operation: DirectCanvasOperatio
       if prop.originDetail.startsWith("iframe-dom:"): "" else: oldValue)
   result.ok = true
 
-proc applyDirectCanvasOperation*(editor: EditorVM;
-    operation: DirectCanvasOperation): DirectCanvasOperationResult {.discardable.} =
+proc stageDirectCanvasOperation(editor: EditorVM;
+    operation: DirectCanvasOperation): DirectCanvasOperationResult =
   ## Route iframe direct manipulation into the same source-backed journal used
   ## by inspector edits. Schema ownership wins; DOM-style fallback is used only
   ## for consumer previews that expose a generic source-map adapter.
@@ -5773,6 +6126,17 @@ proc applyDirectCanvasOperation*(editor: EditorVM;
       result = DirectCanvasOperationResult(ok: fallback.status == pesAccepted,
         operation: op, sourceEdit: fallback.sourceEdit,
         diagnostics: fallback.diagnostics)
+
+proc applyDirectCanvasOperation*(editor: EditorVM;
+    operation: DirectCanvasOperation): DirectCanvasOperationResult {.discardable.} =
+  ## A canvas gesture or context command is a commit like an inspector row:
+  ## what it stages is written automatically. Context commands that run
+  ## another editor command (Duplicate, Open source, ...) stage nothing
+  ## themselves, and `noteCommitForAutoSave` schedules only when something is
+  ## staged.
+  result = editor.stageDirectCanvasOperation(operation)
+  if result.ok:
+    editor.scheduleStagedWrite()
 
 proc applyDirectCanvasResize*(editor: EditorVM; property,
     value: string): DirectCanvasOperationResult {.discardable.} =
@@ -6354,6 +6718,7 @@ proc editSharedDesignProperty*(editor: EditorVM; property, newValue: string;
     return
 
   var plan = result.sourceEdit
+  editor.inspector.inheritUnwrittenExpectation(plan)
   editor.inspector.stampHistoryEntry(plan)
   let beforeElement = editor.inspector.selectedElement.val
   var afterElement = beforeElement
@@ -7409,11 +7774,6 @@ proc selectFoundationToken*(editor: EditorVM; key: string): bool {.discardable.}
       return true
   false
 
-proc removePendingFoundationEdit(editor: EditorVM; edit: SourceEditPlan) =
-  editor.inspector.removeJournaledSourceEdit(edit)
-  editor.workspaceEditStage.val =
-    if editor.inspector.pendingSourceEdits.val.len == 0: wesClean else: wesDirty
-
 proc undoFoundationTokenEdit*(editor: EditorVM): bool {.discardable.} =
   let stack = editor.foundations.undoStack.val
   if stack.len == 0:
@@ -7424,6 +7784,8 @@ proc undoFoundationTokenEdit*(editor: EditorVM): bool {.discardable.} =
     if token.key.sameTokenKey(entry.key):
       updated[i] = entry.beforeToken
       break
+  let step = editor.inspector.sourceHistoryStep(
+    editor.foundations.undoStack.val, editor.foundations.redoStack.val, redo = false)
   editor.foundations.tokens.val = updated
   editor.foundations.selectedTokenKey.val = entry.key
   editor.foundations.undoStack.val = stack[0 ..< stack.len - 1]
@@ -7431,7 +7793,9 @@ proc undoFoundationTokenEdit*(editor: EditorVM): bool {.discardable.} =
       FoundationEditHistoryEntry] =
     result = prev
     result.add entry
-  editor.removePendingFoundationEdit(entry.sourceEdit)
+  editor.applySourceHistoryStep(step, entry.sourceEdit, replaceExisting = true)
+  editor.journalSupersededHistoryBelow(editor.foundations.undoStack.val,
+    entry.sourceEdit)
   true
 
 proc redoFoundationTokenEdit*(editor: EditorVM): bool {.discardable.} =
@@ -7444,6 +7808,11 @@ proc redoFoundationTokenEdit*(editor: EditorVM): bool {.discardable.} =
     if token.key.sameTokenKey(entry.key):
       updated[i] = entry.afterToken
       break
+  let step = editor.inspector.sourceHistoryStep(
+    editor.foundations.undoStack.val, editor.foundations.redoStack.val, redo = true)
+  if step.kind in {ihsDropPending, ihsRestoreWrite}:
+    editor.withdrawPendingHistoryBelow(editor.foundations.undoStack.val,
+      entry.sourceEdit)
   editor.foundations.tokens.val = updated
   editor.foundations.selectedTokenKey.val = entry.key
   editor.foundations.redoStack.val = stack[0 ..< stack.len - 1]
@@ -7451,8 +7820,7 @@ proc redoFoundationTokenEdit*(editor: EditorVM): bool {.discardable.} =
       FoundationEditHistoryEntry] =
     result = prev
     result.add entry
-  editor.inspector.journalSourceEdit(entry.sourceEdit)
-  editor.workspaceEditStage.val = wesDirty
+  editor.applySourceHistoryStep(step, entry.sourceEdit, replaceExisting = true)
   true
 
 proc editFoundationToken*(editor: EditorVM; key, newValue: string): FoundationEditResult {.discardable.} =
@@ -7477,7 +7845,9 @@ proc editFoundationToken*(editor: EditorVM; key, newValue: string): FoundationEd
     editor.foundations.diagnostics.val = diagnostics
     return FoundationEditResult(status: pesRejected, diagnostics: diagnostics)
 
-  let plan = token.sourcePlan(newValue)
+  var plan = token.sourcePlan(newValue)
+  editor.inspector.inheritUnwrittenExpectation(plan)
+  editor.inspector.stampHistoryEntry(plan)
   var updatedTokens = editor.foundations.tokens.val
   updatedTokens[tokenIndex].value = newValue.strip()
   if newValue.strip().isTokenAliasValue:
@@ -7506,6 +7876,7 @@ proc editFoundationToken*(editor: EditorVM; key, newValue: string): FoundationEd
   editor.foundations.redoStack.val = @[]
   editor.inspector.journalSourceEdit(plan)
   editor.workspaceEditStage.val = wesDirty
+  editor.scheduleStagedWrite()
   FoundationEditResult(status: pesAccepted, sourceEdit: plan, impacts: @[impact])
 
 proc variantDiagnostic(kind: ComponentVariantDiagnosticKind;
@@ -8156,6 +8527,7 @@ proc addPendingComponentPlan(editor: EditorVM; plan: SourceEditPlan) =
   editor.inspector.journalSourceEdit(plan)
   editor.workspaceEditStage.val = wesDirty
   editor.workspaceEditDiagnostics.val = @[]
+  editor.scheduleStagedWrite()
   editor.chat.accumulatedEdits.update proc(prev: seq[EditRecord]): seq[
       EditRecord] =
     result = prev
@@ -8176,8 +8548,11 @@ proc addPendingComponentPlan(editor: EditorVM; plan: SourceEditPlan) =
 
 proc stageComponentVariantJournal(editor: EditorVM;
     beforeVariant, afterVariant: ComponentVariantDefinition;
-    selectedBefore, selectedAfter: int; plan: SourceEditPlan) =
-  editor.addPendingComponentPlan(plan)
+    selectedBefore, selectedAfter: int; plan: var SourceEditPlan) =
+  editor.inspector.inheritUnwrittenExpectation(plan)
+  editor.inspector.stampHistoryEntry(plan)
+  let staged = plan
+  editor.addPendingComponentPlan(staged)
   editor.variants.undoStack.update proc(prev: seq[ComponentVariantEditHistoryEntry]): seq[
       ComponentVariantEditHistoryEntry] =
     result = prev
@@ -8186,7 +8561,7 @@ proc stageComponentVariantJournal(editor: EditorVM;
       afterVariant: afterVariant,
       selectedBefore: selectedBefore,
       selectedAfter: selectedAfter,
-      sourceEdit: plan)
+      sourceEdit: staged)
   editor.variants.redoStack.val = @[]
 
 func sourcePlan(variant: ComponentVariantDefinition;
@@ -8489,6 +8864,8 @@ proc undoComponentVariantEdit*(editor: EditorVM): bool {.discardable.} =
   let entry = stack[^1]
   var updated = editor.variants.variants.val
   discard updated.replaceVariant(entry.beforeVariant)
+  let step = editor.inspector.sourceHistoryStep(
+    editor.variants.undoStack.val, editor.variants.redoStack.val, redo = false)
   editor.variants.variants.val = updated
   editor.variants.selectedVariant.val = entry.selectedBefore
   editor.variants.undoStack.val = stack[0 ..< stack.len - 1]
@@ -8496,9 +8873,9 @@ proc undoComponentVariantEdit*(editor: EditorVM): bool {.discardable.} =
       ComponentVariantEditHistoryEntry] =
     result = prev
     result.add entry
-  editor.inspector.removeJournaledSourceEdit(entry.sourceEdit)
-  editor.workspaceEditStage.val =
-    if editor.inspector.pendingSourceEdits.val.len == 0: wesClean else: wesDirty
+  editor.applySourceHistoryStep(step, entry.sourceEdit, replaceExisting = true)
+  editor.journalSupersededHistoryBelow(editor.variants.undoStack.val,
+    entry.sourceEdit)
   true
 
 proc redoComponentVariantEdit*(editor: EditorVM): bool {.discardable.} =
@@ -8508,6 +8885,11 @@ proc redoComponentVariantEdit*(editor: EditorVM): bool {.discardable.} =
   let entry = stack[^1]
   var updated = editor.variants.variants.val
   discard updated.replaceVariant(entry.afterVariant)
+  let step = editor.inspector.sourceHistoryStep(
+    editor.variants.undoStack.val, editor.variants.redoStack.val, redo = true)
+  if step.kind in {ihsDropPending, ihsRestoreWrite}:
+    editor.withdrawPendingHistoryBelow(editor.variants.undoStack.val,
+      entry.sourceEdit)
   editor.variants.variants.val = updated
   editor.variants.selectedVariant.val = entry.selectedAfter
   editor.variants.redoStack.val = stack[0 ..< stack.len - 1]
@@ -8515,8 +8897,7 @@ proc redoComponentVariantEdit*(editor: EditorVM): bool {.discardable.} =
       ComponentVariantEditHistoryEntry] =
     result = prev
     result.add entry
-  editor.inspector.journalSourceEdit(entry.sourceEdit)
-  editor.workspaceEditStage.val = wesDirty
+  editor.applySourceHistoryStep(step, entry.sourceEdit, replaceExisting = true)
   true
 
 func workspacePlanKeys(plan: SourceEditPlan): seq[string] =
@@ -8689,6 +9070,24 @@ proc requireWorkspaceAdapter(editor: EditorVM): tuple[ok: bool,
     return
   result.ok = true
 
+proc nextHistoryStep(editor: EditorVM; redo: bool): InspectorHistoryStep =
+  ## The step the next undo/redo command will take, in the history the
+  ## timeline says it acts on (`nextHistoryKind`).
+  case editor.nextHistoryKind(redo)
+  of ehkNone:
+    InspectorHistoryStep(kind: ihsNone)
+  of ehkInspector:
+    editor.inspector.inspectorHistoryStep(redo)
+  of ehkVector:
+    editor.inspector.sourceHistoryStep(editor.vectorEditor.undoStack.val,
+      editor.vectorEditor.redoStack.val, redo)
+  of ehkFoundation:
+    editor.inspector.sourceHistoryStep(editor.foundations.undoStack.val,
+      editor.foundations.redoStack.val, redo)
+  of ehkVariant:
+    editor.inspector.sourceHistoryStep(editor.variants.undoStack.val,
+      editor.variants.redoStack.val, redo)
+
 proc inspectorHistoryRefusal(editor: EditorVM; redo: bool): PropertyEditDiagnostic =
   ## Why the next inspector undo/redo must be refused, or an empty message.
   ##
@@ -8696,7 +9095,10 @@ proc inspectorHistoryRefusal(editor: EditorVM; redo: bool): PropertyEditDiagnost
   ## refusal leaves history, journal, preview and source untouched. When a
   ## pending plan for the same file would be written first, the file on disk
   ## is not what the restoration will meet; the write itself re-checks then.
-  let step = editor.inspector.inspectorHistoryStep(redo)
+  ##
+  ## Covers the component-property, foundation and vector histories too:
+  ## they restore written edits through the same receipts.
+  let step = editor.nextHistoryStep(redo)
   let action = if redo: "Redo" else: "Undo"
   case step.kind
   of ihsRefuse:
@@ -9132,14 +9534,11 @@ proc applyWorkspaceFileEdits*(editor: EditorVM): WorkspaceEditResult {.discardab
     requiredTestCommands.add reloaded.requiredTestCommands
     reviewDiagnostics.add reloaded.reviewDiagnostics
 
-  editor.inspector.recordSourceWrites(patches)
+  # History survives the write in every history, not only the inspector's:
+  # the write is credited to the entries that produced it, so their undo
+  # restores exactly what it replaced. See `recordHistoryWrites`.
+  editor.recordHistoryWrites(patches)
   editor.inspector.markCssPropertyEditsSaved()
-  editor.vectorEditor.undoStack.val = @[]
-  editor.vectorEditor.redoStack.val = @[]
-  editor.foundations.undoStack.val = @[]
-  editor.foundations.redoStack.val = @[]
-  editor.variants.undoStack.val = @[]
-  editor.variants.redoStack.val = @[]
   editor.chat.accumulatedEdits.val = @[]
   editor.workspaceEditStage.val = wesClean
   editor.workspaceEditDiagnostics.val = @[]
@@ -11806,7 +12205,8 @@ proc commitVectorDocument(editor: EditorVM; operation: VectorOperationKind;
 
   let beforeSvg = beforeDoc.exportVectorDocumentSvg.optimizeVectorSvg
   let afterSvg = afterDoc.exportVectorDocumentSvg.optimizeVectorSvg
-  let plan = afterDoc.vectorSourcePlan(beforeSvg, afterSvg)
+  var plan = afterDoc.vectorSourcePlan(beforeSvg, afterSvg)
+  editor.inspector.stampHistoryEntry(plan)
   editor.vectorEditor.document.val = afterDoc
   editor.vectorEditor.diagnostics.val = afterDoc.validateVectorAccessibility()
   editor.vectorEditor.undoStack.update proc(prev: seq[VectorEditTransaction]): seq[
@@ -11819,6 +12219,7 @@ proc commitVectorDocument(editor: EditorVM; operation: VectorOperationKind;
   editor.vectorEditor.redoStack.val = @[]
   editor.inspector.journalSourceEdit(plan, replaceExisting = false)
   editor.workspaceEditStage.val = wesDirty
+  editor.scheduleStagedWrite()
   VectorOperationResult(ok: true, operation: operation, document: afterDoc,
     sourceEdit: plan, diagnostics: editor.vectorEditor.diagnostics.val)
 
@@ -11854,7 +12255,8 @@ proc commitVectorSourceSnapshot*(editor: EditorVM; operation: VectorOperationKin
       name: afterDoc.name, source: afterDoc.source, a11y: afterDoc.a11y)
   afterDoc.symbols[0].svgContent = normalized
   let expected = if requireExpectedOldValue: beforeSvg else: ""
-  let plan = afterDoc.vectorSourcePlan(beforeSvg, normalized, expected)
+  var plan = afterDoc.vectorSourcePlan(beforeSvg, normalized, expected)
+  editor.inspector.stampHistoryEntry(plan)
 
   editor.vectorEditor.document.val = afterDoc
   editor.vectorEditor.diagnostics.val = afterDoc.validateVectorAccessibility()
@@ -11868,6 +12270,7 @@ proc commitVectorSourceSnapshot*(editor: EditorVM; operation: VectorOperationKin
   editor.vectorEditor.redoStack.val = @[]
   editor.inspector.journalSourceEdit(plan, replaceExisting = false)
   editor.workspaceEditStage.val = wesDirty
+  editor.scheduleStagedWrite()
   VectorOperationResult(ok: true, operation: operation, document: afterDoc,
     sourceEdit: plan, diagnostics: editor.vectorEditor.diagnostics.val)
 
@@ -12454,15 +12857,15 @@ proc undoVectorEdit*(editor: EditorVM): bool {.discardable.} =
   if stack.len == 0:
     return false
   let tx = stack[^1]
+  let step = editor.inspector.sourceHistoryStep(
+    editor.vectorEditor.undoStack.val, editor.vectorEditor.redoStack.val, redo = false)
   editor.vectorEditor.undoStack.val = stack[0 ..< stack.len - 1]
   editor.vectorEditor.redoStack.update proc(prev: seq[VectorEditTransaction]): seq[
       VectorEditTransaction] =
     result = prev
     result.add tx
-  editor.inspector.removeJournaledSourceEdit(tx.sourceEdit)
   editor.vectorEditor.document.val = tx.beforeDocument
-  editor.workspaceEditStage.val =
-    if editor.inspector.pendingSourceEdits.val.len == 0: wesClean else: wesDirty
+  editor.applySourceHistoryStep(step, tx.sourceEdit, replaceExisting = false)
   true
 
 proc redoVectorEdit*(editor: EditorVM): bool {.discardable.} =
@@ -12470,14 +12873,15 @@ proc redoVectorEdit*(editor: EditorVM): bool {.discardable.} =
   if stack.len == 0:
     return false
   let tx = stack[^1]
+  let step = editor.inspector.sourceHistoryStep(
+    editor.vectorEditor.undoStack.val, editor.vectorEditor.redoStack.val, redo = true)
   editor.vectorEditor.redoStack.val = stack[0 ..< stack.len - 1]
   editor.vectorEditor.undoStack.update proc(prev: seq[VectorEditTransaction]): seq[
       VectorEditTransaction] =
     result = prev
     result.add tx
   editor.vectorEditor.document.val = tx.afterDocument
-  editor.inspector.journalSourceEdit(tx.sourceEdit, replaceExisting = false)
-  editor.workspaceEditStage.val = wesDirty
+  editor.applySourceHistoryStep(step, tx.sourceEdit, replaceExisting = false)
   true
 
 proc createVectorEditorVM*(): VectorEditorVM =
@@ -12501,7 +12905,11 @@ proc createVectorEditorVM*(): VectorEditorVM =
     selectedSymbol.val >= 0
   )
   let isDirty = createMemo[bool](proc(): bool =
-    undoStack.val.len > 0
+    ## Unsaved work, not "has history": history survives writes now, so a
+    ## written document that remembers what you did is clean. Same rule as
+    ## the inspector's `isDirty`; see `splitUnsavedHistory`.
+    let split = splitUnsavedHistory(undoStack.val, redoStack.val)
+    split.unsaved.len > 0 or split.reapply.len > 0
   )
 
   let filteredSymbols = createMemo[seq[VectorSymbol]](proc(): seq[VectorSymbol] =
@@ -12586,7 +12994,10 @@ proc createFoundationEditorVM*(): FoundationEditorVM =
       filtered[0]
     else:
       FoundationTokenEntry())
-  let isDirty = createMemo[bool](proc(): bool = undoStack.val.len > 0)
+  let isDirty = createMemo[bool](proc(): bool =
+    ## Unsaved work, not "has history"; see the vector editor's `isDirty`.
+    let split = splitUnsavedHistory(undoStack.val, redoStack.val)
+    split.unsaved.len > 0 or split.reapply.len > 0)
   let hasDiagnostics = createMemo[bool](proc(): bool = diagnostics.val.len > 0)
   FoundationEditorVM(
     tokens: tokens,

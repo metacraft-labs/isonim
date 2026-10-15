@@ -574,6 +574,13 @@ type
     beforeDocument*: VectorDocument
     afterDocument*: VectorDocument
     sourceEdit*: SourceEditPlan
+    lastWrite*: SourceWriteReceipt
+      ## The most recent completed write of this entry's plan, or of the plan
+      ## that undid it; see ``CSSPropertyEditTransaction.lastWrite``. Kept so
+      ## that undo after an automatic save restores exactly the lines the
+      ## write replaced instead of being lost with the save.
+    lastWriteApplied*: bool
+      ## ``lastWrite`` applied this entry's edit rather than undoing it.
 
   VectorSymbol* = object
     ## A reusable vector symbol in the design system.
@@ -1074,6 +1081,11 @@ type
     before*: string       ## The lines the write replaced (may be empty).
     after*: string        ## The lines the write put there (may be empty).
     afterContent*: string ## The whole file immediately after the write.
+    sequence*: int
+      ## Order of this write among all writes in the session (1-based, one
+      ## counter for every history). Lets a redo tell that an earlier edit to
+      ## the same slot was written AFTER this receipt, which makes the receipt
+      ## stale even though nothing outside the editor touched the file.
     uniqueWhenWritten*: bool
       ## ``after`` occurred exactly once, on line boundaries, in
       ## ``afterContent``. Only then can a later single occurrence be known
@@ -1928,6 +1940,13 @@ type
     beforeToken*: FoundationTokenEntry
     afterToken*: FoundationTokenEntry
     sourceEdit*: SourceEditPlan
+    lastWrite*: SourceWriteReceipt
+      ## The most recent completed write of this entry's plan, or of the plan
+      ## that undid it; see ``CSSPropertyEditTransaction.lastWrite``. Kept so
+      ## that undo after an automatic save restores exactly the lines the
+      ## write replaced instead of being lost with the save.
+    lastWriteApplied*: bool
+      ## ``lastWrite`` applied this entry's edit rather than undoing it.
 
   ComponentVariantEditHistoryEntry* = object
     beforeVariant*: ComponentVariantDefinition
@@ -1935,6 +1954,13 @@ type
     selectedBefore*: int
     selectedAfter*: int
     sourceEdit*: SourceEditPlan
+    lastWrite*: SourceWriteReceipt
+      ## The most recent completed write of this entry's plan, or of the plan
+      ## that undid it; see ``CSSPropertyEditTransaction.lastWrite``. Kept so
+      ## that undo after an automatic save restores exactly the lines the
+      ## write replaced instead of being lost with the save.
+    lastWriteApplied*: bool
+      ## ``lastWrite`` applied this entry's edit rather than undoing it.
 
   FoundationEditDiagnostic* = object
     kind*: FoundationEditDiagnosticKind

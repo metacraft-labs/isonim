@@ -22,7 +22,6 @@ const
   textDim = "#475569"
   accent = "#3B82F6"
   danger = "#F87171"
-  success = "#22C55E"
 
 proc categoryButtonHandler[R, E](r: R; node: E; vm: EditorVM;
     kind: FoundationTokenKind): proc() =
@@ -55,12 +54,6 @@ proc editTokenHandler[R, E](r: R; vm: EditorVM; input: E): proc() =
     let token = vm.foundations.selectedToken.val
     if token.key.len > 0:
       discard vm.editFoundationToken(token.key, r.inputValue(capturedInput))
-
-proc revertHandler(vm: EditorVM): proc() =
-  result = proc() = discard vm.runEditorCommand(eckRevert)
-
-proc saveHandler(vm: EditorVM): proc() =
-  result = proc() = discard vm.runEditorCommand(eckSave)
 
 proc undoHandler(vm: EditorVM): proc() =
   result = proc() = discard vm.undoFoundationTokenEdit()
@@ -303,8 +296,6 @@ proc renderFoundationsPage*[R, E](r: R; vm: EditorVM): E =
   var diagnosticsNode: E
   var impactNode: E
   var sourceNode: E
-  var saveButton: E
-  var revertButton: E
   var undoButton: E
   var applyButton: E
   let detail = ui(r):
@@ -357,20 +348,9 @@ proc renderFoundationsPage*[R, E](r: R; vm: EditorVM): E =
               text_align = "center", cursor = "pointer",
               font_size = "12px", font_weight = "700"):
           text "Undo"
-        tdiv(ref = saveButton, role = "button", tabindex = "0",
-              `aria-label` = "Save foundation source edits",
-              padding = "8px 10px", border_radius = "6px",
-              background_color = success, color = "#052E16",
-              text_align = "center", cursor = "pointer",
-              font_size = "12px", font_weight = "700"):
-          text "Save"
-        tdiv(ref = revertButton, role = "button", tabindex = "0",
-              `aria-label` = "Revert foundation source edits",
-              padding = "8px 10px", border_radius = "6px",
-              background_color = bgSurface, color = textSecondary,
-              text_align = "center", cursor = "pointer",
-              font_size = "12px", font_weight = "700"):
-          text "Revert"
+        # No Save or Revert control: an applied token is written
+        # automatically (editor spec "Saving"), and Undo / Mod+Z take it
+        # back, including after the write.
       tdiv(ref = diagnosticsNode,
             `data-foundation-diagnostics` = "true",
             display = "flex", flex_direction = "column", gap = "6px",
@@ -394,10 +374,6 @@ proc renderFoundationsPage*[R, E](r: R; vm: EditorVM): E =
   r.addEventListener(applyButton, "click", editTokenHandler[R, E](r, vm, valueInput))
   r.addEventListener(applyButton, "keydown", editTokenHandler[R, E](r, vm,
     valueInput))
-  r.addEventListener(saveButton, "click", saveHandler(vm))
-  r.addEventListener(saveButton, "keydown", saveHandler(vm))
-  r.addEventListener(revertButton, "click", revertHandler(vm))
-  r.addEventListener(revertButton, "keydown", revertHandler(vm))
   r.addEventListener(undoButton, "click", undoHandler(vm))
   r.addEventListener(undoButton, "keydown", undoHandler(vm))
   r.appendChild(body, detail)
@@ -473,17 +449,8 @@ proc renderFoundationsPage*[R, E](r: R; vm: EditorVM): E =
     else:
       r.setTextContent(impactNode, "No impact analysis yet")
 
-    let save = vm.evaluateCommand(eckSave)
-    let revert = vm.evaluateCommand(eckRevert)
-    r.setAttribute(saveButton, "aria-disabled",
-      if save.status == ecsDisabled: "true" else: "false")
-    r.setAttribute(revertButton, "aria-disabled",
-      if revert.status == ecsDisabled: "true" else: "false")
     r.setAttribute(undoButton, "aria-disabled",
       if vm.foundations.undoStack.val.len == 0: "true" else: "false")
-    r.setStyle(saveButton, "opacity", if save.status == ecsDisabled: "0.5" else: "1")
-    r.setStyle(revertButton, "opacity",
-      if revert.status == ecsDisabled: "0.5" else: "1")
     r.setStyle(undoButton, "opacity",
       if vm.foundations.undoStack.val.len == 0: "0.5" else: "1")
 

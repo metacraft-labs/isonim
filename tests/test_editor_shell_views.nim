@@ -55,6 +55,29 @@ proc collectByAttr(node: MockNode; name, value: string; result: var seq[MockNode
 proc findAllByAttr(node: MockNode; name, value: string): seq[MockNode] =
   collectByAttr(node, name, value, result)
 
+proc manualSaveControls(node: MockNode; found: var seq[string]) =
+  ## Every control that would let a person hold a change back for a second
+  ## gesture: an aria-labelled Save/Revert, or an interactive node whose
+  ## whole text is "Save" or "Revert". Editor spec "Saving": none exist.
+  if node.kind == mnkElement:
+    let label = node.attributes.getOrDefault("aria-label")
+    if (label.startsWith("Save ") or label.startsWith("Revert ")) and
+        label.endsWith("source edits"):
+      found.add label
+    # Exempt, both draft confirms rather than source-edit saves:
+    # - the inline variable editor's dialog confirm commits the draft through
+    #   `editFoundationToken` (a commit, then auto-saved), like "Apply";
+    # - the Spec-mode markdown editor's Save (JS only) ends an explicit spec
+    #   document edit session through its own callback, not the source-edit
+    #   journal.
+    if ("click" in node.eventListeners or "keydown" in node.eventListeners) and
+        node.textContent.strip in ["Save", "Revert"] and
+        node.attributes.getOrDefault("data-variable-inline-editor-save") != "true" and
+        node.attributes.getOrDefault("data-spec-pane-save-btn") != "true":
+      found.add "text:" & node.textContent.strip
+  for child in node.children:
+    manualSaveControls(child, found)
+
 proc countInteractive(node: MockNode): int =
   if node.kind == mnkElement and
       ("click" in node.eventListeners or "keydown" in node.eventListeners):
@@ -756,10 +779,12 @@ suite "Editor Shell Views (M2)":
       check union != nil
       check union.attributes["data-vector-action"] == "boolean-unite"
 
-      let saveVector = findByAttr(vector, "aria-label",
-        "Save vector source edits")
-      check saveVector != nil
-      check saveVector.attributes["data-vector-pending-source-edits"] == "0"
+      # No Save control (editor spec "Saving"); the source write state the
+      # Save button used to carry is on the toolbar.
+      check findByAttr(vector, "aria-label", "Save vector source edits") == nil
+      let vectorToolbar = findByAttr(vector, "data-vector-editor-toolbar", "true")
+      check vectorToolbar != nil
+      check vectorToolbar.attributes["data-vector-pending-source-edits"] == "0"
 
       let layer = findByAttr(vector, "aria-label", "Select vector layer Rectangle")
       check layer != nil
@@ -1241,6 +1266,49 @@ suite "Editor Shell Views (M2)":
       check disabled != nil
       check disabled.attributes["data-compact-choice-row"] == "true"
 
+      dispose()
+
+  test "no panel renders a manual save or revert control":
+    ## Component properties, foundations, vector and the inspector all write
+    ## automatically. Each used to carry its own Save/Revert pair.
+    createRoot do (dispose: proc()):
+      let r = MockRenderer()
+      let vm = createEditorVM()
+      let story = StoryRef(group: "StatusBadge", name: "Neutral",
+        kind: skComponent, index: 0)
+      vm.sidebar.groups.val = @[
+        StoryGroup(name: "Components", kind: skComponent, expanded: true,
+          items: @[StoryItem(name: story.name, kind: story.kind,
+            group: story.group)])
+      ]
+      vm.variants.variants.val = @[ComponentVariantDefinition(
+        component: "StatusBadge", variantKey: "base", story: story,
+        properties: @[ComponentPropertyDefinition(name: "tone",
+          kind: cpkEnum, value: "neutral",
+          options: @["neutral", "success", "error"],
+          sourceFile: "components/status_badge.nim", sourceLine: 12,
+          schemaKey: "status.tone")])]
+      vm.foundations.tokens.val = @[FoundationTokenEntry(key: "space.card",
+        kind: ftkSpacingScale, value: "16px", sourceFile: "tokens.nim",
+        sourceLine: 1, schemaKey: "tokens.space.card", property: "space.card")]
+      discard vm.selectStory(story)
+      var found: seq[string] = @[]
+      let detail = renderComponentDetail[MockRenderer, MockNode](r, vm)
+      check findByAttr(detail, "aria-label",
+        "Apply component property tone option success") != nil
+      manualSaveControls(detail, found)
+      let foundations = renderFoundationsPage[MockRenderer, MockNode](r, vm)
+      check findByAttr(foundations, "aria-label",
+        "Apply foundation token value") != nil
+      manualSaveControls(foundations, found)
+      let vector = renderVectorEditor[MockRenderer, MockNode](r, vm)
+      check findByAttr(vector, "data-vector-editor-toolbar", "true") != nil
+      manualSaveControls(vector, found)
+      vm.setEditMode(emEdit)
+      let shell = renderEditorShell[MockRenderer, MockNode](r, vm)
+      manualSaveControls(shell, found)
+      check found.len == 0
+      if found.len > 0: echo "manual save controls: ", found
       dispose()
 
   test "component detail picks story-specific variants after fallback synthesis":

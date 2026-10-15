@@ -2932,7 +2932,11 @@ suite "Editor ViewModels (M27 workspace file writes)":
       check savedSvg.contains("mix-blend-mode:multiply")
       check savedSvg.contains("star-3")
       check vm.inspector.pendingSourceEdits.val.len == 0
-      check vm.vectorEditor.undoStack.val.len == 0
+      # A write keeps the history (isonim-pm issue 2026-10-14-a-successful-
+      # save-clears-component-foundation-and-vector-undo-history; this used to
+      # assert the stack was emptied) and leaves nothing unsaved.
+      check vm.vectorEditor.undoStack.val.len > 0
+      check vm.vectorEditor.undoStack.val[^1].lastWrite.recorded
       check not vm.vectorEditor.isDirty.val
       check vm.workspaceEditStage.val == wesClean
       check recorder.fullReloadSeen
@@ -2992,7 +2996,10 @@ suite "Editor ViewModels (M27 workspace file writes)":
       check readFile(svgFile).contains("fabric-rect")
       check readFile(svgFile).contains("#EF4444")
       check vm.inspector.pendingSourceEdits.val.len == 0
-      check vm.vectorEditor.undoStack.val.len == 0
+      # History survives the write (see the vector import case above).
+      check vm.vectorEditor.undoStack.val.len > 0
+      check vm.vectorEditor.undoStack.val[^1].lastWrite.recorded
+      check not vm.vectorEditor.isDirty.val
       check vm.workspaceEditStage.val == wesClean
       check recorder.fullReloadSeen
       dispose()
