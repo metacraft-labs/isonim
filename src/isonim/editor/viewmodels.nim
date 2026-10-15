@@ -125,6 +125,14 @@ type
     layers*: Signal[seq[ElementLayerRow]]
     layerSearch*: Signal[string]
     sectionSearch*: Signal[string]
+    preSearchExpandedSections*: seq[InspectorSection]
+      ## The open/closed state the inspector had when a section search
+      ## began. A search opens the sections whose rows match; clearing it
+      ## puts the inspector back the way it was (``setSectionSearch``).
+    propertyClipboard*: Signal[PropertyClipboardEntry]
+      ## "Copy property" / "Paste property" (editor spec "Universal
+      ## Patterns"). One per editor, so a value copied on one element
+      ## pastes onto another.
     expandedSections*: Signal[seq[InspectorSection]]
     sectionsUserSet*: Signal[seq[InspectorSection]]
     revealSectionRequest*: Signal[int]
@@ -4081,7 +4089,18 @@ proc setSection*(inspector: InspectorVM; section: InspectorSection) =
   inspector.activeSection.val = section
 
 proc setSectionSearch*(inspector: InspectorVM; query: string) =
+  ## Editor spec "Section catalogue": the search filters sections and opens
+  ## the ones whose rows match. Opening is done by the view, which knows the
+  ## mounted rows; this records the open/closed state from before the
+  ## search so that clearing the query restores it rather than leaving every
+  ## section the search happened to open.
+  let wasSearching = inspector.sectionSearch.val.strip().len > 0
+  let searching = query.strip().len > 0
+  if searching and not wasSearching:
+    inspector.preSearchExpandedSections = inspector.expandedSections.val
   inspector.sectionSearch.val = query
+  if wasSearching and not searching:
+    inspector.expandedSections.val = inspector.preSearchExpandedSections
 
 proc setSectionExpanded*(inspector: InspectorVM; section: InspectorSection;
     expanded: bool) =
@@ -11777,6 +11796,7 @@ proc createInspectorVM*(designSystemSchema: Signal[DesignSystemSchema] = nil;
     layers: layers,
     layerSearch: layerSearch,
     sectionSearch: sectionSearch,
+    propertyClipboard: createSignal(PropertyClipboardEntry()),
     expandedSections: expandedSections,
     sectionsUserSet: createSignal[seq[InspectorSection]](@[]),
     revealSectionRequest: createSignal(0),

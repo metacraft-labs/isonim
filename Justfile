@@ -1668,7 +1668,15 @@ test-editor-act-time-refusals:
     nim js -d:nodejs --out:build/test_editor_act_time_refusals.js tests/test_editor_act_time_refusals.nim
     python3 tools/run_nim_js_test.py build/test_editor_act_time_refusals.js
 
-test-editor-c4a: test-editor-selection-keys test-editor-source-write-receipts test-editor-save-pipeline test-editor-act-time-refusals test-editor-c4a-headless test-editor-c4a-compounds test-editor-c4a-properties test-editor-c4a-remaining test-editor-inline-preview test-editor-c4a-gestures test-editor-c4a-color test-editor-c4a-grip
+# The inspector's section search, its property Copy / Paste / Reset menu
+# (row More button and right-click) and the colour picker's typed RGB / HSL
+# fields committing on Enter. Native and strict executed Node JS.
+test-editor-inspector-controls:
+    nim c -r --out:build/test_editor_inspector_controls tests/test_editor_inspector_controls.nim
+    nim js -d:nodejs --out:build/test_editor_inspector_controls.js tests/test_editor_inspector_controls.nim
+    python3 tools/run_nim_js_test.py build/test_editor_inspector_controls.js
+
+test-editor-c4a: test-editor-selection-keys test-editor-source-write-receipts test-editor-save-pipeline test-editor-act-time-refusals test-editor-inspector-controls test-editor-c4a-headless test-editor-c4a-compounds test-editor-c4a-properties test-editor-c4a-remaining test-editor-inline-preview test-editor-c4a-gestures test-editor-c4a-color test-editor-c4a-grip
 
 # Source ownership presentation; real native/JS signals and shell, no transports.
 test-editor-source-labels: build-tailwind

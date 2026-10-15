@@ -29,6 +29,8 @@ import isonim/editor/views/widgets/property_commit
 import isonim/editor/views/widgets/section_position
 import isonim/editor/views/widgets/variable_chip
 import isonim/editor/views/widgets/property_row  # measureAnchorRect (VBIND-M2)
+import isonim/editor/views/widgets/property_actions
+import isonim/editor/views/widgets/inspector_search
 
 type
   FillEntry* = object
@@ -168,7 +170,7 @@ proc mountSectionFill*[R, E](r: R; parent: E; vm: EditorVM) =
     r.setTextContent(sourceImpact,description)
     r.setStyle(sourceImpact,"display",if description.len > 0: "block" else: "none")
 
-  proc mountRow(idx: int; entry: FillEntry) =
+  proc mountRow(idx: int) =
     ## Isolating helper — closure-captures ``idx`` from this proc's
     ## scope so each row's click handlers bind to the right index.
     ## ``for``-body ``let`` does not isolate captures across iterations.
@@ -186,6 +188,13 @@ proc mountSectionFill*[R, E](r: R; parent: E; vm: EditorVM) =
     ## Only the primary fill (idx 0) participates in M1: multi-fill
     ## compositing has no per-index canonical CSS property yet, so
     ## additional fill rows stay literal (honest M1 gap — see M2/M3).
+    # The row follows ITS entry reactively instead of being rebuilt for
+    # every new value. Rebuilding on each value change disposed the open
+    # colour picker the moment one of its fields committed, so a picker
+    # could make at most one edit per opening.
+    proc entryNow(): FillEntry =
+      let list = entries.val
+      if idx < list.len: list[idx] else: FillEntry()
     let targetId = vm.inspector.selectedElement.val.id
     let targetStory = vm.selectedStory.val
     proc currentTarget(): bool =
@@ -221,7 +230,6 @@ proc mountSectionFill*[R, E](r: R; parent: E; vm: EditorVM) =
               # without competing with the value next to it.
               border = "1px solid rgba(255, 255, 255, 0.34)",
               border_radius = "3px",
-              background_color = entry.color,
               cursor = "pointer", flex_shrink = "0")
         if binding.isSome:
           # Linked chip read-path — replaces the hex + opacity inputs
@@ -276,6 +284,11 @@ proc mountSectionFill*[R, E](r: R; parent: E; vm: EditorVM) =
               cursor = "pointer"):
           text "\xC3\x97"
     r.appendChild(listEl, row)
+    createRenderEffect proc() =
+      r.setStyle(swatchEl, "background-color", entryNow().color)
+    # Set below for a literal (unbound) fill: the paste commits through the
+    # same `commitColor` as typing a hex value.
+    var pasteColor: proc(value: string) {.closure.}
     if binding.isSome:
       r.setAttribute(row, "data-fill-row-linked", "true")
       # VBIND-M2: the chip's chevron re-opens the picker anchored to the
@@ -317,7 +330,7 @@ proc mountSectionFill*[R, E](r: R; parent: E; vm: EditorVM) =
           vm.requestInspectorVariablePicker(fillProperty(),
             rc.x, rc.y, rc.w, rc.h))
       let colorState = createColorPopoverState()
-      proc commitColor(value: string; done: proc(ok: bool) {.closure.}) =
+      proc commitColor(value: string; done: proc(ok: bool) {.closure.}) {.closure.} =
         if not rowActive or not currentTarget():
           done(false)
           return
@@ -335,7 +348,7 @@ proc mountSectionFill*[R, E](r: R; parent: E; vm: EditorVM) =
           fillWiringNow().commitMessage.val = "Enter a complete hex color."
           done(false)
           return
-        if normalized == normalizedHexColor(entry.color):
+        if normalized == normalizedHexColor(entryNow().color):
           done(true)
           return
         fillWiringNow().commitAsync(normalized, proc(ok: bool) =
@@ -347,8 +360,12 @@ proc mountSectionFill*[R, E](r: R; parent: E; vm: EditorVM) =
               entries.val = next
           done(ok))
       discard mountColorPopover(r, row, swatchEl, colorState,
-        proc(): string = entry.color,
+        proc(): string = entryNow().color,
         proc(value: string): bool =
+          # Enter in a channel / HSL field keeps the picker open; Apply and
+          # the hex field close it. Read when the commit starts, because an
+          # asynchronous source commit completes later.
+          let closeOnSuccess = colorState.commitCloses
           colorState.pending.val = true
           var completed = false
           var accepted = false
@@ -357,36 +374,84 @@ proc mountSectionFill*[R, E](r: R; parent: E; vm: EditorVM) =
             accepted = ok
             if not rowActive or not currentTarget(): return
             colorState.pending.val = false
-            if ok: colorState.open.val = false
+            if ok:
+              if closeOnSuccess: colorState.open.val = false
             else: colorState.diagnostic.val = fillWiringNow().commitMessage.val)
           completed and accepted)
-      r.setInputValue(hexEl, entry.color)
-      r.setInputValue(alphaEl, $int(round(entry.alpha * 100.0)))
+      createRenderEffect proc() =
+        let current = entryNow()
+        r.setInputValue(hexEl, current.color)
+        r.setInputValue(alphaEl, $int(round(current.alpha * 100.0)))
       createRenderEffect proc() =
         let reason = fillWiringNow().readOnlyReason()
         r.setAttribute(row, "data-fill-row-readonly", if reason.len > 0: "true" else: "false")
         r.setAttribute(row, "data-fill-row-readonly-reason", reason)
         when defined(js):
           {.emit: [hexEl,".readOnly = ",reason,".length > 0;",alphaEl,".readOnly = ",reason,".length > 0;"].}
+      pasteColor = proc(value: string) =
+        let color = normalizedSourceColor(value)
+        if color.len == 0:
+          fillWiringNow().commitMessage.val = "Cannot paste " & value & " into Fill."
+          return
+        commitColor(color, proc(ok: bool) = discard)
       # Disclosure is inspection, including when the source cannot be edited.
       # The live commitColor guard refuses Apply and literal/alpha mutations;
       # mountColorPopover owns pointer/Enter/Space disclosure and cleanup.
       r.addEventListener(hexEl, "change", proc() =
         commitColor(r.inputValue(hexEl), proc(ok: bool) =
-          if not ok and rowActive: r.setInputValue(hexEl, entry.color)))
+          if not ok and rowActive: r.setInputValue(hexEl, entryNow().color)))
       r.addEventListener(alphaEl, "change", proc() =
         if not rowActive or not currentTarget(): return
         try:
           let parsed = parseFloat(r.inputValue(alphaEl))
           if classify(parsed) in {fcNan, fcInf, fcNegInf} or parsed < 0 or parsed > 100:
             raise newException(ValueError, "Invalid alpha")
-          var channels = colorChannels(entry.color)
+          var channels = colorChannels(entryNow().color)
           channels.alpha = int(round(parsed * 255 / 100))
           commitColor(channelsHex(channels), proc(ok: bool) =
-            if not ok and rowActive: r.setInputValue(alphaEl, $int(round(entry.alpha*100))))
+            if not ok and rowActive: r.setInputValue(alphaEl, $int(round(entryNow().alpha*100))))
         except ValueError:
           fillWiringNow().commitMessage.val = "Fill opacity must be from 0 to 100%."
-          r.setInputValue(alphaEl, $int(round(entry.alpha*100))))
+          r.setInputValue(alphaEl, $int(round(entryNow().alpha*100))))
+    # Property actions (editor spec "Universal Patterns": "right-click
+    # property -> Copy, then paste onto another element"). A fill entry has
+    # no More slot, so right-click is its entry point.
+    discard registerInspectorSearchText("fill " & fillProperty())
+    let actionsConfig = PropertyActionsConfig(
+      name: "Fill",
+      clipboard: vm.inspector.propertyClipboard,
+      copyValue: proc(): string = entryNow().color,
+      copyProperty: fillProperty(),
+      paste: proc(value: string) =
+        if pasteColor != nil and rowActive and currentTarget(): pasteColor(value),
+      unavailableReason: proc(): string =
+        if idx != 0: secondaryFillNotice
+        elif binding.isSome:
+          "Detach the variable before pasting a value into this fill."
+        else: fillWiringNow().readOnlyReason(),
+      resetReason: propertyResetUnavailableReason,
+      detach: (if idx == 0 and binding.isSome:
+                 vm.inspectorDetachRequestHandler(fillProperty())
+               else: nil),
+      isBound: proc(): bool = binding.isSome)
+    let rowOwner = getOwner()
+    var actionsMenu: PropertyActionsMenu[E]
+    var actionsMounted = false
+    proc openActions() =
+      if not rowActive or not currentTarget(): return
+      if not actionsMounted:
+        actionsMounted = true
+        runWithOwner(rowOwner, proc() =
+          actionsMenu = mountPropertyActionsMenu[R, E](r, row, row, actionsConfig))
+      if not actionsMenu.state.isOpen.val: actionsMenu.open()
+    r.addEventListener(row, "contextmenu", proc(ev: auto) =
+      mixin preventDefault
+      when compiles(ev.preventDefault()):
+        ev.preventDefault()
+      elif defined(js):
+        proc prevent(event: typeof(ev)) {.importjs: "#.preventDefault()".}
+        prevent(ev)
+      openActions())
     r.addEventListener(deleteEl, "click", proc() =
       if not rowActive or not currentTarget(): return
       let reason = fillWiringNow().readOnlyReason()
@@ -398,18 +463,25 @@ proc mountSectionFill*[R, E](r: R; parent: E; vm: EditorVM) =
       fillWiringNow().commitMessage.val = fillDeleteNotice)
     installPopoverTrigger(deleteEl)
 
-  proc rebuildList() =
+  proc rebuildList(count: int) =
     r.clearChildren(listEl)
-    for i in 0 ..< entries.val.len:
-      let entry = entries.val[i]
-      untrack(proc() = mountRow(i, entry))
+    for i in 0 ..< count:
+      mountRow(i)
 
+  # Rows are rebuilt when the target, its binding or the NUMBER of fills
+  # changes; a value change is rendered by the row itself (see `mountRow`).
+  # A memo, so that an unrelated property update on the same element (which
+  # re-runs anything reading the selection) does not rebuild the rows.
+  let rowsKey = createMemo(proc(): tuple[target: string,
+      binding: Option[VariableBinding], count: int] =
+    (target: fillTargetIdentity.val,
+     binding: vm.inspectorBindingFor(fillProperty()),
+     count: entries.val.len))
   createRenderEffect proc() =
-    discard fillTargetIdentity.val
-    discard vm.inspectorBindingFor(fillProperty())
-    rebuildList()
+    let count = rowsKey.val.count
+    untrack(proc() = rebuildList(count))
     r.setStyle(emptyEl, "display",
-      if entries.val.len == 0: "block" else: "none")
+      if count == 0: "block" else: "none")
 
   var sectionActive = true
   onCleanup(proc() = sectionActive = false)

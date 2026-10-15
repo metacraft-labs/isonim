@@ -604,6 +604,18 @@ proc installEditorKeyboardShortcuts(vm: EditorVM) =
           save();
           return;
         }
+        // Editor spec "Section catalogue": the inspector's search field takes
+        // ⌘F focus. Only while that field is actually on screen (Edit mode
+        // with the inspector open); otherwise the browser's own Find stays.
+        if (mod && !event.shiftKey && !event.altKey && lower === 'f') {
+          const search = document.querySelector('[data-isonim-focus-id="section-search"]');
+          if (search && search.getClientRects().length && search.focus) {
+            event.preventDefault();
+            search.focus({ preventScroll: true });
+            if (search.select) search.select();
+            return;
+          }
+        }
         if (editable) return;
         if (mod && (key === '\\' || key === 'Backslash' || code === 'Backslash')) {
           event.preventDefault();

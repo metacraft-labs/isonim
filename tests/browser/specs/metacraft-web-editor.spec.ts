@@ -891,6 +891,7 @@ test.describe("metacraft-web IsoNim editor consumer", () => {
       // Stroke Color row through its More (⫶) menu.
       await page.locator('[data-fill-row="0"]').click({ button: "right" });
       await page.getByRole("menuitem", { name: "Copy property" }).click();
+      { const stroke = page.locator('[data-inspector-section-header="stroke"]'); if ((await stroke.getAttribute("aria-expanded")) !== "true") await stroke.click(); } // Stroke is collapsed by default (spec "Section catalogue").
       await page.getByRole("button", { name: "More actions for Color" }).click();
       await page.getByRole("menuitem", { name: "Paste property" }).click();
       await expect
@@ -1729,6 +1730,264 @@ test.describe("metacraft-web IsoNim editor consumer", () => {
     await page.setViewportSize({ width: 900, height: 800 });
     await expect(inspector).toBeVisible();
     expect(await noOverflow()).toBe(true);
+  });
+
+  // isonim-pm issue 2026-10-14-the-section-inspector-has-no-search-field.
+  // Editor spec "Section catalogue": "A search field at the top of the
+  // inspector (⌘F focus) filters sections by name and properties by label —
+  // sections without matches collapse; sections with matches open and
+  // highlight the matched rows." The mounted section inspector rendered no
+  // field at all; `inspector.sectionSearch` only served the retired tabbed
+  // body. Property labels match the row name and its CSS property.
+  test("metacraft_inspector_search_filters_sections_by_name_and_property_label", async ({
+    page,
+  }) => {
+    await page.goto("/");
+    const { topbar } = await openTopbarInEditMode(page);
+    await selectTopbarElement(page, topbar);
+    const inspector = page.locator('[data-sidebar-content="inspector"]');
+    const header = (slug: string) =>
+      page.locator(`[data-inspector-section-header="${slug}"]`);
+    const search = inspector.getByRole("textbox", { name: "Search inspector sections" });
+    await expect(search).toBeVisible();
+
+    // ⌘F / Ctrl+F from a non-editable control focuses the field.
+    const editChip = modeChip(page, "Edit");
+    await editChip.focus();
+    await page.keyboard.press("ControlOrMeta+F");
+    await expect(search).toBeFocused();
+
+    // A property label (here the CSS property of Stroke's Width row) shows
+    // and opens its section, collapsed by default, and highlights the row.
+    await expect(header("stroke")).toHaveAttribute("aria-expanded", "false");
+    await expect(header("layout")).toHaveAttribute("aria-expanded", "true");
+    await search.fill("border-width");
+    await expect(header("stroke")).toBeVisible();
+    await expect(header("stroke")).toHaveAttribute("aria-expanded", "true");
+    const strokeWidth = page.locator('[data-property-row-css-property="border-width"]');
+    await expect(strokeWidth).toBeVisible();
+    await expect(strokeWidth).toHaveAttribute("data-inspector-search-match", "true");
+    await expect(page.locator('[data-property-row-css-property="border-color"]'))
+      .toHaveAttribute("data-inspector-search-match", "false");
+    for (const slug of ["position", "layout", "appearance", "fill", "typography", "source"]) {
+      await expect(header(slug)).toBeHidden();
+    }
+    // The user can still collapse a section the search opened.
+    await header("stroke").click();
+    await expect(header("stroke")).toHaveAttribute("aria-expanded", "false");
+
+    // A row label (Layout's "Pad top") matches too.
+    await search.fill("pad top");
+    await expect(header("layout")).toBeVisible();
+    await expect(page.locator('[data-property-row="pad-top"]'))
+      .toHaveAttribute("data-inspector-search-match", "true");
+    await expect(page.locator('[data-property-row="pad-left"]'))
+      .toHaveAttribute("data-inspector-search-match", "false");
+    await expect(header("stroke")).toBeHidden();
+
+    // A section matched by its name only is shown and keeps its own state.
+    await search.fill("export");
+    await expect(header("export")).toBeVisible();
+    await expect(header("export")).toHaveAttribute("aria-expanded", "false");
+    await expect(header("layout")).toBeHidden();
+
+    // Nothing matches: no section is shown.
+    await search.fill("no-such-property-anywhere");
+    await expect(page.locator("[data-inspector-section-header]:visible")).toHaveCount(0);
+
+    // Clearing the query shows every section again with the open/closed
+    // state from before the search, and no row stays highlighted.
+    await search.fill("");
+    for (const slug of ["position", "layout", "appearance", "fill", "stroke", "typography", "source"]) {
+      await expect(header(slug)).toBeVisible();
+    }
+    await expect(header("stroke")).toHaveAttribute("aria-expanded", "false");
+    await expect(header("layout")).toHaveAttribute("aria-expanded", "true");
+    await expect(page.locator('[data-inspector-search-match="true"]')).toHaveCount(0);
+
+    // Escape in the field clears an active query.
+    await search.fill("border-width");
+    await expect(header("layout")).toBeHidden();
+    await search.press("Escape");
+    await expect(search).toHaveValue("");
+    await expect(header("layout")).toBeVisible();
+    await expect(header("stroke")).toHaveAttribute("aria-expanded", "false");
+  });
+
+  // isonim-pm issue 2026-10-14-property-copy-paste-is-unreachable-row-more-
+  // menu-is-inert-and-right-click-offers-no-copy. Editor spec "Universal
+  // Patterns": "Copy/Paste properties — right-click property → Copy, then
+  // paste onto another element"; "Reset to default — right-click → Reset";
+  // "Property row pattern": "More (⫶): overflow for Copy property, Paste
+  // property, Reset, and Right-click -> Detach Variable". The row More button
+  // was inert and right-click opened nothing. A paste is committed by the
+  // target control's own commit path (one undoable, written edit); a value
+  // the target cannot take is refused with the row's message. Reset is listed
+  // and disabled with its reason (the source writer cannot remove a
+  // declaration).
+  test("metacraft_property_copy_paste_reachable_from_row_more_and_right_click", async ({
+    page,
+  }) => {
+    await page.goto("/");
+    const workspaceBefore = snapshotDevWorkspace();
+    try {
+      await expectWritableBridge(page);
+      const { topbar } = await openTopbarInEditMode(page);
+      await selectTopbarElement(page, topbar);
+      const history = () => page.evaluate(() =>
+        (window as any).__isonimEditorVm.inspector.undoStack.value.length);
+      const startHistory = await history();
+      const originalBorder = await topbar.evaluate(
+        (node) => getComputedStyle(node).borderTopColor);
+      const originalBackground = await topbar.evaluate(
+        (node) => getComputedStyle(node).backgroundColor);
+
+      const fillHex = page.getByRole("textbox", { name: "Edit fill hex" }).first();
+      await fillHex.fill("#F8FAFC");
+      await fillHex.press("Enter");
+      await expect.poll(() => topbar.evaluate(
+        (node) => getComputedStyle(node).backgroundColor)).toBe("rgb(248, 250, 252)");
+      await expect.poll(history).toBe(startHistory + 1);
+      await expectNoPendingSourceEdits(page);
+
+      // Right-click on the fill entry: Copy property.
+      await page.locator('[data-fill-row="0"]').click({ button: "right" });
+      const fillMenu = page.getByRole("menu", { name: "Actions for Fill" });
+      await expect(fillMenu).toBeVisible();
+      const reset = fillMenu.getByRole("menuitem", { name: "Reset" });
+      await expect(reset).toBeVisible();
+      await expect(reset).toHaveAttribute("aria-disabled", "true");
+      await expect(reset).toHaveAttribute("title", /cannot remove a declaration/);
+      await fillMenu.getByRole("menuitem", { name: "Copy property" }).click();
+      await expect(fillMenu).toBeHidden();
+
+      // Stroke Color's More (⫶): Paste property. Stroke is collapsed by default.
+      const stroke = page.locator('[data-inspector-section-header="stroke"]');
+      if ((await stroke.getAttribute("aria-expanded")) !== "true") await stroke.click();
+      const more = page.getByRole("button", { name: "More actions for Color" });
+      await more.click();
+      const colorMenu = page.getByRole("menu", { name: "Actions for Color" });
+      await expect(colorMenu).toBeVisible();
+      await colorMenu.getByRole("menuitem", { name: "Paste property" }).click();
+      await expect(colorMenu).toBeHidden();
+      await expect.poll(() => topbar.evaluate(
+        (node) => getComputedStyle(node).borderTopColor)).toBe("rgb(248, 250, 252)");
+      await expect.poll(history).toBe(startHistory + 2);
+      await expectNoPendingSourceEdits(page);
+
+      // Keyboard: Enter on More opens the menu, Escape closes it and returns
+      // focus to the button.
+      await more.focus();
+      await page.keyboard.press("Enter");
+      await expect(colorMenu).toBeVisible();
+      await page.keyboard.press("Escape");
+      await expect(colorMenu).toBeHidden();
+      await expect(more).toBeFocused();
+
+      // Right-click on a property row opens the same menu; a value the
+      // property cannot take is refused by the row and changes nothing.
+      const widthRow = page.locator('[data-property-row-css-property="border-width"]');
+      await widthRow.click({ button: "right" });
+      const widthMenu = page.getByRole("menu", { name: "Actions for Width" });
+      await expect(widthMenu).toBeVisible();
+      await widthMenu.getByRole("menuitem", { name: "Paste property" }).click();
+      await expect(widthRow).toContainText("Cannot paste #F8FAFC into Width.");
+      expect(await history()).toBe(startHistory + 2);
+
+      await undoInspectorHistoryTo(page, startHistory);
+      await expect.poll(() => topbar.evaluate(
+        (node) => getComputedStyle(node).borderTopColor)).toBe(originalBorder);
+      await expect.poll(() => topbar.evaluate(
+        (node) => getComputedStyle(node).backgroundColor)).toBe(originalBackground);
+      await expectNoPendingSourceEdits(page);
+    } finally {
+      await restoreDevWorkspace(page, workspaceBefore);
+    }
+  });
+
+  // isonim-pm issue 2026-10-14-fill-colour-picker-rgb-and-swatches-do-not-
+  // commit. Editor spec "Color Picker": "Hex / RGB / HSL input — text fields
+  // for precise values"; "Planned interaction parity": every editable
+  // control uses the same validation/write-back/preview/undo path. Enter in
+  // an RGB channel committed nothing (Enter in the hex field did), and the
+  // picker had no HSL entry. The picker edits one cancelable draft: Tab
+  // leaves a typed channel as a draft; Enter in an RGB channel or the HSL
+  // field commits it and keeps the picker open for the next field; a preset
+  // swatch sets the draft and Apply commits it.
+  test("metacraft_fill_picker_rgb_and_hsl_fields_commit_on_enter", async ({
+    page,
+  }) => {
+    await page.goto("/");
+    const workspaceBefore = snapshotDevWorkspace();
+    try {
+      await expectWritableBridge(page);
+      const { topbar } = await openTopbarInEditMode(page);
+      await selectTopbarElement(page, topbar);
+      const history = () => page.evaluate(() =>
+        (window as any).__isonimEditorVm.inspector.undoStack.value.length);
+      const background = () => topbar.evaluate(
+        (node) => getComputedStyle(node).backgroundColor);
+      const startHistory = await history();
+      const originalBackground = await background();
+
+      await page.locator('[data-fill-row-swatch="0"]').click();
+      const picker = page.getByLabel("Edit color", { exact: true }).filter({ visible: true });
+      await expect(picker).toBeVisible();
+      const hex = picker.getByLabel("Hex color", { exact: true });
+
+      // Tab leaves the typed channel a draft.
+      const red = picker.getByLabel("Red", { exact: true });
+      await red.fill("12");
+      await red.press("Tab");
+      await expect(hex).toHaveValue(/^#0C/);
+      expect(await history()).toBe(startHistory);
+      expect(await background()).toBe(originalBackground);
+
+      // Enter commits each channel and the picker stays open.
+      let committed = startHistory;
+      for (const [channel, value] of [["Red", "59"], ["Green", "130"], ["Blue", "246"]]) {
+        const field = picker.getByLabel(channel, { exact: true });
+        await field.fill(value);
+        await field.press("Enter");
+        committed += 1;
+        await expect.poll(history).toBe(committed);
+        await expect(picker).toBeVisible();
+      }
+      await expect.poll(background).toBe("rgb(59, 130, 246)");
+      const hsl = picker.getByLabel("HSL color", { exact: true });
+      await expect(hsl).toHaveValue("hsl(217 91% 60%)");
+
+      // HSL entry: Enter commits.
+      await hsl.fill("hsl(0 100% 50%)");
+      await hsl.press("Enter");
+      await expect.poll(background).toBe("rgb(255, 0, 0)");
+      await expect.poll(history).toBe(committed + 1);
+      await expect(picker).toBeVisible();
+      await expect(hex).toHaveValue("#FF0000");
+      // A malformed HSL value is refused with a reason and commits nothing.
+      await hsl.fill("hsl(0 100%)");
+      await hsl.press("Enter");
+      await expect(picker.locator('[data-color-popover-error="true"]'))
+        .toContainText("HSL");
+      expect(await history()).toBe(committed + 1);
+      expect(await background()).toBe("rgb(255, 0, 0)");
+
+      // A preset swatch sets the draft; Apply commits it and closes.
+      await picker.getByRole("button", { name: "Use #22C55E" }).click();
+      await expect(hex).toHaveValue("#22C55E");
+      expect(await history()).toBe(committed + 1);
+      await picker.getByRole("button", { name: "Apply" }).click();
+      await expect.poll(background).toBe("rgb(34, 197, 94)");
+      await expect.poll(history).toBe(committed + 2);
+      await expect(page.locator('[data-color-popover-open="true"]')).toHaveCount(0);
+      await expectNoPendingSourceEdits(page);
+
+      await undoInspectorHistoryTo(page, startHistory);
+      await expect.poll(background).toBe(originalBackground);
+      await expectNoPendingSourceEdits(page);
+    } finally {
+      await restoreDevWorkspace(page, workspaceBefore);
+    }
   });
 
   test("e2e_canvas_selection_matches_layer_tree_and_breadcrumbs", async ({ page }) => {

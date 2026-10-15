@@ -7,6 +7,7 @@ import isonim/editor/views/view_lifecycle
 import std/[json, options, sets, strutils, tables]
 
 import isonim/core/[signals, computation, owner]
+from isonim/core/batch import untrack
 import isonim/dsl/ui
 import isonim/viewmodel  # AsyncState (asIdle/asLoading/asReady/asError)
 import isonim/editor/viewmodels
@@ -24,6 +25,8 @@ import isonim/editor/views/chat_panel
 import isonim/editor/views/icons
 import isonim/editor/views/design_review_mount as design_review_mount_view
 import isonim/editor/views/widgets as editor_widgets
+import isonim/editor/views/widgets/inspector_search
+from isonim/core/context import provide
 import isonim/editor/design_review/brief_format
 import isonim/editor/design_review/brief_index
 import isonim/editor/design_review/brief_index_static
@@ -3285,15 +3288,93 @@ proc renderInspectorPanel*[R, E](r: R; vm: EditorVM): E =
         });
       """].}
 
-  for (slug, displayName) in inspectorPlaceholderSections:
+  # Section search (editor spec "Section catalogue": "A search field at the
+  # top of the inspector (⌘F focus) filters sections by name and properties
+  # by label — sections without matches collapse; sections with matches open
+  # and highlight the matched rows"). The field existed only as a VM signal
+  # serving the retired tabbed body; nothing mounted rendered it.
+  var searchInput: E
+  let searchBar = ui(r):
+    tdiv(`data-inspector-search` = "true",
+         display = "flex", align_items = "center",
+         padding = "6px 12px",
+         border_bottom = "1px solid " & borderFaint,
+         flex_shrink = "0"):
+      input(ref = searchInput,
+            `type` = "text",
+            `aria-label` = "Search inspector sections",
+            placeholder = "Search properties",
+            `data-isonim-focus-id` = "section-search",
+            `data-inspector-search-input` = "true",
+            width = "100%", min_width = "0",
+            height = "24px", padding = "0 8px",
+            background_color = bgSurface,
+            border = "1px solid " & border,
+            border_radius = "4px",
+            color = textPrimary,
+            font_size = sidebarBodyFont,
+            font_family = "inherit")
+  r.addEventListener(searchInput, "input", proc() =
+    vm.inspector.setSectionSearch(r.inputValue(searchInput)))
+  # Escape clears an active query (and so restores the sections); with an
+  # empty field it is left to whatever else handles Escape.
+  r.addEventListener(searchInput, "keydown", proc(ev: auto) =
+    mixin preventDefault
+    if inspectorSearchKey(ev) != "Escape" or
+        vm.inspector.sectionSearch.val.len == 0: return
+    when compiles(ev.preventDefault()):
+      ev.preventDefault()
+    elif defined(js):
+      proc prevent(event: typeof(ev)) {.importjs: "#.preventDefault()".}
+      prevent(ev)
+    r.setInputValue(searchInput, "")
+    vm.inspector.setSectionSearch(""))
+  createRenderEffect proc() =
+    let query = vm.inspector.sectionSearch.val
+    if r.inputValue(searchInput) != query:
+      r.setInputValue(searchInput, query)
+
+  let panelOwner = getOwner()
+  proc mountSection(slug, displayName: string) =
+    ## Each section mounts under its own child root, which provides the
+    ## section's search registry to every row mounted below it (see
+    ## `inspector_search`). The root is disposed with the panel.
     let frame = renderSectionFrame[R, E](r, vm, slug, displayName)
     r.appendChild(sectionList, frame.row)
-    mountInspectorSectionBody[R, E](r, vm, slug, frame.body)
-    if slug == "component-properties":
-      let componentFrame = frame.row
-      createRenderEffect proc() =
-        r.setStyle(componentFrame, "display",
-          if isComponentInstance(vm.inspector.selectedElement.val): "flex" else: "none")
+    let section = inspectorSectionFromAttr(slug)
+    let search = createInspectorSectionSearch(proc(): string =
+      normalizedSearchQuery(vm.inspector.sectionSearch.val))
+    createRoot proc(dispose: proc()) =
+      provide(inspectorSectionSearchContext, search)
+      mountInspectorSectionBody[R, E](r, vm, slug, frame.body)
+      if panelOwner != nil:
+        runWithOwner(panelOwner, proc() = onCleanup(dispose))
+    let row = frame.row
+    var lastQuery = ""
+    var lastRowsMatched = false
+    createRenderEffect proc() =
+      let query = search.query()
+      let rowsMatched = search.sectionRowsMatch(query)
+      let nameMatched = searchTextMatches(displayName, query) or
+        searchTextMatches(slug, query)
+      let matched = query.len == 0 or nameMatched or rowsMatched
+      let applicable = slug != "component-properties" or
+        isComponentInstance(vm.inspector.selectedElement.val)
+      r.setStyle(row, "display",
+        if matched and applicable: "flex" else: "none")
+      r.setAttribute(row, "data-inspector-search-hidden",
+        if matched: "false" else: "true")
+      # A section whose ROWS match opens, once per query (and when its rows
+      # start matching), through the neutral setter: the user can still
+      # collapse it, and clearing the query restores the pre-search state.
+      # A section matched by name alone keeps its own open/closed state.
+      if rowsMatched and (query != lastQuery or not lastRowsMatched):
+        untrack(proc() = vm.inspector.setSectionExpanded(section, true))
+      lastQuery = query
+      lastRowsMatched = rowsMatched
+
+  for (slug, displayName) in inspectorPlaceholderSections:
+    mountSection(slug, displayName)
 
   result = ui(r):
     tdiv(class = "editor-inspector",
@@ -3341,6 +3422,7 @@ proc renderInspectorPanel*[R, E](r: R; vm: EditorVM): E =
   # section list. Append BEFORE the list so the DOM order matches the
   # visual order (header first, then list).
   r.appendChild(sidebarRoot, selectionHeaderEl)
+  r.appendChild(sidebarRoot, searchBar)
   r.appendChild(sidebarRoot, sectionListEl)
 
   when isDomViewHost(E):

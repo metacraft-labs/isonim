@@ -2370,6 +2370,14 @@ type
     propertyName*: string      ## CSS property name, e.g.,
                                ## ``background-color`` or ``gap``.
 
+  PropertyClipboardEntry* = object
+    ## What the inspector's "Copy property" captured (editor spec
+    ## "Universal Patterns": "Copy/Paste properties"): the CSS property
+    ## it came from and its value as CSS text. An empty ``value`` means
+    ## nothing has been copied yet.
+    property*: string
+    value*: string
+
   VariablePickerCategory* = enum
     ## Coarse grouping used by the variable picker popover. The
     ## picker collapses each category like an inspector section.

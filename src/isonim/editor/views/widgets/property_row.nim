@@ -66,6 +66,8 @@ import isonim/editor/views/widgets/property_commit
 import isonim/editor/views/widgets/anchored_popover
 import isonim/editor/views/widgets/color_popover
 import isonim/editor/views/widgets/variable_chip
+import isonim/editor/views/widgets/property_actions
+import isonim/editor/views/widgets/inspector_search
 
 # --------------------------------------------------------------------------- #
 #  Public types.
@@ -193,6 +195,10 @@ type
       ## ``"#F8FAFC"``, ``"flex"``, …). Distinct from ``onChange``,
       ## which stays a bare notification so existing callers are
       ## unaffected: both fire, ``onCommitValue`` first.
+    clipboard*: Signal[PropertyClipboardEntry]
+      ## The editor's property clipboard (see `InspectorRowWiring`). Drives
+      ## the row's Copy property / Paste property actions; nil disables them
+      ## with a reason.
 
 # --------------------------------------------------------------------------- #
 #  Visual contract — pulled from the spec's editing-control reference.
@@ -273,6 +279,11 @@ const
   # More affordance. Same hover-reveal behaviour.
   prMoreColor    = "#6B6F80"
   prMoreFont     = "13px"
+
+  # Section-search hit (editor spec "Section catalogue": sections with
+  # matches "highlight the matched rows"). Accent at low alpha so the row's
+  # controls stay readable.
+  prSearchMatchBg = "rgba(124, 122, 237, 0.16)"
 
   # Swatch.
   prSwatchSize   = "14px"
@@ -541,7 +552,8 @@ proc propertyRowNumeric*(name: string;
     scopeOptions: wiring.scopeOptions,
     commitMessage: wiring.commitMessage,
     commitRejected: wiring.commitRejected,
-    onCommitValue: wiring.commit, onAsyncCommitValue: wiring.commitAsync)
+    onCommitValue: wiring.commit, onAsyncCommitValue: wiring.commitAsync,
+    clipboard: wiring.clipboard)
 
 proc propertyRowColor*(name: string;
                        value: Signal[string];
@@ -566,7 +578,8 @@ proc propertyRowColor*(name: string;
     scopeOptions: wiring.scopeOptions,
     commitMessage: wiring.commitMessage,
     commitRejected: wiring.commitRejected,
-    onCommitValue: wiring.commit, onAsyncCommitValue: wiring.commitAsync)
+    onCommitValue: wiring.commit, onAsyncCommitValue: wiring.commitAsync,
+    clipboard: wiring.clipboard)
 
 proc propertyRowChoice*(name: string;
                         value: Signal[string];
@@ -591,7 +604,8 @@ proc propertyRowChoice*(name: string;
     scopeOptions: wiring.scopeOptions,
     commitMessage: wiring.commitMessage,
     commitRejected: wiring.commitRejected,
-    onCommitValue: wiring.commit, onAsyncCommitValue: wiring.commitAsync)
+    onCommitValue: wiring.commit, onAsyncCommitValue: wiring.commitAsync,
+    clipboard: wiring.clipboard)
 
 proc propertyRowText*(name: string;
                       value: Signal[string];
@@ -615,7 +629,8 @@ proc propertyRowText*(name: string;
     scopeOptions: wiring.scopeOptions,
     commitMessage: wiring.commitMessage,
     commitRejected: wiring.commitRejected,
-    onCommitValue: wiring.commit, onAsyncCommitValue: wiring.commitAsync)
+    onCommitValue: wiring.commit, onAsyncCommitValue: wiring.commitAsync,
+    clipboard: wiring.clipboard)
 
 proc propertyRowBoolean*(name: string;
                          value: Signal[bool];
@@ -639,7 +654,8 @@ proc propertyRowBoolean*(name: string;
     scopeOptions: wiring.scopeOptions,
     commitMessage: wiring.commitMessage,
     commitRejected: wiring.commitRejected,
-    onCommitValue: wiring.commit, onAsyncCommitValue: wiring.commitAsync)
+    onCommitValue: wiring.commit, onAsyncCommitValue: wiring.commitAsync,
+    clipboard: wiring.clipboard)
 
 # --------------------------------------------------------------------------- #
 #  Mount.
@@ -1493,13 +1509,16 @@ proc mountPropertyRow*[R, E](r: R; parent: E;
               return false
             if cfg.onAsyncCommitValue != nil:
               let submittedGeneration = valueSlotGeneration
+              # Enter in a channel / HSL field commits and keeps the picker
+              # open; read the popup's choice now, before completion.
+              let closeOnSuccess = colorState.commitCloses
               colorState.pending.val = true
               cfg.onAsyncCommitValue(value, proc(ok: bool) =
                 if not rowAlive or submittedGeneration != valueSlotGeneration: return
                 colorState.pending.val = false
                 if ok:
                   cfg.colorValue.val = value
-                  colorState.open.val = false
+                  if closeOnSuccess: colorState.open.val = false
                   if cfg.onChange != nil: cfg.onChange()
                 else:
                   colorState.diagnostic.val = "The source color edit was refused.")
@@ -1790,10 +1809,132 @@ proc mountPropertyRow*[R, E](r: R; parent: E;
   r.addEventListener(bindNode, "click", bindHandler)
   installPopoverTrigger(bindNode)
 
-  let moreHandler = proc() =
-    if cfg.onMore != nil: cfg.onMore()
-  r.addEventListener(moreNode, "click", moreHandler)
-  r.addEventListener(moreNode, "keydown", moreHandler)
+  # The row's property actions (editor spec "Property row pattern": "More
+  # (⫶): overflow for Copy property, Paste property, Reset, and Right-click
+  # -> Detach Variable"; "Universal Patterns": "right-click property ->
+  # Copy"). The More button and a right-click on the row open the same menu.
+  # It was an enabled, focusable button that no section gave a handler, so a
+  # click did nothing at all.
+  #
+  # A paste goes through the row's own commit: the pasted value is put into
+  # the control exactly as if it had been typed there, so validation, source
+  # write-back, preview and undo are the ones the control already has, and a
+  # value this property cannot take is refused with the row's own message.
+  proc refusePaste(message: string) =
+    if cfg.commitMessage != nil: cfg.commitMessage.val = message
+
+  proc pasteValue(raw: string) =
+    if not rowAlive: return
+    let value = raw.strip()
+    let refusal = "Cannot paste " & value & " into " & cfg.name & "."
+    case cfg.kind
+    of prkNumeric:
+      let parsed = parseNumericInput(value)
+      var nextUnit = cfg.numericUnit.val
+      var supported = parsed.unit.len == 0
+      for unit in cfg.availableUnits:
+        if parsed.unit.len > 0 and unit.code == parsed.unit:
+          nextUnit = unit
+          supported = true
+      if parsed.value.isNone or not supported:
+        refusePaste(refusal)
+        return
+      var v = parsed.value.get
+      if cfg.numericMin.isSome and v < cfg.numericMin.get: v = cfg.numericMin.get
+      if cfg.numericMax.isSome and v > cfg.numericMax.get: v = cfg.numericMax.get
+      let priorValue = cfg.numericValue.val
+      let priorUnit = cfg.numericUnit.val
+      batch(proc() =
+        cfg.numericUnit.val = nextUnit
+        cfg.numericValue.val = v)
+      commitValue(proc() =
+        cfg.numericValue.val = priorValue
+        cfg.numericUnit.val = priorUnit)
+    of prkColor:
+      let color = normalizedSourceColor(value)
+      if color.len == 0:
+        refusePaste(refusal)
+        return
+      let previous = cfg.colorValue.val
+      cfg.colorValue.val = color
+      commitValue(proc() = cfg.colorValue.val = previous)
+    of prkChoice:
+      var known = false
+      for option in cfg.choiceOptions:
+        if option.value == value: known = true
+      if not known:
+        refusePaste(refusal)
+        return
+      let previous = cfg.choiceValue.val
+      cfg.choiceValue.val = value
+      commitValue(proc() = cfg.choiceValue.val = previous)
+    of prkText:
+      let previous = cfg.textValue.val
+      cfg.textValue.val = value
+      commitValue(proc() = cfg.textValue.val = previous)
+    of prkBoolean:
+      if value notin ["true", "false"]:
+        refusePaste(refusal)
+        return
+      let previous = cfg.booleanValue.val
+      cfg.booleanValue.val = value == "true"
+      commitValue(proc() = cfg.booleanValue.val = previous)
+
+  let actionsConfig = PropertyActionsConfig(
+    name: cfg.name,
+    clipboard: cfg.clipboard,
+    copyValue: proc(): string = currentCssValue(),
+    copyProperty: cfg.cssProperty,
+    paste: proc(value: string) = pasteValue(value),
+    unavailableReason: proc(): string =
+      if cfg.cssProperty.len == 0:
+        "This row is not connected to a source property."
+      elif cfg.readOnlyReason != nil: cfg.readOnlyReason()
+      else: "",
+    resetReason: propertyResetUnavailableReason,
+    detach: cfg.onDetachRequest,
+    isBound: proc(): bool =
+      if cfg.bindingReactive != nil: cfg.bindingReactive().isSome
+      else: cfg.binding.isSome)
+  # Mounted on first use, owned by the row: the inspector has dozens of rows
+  # and almost none of their menus are ever opened.
+  let rowOwner = getOwner()
+  var actionsMenu: PropertyActionsMenu[E]
+  var actionsMounted = false
+  proc toggleActions() =
+    if not rowAlive: return
+    if cfg.onMore != nil:
+      cfg.onMore()
+      return
+    if not actionsMounted:
+      actionsMounted = true
+      runWithOwner(rowOwner, proc() =
+        actionsMenu = mountPropertyActionsMenu[R, E](r, root, moreNode, actionsConfig))
+    if actionsMenu.state.isOpen.val: actionsMenu.close()
+    else: actionsMenu.open()
+  r.addEventListener(moreNode, "click", proc() = toggleActions())
+  installPopoverTrigger(moreNode)
+  r.addEventListener(root, "contextmenu", proc(ev: auto) =
+    mixin preventDefault
+    when compiles(ev.preventDefault()):
+      ev.preventDefault()
+    elif defined(js):
+      proc prevent(event: typeof(ev)) {.importjs: "#.preventDefault()".}
+      prevent(ev)
+    if actionsMounted and actionsMenu.state.isOpen.val: return
+    toggleActions())
+
+  # Section search (editor spec "Section catalogue": "filters sections by
+  # name and properties by label ... highlight the matched rows"). The row
+  # registers its label and CSS property with the section it is mounted in.
+  let search = registerInspectorSearchText(cfg.name & " " & cfg.cssProperty)
+  if search != nil:
+    let searchable = cfg.name & " " & cfg.cssProperty
+    createRenderEffect proc() =
+      let hit = searchTextMatches(searchable, search.query())
+      r.setAttribute(root, "data-inspector-search-match",
+        if hit: "true" else: "false")
+      r.setStyle(root, "background-color", if hit: prSearchMatchBg else: "")
 
   # ------------------------------------------------------------------------- #
   #  Phase G+1: the bind/scope slot's scope half.

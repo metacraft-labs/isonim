@@ -424,6 +424,9 @@ type
       ## Optional numeric display-to-CSS adapter; nil preserves ordinary rows.
     readOnlyReason*: proc(): string {.closure.}
     commitAsync*: proc(value: string; done: proc(ok: bool) {.closure.}) {.closure.}
+    clipboard*: Signal[PropertyClipboardEntry]
+      ## The editor's property clipboard, behind the row's Copy property /
+      ## Paste property actions. Nil (a zeroed wiring) leaves them disabled.
 
 proc inspectorRowWiring*(vm: EditorVM; property: string): InspectorRowWiring =
   ## Wire one row to ``property``.
@@ -565,6 +568,7 @@ proc inspectorRowWiring*(vm: EditorVM; property: string): InspectorRowWiring =
         if choice.kind == active: return some(choice)
       none(SourceScopeChoice),
     commit: commit, commitAsync: asyncCommit,
+    clipboard: vm.inspector.propertyClipboard,
     authoredValue: proc(): string =
       let property = vm.inspectorProperty(capturedProperty)
       if property.isNone: return ""

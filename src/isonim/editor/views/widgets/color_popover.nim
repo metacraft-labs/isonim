@@ -1,12 +1,32 @@
 ## Functional colour popup shared by literal inspector values and token drafts.
 ## Values are validated before the caller's existing edit/commit path runs.
-## Pointer plane/hue/alpha and typed channels edit the same cancelable draft.
-## Only Apply invokes the caller's guarded source commit boundary.
+## Pointer plane/hue/alpha, swatches and the typed hex / RGB / HSL fields edit
+## the same cancelable draft. The draft reaches the caller's guarded commit
+## boundary only through Apply or Enter in a typed field (editor spec "Color
+## Picker": "Hex / RGB / HSL input -- text fields for precise values";
+## "Planned interaction parity": one validation/write-back/preview/undo path).
+## Enter in the hex field applies and closes, like Apply. Enter in an RGB
+## channel or the HSL field commits and keeps the picker open, so the next
+## channel can be typed; Tab or blur leave a typed value as a draft.
 import std/[strutils, math]
 import isonim/core/[signals, computation, owner, batch]
 import isonim/dsl/ui
 import isonim/editor/css_color_literal
 import isonim/editor/views/widgets/anchored_popover
+
+when defined(js):
+  import std/dom
+  import isonim/web/dom_api
+
+  proc readPickerKey[E: dom.Event | dom_api.Event](ev: E): cstring
+    {.importjs: "(#.key || '')".}
+
+  proc pickerKey(ev: dom.Event | dom_api.Event): string =
+    # A plain Event has no key; normalize it before Nim string conversion.
+    $readPickerKey(ev)
+
+proc pickerKey[E](ev: E): string =
+  ev.key
 
 type ColorPopoverState* = ref object
   open*: Signal[bool]
@@ -15,6 +35,11 @@ type ColorPopoverState* = ref object
   pending*: Signal[bool]
   hue*, saturation*, brightness*: Signal[float]
   projectedDraft: string
+  commitCloses*: bool
+    ## Set by the popup immediately before it calls the caller's commit:
+    ## true for Apply / Enter in the hex field, false for Enter in a channel
+    ## or the HSL field. A caller that completes asynchronously reads it when
+    ## the commit starts to decide whether success closes the picker.
 
 func normalizedHexColor*(raw: string): string =
   let value = raw.strip()
@@ -67,6 +92,41 @@ func colorHsv*(channels: ColorChannels): tuple[hue, saturation, value: float] =
   else: result.hue = 60 * (4 + (red-green) / delta)
   if result.hue < 0: result.hue += 360
 
+func colorHslText*(channels: ColorChannels): string =
+  ## The draft as a CSS `hsl()` literal, rounded to whole units for display,
+  ## with the alpha only when it is not opaque.
+  let red = channels.red.float / 255
+  let green = channels.green.float / 255
+  let blue = channels.blue.float / 255
+  let greatest = max(red, max(green, blue))
+  let least = min(red, min(green, blue))
+  let lightness = (greatest + least) / 2
+  let delta = greatest - least
+  var hue, saturation = 0.0
+  if delta > 0:
+    saturation = delta / (1 - abs(2 * lightness - 1))
+    if greatest == red: hue = 60 * ((green - blue) / delta)
+    elif greatest == green: hue = 60 * (2 + (blue - red) / delta)
+    else: hue = 60 * (4 + (red - green) / delta)
+    if hue < 0: hue += 360
+  result = "hsl(" & $(int(round(hue)) mod 360) & " " &
+    $int(round(saturation * 100)) & "% " & $int(round(lightness * 100)) & "%"
+  if channels.alpha != 255:
+    result.add " / " & $int(round(channels.alpha.float * 100 / 255)) & "%"
+  result.add ")"
+
+func hslDraftColor*(raw: string): string =
+  ## A typed HSL value as a picker draft (`#RRGGBB[AA]`), or "" when it is not
+  ## a complete HSL color. Accepts the CSS forms `hsl()` / `hsla()` with comma
+  ## or space notation, and the bare channel list (`217 91% 60%`).
+  let text = raw.strip()
+  if text.len == 0: return ""
+  let lower = text.toLowerAscii()
+  let literal =
+    if lower.startsWith("hsl"): text
+    else: "hsl(" & text & ")"
+  normalizedSourceColor(literal)
+
 func hsvChannels*(hue, saturation, value: float; alpha = 255): ColorChannels =
   let h = clamp(hue, 0, 359.999) / 60
   let chroma = clamp(value, 0, 1) * clamp(saturation, 0, 1)
@@ -86,7 +146,8 @@ func hsvChannels*(hue, saturation, value: float; alpha = 255): ColorChannels =
 proc createColorPopoverState*(): ColorPopoverState =
   ColorPopoverState(open: createSignal(false), draft: createSignal(""),
     diagnostic: createSignal(""), pending: createSignal(false),
-    hue: createSignal(0.0), saturation: createSignal(0.0), brightness: createSignal(0.0))
+    hue: createSignal(0.0), saturation: createSignal(0.0), brightness: createSignal(0.0),
+    commitCloses: true)
 
 type ColorDraftSnapshot* = object
   draft*: string
@@ -146,7 +207,7 @@ proc mountColorPopover*[R, E](r: R; parent, invoker: E;
     state: ColorPopoverState; current: proc(): string;
     commit: proc(value: string): bool): E =
   var rootNode, inputNode, errorNode, previewNode, applyNode, cancelNode: E
-  var planeNode, markerNode, hueNode, alphaNode, channelHost: E
+  var planeNode, markerNode, hueNode, alphaNode, channelHost, hslNode: E
   var channelInputs: array[4, E]
   let hue = state.hue
   var canceledRangeInput = false
@@ -178,6 +239,10 @@ proc mountColorPopover*[R, E](r: R; parent, invoker: E;
       input(ref = alphaNode, `type` = "range", min = "0", max = "100", step = "1",
             `data-color-alpha` = "true", `aria-label` = "Opacity", width = "100%")
       tdiv(ref = channelHost, display = "flex", gap = "4px", `data-color-channels` = "true")
+      input(ref = hslNode, `data-color-hsl` = "true",
+            `aria-label` = "HSL color", padding = "6px 8px",
+            background_color = "#0F0F18", color = "#F1F5F9",
+            border = "1px solid #2F3140", border_radius = "4px")
       input(ref = inputNode, `data-color-popover-input` = "true",
             `aria-label` = "Hex color", padding = "8px",
             background_color = "#0F0F18", color = "#F1F5F9",
@@ -194,8 +259,24 @@ proc mountColorPopover*[R, E](r: R; parent, invoker: E;
              background_color = "#7C7AED", border_radius = "4px", cursor = "pointer"):
           text "Apply"
   r.setStyle(planeNode, "aspect-ratio", "1 / 1")
-  proc updateChannel(index: int; node: E) =
-    if not mountedActive or not state.open.val or state.pending.val: return
+  # Assigned below, once Apply's guards exist: Enter in a typed field commits
+  # through exactly the same path as the Apply button.
+  var commitDraft: proc(close: bool) {.closure.}
+  proc onEnter(node: E; update: proc(): bool {.closure.}; close: bool) =
+    ## Enter in a typed field: take the field's value into the draft (the
+    ## `change` that Enter also raises may arrive after this keydown), then
+    ## commit it. A value the field refuses stays uncommitted with its reason.
+    r.addEventListener(node, "keydown", proc(ev: auto) =
+      mixin preventDefault
+      if pickerKey(ev) != "Enter": return
+      when compiles(ev.preventDefault()):
+        ev.preventDefault()
+      elif defined(js):
+        proc prevent(event: typeof(ev)) {.importjs: "#.preventDefault()".}
+        prevent(ev)
+      if update() and commitDraft != nil: commitDraft(close))
+  proc updateChannel(index: int; node: E): bool {.discardable.} =
+    if not mountedActive or not state.open.val or state.pending.val: return false
     let raw = r.inputValue(node).strip()
     try:
       let number = parseInt(raw)
@@ -207,11 +288,17 @@ proc mountColorPopover*[R, E](r: R; parent, invoker: E;
       of 1: channels.green = number
       of 2: channels.blue = number
       else: channels.alpha = int(round(number.float * 255 / 100))
+      # A colour typed into a fully transparent draft (a fill that is
+      # `transparent`, i.e. no visible colour) would stay invisible and the
+      # edit would look like it did nothing. A typed hex or HSL value without
+      # alpha is opaque; so is a typed channel here. Alpha % still sets it.
+      if index < 3 and channels.alpha == 0: channels.alpha = 255
       if index == 3:
         state.setColorHsv(hue.val, state.saturation.val, state.brightness.val, channels.alpha)
       else:
         state.draft.val = channelsHex(channels)
       state.diagnostic.val = ""
+      result = true
     except ValueError:
       state.diagnostic.val = if index == 3: "Opacity must be from 0 to 100%."
         else: "RGB channels must be whole numbers from 0 to 255."
@@ -226,7 +313,21 @@ proc mountColorPopover*[R, E](r: R; parent, invoker: E;
     channelInputs[index] = node
     r.appendChild(channelHost, control)
     r.addEventListener(node, "change", proc() = updateChannel(index, node))
+    onEnter(node, proc(): bool = updateChannel(index, node), close = false)
   for index, label in ["Red", "Green", "Blue", "Alpha %"]: addChannel(index, label)
+  proc updateHsl(): bool =
+    if not mountedActive or not state.open.val or state.pending.val: return false
+    let raw = r.inputValue(hslNode)
+    let color = hslDraftColor(raw)
+    if color.len == 0:
+      state.diagnostic.val = "Enter an HSL color such as hsl(217 91% 60%)."
+      return false
+    if normalizedHexColor(color) != normalizedHexColor(state.draft.val):
+      state.draft.val = color
+    state.diagnostic.val = ""
+    true
+  r.addEventListener(hslNode, "change", proc() = discard updateHsl())
+  onEnter(hslNode, updateHsl, close = false)
   proc setHsv(saturation, brightness: float) =
     if mountedActive and state.open.val and not state.pending.val:
       state.setColorHsv(hue.val, saturation, brightness, colorChannels(state.draft.val).alpha)
@@ -307,7 +408,9 @@ proc mountColorPopover*[R, E](r: R; parent, invoker: E;
            cursor = "pointer", background_color = color)
     r.appendChild(paletteHost, tile)
     r.addEventListener(swatch, "click", proc() =
-      if mountedActive and state.open.val and not state.pending.val: state.draft.val = color)
+      if mountedActive and state.open.val and not state.pending.val:
+        state.draft.val = color
+        state.diagnostic.val = "")
   for color in ["#FFFFFF", "#000000", "#EF4444", "#F59E0B", "#22C55E", "#3B82F6", "#7C7AED", "#EC4899"]:
     addSwatch(color)
   installAnchoredPopover(rootNode, "isonim-color-close")
@@ -320,7 +423,7 @@ proc mountColorPopover*[R, E](r: R; parent, invoker: E;
   onCleanup(proc() =
     cancelDraft()
     mountedActive = false)
-  let apply = proc() =
+  proc applyDraft(close: bool) =
     if not mountedActive or not state.open.val or state.pending.val: return
     when defined(js):
       var connected = false
@@ -333,9 +436,19 @@ proc mountColorPopover*[R, E](r: R; parent, invoker: E;
       state.diagnostic.val = "Enter a valid hex color (#RGB, #RGBA, #RRGGBB or #RRGGBBAA)."
     else:
       state.diagnostic.val = ""
-      if commit(value): state.open.val = false
+      state.commitCloses = close
+      let accepted = commit(value)
+      state.commitCloses = true
+      if accepted:
+        if close: state.open.val = false
+        else:
+          # Committed and still open: the committed value is the new point
+          # Cancel / Escape return to, not the colour the picker opened with.
+          openingDraft = state.captureColorDraft()
       elif not state.pending.val and state.diagnostic.val.len == 0:
         state.diagnostic.val = "The color edit was refused."
+  commitDraft = applyDraft
+  let apply = proc() = applyDraft(true)
   r.addEventListener(applyNode, "click", apply)
   r.addEventListener(inputNode, "input", proc() =
     if not mountedActive or not state.open.val or state.pending.val: return
@@ -371,6 +484,7 @@ proc mountColorPopover*[R, E](r: R; parent, invoker: E;
     r.setInputValue(alphaNode, $opacity)
     for index, number in [channels.red, channels.green, channels.blue, opacity]:
       r.setInputValue(channelInputs[index], $number)
+    r.setInputValue(hslNode, colorHslText(channels))
     r.setStyle(planeNode, "background", "linear-gradient(to top, #000, transparent), linear-gradient(to right, #fff, transparent), " & channelsHex(hsvChannels(hue.val, 1, 1)))
     r.setAttribute(planeNode, "aria-valuetext", "Saturation " & $int(round(saturation*100)) & "%, brightness " & $int(round(brightness*100)) & "%")
     r.setStyle(markerNode, "left", $(saturation * 100) & "%")
@@ -379,6 +493,13 @@ proc mountColorPopover*[R, E](r: R; parent, invoker: E;
     r.setStyle(alphaNode, "background", "linear-gradient(to right, rgba(" & $channels.red & ", " & $channels.green & ", " & $channels.blue & ", 0), " & rgb & "), conic-gradient(#747785 25%, #333642 0 50%, #747785 0 75%, #333642 0)")
     r.setStyle(alphaNode, "background-size", "auto, 8px 8px")
     r.setStyle(previewNode, "background-color", normalizedHexColor(state.draft.val))
+  # Separate from the field values above: a diagnostic or pending change used
+  # to re-run that effect and rewrite every field from the draft. That threw
+  # away the text a refusal was about, and the field's `change` on the next
+  # blur then re-validated the rewritten value and cleared the message --
+  # shrinking the popup under the pointer, so the click that caused the blur
+  # (a swatch, Apply) landed on whatever moved into its place.
+  createRenderEffect proc() =
     r.setTextContent(errorNode, if state.pending.val: "Saving source…" else: state.diagnostic.val)
     r.setAttribute(applyNode, "aria-disabled", if state.pending.val: "true" else: "false")
   r.appendChild(parent, root)
