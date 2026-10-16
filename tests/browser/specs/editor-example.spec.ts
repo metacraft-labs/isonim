@@ -426,7 +426,12 @@ test.describe("IsoNim packaged editor example", () => {
       .fill("Apply the spacing edit");
     await page.getByRole("button", { name: "Send agent prompt" }).click();
 
-    await expect(page.getByText("You: Apply the spacing edit")).toBeVisible();
+    const conversation = page.locator('.editor-chat[data-chat-local-id="chat-1"]');
+    const userTurn = conversation.locator('[data-chat-role="arUser"][data-chat-turn="1"]');
+    await expect(conversation).toBeVisible();
+    await expect(userTurn).toHaveCount(1);
+    await expect(userTurn).toBeVisible();
+    await expect(userTurn.locator('[data-chat-markdown="paragraph"]')).toHaveText("Apply the spacing edit");
     await expect(page.getByText("AI Designer: Fake adapter")).toBeVisible();
     await expect(
       page.getByText(

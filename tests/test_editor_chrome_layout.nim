@@ -211,7 +211,9 @@ suite "M57 vertical compact choice column":
 
       edit.fireEvent("click")
       check clicked == "edit"
-      comment.fireEvent("keydown")
+      comment.fireEventWith("keydown", MockEvent(`type`: "keydown", key: "Tab"))
+      check clicked == "edit"
+      comment.fireEventWith("keydown", MockEvent(`type`: "keydown", key: "Enter"))
       check clicked == "comment"
 
       # No overflow chevron when every option is visible.

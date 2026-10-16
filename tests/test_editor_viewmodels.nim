@@ -4,6 +4,7 @@ import std/[options, unittest, strutils, sequtils, os, algorithm]
 import nim_agents
 import isonim/core/[signals, computation, owner]
 import isonim/viewmodel
+import isonim/editor/types as editorTypes
 import isonim/editor/agent_context
 import isonim/editor/agent_harbor
 # ``AgentFileDiff`` is defined both by ``isonim/editor/types`` (re-exported
@@ -1780,11 +1781,19 @@ suite "Editor ViewModels (M26 source-backed CSS property editors)":
       check vm.selectPreviousInspectorElement()
       check vm.inspector.selectedElement.val.id == "header"
 
+      let savedExpansion = vm.inspector.expandedLayerIds.val
       vm.inspector.setLayerSearch("section")
-      check vm.inspector.filteredLayers.val.len == 1
+      check vm.inspector.filteredLayers.val.mapIt(it.id) == @["root", "content"]
+      check vm.inspector.selectedElement.val.id == "header"
+      check vm.inspector.expandedLayerIds.val == savedExpansion
+      check vm.selectNextInspectorElement()
+      check vm.inspector.selectedElement.val.id == "root"
       check vm.selectNextInspectorElement()
       check vm.inspector.selectedElement.val.id == "content"
       vm.inspector.setLayerSearch("")
+      check vm.inspector.filteredLayers.val.mapIt(it.id) == @["root", "header", "title", "content"]
+      check vm.inspector.selectedElement.val.id == "content"
+      check vm.inspector.expandedLayerIds.val == savedExpansion
       vm.inspector.toggleLayerExpanded("root")
       check vm.inspector.filteredLayers.val.len == 1
       vm.clearInspectorSelection()
@@ -2923,7 +2932,11 @@ suite "Editor ViewModels (M27 workspace file writes)":
       check savedSvg.contains("mix-blend-mode:multiply")
       check savedSvg.contains("star-3")
       check vm.inspector.pendingSourceEdits.val.len == 0
-      check vm.vectorEditor.undoStack.val.len == 0
+      # A write keeps the history (isonim-pm issue 2026-10-14-a-successful-
+      # save-clears-component-foundation-and-vector-undo-history; this used to
+      # assert the stack was emptied) and leaves nothing unsaved.
+      check vm.vectorEditor.undoStack.val.len > 0
+      check vm.vectorEditor.undoStack.val[^1].lastWrite.recorded
       check not vm.vectorEditor.isDirty.val
       check vm.workspaceEditStage.val == wesClean
       check recorder.fullReloadSeen
@@ -2983,7 +2996,10 @@ suite "Editor ViewModels (M27 workspace file writes)":
       check readFile(svgFile).contains("fabric-rect")
       check readFile(svgFile).contains("#EF4444")
       check vm.inspector.pendingSourceEdits.val.len == 0
-      check vm.vectorEditor.undoStack.val.len == 0
+      # History survives the write (see the vector import case above).
+      check vm.vectorEditor.undoStack.val.len > 0
+      check vm.vectorEditor.undoStack.val[^1].lastWrite.recorded
+      check not vm.vectorEditor.isDirty.val
       check vm.workspaceEditStage.val == wesClean
       check recorder.fullReloadSeen
       dispose()
@@ -4847,7 +4863,7 @@ suite "Editor ViewModels (M27 workspace file writes)":
           planFor(schemaFile, "margin", "8px", "12px",
             "components.card.margin")
         ],
-        diffs: @[editor_types.AgentFileDiff(file: schemaFile, beforeText: "padding=16px",
+        diffs: @[editorTypes.AgentFileDiff(file: schemaFile, beforeText: "padding=16px",
           afterText: "padding=24px", summary: "padding update")]))
 
       var rerunPrompt = ""
@@ -5840,7 +5856,7 @@ suite "Editor ViewModels (M27 workspace file writes)":
         summary: "padding shared schema scope",
         sourceEdits: @[planFor(schemaFile, "padding", "16px", "24px",
           "components.card.padding")],
-        diffs: @[editor_types.AgentFileDiff(file: schemaFile, beforeText: "padding=16px",
+        diffs: @[editorTypes.AgentFileDiff(file: schemaFile, beforeText: "padding=16px",
           afterText: "padding=24px", summary: "padding 16px -> 24px")],
         impact: AgentProposalImpact(summary: "Updates Card default padding.",
           affectedStories: @[writeStory],
@@ -5867,7 +5883,7 @@ suite "Editor ViewModels (M27 workspace file writes)":
         summary: "padding against current schema scope",
         sourceEdits: @[planFor(schemaFile, "padding", "24px", "32px",
           "components.card.padding")],
-        diffs: @[editor_types.AgentFileDiff(file: schemaFile, beforeText: "padding=24px",
+        diffs: @[editorTypes.AgentFileDiff(file: schemaFile, beforeText: "padding=24px",
           afterText: "padding=32px", summary: "padding 24px -> 32px")],
         tests: @["compile DestinationCard/Default"]))
       let manual = vm.editCssProperty("padding", "28px", pesShared)
@@ -6633,6 +6649,51 @@ suite "Editor ViewModels (cross-surface integration)":
       check wiring.commitMessage.val == ""
       check vm.inspector.pendingSourceEdits.val.len == 1
       check vm.inspector.pendingSourceEdits.val[0].newValue == "26px"
+      dispose()
+
+  test "section_row_each_scope_chip_chooses_its_own_scope":
+    ## Every chip's ``onChoose`` must act on the choice that chip
+    ## displays. The callbacks are built in a loop, and a Nim closure
+    ## created in a loop body shares one environment across iterations,
+    ## so a naive build makes every chip run the LAST option's callback:
+    ## the labels are right and every click selects the same scope.
+    createRoot proc(dispose: proc()) =
+      let root = tempWorkspaceDir("writeback-scope-each")
+      defer: removeDir(root)
+      let sourceFile = root / "card.nim"
+      atomicWrite(sourceFile, "card-title.font-size=20px\n")
+      let tree = cardTreeJson.replace("SRC", sourceFile)
+      let vm = writebackVm(root, sourceFile, tree)
+
+      let wiring = vm.inspectorRowWiring("font-size")
+      let options = wiring.scopeOptions()
+      # With a shared callback every chip acts as the last one, so any
+      # two chips of different kinds expose it. An editable and a
+      # read-only chip also cover both branches of ``onChoose``.
+      check options.len >= 2
+      check options.anyIt(it.enabled)
+      check options.anyIt(not it.enabled)
+      for option in options:
+        var kindText = ""
+        for (name, value) in option.dataAttrs:
+          if name == "data-source-scope-kind":
+            kindText = value
+        check kindText.len > 0
+        let kind = parseEnum[SourceScopeChoiceKind](kindText)
+        # Seed a scope the chip does not name, so a no-op callback
+        # cannot pass by leaving the previous value in place.
+        let sentinel =
+          if kind == sskGlobalPrimitiveToken: sskLocalInstance
+          else: sskGlobalPrimitiveToken
+        wiring.scopeSelected.val = sentinel
+        wiring.commitMessage.val = ""
+        option.onChoose()
+        if option.enabled:
+          check wiring.scopeSelected.val == kind
+          check wiring.commitMessage.val == ""
+        else:
+          check wiring.scopeSelected.val == sentinel
+          check wiring.commitMessage.val.len > 0
       dispose()
 
   test "section_row_refuses_out_loud_on_a_read_only_workspace":

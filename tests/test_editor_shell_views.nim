@@ -1,4 +1,17 @@
 ## Tests for IsoNim Editor — shell Views (M2)
+## MockRenderer provides inspectable generic nodes for headless production
+## ViewModel/view bindings without a browser. Signals, owners and editor reducers
+## are real; the registered mounted GUI suites separately verify actual DOM,
+## keyboard, geometry and preview behavior. No external provider is substituted
+## to claim REST or compiler integration in this suite. The scope test records
+## admission and returns a refusal; it does not simulate a successful source
+## write. Chat adapters record prompt/context admission and cancellation only,
+## not Harbor/session-worker outcomes. Saved callbacks test logical retirement,
+## not physical browser listener removal. Authored metadata fixtures exercise
+## ownership presentation/admission, not discovery. The source-text assertion
+## reads the same production file at runtime natively and compile time in JS.
+## Header Add checks prove guard metadata and direct-dispatch no-ops only;
+## the mounted GUI owns actual event bubbling, keyboard and focus claims.
 
 import std/[unittest, strutils, tables]
 import isonim/core/[signals, computation, owner]
@@ -41,6 +54,29 @@ proc collectByAttr(node: MockNode; name, value: string; result: var seq[MockNode
 
 proc findAllByAttr(node: MockNode; name, value: string): seq[MockNode] =
   collectByAttr(node, name, value, result)
+
+proc manualSaveControls(node: MockNode; found: var seq[string]) =
+  ## Every control that would let a person hold a change back for a second
+  ## gesture: an aria-labelled Save/Revert, or an interactive node whose
+  ## whole text is "Save" or "Revert". Editor spec "Saving": none exist.
+  if node.kind == mnkElement:
+    let label = node.attributes.getOrDefault("aria-label")
+    if (label.startsWith("Save ") or label.startsWith("Revert ")) and
+        label.endsWith("source edits"):
+      found.add label
+    # Exempt, both draft confirms rather than source-edit saves:
+    # - the inline variable editor's dialog confirm commits the draft through
+    #   `editFoundationToken` (a commit, then auto-saved), like "Apply";
+    # - the Spec-mode markdown editor's Save (JS only) ends an explicit spec
+    #   document edit session through its own callback, not the source-edit
+    #   journal.
+    if ("click" in node.eventListeners or "keydown" in node.eventListeners) and
+        node.textContent.strip in ["Save", "Revert"] and
+        node.attributes.getOrDefault("data-variable-inline-editor-save") != "true" and
+        node.attributes.getOrDefault("data-spec-pane-save-btn") != "true":
+      found.add "text:" & node.textContent.strip
+  for child in node.children:
+    manualSaveControls(child, found)
 
 proc countInteractive(node: MockNode): int =
   if node.kind == mnkElement and
@@ -464,25 +500,116 @@ suite "Editor Shell Views (M2)":
       dispose()
 
   test "component_edit_inspector_explains_and_applies_design_system_scope":
-    ## DEFERRED to Phase G — see
-    ## ``isonim-specs/isonim-editor.md`` §"Property Inspector
-    ## Panel — Section-Based Design".
-    ##
-    ## Phase A demolition (2026-05-28) stopped mounting
-    ## ``populateInspectorManualBody`` inside ``renderInspectorPanel``.
-    ## The rich content this test exercises (12-sub-tabs, design-
-    ## system-impact panel, dense property rows, scope selector
-    ## click handling) is preserved in
-    ## ``component_edit.nim::populateInspectorManualBody`` but is
-    ## not wired into the new section-based sidebar yet. Phase G
-    ## progressively extracts that content into per-section widget
-    ## files; this test will be rewritten then to assert against
-    ## the new per-section mount points.
-    skip()
+    createRoot do (dispose: proc()):
+      let r = MockRenderer()
+      let vm = createEditorVM()
+      vm.sidebar.groups.val = buildStoryboard()
+      vm.selectedStory.val = StoryRef(group: "TaskRow", name: "Active task", kind: skComponent)
+      vm.setEditMode(emEdit)
+      var permissions = vm.workspacePermissions.val
+      permissions.writeSource = true
+      vm.workspacePermissions.val = permissions
+      let token = PropertyInfo(name: "background-color", value: "#112233",
+        authoredValue: "#112233", sourceFile: "styles.nim",
+        schemaKey: "tokens.native.panel", tokenName: "--panel",
+        nativeSourceShared: true, nativeSourceToken: true, sharedCount: 2)
+      vm.inspector.selectedElement.val = ElementRef(id: "panel", tag: "div",
+        schemaKey: "dom.panel", properties: @[token])
+      var admissions = 0
+      vm.inspectorSourceCommit = proc(element: ElementRef; property, value: string;
+          scope: SourceScopeChoiceKind; done: proc(ok: bool; diagnostic: string) {.closure.}) =
+        inc admissions
+        check element.id == "panel"
+        check property == "background-color"
+        check value == "#445566"
+        check scope == sskSemanticToken
+        done(false, "Recording adapter refuses source changes")
+      let shell = renderEditorShell[MockRenderer, MockNode](r, vm)
+      let source = findByAttr(shell, "data-source-scope", "true")
+      check source != nil
+      check source.textContent == "Theme token"
+      let componentSection = findByAttr(shell, "data-inspector-section-row", "component-properties")
+      check componentSection != nil
+      check componentSection.styles.getOrDefault("display") == "none"
+      let fillHeader = findByAttr(shell, "data-inspector-section-header", "fill")
+      check fillHeader != nil
+      if fillHeader.attributes.getOrDefault("aria-expanded") != "true":
+        fillHeader.fireEvent("click")
+      check fillHeader.attributes.getOrDefault("aria-expanded") == "true"
+      let strip = findByAttr(shell, "data-fill-source-scope", "true")
+      check strip != nil
+      let applyToken = findByAttr(strip, "aria-label", "Apply semantic token scope for background-color")
+      let applyApi = findByAttr(strip, "aria-label", "Apply component schema scope for background-color")
+      check applyToken != nil and applyApi != nil
+      check applyToken.attributes.getOrDefault("data-source-scope-editable") == "true"
+      check applyToken.attributes.getOrDefault("data-source-scope-token") == "--panel"
+      check applyToken.attributes.getOrDefault("data-source-scope-count") == "2"
+      check applyApi.attributes.getOrDefault("aria-disabled") == "true"
+      applyToken.fireEvent("click")
+      check findByAttr(strip, "aria-label", "Apply semantic token scope for background-color").attributes.getOrDefault("aria-pressed") == "true"
+      let impact = findByAttr(shell, "data-fill-source-impact", "true")
+      check impact != nil and impact.styles.getOrDefault("display") == "block"
+      check "--panel" in impact.textContent
+      check "Known direct matches" in impact.textContent
+      let before = vm.inspector.selectedElement.val
+      applyApi.fireEvent("click")
+      check vm.inspector.selectedElement.val == before
+      check admissions == 0
+      let hex = findByAttr(shell, "data-fill-row-hex", "0")
+      check hex != nil
+      r.setInputValue(hex, "#445566")
+      hex.fireEvent("change")
+      check admissions == 1
+      check vm.inspector.selectedElement.val == before
+      check r.inputValue(hex) == "#112233"
+      let message = findByAttr(shell, "data-fill-message", "true")
+      check message.textContent == "Recording adapter refuses source changes"
+      check message.attributes.getOrDefault("data-fill-message-visible") == "true"
+      permissions.writeSource = false
+      vm.workspacePermissions.val = permissions
+      r.setInputValue(hex, "#778899")
+      hex.fireEvent("change")
+      check admissions == 1
+      check message.textContent == "This workspace is read-only for source changes."
+      check vm.inspector.selectedElement.val == before
+      check vm.inspector.undoStack.val.len == 0
+      check vm.inspector.pendingSourceEdits.val.len == 0
+      check vm.chat.messages.val.len == 0
+      # Preserve the real computed payload: generated DOM identity is not a
+      # component API or complete source ownership. No fields are discarded.
+      let normalized = previewDomElementRef(StoryRenderMetadata(sourceFile: "stories.nim", sourceLine: 1),
+        tag = "button", testId = "ordinary", className = "panel", sourceFile = "stories.nim", sourceLine = 1,
+        backgroundColor = "rgb(17, 34, 51)", color = "rgb(255, 255, 255)", padding = "8px",
+        width = "120px", height = "48px")
+      vm.inspector.selectedElement.val = normalized
+      check normalized.schemaKey.startsWith("dom.")
+      check source.textContent == "Unknown"
+      check componentSection.styles.getOrDefault("display") == "none"
+      check admissions == 1
+      # A distinct declared component fixture uses actual graph ownership,
+      # including mapped read-only source. Editability does not erase ownership.
+      vm.designSystemSchema.val = DesignSystemSchema(nodes: @[
+        DesignSchemaNode(key: "Button.variant", kind: dsnComponentVariant, property: "variant")],
+        sourceOwnership: @[DesignSourceOwnership(elementSourceKey: "button",
+          property: "variant", nodeKey: "Button.variant", unstructuredViewCode: true)])
+      vm.inspector.selectedElement.val = ElementRef(id: "button", tag: "button", schemaKey: "Button",
+        properties: @[PropertyInfo(name: "variant", value: "primary", schemaKey: "Button.variant")])
+      check source.textContent == "Component schema"
+      check componentSection.styles.getOrDefault("display") == "flex"
+      check findByAttr(shell, "data-property-row", "variant") != nil
+      check admissions == 1
+      check vm.inspector.undoStack.val.len == 0
+      check vm.inspector.pendingSourceEdits.val.len == 0
+      dispose()
 
   test "test_views_contain_no_hardcoded_values":
     ## View files use Tailwind classes, no hardcoded pixel values in class strings
-    let shellFile = readFile("src/isonim/editor/views/shell.nim")
+    # Node JS has no Nim C fopen shim. Read the SAME production source at
+    # compile time there; native keeps its existing filesystem check.
+    when defined(js):
+      const shellFile = staticRead("../src/isonim/editor/views/shell.nim")
+    else:
+      let shellFile = readFile("src/isonim/editor/views/shell.nim")
 
     # Views should use class = "..." for layout (Tailwind)
     check "class = " in shellFile
@@ -492,19 +619,82 @@ suite "Editor Shell Views (M2)":
     # (they use Tailwind scale like p-4, not p-16px)
 
   test "test_chat_section_has_input":
-    ## DEFERRED to Phase F — see
-    ## ``isonim-specs/isonim-editor.md`` §"AI assistant
-    ## placement".
-    ##
-    ## Phase A demolition (2026-05-28) removed the Assistant tab
-    ## body from the right sidebar. The chat panel
-    ## (``renderChatPanel``) is preserved in
-    ## ``chat_panel.nim`` and will be re-mounted inside the
-    ## chrome-bar-driven slide-out drawer in Phase F. The drawer
-    ## then carries the chat composer (Agent prompt + Send) that
-    ## this test asserts on; Phase F rewrites this test to target
-    ## the drawer mount point.
-    skip()
+    createRoot do (dispose: proc()):
+      let r = MockRenderer()
+      let vm = createEditorVM()
+      vm.sidebar.groups.val = buildStoryboard()
+      vm.selectedStory.val = StoryRef(group: "TaskRow", name: "Active task", kind: skComponent)
+      vm.setEditMode(emEdit)
+      var prompts: seq[string]
+      var cancellations = 0
+      proc configure(chat: AgentChatVM) =
+        chat.configureAgentAdapters(proc(prompt: string; context: AgentPromptContext): bool =
+          prompts.add prompt
+          check context.selectedStory.name == "Active task"
+          check context.selectedStory.group == "TaskRow"
+          true,
+          proc(): bool = inc cancellations; true)
+      vm.configureChat = configure
+      configure(vm.chat)
+      let shell = renderEditorShell[MockRenderer, MockNode](r, vm)
+      check findByAttr(shell, "aria-label", "Agent prompt") == nil
+      let view = findByAttr(shell, "data-choice-group-label", "View")
+      let edit = findByAttr(shell, "data-choice-group-label", "Edit")
+      check view != nil and edit != nil
+      view.fireEvent("click")
+      let input = findByAttr(shell, "aria-label", "Agent prompt")
+      let send = findByAttr(shell, "aria-label", "Send agent prompt")
+      check input != nil and send != nil
+      let original = vm.chat
+      r.setInputValue(input, "Current shell prompt")
+      input.fireEvent("input")
+      check original.inputText.val == "Current shell prompt"
+      send.fireEvent("click")
+      check prompts == @["Current shell prompt"]
+      check original.promptGeneration == 1
+      check original.messages.val.len > 0
+      check original.messages.val[0].kind == cmkUser
+      check original.messages.val[0].text == "Current shell prompt"
+      check original.inputText.val == ""
+      r.setInputValue(input, "Retained shell draft")
+      input.fireEvent("input")
+      edit.fireEvent("click")
+      check findByAttr(shell, "aria-label", "Agent prompt") == nil
+      view.fireEvent("click")
+      check vm.chat == original
+      check findByAttr(shell, "aria-label", "Agent prompt") == input
+      check original.inputText.val == "Retained shell draft"
+      let retiredSend = send.eventListeners["click"][0]
+      let retiredInput = input.eventListeners["input"][0]
+      let newChat = findByAttr(shell, "data-ai-assistant-new-chat", "true")
+      check newChat != nil
+      newChat.fireEvent("click")
+      let current = vm.chat
+      check current != original
+      let currentInput = findByAttr(shell, "aria-label", "Agent prompt")
+      check currentInput != nil and currentInput != input
+      r.setInputValue(currentInput, "New shell prompt")
+      currentInput.fireEvent("input")
+      let messages = current.messages.val
+      let generation = current.promptGeneration
+      retiredInput()
+      retiredSend()
+      check current.inputText.val == "New shell prompt"
+      check current.messages.val == messages
+      check current.promptGeneration == generation
+      check original.inputText.val == "Retained shell draft"
+      check prompts == @["Current shell prompt"]
+      findByAttr(shell, "aria-label", "Send agent prompt").fireEvent("click")
+      check prompts == @["Current shell prompt", "New shell prompt"]
+      check current.promptGeneration == generation + 1
+      check current.inputText.val == ""
+      let sessions = vm.chats.val
+      dispose()
+      retiredSend()
+      check vm.chats.val == sessions
+      check vm.chat == current
+      check prompts.len == 2
+      check cancellations == 0
 
   test "editor_shell_mock_renderer_exposes_clickable_controls":
     createRoot do (dispose: proc()):
@@ -589,10 +779,12 @@ suite "Editor Shell Views (M2)":
       check union != nil
       check union.attributes["data-vector-action"] == "boolean-unite"
 
-      let saveVector = findByAttr(vector, "aria-label",
-        "Save vector source edits")
-      check saveVector != nil
-      check saveVector.attributes["data-vector-pending-source-edits"] == "0"
+      # No Save control (editor spec "Saving"); the source write state the
+      # Save button used to carry is on the toolbar.
+      check findByAttr(vector, "aria-label", "Save vector source edits") == nil
+      let vectorToolbar = findByAttr(vector, "data-vector-editor-toolbar", "true")
+      check vectorToolbar != nil
+      check vectorToolbar.attributes["data-vector-pending-source-edits"] == "0"
 
       let layer = findByAttr(vector, "aria-label", "Select vector layer Rectangle")
       check layer != nil
@@ -986,13 +1178,14 @@ suite "Editor Shell Views (M2)":
                       kind: skComponent, group: "Components")
         ])
       ]
+      var storyDescription = "Rendered by project-owned component code."
       vm.preview.hook = proc(story: StoryRef;
           platform: Platform): ProjectPreview =
         ProjectPreview(
           status: ppsRendered,
           story: story,
           title: story.group & " / " & story.name,
-          bodyText: "Rendered by project-owned component code.",
+          bodyText: storyDescription,
           documentHtml: "<main data-testid=\"real-component\">Button</main>")
       discard vm.selectStory(componentStory)
 
@@ -1006,6 +1199,11 @@ suite "Editor Shell Views (M2)":
       check frame.styles["overflow"] == "hidden"
       check frame.attributes["height"] == "1"
       check detail.textContent.contains("Rendered by project-owned component code.")
+      check frame.attributes["aria-description"] ==
+        "Rendered by project-owned component code."
+      storyDescription = "Updated story description."
+      vm.preview.sourceGeneration.val = vm.preview.sourceGeneration.val + 1
+      check frame.attributes["aria-description"] == "Updated story description."
 
       dispose()
 
@@ -1068,6 +1266,49 @@ suite "Editor Shell Views (M2)":
       check disabled != nil
       check disabled.attributes["data-compact-choice-row"] == "true"
 
+      dispose()
+
+  test "no panel renders a manual save or revert control":
+    ## Component properties, foundations, vector and the inspector all write
+    ## automatically. Each used to carry its own Save/Revert pair.
+    createRoot do (dispose: proc()):
+      let r = MockRenderer()
+      let vm = createEditorVM()
+      let story = StoryRef(group: "StatusBadge", name: "Neutral",
+        kind: skComponent, index: 0)
+      vm.sidebar.groups.val = @[
+        StoryGroup(name: "Components", kind: skComponent, expanded: true,
+          items: @[StoryItem(name: story.name, kind: story.kind,
+            group: story.group)])
+      ]
+      vm.variants.variants.val = @[ComponentVariantDefinition(
+        component: "StatusBadge", variantKey: "base", story: story,
+        properties: @[ComponentPropertyDefinition(name: "tone",
+          kind: cpkEnum, value: "neutral",
+          options: @["neutral", "success", "error"],
+          sourceFile: "components/status_badge.nim", sourceLine: 12,
+          schemaKey: "status.tone")])]
+      vm.foundations.tokens.val = @[FoundationTokenEntry(key: "space.card",
+        kind: ftkSpacingScale, value: "16px", sourceFile: "tokens.nim",
+        sourceLine: 1, schemaKey: "tokens.space.card", property: "space.card")]
+      discard vm.selectStory(story)
+      var found: seq[string] = @[]
+      let detail = renderComponentDetail[MockRenderer, MockNode](r, vm)
+      check findByAttr(detail, "aria-label",
+        "Apply component property tone option success") != nil
+      manualSaveControls(detail, found)
+      let foundations = renderFoundationsPage[MockRenderer, MockNode](r, vm)
+      check findByAttr(foundations, "aria-label",
+        "Apply foundation token value") != nil
+      manualSaveControls(foundations, found)
+      let vector = renderVectorEditor[MockRenderer, MockNode](r, vm)
+      check findByAttr(vector, "data-vector-editor-toolbar", "true") != nil
+      manualSaveControls(vector, found)
+      vm.setEditMode(emEdit)
+      let shell = renderEditorShell[MockRenderer, MockNode](r, vm)
+      manualSaveControls(shell, found)
+      check found.len == 0
+      if found.len > 0: echo "manual save controls: ", found
       dispose()
 
   test "component detail picks story-specific variants after fallback synthesis":
@@ -1173,7 +1414,7 @@ suite "Editor Shell Views (M2)":
 
       let chat = renderChatPanel[MockRenderer, MockNode](r, vm)
       check chat.textContent.contains("Ask for design-system changes")
-      check chat.textContent.contains("Empty / disconnected")
+      check chat.textContent.contains("Start a conversation")
 
       dispose()
 
@@ -1197,6 +1438,117 @@ suite "Editor Shell Views (M2)":
       let ancestor = findByAttr(shell, "aria-label", "Select breadcrumb button")
       check ancestor != nil
 
+      dispose()
+
+suite "Layers header search":
+
+  test "rendered rows retain known source attribution without inventing unknown locations":
+    createRoot do (dispose: proc()):
+      let r = MockRenderer()
+      let vm = createEditorVM()
+      vm.inspector.setSelectionTree(@[
+        ElementLayerRow(id: "known", label: "h1.title", tag: "h1",
+          sourceFile: "apps/back-office/src/backoffice_ui/components.nim", sourceLine: 42),
+        ElementLayerRow(id: "file-only", label: "header", tag: "header",
+          sourceFile: "C:\\project\\components.nim"),
+        ElementLayerRow(id: "unknown", label: "span.client", tag: "span")])
+      let panel = renderSceneGraphPanel[MockRenderer, MockNode](r, vm)
+      let known = panel.findByAttr("data-scene-graph-source", "known")
+      require known != nil
+      check known.textContent == "components.nim:42"
+      check known.attributes["title"] ==
+        "apps/back-office/src/backoffice_ui/components.nim:42"
+      check known.styles["max-width"] == "45%"
+      let fileOnly = panel.findByAttr("data-scene-graph-source", "file-only")
+      require fileOnly != nil
+      check fileOnly.textContent == "components.nim"
+      check not fileOnly.textContent.contains(":0")
+      check panel.findByAttr("data-scene-graph-row", "unknown") != nil
+      check panel.findByAttr("data-scene-graph-source", "unknown") == nil
+      check vm.selectInspectorElementById("known")
+      vm.inspector.setLayerSearch("  COMPONENTS.NIM  ")
+      check panel.findByAttr("data-scene-graph-row", "known") != nil
+      check panel.findByAttr("data-scene-graph-row", "file-only") != nil
+      check panel.findByAttr("data-scene-graph-row", "unknown") == nil
+      check vm.inspector.selectedElement.val.id == "known"
+      dispose()
+
+  test "header search filters collapsed descendants without changing selection or expansion":
+    createRoot do (dispose: proc()):
+      let r = MockRenderer()
+      let vm = createEditorVM()
+      vm.inspector.setSelectionTree(@[
+        ElementLayerRow(id: "root", label: "Save panel", tag: "main", childCount: 2,
+          expanded: true),
+        ElementLayerRow(id: "title", parentId: "root", label: "Welcome title",
+          tag: "h1", depth: 1),
+        ElementLayerRow(id: "action", parentId: "root", label: "Save changes",
+          tag: "button", depth: 1)])
+      check vm.selectInspectorElementById("title")
+      vm.inspector.toggleLayerExpanded("root")
+      let savedExpansion = vm.inspector.expandedLayerIds.val
+      let panel = renderSceneGraphPanel[MockRenderer, MockNode](r, vm)
+      let search = panel.findByAttr("aria-label", "Search layers")
+      check panel.attributes["aria-label"] == "Layers"
+      check search != nil
+      check search.attributes["placeholder"] == "Search layers"
+      let field = panel.findByAttr("data-sidebar-search-field", "layers")
+      check field != nil
+      check field.styles["background-color"] == "#1A1B26"
+      check field.styles["border"] == "1px solid " & border
+      check field.styles["height"] == "28px"
+      check search.styles["background-color"] == "transparent"
+      check not panel.textContent.contains("Scene graph")
+      check panel.findByAttr("data-scene-graph-row", "action") == nil
+      r.setInputValue(search, "  SAVE  ")
+      search.fireEvent("input")
+      check vm.inspector.layerSearch.val == "  SAVE  "
+      check panel.findByAttr("data-scene-graph-row", "action") != nil
+      check panel.findByAttr("data-scene-graph-row", "title") == nil
+      # A matching descendant retains a nonmatching, collapsed ancestor.
+      r.setInputValue(search, "changes")
+      search.fireEvent("input")
+      check panel.findByAttr("data-scene-graph-row", "action") != nil
+      check panel.findByAttr("data-scene-graph-row", "root") != nil
+      check panel.findByAttr("data-scene-graph-row", "root").attributes["aria-expanded"] == "true"
+      check panel.findByAttr("data-scene-graph-twisty", "root").textContent == "\xE2\x96\xBE"
+      check panel.findByAttr("data-scene-graph-row", "title") == nil
+      check vm.inspector.selectedElement.val.id == "title"
+      check vm.inspector.expandedLayerIds.val == savedExpansion
+      r.setInputValue(search, "unknown layer")
+      search.fireEvent("input")
+      check panel.findByAttr("data-scene-graph-empty", "true").textContent ==
+        "No matching layers"
+      r.setInputValue(search, "")
+      search.fireEvent("input")
+      check panel.findByAttr("data-scene-graph-row", "root") != nil
+      check panel.findByAttr("data-scene-graph-row", "action") == nil
+      check panel.findByAttr("data-scene-graph-row", "root").attributes["aria-expanded"] == "false"
+      check vm.inspector.selectedElement.val.id == "title"
+      check vm.inspector.expandedLayerIds.val == savedExpansion
+      vm.inspector.toggleLayerExpanded("root")
+      check panel.findByAttr("data-scene-graph-row", "action") != nil
+      dispose()
+
+  test "header search shares the inspector query and preserves story search":
+    createRoot do (dispose: proc()):
+      let r = MockRenderer()
+      let vm = createEditorVM()
+      vm.sidebar.setSearch("Home")
+      vm.inspector.setSelectionTree(@[
+        ElementLayerRow(id: "first", label: "Save", tag: "button"),
+        ElementLayerRow(id: "second", label: "Heading", tag: "h1")])
+      let panel = renderSceneGraphPanel[MockRenderer, MockNode](r, vm)
+      let search = panel.findByAttr("aria-label", "Search layers")
+      vm.inspector.setLayerSearch("h1")
+      check r.inputValue(search) == "h1"
+      check panel.findByAttr("data-scene-graph-row", "second") != nil
+      check panel.findByAttr("data-scene-graph-row", "first") == nil
+      check vm.sidebar.searchQuery.val == "Home"
+      r.setInputValue(search, "Save")
+      search.fireEvent("change")
+      check vm.inspector.layerSearch.val == "Save"
+      check vm.sidebar.searchQuery.val == "Home"
       dispose()
 
 suite "Status-bar breadcrumb — the retained trail":
@@ -1281,6 +1633,34 @@ suite "Status-bar breadcrumb — the retained trail":
       check vm.selectInspectorElementById("root")
       check shell.breadcrumbStates() == @[("root", "selected")]
 
+      dispose()
+
+  test "an explicit same-target Layers click replaces the breadcrumb trail":
+    createRoot do (dispose: proc()):
+      let r = MockRenderer()
+      let vm = createEditorVM()
+      # The parent DOM reader seeds shallow IDs on first publication; this
+      # native view binding consumes the equivalent already published tree.
+      vm.inspector.expandedLayerIds.val = @["root", "header"]
+      vm.inspector.setSelectionTree(sceneGraphRows())
+      check vm.selectInspectorElementById("title")
+      let shell = renderEditorShell[MockRenderer, MockNode](r, vm)
+      check vm.selectInspectorElementById("header", soBreadcrumb)
+      check shell.breadcrumbStates() == @[("root", "ancestor"),
+        ("header", "selected"), ("title", "trail")]
+      let panel = renderSceneGraphPanel[MockRenderer, MockNode](r, vm)
+      let headerRow = panel.findByAttr("data-scene-graph-row", "header")
+      require headerRow != nil
+      headerRow.fireEvent("click")
+      check vm.inspector.selectedElement.val.id == "header"
+      check shell.breadcrumbStates() == @[("root", "ancestor"),
+        ("header", "selected")]
+      check vm.inspector.breadcrumbWalkId.val == ""
+      # The actual preview reply after that explicit click cannot revive a tail.
+      check vm.selectInspectorElement(ElementRef(id: "header", tag: "header",
+        ancestors: @["root", "header"], ancestorIds: @["root", "header"]))
+      check shell.breadcrumbStates() == @[("root", "ancestor"),
+        ("header", "selected")]
       dispose()
 
   test "a retained tail the preview no longer renders is dropped":
@@ -1603,4 +1983,132 @@ suite "Phase N — left sidebar drag resize":
       check vm.leftSidebarWidth.val == 180
       vm.setLeftSidebarWidth(9_999)
       check vm.leftSidebarWidth.val == 420
+      dispose()
+
+suite "Agent navigation sidebar binding lifetime":
+  test "search binding follows live state and stops writing after actual scope disposal":
+    let r = MockRenderer()
+    var oldVm: EditorVM
+    var oldInput: MockNode
+    var disposeOld: proc()
+    createRoot proc(dispose: proc()) =
+      disposeOld = dispose
+      oldVm = createEditorVM()
+      let sidebar = renderSidebar[MockRenderer, MockNode](r, oldVm)
+      oldInput = findByAttr(sidebar, "data-sidebar-search", "true")
+      check oldInput != nil
+      oldVm.sidebar.setSearch("live search")
+      check r.inputValue(oldInput) == "live search"
+      # Human typing updates the same value before the input event reaches VM.
+      r.setInputValue(oldInput, "typed search")
+      oldInput.fireEvent("input")
+      check oldVm.sidebar.searchQuery.val == "typed search"
+      oldVm.sidebar.setSearch("")
+      check r.inputValue(oldInput) == ""
+      oldVm.sidebar.setSearch("before disposal")
+      check r.inputValue(oldInput) == "before disposal"
+    disposeOld()
+    oldVm.sidebar.searchQuery.val = "after disposal"
+    check r.inputValue(oldInput) == "before disposal"
+    var freshVm: EditorVM
+    var freshInput: MockNode
+    var disposeFresh: proc()
+    createRoot proc(dispose: proc()) =
+      disposeFresh = dispose
+      freshVm = createEditorVM()
+      freshVm.sidebar.setSearch("fresh mount")
+      let sidebar = renderSidebar[MockRenderer, MockNode](r, freshVm)
+      freshInput = findByAttr(sidebar, "data-sidebar-search", "true")
+      check r.inputValue(freshInput) == "fresh mount"
+      freshVm.sidebar.setSearch("fresh update")
+      check r.inputValue(freshInput) == "fresh update"
+      check r.inputValue(oldInput) == "before disposal"
+    disposeFresh()
+    freshVm.sidebar.searchQuery.val = "after fresh disposal"
+    oldVm.sidebar.searchQuery.val = "obsolete update after remount"
+    check r.inputValue(freshInput) == "fresh update"
+    check r.inputValue(oldInput) == "before disposal"
+
+suite "Unsupported inspector header Add guards":
+  test "header Add is unavailable while body export configuration remains functional":
+    createRoot do (dispose: proc()):
+      let r = MockRenderer()
+      let vm = createEditorVM()
+      vm.inspector.selectedElement.val = ElementRef(id: "header-selection", tag: "div")
+      let panel = renderInspectorPanel[MockRenderer, MockNode](r, vm)
+      let exportAdd = findByAttr(panel, "data-export-add", "true")
+      check exportAdd != nil
+      exportAdd.fireEvent("click")
+      findByAttr(panel, "data-export-row-size", "0").fireEvent("click")
+      findByAttr(panel, "data-export-row-format", "0").fireEvent("click")
+      let suffix = findByAttr(panel, "data-export-row-suffix", "0")
+      r.setInputValue(suffix, "-configured")
+      suffix.fireEvent("change")
+      let selected = vm.inspector.selectedElement.val
+      let expanded = vm.inspector.expandedSections.val
+      let stage = vm.workspaceEditStage.val
+      let generation = vm.preview.sourceGeneration.val
+      for slug in ["fill", "stroke", "effects", "export"]:
+        let header = findByAttr(panel, "data-inspector-section-header", slug)
+        let add = findByAttr(header, "data-inspector-section-action", "add")
+        check add != nil
+        check add.attributes.getOrDefault("aria-disabled") == "true"
+        check add.attributes.getOrDefault("title").startsWith("Adding another ")
+        check add.attributes.getOrDefault("tabindex") == "0"
+        check add.styles.getOrDefault("cursor") == "default"
+        add.fireEvent("click")
+        add.fireEvent("keydown")
+        check vm.inspector.expandedSections.val == expanded
+        check vm.inspector.selectedElement.val == selected
+        check vm.workspaceEditStage.val == stage
+        check vm.preview.sourceGeneration.val == generation
+        check vm.inspector.undoStack.val.len == 0
+        check vm.inspector.redoStack.val.len == 0
+        check vm.inspector.pendingSourceEdits.val.len == 0
+        check countByAttr(panel, "data-export-row", "0") == 1
+        check findByAttr(panel, "data-export-row-size", "0").textContent == "2x"
+        check findByAttr(panel, "data-export-row-format", "0").textContent == "SVG"
+        check r.inputValue(findByAttr(panel, "data-export-row-suffix", "0")) == "-configured"
+      findByAttr(panel, "data-export-row-delete", "0").fireEvent("click")
+      check countByAttr(panel, "data-export-row", "0") == 0
+      dispose()
+
+suite "Per-item shell effects":
+  test "every chat tab and overflow status follows its own session":
+    createRoot do (dispose: proc()):
+      let vm = createEditorVM()
+      discard vm.createNewChat()
+      discard vm.createNewChat()
+      let root = renderAiAssistantPanel[MockRenderer, MockNode](MockRenderer(), vm)
+      let tabs = findAllByAttr(root, "role", "tab")
+      let entries = findAllByAttr(root, "role", "option")
+      require tabs.len == 3
+      require entries.len == 3
+      for i, session in vm.chats.val:
+        session.vm.sessionStatus.val = asLoading
+        for j in 0 ..< 3:
+          let status = if j <= i: "loading" else: "idle"
+          check findByAttr(tabs[j], "data-ai-assistant-tab-status", status) != nil
+          check entries[j].children[0].styles["background-color"] ==
+            (if j <= i: "#F59E0B" else: "#A0A2B0")
+      dispose()
+
+  test "hovering each retained breadcrumb changes only that chip":
+    createRoot do (dispose: proc()):
+      let vm = createEditorVM()
+      vm.inspector.setSelectionTree(@[
+        ElementLayerRow(id: "root", label: "root", tag: "div", childCount: 1, expanded: true),
+        ElementLayerRow(id: "middle", parentId: "root", label: "middle", tag: "div", childCount: 1, depth: 1, expanded: true),
+        ElementLayerRow(id: "leaf", parentId: "middle", label: "leaf", tag: "span", depth: 2)])
+      require vm.selectInspectorElementById("leaf")
+      let root = renderEditorShell[MockRenderer, MockNode](MockRenderer(), vm)
+      require vm.selectInspectorElementById("root", soBreadcrumb)
+      let chips = findAllByAttr(root, "data-breadcrumb-state", "trail")
+      require chips.len == 2
+      for i, chip in chips:
+        chip.fireEvent("mouseenter")
+        check chip.styles["color"] == "#9CA0B0"
+        check chips[1-i].styles["color"] != chip.styles["color"]
+        chip.fireEvent("mouseleave")
+        check chip.styles["color"] == chips[1-i].styles["color"]
       dispose()

@@ -1,9 +1,11 @@
+import isonim/editor/views/view_lifecycle
 ## IsoNim Editor - Page Preview View.
 ##
 ## Renders project-owned preview documents in an editor-owned responsive frame.
 
 import isonim/core/[computation, signals]
 import isonim/dsl/ui
+import isonim/editor/preview_identity
 import isonim/editor/types
 import isonim/editor/viewmodels
 import isonim/editor/streaming_preview
@@ -118,6 +120,9 @@ proc renderPagePreview*[R, E](r: R; vm: EditorVM): E =
   r.setStyle(pageCanvasMnt.breadcrumb, "align-self", "flex-start")
   r.appendChild(frameHostNode, pageCanvasMnt.breadcrumb)
   r.appendChild(container, frameHostNode)
+  # Pages use the same overlay and guarded rendered-property selection path
+  # as component previews. A layer record alone has no computed properties.
+  installPreviewSelectionBridge[R, E](r, previewFrame, vm)
   r.enableDragScroll(frameHost)
 
   # M-EVP-8: vector-symbol hit-test handles. The Nim-rendered tree gets
@@ -162,7 +167,7 @@ proc renderPagePreview*[R, E](r: R; vm: EditorVM): E =
       r.appendChild(hitTestRoot, handle)
 
   # M-EVP-13: bridge attach/detach for the page-preview canvas.
-  when defined(js):
+  when isDomViewHost(E):
     let pageBridgeBinding = newBridgeBinding()
 
   createRenderEffect proc() =
@@ -239,7 +244,7 @@ proc renderPagePreview*[R, E](r: R; vm: EditorVM): E =
         else:
           editablePreviewDocument(preview.documentHtml, preview.metadata,
             vm.editMode.val)
-      r.setAttribute(previewFrame, "srcdoc", srcdoc)
+      r.setAttribute(previewFrame, "srcdoc", identifiedPreviewDocument(srcdoc, vm.selectedStory.val, vm.livePreviewReloadGeneration.val))
       r.setStyle(fallbackPanel, "display", "none")
       r.setStyle(previewFrame, "display", "block")
     else:
@@ -274,7 +279,7 @@ proc renderPagePreview*[R, E](r: R; vm: EditorVM): E =
         r.setStyle(pageCanvasMnt.wrapper, "flex", "0 0 auto")
         r.setStyle(pageCanvasMnt.wrapper, "border-radius", borderRadius)
 
-    when defined(js):
+    when isDomViewHost(E):
       pageBridgeBinding.attachIfNeeded(vm, pageCanvasMnt.canvas, useCanvas)
       # VRS-M2: tell the launcher to re-render at the user-selected
       # viewport. The publisher closure (installed by

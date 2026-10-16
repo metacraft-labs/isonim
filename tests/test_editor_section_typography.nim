@@ -1,3 +1,9 @@
+## Portable Typography structure and CSS weight mapping checks. MockRenderer
+## exercises the shared mounted choice wiring on native and strict JavaScript;
+## it cannot prove physical browser input, filesystem persistence or compilation.
+## The recording source callback is a narrow mapping spy, justified to isolate
+## the exact proposed CSS value. The ordinary-properties GUI suite covers real
+## authenticated native writes, compiler/catalog publication and browser preview.
 ## Phase G — section_typography widget unit test.
 
 import std/[options, tables, unittest]
@@ -59,3 +65,44 @@ suite "Phase G section_typography":
     check not isTextLikeTag("div")
     check not isTextLikeTag("button")
     check not isTextLikeTag("img")
+
+  test "friendly font weight labels submit valid CSS numeric weights":
+    for i, expected in ["100", "300", "400", "500", "600", "700"]:
+      createRoot do (dispose: proc()):
+        let r = MockRenderer()
+        let root = r.createElement("div")
+        let vm = createEditorVM()
+        vm.inspector.selectedElement.val = ElementRef(id: "text", tag: "p",
+          properties: @[PropertyInfo(name: "font-weight", value: "900")])
+        vm.workspacePermissions.val = EditorWorkspacePermissions(readSource: true, writeSource: true)
+        var submitted = ""
+        vm.inspectorSourceCommit = proc(element: ElementRef; property, value: string;
+            scope: SourceScopeChoiceKind; done: proc(ok: bool; diagnostic: string) {.closure.}) =
+          check element.id == "text"
+          check property == "font-weight"
+          submitted = value
+          done(true, "")
+        mountSectionTypography[MockRenderer, MockNode](r, root, vm)
+        let row = findByAttr(root, "data-property-row", "font-weight")
+        let choice = findByAttr(row, "data-choice-group-option", $i)
+        require choice != nil
+        fireEvent(choice, "click")
+        check submitted == expected
+        dispose()
+
+  test "unlisted and empty weight values stay honest without edits":
+    for value in ["800", "650", "bolder", "var(--weight)", ""]:
+      createRoot do (dispose: proc()):
+        let r = MockRenderer()
+        let root = r.createElement("div")
+        let vm = createEditorVM()
+        vm.inspector.selectedElement.val = ElementRef(id: "text", tag: "p",
+          properties: @[PropertyInfo(name: "font-weight", value: value)])
+        let before = vm.inspector.selectedElement.val
+        mountSectionTypography[MockRenderer, MockNode](r, root, vm)
+        let row = findByAttr(root, "data-property-row", "font-weight")
+        check textContent(findByAttr(row, "data-choice-group-trigger-label", "true")) == value
+        check vm.inspector.selectedElement.val == before
+        check vm.inspector.undoStack.val.len == 0
+        check vm.inspector.redoStack.val.len == 0
+        dispose()

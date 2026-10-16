@@ -271,6 +271,46 @@ proc loadBindingSidecar*(workspace: var EditorWorkspace; raw: string) =
   workspace.variableBindings = parsed.bindings
   workspace.variableBindingHistory = parsed.history
 
+proc validateProjectRefresh*(vm: EditorVM; workspace: EditorWorkspace) =
+  ## A refresh may replace project data only within the current editor scope.
+  if vm.workspaceId.len > 0 and workspace.id != vm.workspaceId:
+    raise newException(ValueError, "Cannot refresh workspace '" & workspace.id &
+      "' while editing '" & vm.workspaceId & "'. Open the project explicitly.")
+
+proc recordProjectRefreshRefusal*(vm: EditorVM; message: string) =
+  ## Keep existing source failures when a hot bundle attempts to change scope.
+  var diagnostics = @[WorkspaceEditDiagnostic(kind: wedWorkspaceMismatch, message: message)]
+  for existing in vm.workspaceEditDiagnostics.val:
+    if existing.kind != wedWorkspaceMismatch: diagnostics.add existing
+  vm.workspaceEditDiagnostics.val = diagnostics
+  vm.workspaceEditStage.val = wesFailed
+
+proc clearProjectRefreshRefusal*(vm: EditorVM) =
+  ## Only a successful same-scope update clears the matching refusal.
+  var diagnostics: seq[WorkspaceEditDiagnostic] = @[]
+  var removed = false
+  for existing in vm.workspaceEditDiagnostics.val:
+    if existing.kind == wedWorkspaceMismatch: removed = true
+    else: diagnostics.add existing
+  if not removed: return
+  vm.workspaceEditDiagnostics.val = diagnostics
+  vm.workspaceEditStage.val =
+    if diagnostics.len > 0: wesFailed
+    elif vm.inspector.pendingSourceEdits.val.len > 0: wesDirty
+    else: wesClean
+
+proc recoverProjectBuild*(vm: EditorVM) =
+  ## Bundle loading can recover a build failure, never a refused save or scope.
+  if vm.workspaceEditStage.val != wesFailed or vm.workspaceEditDiagnostics.val.len == 0:
+    return
+  for diagnostic in vm.workspaceEditDiagnostics.val:
+    if diagnostic.kind != wedCompileFailed or
+        not diagnostic.message.startsWith("The project failed to rebuild: "):
+      return
+  vm.workspaceEditDiagnostics.val = @[]
+  vm.workspaceEditStage.val =
+    if vm.inspector.pendingSourceEdits.val.len > 0: wesDirty else: wesClean
+
 proc loadProjectData*(vm: EditorVM; workspace: EditorWorkspace) =
   ## Everything in the VM that comes from the PROJECT, and nothing that
   ## comes from the session.
@@ -285,6 +325,7 @@ proc loadProjectData*(vm: EditorVM; workspace: EditorWorkspace) =
   ##
   ## Safe to call repeatedly. Nothing here reads the current session, so the
   ## result depends only on `workspace`.
+  vm.validateProjectRefresh(workspace)
   vm.sidebar.groups.val = workspace.storyGroups
   vm.storyboard.canvasItems.val = workspace.canvasItems
   vm.storyboard.connections.val = workspace.connections
@@ -306,9 +347,6 @@ proc loadProjectData*(vm: EditorVM; workspace: EditorWorkspace) =
   vm.sourceAdapterReady.val = workspace.sourceAdapterReady or
     not workspace.editAdapter.isNil
   vm.allowedPlatforms = workspace.allowedPlatforms
-  vm.chat.configureAgentAdapters(workspace.agentPromptAdapter,
-                                  workspace.agentCancelAdapter,
-                                  workspace.agentBackend)
   # Last, and after `preview.hook`: every assignment above writes a SIGNAL, so
   # the reactive graph already knows about it. `preview.hook` is a plain field
   # holding a closure, so replacing it changes what the preview would render
@@ -317,11 +355,42 @@ proc loadProjectData*(vm: EditorVM; workspace: EditorWorkspace) =
   # other field already updated.
   vm.preview.sourceGeneration.val = vm.preview.sourceGeneration.val + 1
 
+proc refreshWorkspaceCatalog*(vm: EditorVM; workspace: EditorWorkspace) =
+  ## Refresh project data without resetting the user's session or pending edits.
+  if vm.workspaceId != workspace.id:
+    raise newException(ValueError, "Catalog refresh requires the current workspace.")
+  let selected = vm.selectedStory.val
+  let pending = vm.inspector.pendingSourceEdits.val.len > 0
+  let variants = vm.variants.variants.val
+  let schema = vm.designSystemSchema.val
+  let tokens = vm.foundations.tokens.val
+  vm.loadProjectData(workspace)
+  if pending:
+    vm.variants.variants.val = variants
+    vm.designSystemSchema.val = schema
+    vm.foundations.tokens.val = tokens
+  for group in workspace.storyGroups:
+    for index, item in group.items:
+      if item.group == selected.group and item.name == selected.name and item.kind == selected.kind:
+        vm.selectedStory.val = StoryRef(group: item.group, name: item.name, kind: item.kind, index: index)
+  vm.livePreviewReloadGeneration.val = vm.livePreviewReloadGeneration.val + 1
+
 proc applyWorkspace*(vm: EditorVM; workspace: EditorWorkspace) =
   ## Load project data AND reset the session. Use when the editor is opening
   ## a workspace; use `loadProjectData` when the same workspace changed on
   ## disk.
+  if vm.workspaceId.len > 0:
+    for conversation in vm.chats.val:
+      if conversation.vm.controlConversationId.val.len > 0:
+        raise newException(ValueError,
+          "Close active agent conversations before switching projects.")
+  vm.controlSourceFixtures = @[]
+  vm.controlAsyncCommandAdapter = nil
+  vm.workspaceId = workspace.id
   vm.loadProjectData(workspace)
+  vm.chat.configureAgentAdapters(workspace.agentPromptAdapter,
+                                  workspace.agentCancelAdapter,
+                                  workspace.agentBackend)
   vm.vectorEditor.document.val = VectorDocument()
   vm.vectorEditor.diagnostics.val = @[]
   vm.vectorEditor.undoStack.val = @[]

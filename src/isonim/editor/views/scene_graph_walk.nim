@@ -57,6 +57,11 @@ const sceneGraphWalkJs* = """
     function isElement(node) {
       return !!node && node.nodeType === 1;
     }
+    function isEditorChrome(node) {
+      var el = isElement(node) ? node : node && node.parentElement;
+      return !!el && ((el.id && editorIds.has(el.id)) ||
+        (el.closest && el.closest(EDITOR_CHROME)));
+    }
     // Visibility, not markup, decides membership. A zero-box element is not
     // something a designer can point at -- and it is also what keeps `head`,
     // `meta`, `style` and `script` out of the tree without a tag blocklist,
@@ -207,6 +212,7 @@ const sceneGraphWalkJs* = """
     }
     return {
       isElement: isElement,
+      isEditorChrome: isEditorChrome,
       isSelectable: isSelectable,
       stableSelector: stableSelector,
       parseSource: parseSource,

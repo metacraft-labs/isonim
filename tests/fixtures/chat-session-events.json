@@ -1,0 +1,281 @@
+{
+  "contract": "agent-harbor ca478177 SessionEvent REST union",
+  "events": [
+    {
+      "type": "status",
+      "timestamp": 1,
+      "status": "running"
+    },
+    {
+      "type": "log",
+      "timestamp": 1,
+      "message": "A useful assistant response"
+    },
+    {
+      "type": "error",
+      "timestamp": 1,
+      "message": "Build failed"
+    },
+    {
+      "type": "thought",
+      "timestamp": 1,
+      "thought": "Considering the design"
+    },
+    {
+      "type": "tool_use",
+      "timestamp": 1,
+      "tool_name": "Compile",
+      "tool_execution_id": "fixture-tool",
+      "tool_args": {
+        "story": "Home"
+      },
+      "status": "running"
+    },
+    {
+      "type": "tool_result",
+      "timestamp": 1,
+      "tool_name": "Compile",
+      "tool_execution_id": "fixture-tool",
+      "tool_output": "Build completed",
+      "status": "completed",
+      "exit_code": 0
+    },
+    {
+      "type": "file_edit",
+      "timestamp": 1,
+      "file_path": "stories.nim",
+      "lines_added": 2,
+      "lines_removed": 1
+    },
+    {
+      "type": "file_read",
+      "timestamp": 1,
+      "file_path": "stories.nim",
+      "start_line": 1,
+      "end_line": 10
+    },
+    {
+      "type": "diff",
+      "timestamp": 1,
+      "path": "stories.nim",
+      "oldText": "old story",
+      "newText": "new story",
+      "truncated": false
+    },
+    {
+      "type": "user_input",
+      "timestamp": 1,
+      "content": "The local human message",
+      "input_type": "text"
+    },
+    {
+      "type": "plan",
+      "timestamp": 1,
+      "entries": [
+        {
+          "content": "Build source",
+          "priority": "high",
+          "status": "completed"
+        }
+      ],
+      "is_update": false
+    },
+    {
+      "type": "turn_complete",
+      "timestamp": 1,
+      "stop_reason": "end_turn",
+      "input_tokens": 13,
+      "output_tokens": 7
+    },
+    {
+      "type": "workspace",
+      "timestamp": 1,
+      "status": "ready",
+      "mountPath": "/fixture/project",
+      "workingCopyMode": "in_place"
+    },
+    {
+      "type": "sub_agent",
+      "timestamp": 1,
+      "subAgentId": "child",
+      "parentSessionId": "parent",
+      "innerEvent": {
+        "type": "log",
+        "message": "Child result"
+      }
+    },
+    {
+      "type": "delegation",
+      "timestamp": 1,
+      "kind": "started",
+      "description": "Review layout",
+      "activeSubAgents": 1,
+      "totalSubAgents": 1
+    },
+    {
+      "type": "orchestration",
+      "timestamp": 1,
+      "kind": "review_requested",
+      "description": "Request design review"
+    },
+    {
+      "type": "llm_request",
+      "timestamp": 1,
+      "model": "Reported model",
+      "messageCount": 2,
+      "responseSummary": "Generated edit",
+      "hasToolCalls": true,
+      "usage": {
+        "inputTokens": 13,
+        "outputTokens": 7,
+        "source": "provider_reported"
+      },
+      "isSessionTied": true
+    },
+    {
+      "type": "context_files",
+      "timestamp": 1,
+      "kind": "snapshot",
+      "files": [
+        {
+          "path": "stories.nim",
+          "contentHash": "fixture",
+          "reason": "selected"
+        }
+      ],
+      "totalCount": 1
+    },
+    {
+      "type": "fleet_fence",
+      "timestamp": 1,
+      "kind": "fence_complete",
+      "fenceId": "fence1",
+      "hosts": [
+        "host1"
+      ],
+      "durationMs": 12
+    },
+    {
+      "type": "fleet_host",
+      "timestamp": 1,
+      "kind": "host_complete",
+      "host": "host1",
+      "os": "linux",
+      "exitCode": 0
+    },
+    {
+      "type": "session_started",
+      "timestamp": 1
+    },
+    {
+      "type": "session_awaiting_input",
+      "timestamp": 1,
+      "request": "question1"
+    },
+    {
+      "type": "session_resumed",
+      "timestamp": 1,
+      "deliverer": "human"
+    },
+    {
+      "type": "session_ended",
+      "timestamp": 1,
+      "outcome": "completed"
+    },
+    {
+      "type": "proxy_credential_rotated",
+      "timestamp": 1,
+      "upstreamRequestId": "upstream1",
+      "provider": "reported",
+      "accountRotatedTo": "PRIVATE_DO_NOT_RENDER",
+      "triggerStatus": 429
+    },
+    {
+      "type": "proxy_rate_limit_absorbed",
+      "timestamp": 1,
+      "upstreamRequestId": "upstream1",
+      "attempts": 2,
+      "cumulativeWaitMs": 10
+    },
+    {
+      "type": "dispatcher_restarted",
+      "timestamp": 1,
+      "campaignId": "campaign1",
+      "restartSeq": 1
+    },
+    {
+      "type": "anti_halting_resume_confirmed",
+      "timestamp": 1,
+      "interventionId": "intervention1",
+      "stallType": "inactivity"
+    },
+    {
+      "type": "session_leadership_migrated",
+      "timestamp": 1,
+      "sourceExecutor": "linux1",
+      "targetExecutor": "mac1",
+      "targetOs": "macos",
+      "flushedSeq": 21
+    },
+    {
+      "type": "agent_question",
+      "timestamp": 1,
+      "request": "question1",
+      "kind": "choice",
+      "prompt": "Which story?",
+      "options": [
+        {
+          "id": "home",
+          "label": "Home",
+          "description": "Main page"
+        }
+      ]
+    },
+    {
+      "type": "participant",
+      "timestamp": 1,
+      "participant_id": "human1",
+      "kind": "human",
+      "display_name": "Designer",
+      "trust": "owner",
+      "transition": "active"
+    },
+    {
+      "type": "context_injection",
+      "timestamp": 1,
+      "tag": "preamble",
+      "text": "Shared session context"
+    },
+    {
+      "type": "login_required",
+      "timestamp": 1,
+      "request": "login1",
+      "provider": "chatgpt",
+      "surface": "PRIVATE_DO_NOT_RENDER"
+    },
+    {
+      "type": "link_spans",
+      "timestamp": 1,
+      "source": 0,
+      "spans": [
+        {
+          "kind": 0,
+          "start": 0,
+          "end": 10,
+          "line": 0,
+          "anchor_byte": 0,
+          "targets": [
+            {
+              "path": "stories.nim",
+              "exists": true,
+              "is_dir": false,
+              "modified_in_session": true,
+              "line": 1,
+              "col": 1
+            }
+          ]
+        }
+      ]
+    }
+  ]
+}

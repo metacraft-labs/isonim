@@ -265,6 +265,11 @@ test-hcr-shim:
 # hiding: this lane never got past `test_signals` while the siblings were
 # missing, so it had never reached `test_dsl` to fail there.
 test-js: build-tailwind
+    nim js -d:nodejs --out:build/test_editor_workspace_refresh.js tests/test_editor_workspace_refresh.nim
+    python3 tools/run_nim_js_test.py build/test_editor_workspace_refresh.js
+    nim js -r --out:build/test_editor_control.js tests/test_editor_control.nim
+    nim js -r tests/test_choice_row_activation.nim
+    nim js -r tests/test_loop_accessors.nim
     nim js -r tests/test_signals.nim
     nim js -r tests/test_effects.nim
     nim js -r tests/test_clock.nim
@@ -395,7 +400,12 @@ isonim-review-build:
         -d:chronicles_runtime_filtering=on \
         -d:chronicles_log_level=TRACE \
         --hints:off --out:build/bin/isonim-review tools/isonim_review/main.nim
-    @echo "Built: build/bin/isonim-review"
+    cp build/bin/isonim-review build/bin/isonim
+    @echo "Built: build/bin/isonim-review and build/bin/isonim"
+
+# Read-only metadata and recovery across genuine native compiler transactions.
+test-editor-source-metadata: isonim-review-build
+    python3 tests/test_editor_source_metadata_transactions.py
 
 # Run REV-M1's design-review unit + integration tests.
 test-design-review: isonim-review-build
@@ -417,12 +427,14 @@ test-design-review-cli: isonim-review-build
     nim c -r --path:. --path:src --path:vendor/db_connector/src --path:vendor/chronicles --path:vendor/serialization --path:vendor/json_serialization --path:../nim-faststreams --path:../nim-stew --path:../nim-acp/src --path:../nim-agent-harbor/src --path:../nim-agents/src -d:nimOldCaseObjects --hints:off tests/test_design_review_cli_seed_run.nim
 
 # REV-M5: run every REV-M5 capture-pipeline test.  Unit tests boot
-# fake WebSocket servers + ephemeral git workspaces; the idempotency
-# and e2e tests use the REV-M3 PgFixture + a real `isonim-review`
-# subprocess.  All paths use the same `--path:` set the CLI build uses.
+# fake WebSocket servers + ephemeral reprobuild workspaces (the gate and
+# the workspace pin read them through `repro`, which must be on PATH or
+# named by $ISONIM_REVIEW_REPRO); the idempotency and e2e tests use the
+# REV-M3 PgFixture + a real `isonim-review` subprocess.  All paths use
+# the same `--path:` set the CLI build uses.
 test-design-review-capture: isonim-review-build
     nim c -r --path:. --path:src --path:vendor/db_connector/src --path:../isonim-render-serve/src --path:../nim-everywhere/src --hints:off tests/test_design_review_clean_tree.nim
-    nim c -r --path:. --path:src --path:vendor/db_connector/src --path:../isonim-render-serve/src --path:../nim-everywhere/src --hints:off tests/test_design_review_manifest_hash.nim
+    nim c -r --path:. --path:src --path:vendor/db_connector/src --path:../isonim-render-serve/src --path:../nim-everywhere/src --hints:off tests/test_design_review_workspace_pin.nim
     nim c -r --path:. --path:src --path:vendor/db_connector/src --path:../isonim-render-serve/src --path:../nim-everywhere/src --hints:off tests/test_design_review_capture_store.nim
     nim c -r --path:. --path:src --path:vendor/db_connector/src --path:../isonim-render-serve/src --path:../nim-everywhere/src --hints:off tests/test_design_review_bridge_client.nim
     nim c -r --path:. --path:src --path:vendor/db_connector/src --path:../isonim-render-serve/src --path:../nim-everywhere/src --hints:off tests/test_design_review_capture_native_dimensions.nim
@@ -480,7 +492,66 @@ fake-acp-agent-build:
 
 # Phase B — run every chat / agent-route test.  No PG required;
 # ``isonim-review serve --agent-routes-only`` is used throughout.
+test-design-review-local-harbor:
+    mkdir -p build/bin
+    nim c -r --out:build/bin/test-design-review-local-harbor --path:src --path:../nim-everywhere/src --path:../nim-acp/src --path:../nim-agent-harbor/src --path:../nim-agents/src --hints:off tests/test_design_review_local_harbor.nim
+
+# Real process/socket/flood/EOF/descriptor ownership boundaries.
+test-daemon-ready-handshake:
+    mkdir -p build/bin
+    nim c -r --threads:on --out:build/bin/test-daemon-ready-handshake tests/test_daemon_ready_handshake.nim
+
+# Actual CLI and cold producer responsiveness, singleflight and teardown.
+test-design-review-harbor-preparation: isonim-review-build
+    python3 tests/test_design_review_harbor_preparation.py
+
+# Real Repro producer/consumer build, source mutation, and failure boundaries.
+test-design-review-harbor-build:
+    mkdir -p build/bin
+    nim c -r --out:build/bin/test-design-review-harbor-build --path:src --path:../nim-everywhere/src --path:../nim-acp/src --path:../nim-agent-harbor/src --path:../nim-agents/src --hints:off tests/test_design_review_harbor_build.nim
+
+test-design-review-harbor-own-producer: test-design-review-harbor-build
+    ISONIM_HARBOR_BUILD_DRIVER="$PWD/build/bin/test-design-review-harbor-build" python3 tests/test_design_review_harbor_own_producer.py
+
+
+# Private-repository acceptance: explicitly requires the selected local checkout.
+test-design-review-harbor-live:
+    mkdir -p build/bin
+    nim c -r --out:build/bin/test-design-review-harbor-live --path:src --path:../nim-everywhere/src --path:../nim-acp/src --path:../nim-agent-harbor/src --path:../nim-agents/src --hints:off tests/test_design_review_harbor_live.nim
+
+
+# Opt-in live private Harbor/provider acceptance; the producer CLI must be built.
+test-design-review-harbor-persistent provider harbor="../agent-harbor":
+    mkdir -p build/bin
+    nim c --out:build/bin/test-harbor-persistent-live --path:src --path:../nim-everywhere/src --path:../nim-acp/src --path:../nim-agent-harbor/src --path:../nim-agents/src ../nim-agents/tests/test_harbor_persistent_live.nim
+    python3 tests/run_harbor_persistent_live.py --harbor-repo "$(realpath '{{harbor}}')" --ah "$(realpath '{{harbor}}/build/bin/ah')" --provider "{{provider}}" --driver "$(realpath build/bin/test-harbor-persistent-live)"
+
+test-editor-server: isonim-review-build
+    python3 tests/test_editor_server.py
+    python3 tests/test_editor_native_acp_shutdown.py
+
+# Real editor routes and sibling producer, official deterministic agent only.
+# Public workspaces skip only when the optional private checkout is absent.
+# Private workspaces set ISONIM_HARBOR_SCENARIO_PROVIDER to built mock-agent.
+test-editor-harbor-scenario:
+    python3 tests/helpers/editor_scenario_checkout.py _editor-harbor-scenario
+
+_editor-harbor-scenario: isonim-review-build
+    python3 tests/test_editor_process_observer.py
+    python3 tests/test_editor_harbor_scenario.py
+
 test-design-review-chat: isonim-review-build fake-acp-agent-build
+    nim c -r --path:src tests/test_design_review_class_quota.nim
+    nim c -r tests/test_editor_scenario_protocol.nim
+    nim c -r --path:src --path:vendor/db_connector/src --path:../nim-acp/src --path:../nim-agent-harbor/src --path:../nim-agents/src tests/test_editor_agent_route_ownership.nim
+    nim c -r tests/test_editor_agent_harbor.nim
+    nim js -r tests/test_editor_agent_harbor.nim
+    python3 tests/test_editor_server.py
+    python3 tests/test_agent_session_launcher.py
+    python3 tests/test_harbor_route_lifecycle.py
+    python3 tests/test_editor_process_observer.py
+    python3 tests/test_editor_harbor_scenario.py
+    nim js -r --path:src tests/test_browser_agent_lifecycle.nim
     nim c -r --path:. --path:src \
         --path:vendor/db_connector/src --path:vendor/chronicles \
         --path:vendor/serialization --path:vendor/json_serialization \
@@ -809,7 +880,7 @@ test-design-review-gallery-production: isonim-review-build editor-build
 # Build and serve the editor
 editor-serve: editor-build
     @echo "Serving editor on http://localhost:8090"
-    cd build/editor && python3 -m http.server 8090
+    python3 tools/editor_server.py --directory build/editor --project-root examples/wanderlust --port 8090
 
 # Screenshot all views at all sizes → build/editor/screenshots/
 editor-screenshot:
@@ -836,7 +907,7 @@ editor-screenshot-list:
     node tools/editor-screenshot.mjs --list
 
 # Run editor ViewModel tests
-test-editor:
+test-editor: test-design-review-local-harbor test-design-review-harbor-build test-design-review-harbor-own-producer test-editor-control test-editor-source test-editor-chat-activity
     nim c -r tests/test_editor_workspace.nim
     nim c -r tests/test_editor_public_api.nim
     nim js --path:src -o:build/test_editor_public_browser_imports.js tests/test_editor_public_browser_imports.nim
@@ -847,6 +918,9 @@ test-editor:
     nim c -r tests/test_editor_agent_harbor.nim
     nim c -r tests/test_editor_user_project.nim
     nim c -r tests/test_editor_shell_views.nim
+    nim c -r tests/test_editor_loop_handlers.nim
+    nim c -r tests/test_loop_accessors.nim
+    nim c -r tests/test_choice_row_activation.nim
     nim c -r tests/test_editor_task_views.nim
     nim c -r tests/test_editor_interactivity.nim
     nim c -r tests/test_editor_responsive.nim
@@ -863,17 +937,17 @@ test-editor:
 
 # Run packaged editor browser tests.
 test-browser-editor-example: editor-build
-    cd tests/browser && npm install && npx playwright test --project=editor-example
+    cd tests/browser && npm install && PLAYWRIGHT_CHROMIUM_EXECUTABLE="${PLAYWRIGHT_CHROMIUM_EXECUTABLE:-$(command -v chromium)}" npx playwright test --project=editor-example
 
 # Run the M43 visual screenshot, pixel, layout, and review brief gates.
 test-editor-visual-gates: editor-build
     node --test tests/test_editor_visual_review_brief.mjs
-    cd tests/browser && npm install && npx playwright test --project=editor-example --grep "e2e_editor_visual_baselines_cover_all_primary_modes|e2e_editor_ui_quality_no_overlap_or_unexpected_scrollbars|e2e_long_tail_css_property_visual_evidence"
+    cd tests/browser && npm install && PLAYWRIGHT_CHROMIUM_EXECUTABLE="${PLAYWRIGHT_CHROMIUM_EXECUTABLE:-$(command -v chromium)}" npx playwright test --project=editor-example --grep "e2e_editor_visual_baselines_cover_all_primary_modes|e2e_editor_ui_quality_no_overlap_or_unexpected_scrollbars|e2e_long_tail_css_property_visual_evidence"
 
 # Run live consumer browser contract tests against metacraft-web.
 test-browser-editor-consumer:
     cd ../metacraft-web && just build-back-office-editor
-    cd tests/browser && npm install && npx playwright test --project=metacraft-web-editor
+    cd tests/browser && npm install && PLAYWRIGHT_CHROMIUM_EXECUTABLE="${PLAYWRIGHT_CHROMIUM_EXECUTABLE:-$(command -v chromium)}" npx playwright test --project=metacraft-web-editor
 
 # Run all editor browser tests.
 test-browser-editor: test-browser-editor-example test-browser-editor-consumer
@@ -937,8 +1011,14 @@ test-design-review-acceptance: isonim-review-build
 
 # CMP-M2: Run the campaign storage + route + CLI + e2e tests.  The
 # route + CLI + e2e tests spawn a real ``isonim-review serve`` daemon
-# against an ephemeral PgFixture and a fake-ACP backend.
+# against an ephemeral PgFixture and a fake-ACP backend.  The campaign-pin
+# tests (migration 012) read hermetic reprobuild workspaces through
+# ``repro`` and an ephemeral PgFixture; they need no daemon.
 test-design-review-campaigns: isonim-review-build fake-acp-agent-build
+    nim c -r --path:. --path:src --path:vendor/db_connector/src \
+        --hints:off tests/test_design_review_campaign_pins.nim
+    nim c -r --path:. --path:src --path:vendor/db_connector/src \
+        --hints:off tests/test_design_review_campaign_pins_pg.nim
     nim c -r --path:. --path:src \
         --path:vendor/db_connector/src --path:vendor/chronicles \
         --path:vendor/serialization --path:vendor/json_serialization \
@@ -1091,7 +1171,7 @@ build-hmr-fixture:
 
 # Run the HMR Playwright spec (requires: just build-hmr-fixture).
 test-browser-hmr: build-hmr-fixture
-    cd tests/browser && npx playwright test --project=hmr
+    cd tests/browser && PLAYWRIGHT_CHROMIUM_EXECUTABLE="${PLAYWRIGHT_CHROMIUM_EXECUTABLE:-$(command -v chromium)}" npx playwright test --project=hmr
 
 # Build the parametric-HMR fixture (JS target with -d:isonimHmr). The
 # fixture exercises the parametric `{.uiComponent.}` dispatch and
@@ -1102,7 +1182,7 @@ build-hmr-parametric-fixture:
 
 # Run the parametric-HMR Playwright spec.
 test-browser-hmr-parametric: build-hmr-parametric-fixture
-    cd tests/browser && npx playwright test --project=hmr-parametric
+    cd tests/browser && PLAYWRIGHT_CHROMIUM_EXECUTABLE="${PLAYWRIGHT_CHROMIUM_EXECUTABLE:-$(command -v chromium)}" npx playwright test --project=hmr-parametric
 
 # Build the SSE-transport fixture: the dev server, the "before" and
 # "after" client bundles, and the seeded main.js. The Playwright
@@ -1117,7 +1197,7 @@ build-hmr-transport-fixture:
 
 # Run the SSE-transport Playwright spec.
 test-browser-hmr-transport: build-hmr-transport-fixture
-    cd tests/browser && npx playwright test --project=hmr-transport
+    cd tests/browser && PLAYWRIGHT_CHROMIUM_EXECUTABLE="${PLAYWRIGHT_CHROMIUM_EXECUTABLE:-$(command -v chromium)}" npx playwright test --project=hmr-transport
 
 # Run Playwright browser tests (requires: just demo-build && cd tests/browser && npm install)
 test-browser: test-browser-demo test-browser-ssr test-browser-hmr test-browser-hmr-parametric test-browser-hmr-transport
@@ -1155,9 +1235,14 @@ browser-test-deps: build-tailwind demo-build build-hmr-fixture build-hmr-paramet
 # touches the network.
 
 # Install the browser-test npm deps + a chromium build.
+# On Linux the dev shell provides nixpkgs' chromium, and the suite drives it
+# through PLAYWRIGHT_CHROMIUM_EXECUTABLE (the smoke/demo/all recipes below).
+# Playwright's own download is a glibc build that cannot start on NixOS hosts
+# -- including the NixOS self-hosted CI runners -- so it is fetched only when
+# no chromium is on PATH (macOS).
 browser-test-install:
     npm --prefix tests/browser install
-    npx --prefix tests/browser playwright install chromium
+    if ! command -v chromium >/dev/null 2>&1; then npx --prefix tests/browser playwright install chromium; fi
 
 # Build everything, then run the six static in-repo Playwright projects (51 tests).
 test-browser-all: browser-test-deps
@@ -1179,11 +1264,11 @@ test-browser-all: browser-test-deps
 
 # The CI gate: the three HMR Playwright projects, 25 tests, ~56s cold.
 test-browser-smoke: build-tailwind build-hmr-fixture build-hmr-parametric-fixture build-hmr-transport-fixture
-    cd tests/browser && npx playwright test --project=hmr --project=hmr-parametric --project=hmr-transport
+    cd tests/browser && PLAYWRIGHT_CHROMIUM_EXECUTABLE="${PLAYWRIGHT_CHROMIUM_EXECUTABLE:-$(command -v chromium)}" npx playwright test --project=hmr --project=hmr-parametric --project=hmr-transport
 
 # Run Playwright demo app tests only
 test-browser-demo: demo-build
-    cd tests/browser && npx playwright test --project=demo-app
+    cd tests/browser && PLAYWRIGHT_CHROMIUM_EXECUTABLE="${PLAYWRIGHT_CHROMIUM_EXECUTABLE:-$(command -v chromium)}" npx playwright test --project=demo-app
 
 # The Web Worker build target's fixture (IFP-M3; IsoNim.md § Web Worker
 # Target): a compile module built as a worker chunk (preview.worker.js), the
@@ -1267,7 +1352,426 @@ bench-all: bench-build demo-build build-web-components
 lint:
     @echo "isonim: lint placeholder (Nim style enforced inside test recipes)"
 
+# Shared typed command host, native scoped RPC and real mounted browser/CLI gate.
+test-editor-control: isonim-review-build editor-control-build
+    nim c -r tests/test_editor_control.nim
+    nim js -r --out:build/test_editor_control.js tests/test_editor_control.nim
+    nim c -r tests/test_editor_control_routes.nim
+    nim c -r tests/test_editor_agent_launch_cleanup.nim
+    python3 tests/test_editor_agent_env.py
+    python3 tests/test_editor_cli_wait.py
+    node tests/test_editor_control_gui.mjs
+
+# Isolated mounted control acceptance bundle; does not bake/alter project briefs.
+editor-control-build:
+    mkdir -p build/editor-control
+    nim js --path:src --path:. --path:../nim-everywhere/src --path:../isonim-render-serve/src --path:../nim-acp/src --path:../nim-agent-harbor/src --path:../nim-agents/src -o:build/editor-control/editor.js tests/helpers/editor_control_workspace.nim
+    node --check build/editor-control/editor.js
+    cp src/isonim/editor/index.html build/editor-control/index.html
+    cp node_modules/fabric/dist/index.min.js build/editor-control/fabric.min.js
+    cp node_modules/paper/dist/paper-core.min.js build/editor-control/paper-core.min.js
+    cp node_modules/svgo/dist/svgo.browser.js build/editor-control/svgo.browser.js
+
+# Real source-project consumer, isolated from all existing editor assets.
+source-editor-build:
+    mkdir -p build/editor-source
+    python3 tools/build_source_catalog.py examples/source_project
+    nim js --path:src --path:. --path:../nim-everywhere/src --path:../isonim-render-serve/src --path:../nim-acp/src --path:../nim-agent-harbor/src --path:../nim-agents/src -o:build/editor-source/editor.js examples/source_project/editor.nim
+    node --check build/editor-source/editor.js
+    cp src/isonim/editor/index.html build/editor-source/index.html
+    cp node_modules/fabric/dist/index.min.js build/editor-source/fabric.min.js
+    cp node_modules/paper/dist/paper-core.min.js build/editor-source/paper-core.min.js
+    cp node_modules/svgo/dist/svgo.browser.js build/editor-source/svgo.browser.js
+
+source-editor-serve: isonim-review-build source-editor-build
+    python3 tools/editor_server.py --directory build/editor-source --project-root examples/source_project --port 8095
+
+# Native persistence/compiler and full mounted GUI acceptance, no substitute compiler.
+test-editor-source: isonim-review-build source-editor-build
+    nim c -r tests/test_editor_workspace_refresh.nim
+    nim js -d:nodejs --out:build/test_editor_workspace_refresh.js tests/test_editor_workspace_refresh.nim
+    python3 tools/run_nim_js_test.py build/test_editor_workspace_refresh.js
+    python3 tests/test_editor_source_project.py
+    python3 tests/test_editor_native_acp_shutdown.py
+    node tests/test_editor_source_gui.mjs
+
+# Production mounted chat state/keyboard/layout verification, isolated assets.
+editor-chat-build:
+    mkdir -p build/editor-chat
+    nim js --path:src --path:. --path:../nim-everywhere/src --path:../isonim-render-serve/src --path:../nim-acp/src --path:../nim-agent-harbor/src --path:../nim-agents/src -o:build/editor-chat/editor.js tests/helpers/editor_chat_workspace.nim
+    node --check build/editor-chat/editor.js
+    cp src/isonim/editor/index.html build/editor-chat/index.html
+    cp node_modules/fabric/dist/index.min.js build/editor-chat/fabric.min.js
+    cp node_modules/paper/dist/paper-core.min.js build/editor-chat/paper-core.min.js
+    cp node_modules/svgo/dist/svgo.browser.js build/editor-chat/svgo.browser.js
+
+test-editor-chat-activity: editor-chat-build
+    nim c -r tests/test_editor_chat_activity.nim
+    nim js -r --out:build/test_editor_chat_activity.js tests/test_editor_chat_activity.nim
+    nim c -r tests/test_editor_preview_toolbar.nim
+    nim js -r --out:build/test_editor_preview_toolbar.js tests/test_editor_preview_toolbar.nim
+    node tests/test_editor_chat_activity_gui.mjs
+    node tests/test_editor_admission_gui.mjs
+
+# Optional private Harbor acceptance: absence is the only allowed automatic skip.
+# When the sibling exists, missing/broken official provider and builds fail.
+test-editor-preparation-clock:
+    python3 tests/test_editor_preparation_clock.py
+    "${ISONIM_SCENARIO_NODE:-node}" tests/test_editor_preparation_clock.mjs
+
+editor-scenario-host-build:
+    nim c --out:build/bin/editor-scenario-host tests/test_editor_scenario_host.nim
+
+# Output-mode compatibility through the owned current sibling and real provider.
+test-editor-harbor-output-modes:
+    python3 tests/helpers/editor_scenario_checkout.py _editor-harbor-output-modes
+
+_editor-harbor-output-modes: isonim-review-build source-editor-build
+    python3 tests/test_editor_harbor_output_modes.py
+
+test-editor-scenarios-native:
+    python3 tests/helpers/editor_scenario_checkout.py _editor-scenarios-native
+
+_editor-scenarios-native: test-editor-preparation-clock isonim-review-build source-editor-build editor-scenario-host-build
+    python3 tests/test_editor_scenarios.py
+    python3 tests/test_editor_scenario_resources.py
+
+test-editor-scenarios-gui:
+    python3 tests/helpers/editor_scenario_checkout.py _editor-scenarios-gui
+
+_editor-scenarios-gui: test-editor-preparation-clock isonim-review-build source-editor-build
+    python3 tests/run_editor_scenarios_gui.py
+
+test-editor-scenarios-stress:
+    python3 tests/helpers/editor_scenario_checkout.py _editor-scenarios-stress
+
+_editor-scenarios-stress: test-editor-preparation-clock isonim-review-build source-editor-build editor-scenario-host-build
+    python3 tests/test_editor_scenario_stress.py
+
+test-editor-scenarios: test-editor-scenarios-native test-editor-scenarios-gui test-editor-scenarios-stress
+
+
+# Opt-in real Claude authoring acceptance; missing credentials/provider FAIL this
+# explicitly requested gate. It never substitutes playback for model inference.
+editor-authoring-build:
+    mkdir -p build/editor-authoring
+    nim js --path:src --path:. --path:../nim-everywhere/src --path:../isonim-render-serve/src --path:../nim-acp/src --path:../nim-agent-harbor/src --path:../nim-agents/src -o:build/editor-authoring/editor.js tests/helpers/editor_authoring_workspace.nim
+    node --check build/editor-authoring/editor.js
+    cp src/isonim/editor/index.html build/editor-authoring/index.html
+    cp node_modules/fabric/dist/index.min.js build/editor-authoring/fabric.min.js
+    cp node_modules/paper/dist/paper-core.min.js build/editor-authoring/paper-core.min.js
+    cp node_modules/svgo/dist/svgo.browser.js build/editor-authoring/svgo.browser.js
+
+test-editor-authoring-evidence: test-editor-preparation-clock
+    python3 tests/test_editor_authoring_evidence.py
+    python3 tests/test_editor_scenario_cleanup.py
+    node tests/test_editor_close_ack.mjs
+    python3 tests/test_editor_authoring_responses.py
+    python3 tests/test_editor_authoring_assistant_evidence.py
+    python3 tests/test_editor_provider_closure.py
+    node tests/test_editor_sdk_protocol_observer.mjs
+    node tests/test_editor_sdk_kernel_evidence.mjs
+
+# Fresh runtime fact: ambient explicit provider is rederived and hashed. An old
+# dev-shell provider is a clear failure; no guessed private store path or skip.
+editor-authoring-runtime:
+    python3 tests/helpers/editor_sdk_runtime.py build/editor-sdk-runtime.json
+
+test-editor-sdk-native: editor-authoring-runtime
+    python3 tests/test_editor_sdk_runtime.py
+    python3 tests/test_editor_sdk_native_controls.py
+
+test-editor-authoring-response-sequencing: isonim-review-build editor-authoring-build test-editor-authoring-evidence
+    python3 tests/test_editor_authoring_response_sequencing.py
+
+test-editor-authoring-real: isonim-review-build editor-authoring-build test-editor-authoring-evidence test-editor-sdk-native
+    python3 tests/test_editor_authoring_real.py
+
+# M7: real production browser bundle, pinned two-process canary before corpus.
+# First corpus is a candidate; human baseline acceptance remains a separate gate.
+test-editor-chat-visual output="build/chat-visual-campaign": test-editor-chat-contract editor-chat-build
+    just test-editor-chat-visual-readiness "{{output}}"
+    python3 tools/chat-visual-campaign.py --output "{{output}}"
+    python3 tests/test_chat_visual_tools.py --captures "{{output}}"
+
+test-editor-chat-visual-tools output="build/chat-visual-campaign":
+    just test-editor-chat-visual-readiness "{{output}}"
+    python3 tests/test_chat_visual_tools.py --captures "{{output}}"
+
+test-editor-chat-visual-readiness output="build/chat-visual-readiness":
+    mkdir -p "{{output}}"
+    rm -f "{{output}}/readiness.cid"
+    docker run --rm --cidfile "{{output}}/readiness.cid" --platform linux/amd64 --network none --ipc private --shm-size 1g --user "$(id -u):$(id -g)" -e HOME=/tmp -v "$(pwd):/workspace:ro" -w /workspace mcr.microsoft.com/playwright@sha256:eac9b0a5312cdab40ee8c2429df5bf19bffdccf8f3bf3c42268e173f97541645 node --test tests/test_chat_capture_frames.mjs
+
+# Optional private contract authority; when present malformed DTOs fail.
+test-editor-chat-contract:
+    python3 tools/validate-chat-event-corpus.py
+
 # Entering the dev shell from another git repository must write nothing there.
 # Runs `nix develop`, so it is not part of the in-shell test recipes.
 test-dev-shell:
     bash tests/test_dev_shell_writes_nothing_elsewhere.sh
+
+# Functional inspector popup geometry, focus and private-source acceptance.
+editor-popup-build:
+    mkdir -p build/editor-popup
+    nim js -d:isonimCatalogOnlyPopup --path:src --path:. --path:../nim-everywhere/src --path:../isonim-render-serve/src --path:../nim-acp/src --path:../nim-agent-harbor/src --path:../nim-agents/src -o:build/editor-popup/editor.js tests/helpers/editor_popup_workspace.nim
+    "${ISONIM_SCENARIO_NODE:-node}" --check build/editor-popup/editor.js
+    nim js --path:src --path:. --path:../nim-everywhere/src -o:build/editor-popup/core-owner-hmr.js tests/helpers/core_owner_hmr.nim
+    "${ISONIM_SCENARIO_NODE:-node}" --check build/editor-popup/core-owner-hmr.js
+
+test-editor-popup: isonim-review-build editor-popup-build
+    nim c -r --out:build/test_editor_color_popover tests/test_editor_color_popover.nim
+    nim js -d:nodejs --out:build/test_editor_color_popover.js tests/test_editor_color_popover.nim
+    python3 tools/run_nim_js_test.py build/test_editor_color_popover.js
+    nim c -r --out:build/test_signals_popup tests/test_signals.nim
+    nim js -r --out:build/test_signals_popup.js tests/test_signals.nim
+    "${ISONIM_SCENARIO_NODE:-node}" tests/test_core_owner_hmr.mjs
+    "${ISONIM_SCENARIO_NODE:-node}" tests/test_editor_popover_geometry.mjs
+    "${ISONIM_SCENARIO_NODE:-node}" tests/test_editor_selection_restore_gui.mjs
+    "${ISONIM_SCENARIO_NODE:-node}" tests/test_editor_popup_gui.mjs
+
+# Explicit required sibling: metacraft-web's production adapter is imported;
+# this never silently skips or substitutes an IsoNim-native writer.
+test-editor-color-source:
+    test -f ../metacraft-web/apps/back-office/src/backoffice_editor/workspace.nim
+    nim c -r --path:../metacraft-web/apps/back-office/src --path:../metacraft-web/packages/metacraft-design/src --out:build/test_editor_color_source tests/test_editor_color_source.nim
+
+# Authoritative native-inspector composition; legacy popup tests opt in above.
+editor-inspector-build: build-tailwind
+    mkdir -p build/editor-inspector
+    nim js --path:src --path:. --path:../nim-everywhere/src --path:../isonim-render-serve/src --path:../nim-acp/src --path:../nim-agent-harbor/src --path:../nim-agents/src -o:build/editor-inspector/editor.js tests/helpers/editor_popup_workspace.nim
+    "${ISONIM_SCENARIO_NODE:-node}" --check build/editor-inspector/editor.js
+
+# Only the accepted C2 unittest units use the semantic JS outcome guard.
+test-editor-c2-headless:
+    #!/usr/bin/env bash
+    set -euo pipefail
+    python3 tests/test_nim_js_guard.py
+    for stem in test_effects test_editor_widget_property_row test_editor_color_popover test_editor_section_fill test_editor_source_scope_row; do
+      nim c -r --out:build/"$stem" tests/"$stem".nim
+      nim js -d:nodejs --out:build/"$stem".js tests/"$stem".nim
+      python3 tools/run_nim_js_test.py build/"$stem".js
+    done
+
+# Genuine temporary source, authenticated native transactions/compiler/preview.
+test-editor-c2-source: isonim-review-build editor-inspector-build
+    "${ISONIM_SCENARIO_NODE:-node}" tests/test_editor_fill_readonly_gui.mjs
+    "${ISONIM_SCENARIO_NODE:-node}" tests/test_editor_inspector_source_gui.mjs
+
+test-editor-c2-lifetime: isonim-review-build editor-popup-build
+    "${ISONIM_SCENARIO_NODE:-node}" tests/test_core_owner_hmr.mjs
+    "${ISONIM_SCENARIO_NODE:-node}" tests/test_editor_popover_geometry.mjs
+    "${ISONIM_SCENARIO_NODE:-node}" tests/test_editor_selection_restore_gui.mjs
+
+test-editor-c2: test-editor-c2-headless test-editor-c2-source test-editor-c2-lifetime test-editor-popup
+
+# ColorPicker draft coordinates and existing source popup compatibility.
+test-editor-c3-headless:
+    nim c -r --out:build/test_editor_color_picker tests/test_editor_color_picker.nim
+    nim js -d:nodejs --out:build/test_editor_color_picker.js tests/test_editor_color_picker.nim
+    python3 tools/run_nim_js_test.py build/test_editor_color_picker.js
+    nim c -r --out:build/test_editor_color_popover tests/test_editor_color_popover.nim
+    nim js -d:nodejs --out:build/test_editor_color_popover.js tests/test_editor_color_popover.nim
+    python3 tools/run_nim_js_test.py build/test_editor_color_popover.js
+
+# Actual default-native ColorPicker/source/compiler acceptance.
+test-editor-c3-source: isonim-review-build editor-inspector-build
+    "${ISONIM_SCENARIO_NODE:-node}" tests/test_editor_color_picker_gui.mjs
+
+test-editor-c3: test-editor-c3-headless test-editor-c3-source test-editor-popup
+
+# Actual production preview capture and selected metadata normalization.
+editor-flex-metadata-build: build-tailwind
+    mkdir -p build/editor-flex-metadata
+    nim js --path:src --path:. --path:../nim-everywhere/src --path:../isonim-render-serve/src --path:../nim-acp/src --path:../nim-agent-harbor/src --path:../nim-agents/src -o:build/editor-flex-metadata/editor.js tests/helpers/editor_flex_metadata_workspace.nim
+    "${ISONIM_SCENARIO_NODE:-node}" --check build/editor-flex-metadata/editor.js
+
+test-editor-flex-metadata-headless: build-tailwind
+    nim c -r --out:build/test_editor_flex_metadata tests/test_editor_flex_metadata.nim
+    nim js -d:nodejs --out:build/test_editor_flex_metadata.js tests/test_editor_flex_metadata.nim
+    python3 tools/run_nim_js_test.py build/test_editor_flex_metadata.js
+
+test-editor-flex-metadata-source: isonim-review-build editor-flex-metadata-build
+    timeout --signal=TERM --kill-after=15s 180s "${ISONIM_SCENARIO_NODE:-node}" tests/test_editor_flex_metadata_gui.mjs
+
+test-editor-flex-metadata: test-editor-flex-metadata-headless test-editor-flex-metadata-source
+
+# Remaining approved inspector section parity; real source suites follow.
+test-editor-c4a-headless: build-tailwind
+    #!/usr/bin/env bash
+    set -euo pipefail
+    for stem in test_editor_section_appearance test_editor_section_component_props test_editor_section_layout test_editor_section_position test_editor_section_typography test_editor_section_stroke test_editor_section_state test_editor_section_effects; do
+      nim c -r --out:build/"$stem" tests/"$stem".nim
+      nim js -d:nodejs --out:build/"$stem".js tests/"$stem".nim
+      python3 tools/run_nim_js_test.py build/"$stem".js
+    done
+
+# Actual source/compiler/preview/undo controls; each original GUI bound retained.
+test-editor-c4a-compounds: isonim-review-build editor-inspector-build
+    timeout --signal=TERM --kill-after=15s 180s "${ISONIM_SCENARIO_NODE:-node}" tests/test_editor_inspector_compounds_gui.mjs
+
+# Additive bounded ordinary-property matrix: 39 real source/compiler edits,
+# undo/redo/reload and refusal. Original compounds/gesture bounds stay 180s.
+test-editor-c4a-properties: isonim-review-build editor-inspector-build
+    timeout --signal=TERM --kill-after=15s 240s "${ISONIM_SCENARIO_NODE:-node}" tests/test_editor_inspector_properties_gui.mjs
+
+# Remaining ordinary controls and actual DSL schema/state admission:21 source
+# edits plus undo/redo/reload/refusal. Existing GUI bounds are unchanged.
+test-editor-c4a-remaining: isonim-review-build editor-inspector-build
+    timeout --signal=TERM --kill-after=15s 180s "${ISONIM_SCENARIO_NODE:-node}" tests/test_editor_inspector_remaining_gui.mjs
+
+# Catalog-only actual inline declaration ownership and physical State workflow.
+# Separate finite180s entry; original source and inspector bounds stay unchanged.
+test-editor-inline-preview-headless:
+    nim c -r --out:build/test_editor_section_state tests/test_editor_section_state.nim
+    nim js -d:nodejs --out:build/test_editor_section_state.js tests/test_editor_section_state.nim
+    python3 tools/run_nim_js_test.py build/test_editor_section_state.js
+
+test-editor-inline-preview: test-editor-inline-preview-headless isonim-review-build editor-popup-build
+    timeout --signal=TERM --kill-after=15s 180s "${ISONIM_SCENARIO_NODE:-node}" tests/test_editor_inline_preview_gui.mjs
+
+test-editor-c4a-gestures: isonim-review-build editor-inspector-build
+    timeout --signal=TERM --kill-after=15s 180s "${ISONIM_SCENARIO_NODE:-node}" tests/test_editor_inspector_gestures_gui.mjs
+
+test-editor-c4a-color: build-tailwind
+    timeout --signal=TERM --kill-after=15s 180s "${ISONIM_SCENARIO_NODE:-node}" tests/test_editor_color_parity.mjs
+
+test-editor-c4a-grip: isonim-review-build build-tailwind
+    timeout --signal=TERM --kill-after=15s 180s "${ISONIM_SCENARIO_NODE:-node}" tests/test_editor_source_style_gui.mjs
+    timeout --signal=TERM --kill-after=15s 180s "${ISONIM_SCENARIO_NODE:-node}" tests/test_editor_source_style_values_gui.mjs
+
+# Undo/redo restores exactly the source lines each written inspector edit
+# wrote, refuses unsafe restorations, and never re-targets a sibling edit that
+# shares the value text. Native and strict executed Node JS.
+test-editor-source-write-receipts:
+    nim c -r --out:build/test_editor_source_write_receipts tests/test_editor_source_write_receipts.nim
+    nim js -d:nodejs --out:build/test_editor_source_write_receipts.js tests/test_editor_source_write_receipts.nim
+    python3 tools/run_nim_js_test.py build/test_editor_source_write_receipts.js
+
+# Every commit path (component property/state, foundation token, vector,
+# canvas command) schedules the automatic write, and a write keeps those
+# histories: undo after it restores exactly the written lines. Native and
+# strict executed Node JS.
+test-editor-save-pipeline:
+    nim c -r --out:build/test_editor_save_pipeline tests/test_editor_save_pipeline.nim
+    nim js -d:nodejs --out:build/test_editor_save_pipeline.js tests/test_editor_save_pipeline.nim
+    python3 tools/run_nim_js_test.py build/test_editor_save_pipeline.js
+
+# A refusal happens when the user acts, not at the write: an edit no project
+# schema entry can write is refused at the commit (and its scope shown
+# disabled), an undo/redo the write transaction would refuse is refused at the
+# keystroke, and the Foundations page Undo is the shared undo command. Native
+# and strict executed Node JS.
+test-editor-act-time-refusals:
+    nim c -r --out:build/test_editor_act_time_refusals tests/test_editor_act_time_refusals.nim
+    nim js -d:nodejs --out:build/test_editor_act_time_refusals.js tests/test_editor_act_time_refusals.nim
+    python3 tools/run_nim_js_test.py build/test_editor_act_time_refusals.js
+
+test-editor-c4a: test-editor-selection-keys test-editor-source-write-receipts test-editor-save-pipeline test-editor-act-time-refusals test-editor-c4a-headless test-editor-c4a-compounds test-editor-c4a-properties test-editor-c4a-remaining test-editor-inline-preview test-editor-c4a-gestures test-editor-c4a-color test-editor-c4a-grip
+
+# Source ownership presentation; real native/JS signals and shell, no transports.
+test-editor-source-labels: build-tailwind
+    #!/usr/bin/env bash
+    set -euo pipefail
+    for stem in test_editor_section_source test_editor_source_scope_labels test_editor_source_scope_row test_editor_section_component_props; do
+      nim c -r --out:build/$stem tests/$stem.nim
+    done
+    for stem in test_editor_section_source test_editor_source_scope_row test_editor_section_component_props; do
+      nim js -d:nodejs --out:build/$stem.js tests/$stem.nim
+      python3 tools/run_nim_js_test.py build/$stem.js
+    done
+
+editor-source-labels-build: build-tailwind
+    mkdir -p build/editor-source-labels
+    nim js --path:src --path:. --path:../nim-everywhere/src --path:../isonim-render-serve/src --path:../nim-acp/src --path:../nim-agent-harbor/src --path:../nim-agents/src -o:build/editor-source-labels/editor.js tests/helpers/editor_source_scope_browser.nim
+    "${ISONIM_SCENARIO_NODE:-node}" --check build/editor-source-labels/editor.js
+
+test-editor-source-labels-gui: editor-source-labels-build
+    timeout --signal=TERM --kill-after=15s 180s "${ISONIM_SCENARIO_NODE:-node}" tests/test_editor_source_scope_gui.mjs
+
+# Captured callback ownership; no provider/worker/filesystem outcomes.
+test-editor-chat-lifetime-headless: build-tailwind
+    #!/usr/bin/env bash
+    set -euo pipefail
+    for stem in test_editor_chat_view_lifetime test_editor_shell_chat_lifetime test_editor_chat_tabs_vm test_editor_chat_activity; do
+      nim c -r --out:build/$stem tests/$stem.nim
+    done
+    for stem in test_editor_chat_view_lifetime test_editor_chat_tabs_vm test_editor_chat_activity; do
+      nim js -d:nodejs --out:build/$stem.js tests/$stem.nim
+      python3 tools/run_nim_js_test.py build/$stem.js
+    done
+
+editor-chat-lifetime-build: build-tailwind
+    mkdir -p build/editor-chat-lifetime
+    nim js --path:src --path:. --path:../nim-everywhere/src --path:../isonim-render-serve/src --path:../nim-acp/src --path:../nim-agent-harbor/src --path:../nim-agents/src -o:build/editor-chat-lifetime/editor.js tests/helpers/editor_chat_lifetime_browser.nim
+    "${ISONIM_SCENARIO_NODE:-node}" --check build/editor-chat-lifetime/editor.js
+
+test-editor-chat-lifetime-gui: editor-chat-lifetime-build
+    timeout --signal=TERM --kill-after=15s 180s "${ISONIM_SCENARIO_NODE:-node}" tests/test_editor_chat_lifetime_gui.mjs
+
+# Logical renderer mounts execute without browser globals; DOM peers stay real.
+test-editor-renderer-boundaries: build-tailwind
+    #!/usr/bin/env bash
+    set -euo pipefail
+    nim c -r --path:src --path:. --path:../nim-everywhere/src --path:../isonim-render-serve/src --path:../nim-acp/src --path:../nim-agent-harbor/src --path:../nim-agents/src tests/test_editor_renderer_boundaries.nim
+    nim js -d:nodejs --path:src --path:. --path:../nim-everywhere/src --path:../isonim-render-serve/src --path:../nim-acp/src --path:../nim-agent-harbor/src --path:../nim-agents/src -o:tests/test_editor_renderer_boundaries.js tests/test_editor_renderer_boundaries.nim
+    python3 tools/run_nim_js_test.py tests/test_editor_renderer_boundaries.js
+
+editor-renderer-boundaries-build: build-tailwind
+    mkdir -p build/editor-renderer-boundaries
+    nim js --path:src --path:. --path:../nim-everywhere/src --path:../isonim-render-serve/src --path:../nim-acp/src --path:../nim-agent-harbor/src --path:../nim-agents/src -o:build/editor-renderer-boundaries/editor.js tests/helpers/editor_renderer_boundary_browser.nim
+    "${ISONIM_SCENARIO_NODE:-node}" --check build/editor-renderer-boundaries/editor.js
+
+test-editor-renderer-boundaries-gui: editor-renderer-boundaries-build
+    timeout --signal=TERM --kill-after=15s 180s "${ISONIM_SCENARIO_NODE:-node}" tests/test_editor_renderer_boundary_gui.mjs
+
+# Current full shell logical controls: native and strict executed Node JS.
+test-editor-shell-current: build-tailwind
+    #!/usr/bin/env bash
+    set -euo pipefail
+    nim c -r --out:build/test_editor_shell_views tests/test_editor_shell_views.nim
+    nim js -d:nodejs --out:build/test_editor_shell_views.js tests/test_editor_shell_views.nim
+    python3 tools/run_nim_js_test.py build/test_editor_shell_views.js
+
+editor-preview-mount-build: build-tailwind
+    mkdir -p build/editor-preview-mount
+    nim js --path:src --path:. --path:../nim-everywhere/src --path:../isonim-render-serve/src --path:../nim-acp/src --path:../nim-agent-harbor/src --path:../nim-agents/src -o:build/editor-preview-mount/editor.js tests/helpers/editor_preview_mount_browser.nim
+    "${ISONIM_SCENARIO_NODE:-node}" --check build/editor-preview-mount/editor.js
+
+test-editor-preview-mount-gui: editor-preview-mount-build
+    timeout --signal=TERM --kill-after=15s 180s "${ISONIM_SCENARIO_NODE:-node}" tests/test_editor_preview_mount_gui.mjs
+
+# Requested-document ownership on real reactive roots; strict Node execution.
+test-editor-preview-mount: build-tailwind
+    #!/usr/bin/env bash
+    set -euo pipefail
+    nim c -r --path:src --path:. --path:../nim-everywhere/src --path:../isonim-render-serve/src --path:../nim-acp/src --path:../nim-agent-harbor/src --path:../nim-agents/src -o:build/test_editor_preview_mount tests/test_editor_preview_mount.nim
+    nim js -d:nodejs --path:src --path:. --path:../nim-everywhere/src --path:../isonim-render-serve/src --path:../nim-acp/src --path:../nim-agent-harbor/src --path:../nim-agents/src -o:build/test_editor_preview_mount.js tests/test_editor_preview_mount.nim
+    python3 tools/run_nim_js_test.py build/test_editor_preview_mount.js
+
+# Full committed inspector closure; every prerequisite owning entry remains.
+test-editor-inspector: test-editor-shell-current test-editor-inspector-native-source test-editor-c2 test-editor-c3 test-editor-c4a test-editor-flex-metadata test-editor-source-labels test-editor-source-labels-gui test-editor-chat-lifetime-headless test-editor-chat-lifetime-gui test-editor-renderer-boundaries test-editor-renderer-boundaries-gui test-editor-preview-mount test-editor-preview-mount-gui test-editor-source-metadata
+    #!/usr/bin/env bash
+    set -euo pipefail
+    for stem in test_editor_source_markup test_editor_source_style_bindings test_editor_control_routes; do
+      nim c -r --out:build/$stem tests/$stem.nim
+    done
+    nim js -d:nodejs --out:build/test_editor_source_markup.js tests/test_editor_source_markup.nim
+    python3 tools/run_nim_js_test.py build/test_editor_source_markup.js
+
+# Real native guarded-source transactions and disposable compiled GRIP provider.
+test-editor-inspector-native-source: isonim-review-build
+    python3 tests/test_editor_inspector_source.py
+    python3 tests/test_editor_source_style_provider.py
+    timeout --signal=TERM --kill-after=15s 180s "${ISONIM_SCENARIO_NODE:-node}" tests/test_editor_source_bindings_gui.mjs
+
+# Finite Selection Colors key admission and native bind/unlink/compiler matrix.
+# Separate180s entry preserves the original bindings and compounds bounds.
+test-editor-selection-keys-headless: build-tailwind
+    nim c -r --out:build/test_editor_section_selection_colors tests/test_editor_section_selection_colors.nim
+    nim js -d:nodejs --out:build/test_editor_section_selection_colors.js tests/test_editor_section_selection_colors.nim
+    python3 tools/run_nim_js_test.py build/test_editor_section_selection_colors.js
+
+test-editor-selection-keys: test-editor-selection-keys-headless isonim-review-build
+    timeout --signal=TERM --kill-after=15s 180s "${ISONIM_SCENARIO_NODE:-node}" tests/test_editor_selection_keys_gui.mjs

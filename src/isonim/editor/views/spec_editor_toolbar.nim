@@ -687,18 +687,19 @@ proc mountSpecEditorToolbar*[R, E](r: R; parent: E;
   r.addEventListener(linkCancel, "click", cancelLink)
 
   when defined(js):
-    # Plain JS keydown listener — reads ``event.key`` via a tiny
-    # ``{.importjs.}`` proc so we avoid ``{.emit.}`` blocks.  Enter
-    # submits, Escape cancels — matches the comment-popover affordance.
-    proc readKey(ev: Event): cstring
-      {.importjs: "(#).key".}
-    let onLinkInputKey = proc(ev: Event) {.closure.} =
-      let key = $readKey(ev)
-      if key == "Enter":
-        submitLink()
-      elif key == "Escape":
-        cancelLink()
-    r.addEventListener(linkInput, "keydown", onLinkInputKey)
+    when compiles(r.addEventListener(linkInput, "keydown", proc(ev: Event) = discard)):
+      # Plain JS keydown listener — reads ``event.key`` via a tiny
+      # ``{.importjs.}`` proc so we avoid ``{.emit.}`` blocks.  Enter
+      # submits, Escape cancels — matches the comment-popover affordance.
+      proc readKey(ev: Event): cstring
+        {.importjs: "(#).key".}
+      let onLinkInputKey = proc(ev: Event) {.closure.} =
+        let key = $readKey(ev)
+        if key == "Enter":
+          submitLink()
+        elif key == "Escape":
+          cancelLink()
+      r.addEventListener(linkInput, "keydown", onLinkInputKey)
     # Mirror linkInput's value back into the VM signal as the user
     # types — the submit handler reads ``r.inputValue`` so a one-way
     # mirror is sufficient.

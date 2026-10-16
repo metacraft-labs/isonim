@@ -1,0 +1,617 @@
+{
+  "authority": "agent-harbor b40f6090 crates/ah-rest-api-contract/src/types.rs SessionEvent",
+  "boundary": "Synthetic public DTOs through production projection, reducer and mounted editor. Real REST/provider tests remain separate.",
+  "normalizedScenes": {
+    "thought-settled": [
+      {
+        "kind": "thought_chunk",
+        "text": "Verified the compiled hero preview."
+      },
+      {
+        "kind": "completed",
+        "stopReason": "end_turn"
+      }
+    ],
+    "tool-running": [
+      {
+        "kind": "tool_call",
+        "status": "running",
+        "toolArguments": "{\"story\":\"Hero\"}",
+        "toolCallId": "running-build",
+        "toolName": "isonim build"
+      }
+    ],
+    "tool-waiting": [
+      {
+        "kind": "tool_call",
+        "status": "pending",
+        "toolArguments": "{\"story\":\"Hero\"}",
+        "toolCallId": "waiting-build",
+        "toolName": "isonim build"
+      }
+    ]
+  },
+  "scenes": {
+    "completed": [
+      {
+        "level": "info",
+        "message": "The compiled hero preview is ready. You can continue in this conversation.",
+        "timestamp": 1700000000,
+        "type": "log"
+      },
+      {
+        "thought": "Verified the mounted preview.",
+        "timestamp": 1700000000,
+        "type": "thought"
+      },
+      {
+        "input_tokens": 1260,
+        "output_tokens": 180,
+        "stop_reason": "end_turn",
+        "timestamp": 1700000000,
+        "type": "turn_complete"
+      }
+    ],
+    "conversation": [
+      {
+        "content": "Improve the hero spacing.",
+        "input_type": "text",
+        "timestamp": 1700000000,
+        "type": "user_input"
+      },
+      {
+        "level": "info",
+        "message": "# Hero refreshed\nThe spacing now follows the website tokens.\n- Preview rebuilt\n- Primary action retained\n```nim\nsetStyle(hero, \"padding\", \"32px\")\n```",
+        "timestamp": 1700000000,
+        "type": "log"
+      },
+      {
+        "thought": "Checking how the hero uses shared spacing.",
+        "timestamp": 1700000000,
+        "type": "thought"
+      },
+      {
+        "thought": " The token is also used by the pricing story.",
+        "timestamp": 1700000000,
+        "type": "thought"
+      }
+    ],
+    "delegation": [
+      {
+        "innerEvent": {
+          "thought": "Checking the tablet hero layout.",
+          "type": "thought"
+        },
+        "parentSessionId": "website-session",
+        "subAgentId": "layout-review",
+        "timestamp": 1700000000,
+        "type": "sub_agent"
+      },
+      {
+        "activeSubAgents": 0,
+        "description": "Layout review completed.",
+        "kind": "completed",
+        "timestamp": 1700000000,
+        "totalSubAgents": 1,
+        "type": "delegation"
+      },
+      {
+        "description": "Review the selected hero story.",
+        "kind": "review_requested",
+        "targetSessionId": "layout-review",
+        "timestamp": 1700000000,
+        "type": "orchestration"
+      }
+    ],
+    "error": [
+      {
+        "status": "running",
+        "timestamp": 1700000000,
+        "type": "status"
+      },
+      {
+        "message": "Build failed. The last successful preview is still available.",
+        "timestamp": 1700000000,
+        "type": "error"
+      }
+    ],
+    "files": [
+      {
+        "description": "Use shared spacing and preserve the title.",
+        "file_path": "stories/hero.nim",
+        "lines_added": 4,
+        "lines_removed": 2,
+        "timestamp": 1700000000,
+        "type": "file_edit"
+      },
+      {
+        "end_line": 20,
+        "file_path": "theme/spacing.nim",
+        "start_line": 8,
+        "timestamp": 1700000000,
+        "type": "file_read"
+      },
+      {
+        "newText": "padding = \"32px\"\ngap = \"16px\"",
+        "oldText": "padding = \"16px\"\ngap = \"8px\"",
+        "path": "stories/hero.nim",
+        "timestamp": 1700000000,
+        "truncated": false,
+        "type": "diff"
+      }
+    ],
+    "lifecycle": [
+      {
+        "timestamp": 1700000000,
+        "type": "session_started"
+      },
+      {
+        "request": "question-hero",
+        "timestamp": 1700000000,
+        "type": "session_awaiting_input"
+      },
+      {
+        "deliverer": "human",
+        "timestamp": 1700000000,
+        "type": "session_resumed"
+      },
+      {
+        "outcome": "completed",
+        "timestamp": 1700000000,
+        "type": "session_ended"
+      }
+    ],
+    "login": [
+      {
+        "provider": "anthropic",
+        "request": "login-provider",
+        "surface": "",
+        "timestamp": 1700000000,
+        "type": "login_required"
+      },
+      {
+        "request": "login-provider",
+        "timestamp": 1700000000,
+        "type": "session_awaiting_input"
+      }
+    ],
+    "long-content": [
+      {
+        "level": "info",
+        "message": "Long source identifiers remain readable: responsiveHeroWithSharedSpacingAndAccessiblePrimaryActionresponsiveHeroWithSharedSpacingAndAccessiblePrimaryActionresponsiveHeroWithSharedSpacingAndAccessiblePrimaryActionresponsiveHeroWithSharedSpacingAndAccessiblePrimaryActionresponsiveHeroWithSharedSpacingAndAccessiblePrimaryActionresponsiveHeroWithSharedSpacingAndAccessiblePrimaryAction\n```nim\nsetStyle(hero, \"padding\", \"32px\") # line 0\nsetStyle(hero, \"padding\", \"32px\") # line 1\nsetStyle(hero, \"padding\", \"32px\") # line 2\nsetStyle(hero, \"padding\", \"32px\") # line 3\nsetStyle(hero, \"padding\", \"32px\") # line 4\nsetStyle(hero, \"padding\", \"32px\") # line 5\nsetStyle(hero, \"padding\", \"32px\") # line 6\nsetStyle(hero, \"padding\", \"32px\") # line 7\nsetStyle(hero, \"padding\", \"32px\") # line 8\nsetStyle(hero, \"padding\", \"32px\") # line 9\nsetStyle(hero, \"padding\", \"32px\") # line 10\nsetStyle(hero, \"padding\", \"32px\") # line 11\n```",
+        "timestamp": 1700000000,
+        "type": "log"
+      },
+      {
+        "status": "started",
+        "timestamp": 1700000000,
+        "tool_args": {
+          "path": "stories/website-hero-website-hero-website-hero-website-hero-website-hero-website-hero-website-hero-website-hero-website-hero-website-hero-website-hero-website-hero-.nim"
+        },
+        "tool_execution_id": "long-inspect",
+        "tool_name": "isonim inspect",
+        "type": "tool_use"
+      }
+    ],
+    "model-context": [
+      {
+        "hasToolCalls": true,
+        "isSessionTied": true,
+        "messageCount": 6,
+        "model": "Sonnet",
+        "responseSummary": "Updated the hero story.",
+        "timestamp": 1700000000,
+        "type": "llm_request",
+        "usage": {
+          "inputTokens": 1260,
+          "outputTokens": 180,
+          "source": "provider_reported"
+        }
+      },
+      {
+        "files": [
+          {
+            "contentHash": "demo",
+            "path": "stories/hero.nim",
+            "reason": "selected story"
+          },
+          {
+            "contentHash": "demo",
+            "path": "theme/spacing.nim",
+            "reason": "shared token"
+          }
+        ],
+        "kind": "added",
+        "timestamp": 1700000000,
+        "totalCount": 2,
+        "type": "context_files"
+      },
+      {
+        "tag": "attribution",
+        "text": "Website author requested a spacious hero.",
+        "timestamp": 1700000000,
+        "type": "context_injection"
+      }
+    ],
+    "participants": [
+      {
+        "display_name": "Website author",
+        "kind": "owner",
+        "participant_id": "author",
+        "timestamp": 1700000000,
+        "transition": "joined",
+        "trust": "trusted",
+        "type": "participant"
+      },
+      {
+        "source": 0,
+        "spans": [
+          {
+            "anchor_byte": 0,
+            "end": 16,
+            "kind": 0,
+            "line": null,
+            "start": 0,
+            "targets": [
+              {
+                "col": 1,
+                "exists": true,
+                "is_dir": false,
+                "line": 42,
+                "modified_in_session": true,
+                "path": "stories/hero.nim"
+              }
+            ]
+          }
+        ],
+        "timestamp": "1700000000",
+        "type": "link_spans"
+      }
+    ],
+    "plan": [
+      {
+        "entries": [
+          {
+            "content": "Inspect the current hero",
+            "priority": "high",
+            "status": "completed"
+          },
+          {
+            "content": "Create the spacious variant",
+            "priority": "high",
+            "status": "in_progress"
+          },
+          {
+            "content": "Check tablet layout",
+            "priority": "medium",
+            "status": "pending"
+          }
+        ],
+        "is_update": false,
+        "timestamp": 1700000000,
+        "type": "plan"
+      },
+      {
+        "input_tokens": 1260,
+        "output_tokens": 180,
+        "stop_reason": "tool_use",
+        "timestamp": 1700000000,
+        "type": "turn_complete"
+      }
+    ],
+    "question": [
+      {
+        "kind": "single_choice",
+        "options": [
+          {
+            "id": "comfortable",
+            "label": "Comfortable"
+          },
+          {
+            "id": "compact",
+            "label": "Compact"
+          }
+        ],
+        "prompt": "Which hero spacing should I use?",
+        "request": "question-hero",
+        "timestamp": 1700000000,
+        "type": "agent_question"
+      },
+      {
+        "request": "question-hero",
+        "timestamp": 1700000000,
+        "type": "session_awaiting_input"
+      }
+    ],
+    "recovery": [
+      {
+        "accountRotatedTo": "fixture-account",
+        "provider": "anthropic",
+        "timestamp": 1700000000,
+        "triggerStatus": 401,
+        "type": "proxy_credential_rotated",
+        "upstreamRequestId": "model-request"
+      },
+      {
+        "attempts": 2,
+        "cumulativeWaitMs": 1200,
+        "timestamp": 1700000000,
+        "type": "proxy_rate_limit_absorbed",
+        "upstreamRequestId": "model-request"
+      },
+      {
+        "campaignId": "website-authoring",
+        "restartSeq": 2,
+        "timestamp": 1700000000,
+        "type": "dispatcher_restarted"
+      },
+      {
+        "interventionId": "resume-layout",
+        "stallType": "idle",
+        "timestamp": 1700000000,
+        "type": "anti_halting_resume_confirmed"
+      },
+      {
+        "flushedSeq": 40,
+        "sourceExecutor": "authoring-host",
+        "targetExecutor": "preview-host",
+        "targetOs": "linux",
+        "timestamp": 1700000000,
+        "type": "session_leadership_migrated"
+      }
+    ],
+    "tools": [
+      {
+        "status": "started",
+        "timestamp": 1700000000,
+        "tool_args": {
+          "name": "Hero / spacious"
+        },
+        "tool_execution_id": "create",
+        "tool_name": "isonim story create",
+        "type": "tool_use"
+      },
+      {
+        "status": "started",
+        "timestamp": 1700000000,
+        "tool_args": {
+          "story": "Hero / spacious"
+        },
+        "tool_execution_id": "build",
+        "tool_name": "isonim build",
+        "type": "tool_use"
+      },
+      {
+        "status": "started",
+        "timestamp": 1700000000,
+        "tool_args": {},
+        "tool_execution_id": "capture",
+        "tool_name": "isonim capture",
+        "type": "tool_use"
+      },
+      {
+        "exit_code": 0,
+        "status": "completed",
+        "timestamp": 1700000000,
+        "tool_execution_id": "capture",
+        "tool_name": "isonim capture",
+        "tool_output": "Captured the compiled hero preview.",
+        "type": "tool_result"
+      },
+      {
+        "status": "started",
+        "timestamp": 1700000000,
+        "tool_args": {},
+        "tool_execution_id": "bad-build",
+        "tool_name": "isonim build",
+        "type": "tool_use"
+      },
+      {
+        "exit_code": 1,
+        "status": "failed",
+        "timestamp": 1700000000,
+        "tool_execution_id": "bad-build",
+        "tool_name": "isonim build",
+        "tool_output": "stories/hero.nim:42: undeclared identifier spacingLarge",
+        "type": "tool_result"
+      }
+    ],
+    "workspace": [
+      {
+        "mount_path": "/workspace/website",
+        "status": "ready",
+        "timestamp": 1700000000,
+        "type": "workspace",
+        "working_copy_mode": "local"
+      },
+      {
+        "durationMs": 240,
+        "fenceId": "preview-sync",
+        "kind": "fence_complete",
+        "timestamp": 1700000000,
+        "type": "fleet_fence"
+      },
+      {
+        "command": "isonim build",
+        "exitCode": 0,
+        "host": "preview-host",
+        "kind": "host_complete",
+        "os": "linux",
+        "output": "Compiled the website preview.",
+        "stream": "stdout",
+        "timestamp": 1700000000,
+        "type": "fleet_host"
+      }
+    ],
+    "question-free-form": [
+      {
+        "type": "agent_question",
+        "kind": "free_form",
+        "prompt": "What should the hero say?",
+        "options": [],
+        "request": "question-free-form",
+        "timestamp": 1700000000
+      }
+    ],
+    "question-multi-choice": [
+      {
+        "type": "agent_question",
+        "kind": "multi_choice",
+        "prompt": "Which layouts should I preview?",
+        "options": [
+          {
+            "id": "desktop",
+            "label": "Desktop"
+          },
+          {
+            "id": "tablet",
+            "label": "Tablet"
+          }
+        ],
+        "request": "question-multi-choice",
+        "timestamp": 1700000000
+      }
+    ],
+    "question-confirmation": [
+      {
+        "type": "agent_question",
+        "kind": "confirmation",
+        "prompt": "May I replace the hero image?",
+        "options": [],
+        "request": "question-confirmation",
+        "timestamp": 1700000000
+      }
+    ]
+  },
+  "schema": 1,
+  "behaviorScenes": {
+    "navigation-pending": {
+      "boundary": "production shared VM/commands and mounted DOM; deterministic transport timing only",
+      "expected": [
+        "Checked Require approval for agent navigation preference",
+        "Pending open-story request with Approve and Reject controls",
+        "Home remains in the preview until approval"
+      ]
+    },
+    "navigation-approved": {
+      "boundary": "production shared VM/commands and mounted DOM; deterministic transport timing only",
+      "expected": [
+        "Applied open-story history row without pending controls",
+        "Details is selected in the real story browser",
+        "Website preview remains visible"
+      ]
+    },
+    "navigation-rejected": {
+      "boundary": "production shared VM/commands and mounted DOM; deterministic transport timing only",
+      "expected": [
+        "Rejected open-story history row without pending controls",
+        "Home remains selected; no navigation was applied",
+        "Approval preference remains enabled"
+      ]
+    },
+    "navigation-stale": {
+      "boundary": "production shared VM/commands and mounted DOM; deterministic transport timing only",
+      "expected": [
+        "Failed request history after a real user viewport change",
+        "Home remains selected after the stale approval",
+        "No pending approval controls remain"
+      ]
+    },
+    "navigation-auto": {
+      "boundary": "production shared VM/commands and mounted DOM; deterministic transport timing only",
+      "expected": [
+        "Unchecked Require approval for agent navigation preference",
+        "Applied open-story history row and Details selected",
+        "No approval controls are shown"
+      ]
+    },
+    "focus-auto": {
+      "boundary": "production shared VM/commands and mounted DOM; deterministic transport timing only",
+      "expected": [
+        "Applied focus sidebar-search history row",
+        "Sidebar search holds actual keyboard focus",
+        "Website preview and composer remain visible"
+      ]
+    },
+    "selection-highlight-auto": {
+      "boundary": "production shared VM/commands and mounted DOM; deterministic transport timing only",
+      "expected": [
+        "Applied select primary history row",
+        "Primary action in the preview has a visible highlight and actual focus",
+        "Selected element is primary in production inspector state"
+      ]
+    },
+    "highlight-auto": {
+      "boundary": "production shared VM/commands and mounted DOM; deterministic transport timing only",
+      "expected": [
+        "Applied highlight secondary history row",
+        "Secondary action in the preview has a visible highlight",
+        "Selection stays unchanged; highlighting does not imply selection"
+      ]
+    },
+    "chat-first-send": {
+      "boundary": "production shared VM/commands and mounted DOM; deterministic transport timing only",
+      "expected": [
+        "One actual user message Improve the hero spacing.",
+        "Introduction and suggested prompt chips are gone",
+        "Composer is empty after accepted send"
+      ]
+    },
+    "chat-send-failed": {
+      "boundary": "production shared VM/commands and mounted DOM; deterministic transport timing only",
+      "expected": [
+        "Retry this website request. remains in the composer",
+        "Suggested prompt chips and introduction are gone after attempted send",
+        "No fabricated successful assistant response"
+      ]
+    },
+    "chat-draft-streaming": {
+      "boundary": "production shared VM/commands and mounted DOM; deterministic transport timing only",
+      "expected": [
+        "Streaming assistant Website update is visible",
+        "Next website change. remains in the composer",
+        "Send is disabled during the unresolved turn"
+      ]
+    },
+    "chat-independent-first": {
+      "boundary": "production shared VM/commands and mounted DOM; deterministic transport timing only",
+      "expected": [
+        "First conversation has its actual user and assistant content",
+        "First conversation draft remains in its composer",
+        "Suggested prompts do not return to this sent conversation"
+      ]
+    },
+    "chat-independent-second": {
+      "boundary": "production shared VM/commands and mounted DOM; deterministic transport timing only",
+      "expected": [
+        "Second independent conversation shows its own draft",
+        "Second conversation retains introduction and suggested prompts",
+        "No first-conversation transcript appears"
+      ]
+    },
+    "chat-scroll-back": {
+      "boundary": "production shared VM/commands and mounted DOM; deterministic transport timing only",
+      "expected": [
+        "Earlier assistant History 0 remains at the top of scrollback",
+        "New output \u00b7 Return to latest control is visible",
+        "Draft stays intact and streaming does not force a jump"
+      ]
+    },
+    "chat-scroll-latest": {
+      "boundary": "production shared VM/commands and mounted DOM; deterministic transport timing only",
+      "expected": [
+        "Latest assistant Newest website activity is visible",
+        "Return to latest indicator has disappeared",
+        "Composer draft remains intact"
+      ]
+    },
+    "chat-selection-streaming": {
+      "boundary": "production shared VM/commands and mounted DOM; deterministic transport timing only",
+      "expected": [
+        "Selected heading Website update remains selected after another chunk",
+        "Streaming continuation is visible",
+        "Composer and website preview remain visible"
+      ]
+    }
+  }
+}

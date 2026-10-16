@@ -1,5 +1,5 @@
 import unittest
-import isonim/core/[types, graph, signals]
+import isonim/core/[types, graph, signals, computation, owner]
 
 suite "Signal Creation and Basic Operations":
   test "createSignal returns typed signal with initial value":
@@ -154,3 +154,44 @@ suite "Signal compiles on both targets":
     check a.val == 2
     check b.val == "updated"
     check c.val == 2.71
+
+
+suite "Owner and computation cleanup boundaries":
+  test "plain owner disposes nested computations and root cleanup exactly once":
+    let value = createSignal(0)
+    var runs, effectCleanups, rootCleanups: int
+    var dispose: proc()
+    createRoot proc(cleanup: proc()) =
+      dispose = cleanup
+      onCleanup proc() = rootCleanups.inc
+      createEffect proc() =
+        discard value.val
+        runs.inc
+        onCleanup proc() = effectCleanups.inc
+    check value.observers.len == 1
+    value.val = 1
+    check runs == 2
+    check effectCleanups == 1
+    check value.observers.len == 1
+    dispose()
+    dispose()
+    check rootCleanups == 1
+    check effectCleanups == 2
+    check value.observers.len == 0
+    value.val = 2
+    check runs == 2
+
+  test "computation cleanup removes reciprocal source edges without executing it":
+    let value = createSignal(0)
+    let comp = ComputationBase(sources: @[], sourceSlots: @[], owned: @[],
+      cleanups: @[], resourceStates: @[])
+    Listener = comp
+    discard value.val
+    Listener = nil
+    check value.observers.len == 1
+    check comp.sources.len == 1
+    cleanNode(comp)
+    check value.observers.len == 0
+    check value.observerSlots.len == 0
+    check comp.sources.len == 0
+    check comp.sourceSlots.len == 0

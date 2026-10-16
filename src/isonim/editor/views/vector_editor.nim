@@ -1,10 +1,11 @@
+import isonim/editor/views/view_lifecycle
 ## IsoNim Editor — Vector Graphics Editor View.
 ##
 ## Embedded SVG editor for design system symbols (icons, illustrations).
 ## Left: tool palette. Center: SVG canvas with grid. Right: properties
 ## (stroke, fill, transform). Bottom: layers panel.
 
-import std/options
+import std/[options, sequtils, strutils]
 
 import isonim/core/[signals, computation]
 import isonim/dsl/ui
@@ -92,20 +93,19 @@ proc bindVectorLayerState[R, E](r: R; node: E; vm: EditorVM; index: int) =
     r.setStyle(node, "background-color",
       if isSelected: accent & "22" else: "transparent")
 
-proc bindVectorSaveState[R, E](r: R; node: E; vm: EditorVM) =
+proc bindVectorSourceState[R, E](r: R; node: E; vm: EditorVM) =
+  ## Source write state, exposed on the toolbar. There is no Save control
+  ## (editor spec "Saving"): a vector edit is written automatically, so this
+  ## is status, not an affordance.
   createRenderEffect proc() =
-    let command = vm.evaluateCommand(eckSave)
-    let disabled = command.status == ecsDisabled
-    r.setAttribute(node, "aria-disabled", if disabled: "true" else: "false")
     r.setAttribute(node, "data-vector-source-stage",
       $vm.workspaceEditStage.val)
     r.setAttribute(node, "data-vector-pending-source-edits",
       $vm.inspector.pendingSourceEdits.val.len)
-    r.setStyle(node, "opacity", if disabled: "0.5" else: "1")
 
 proc renderVectorEditor*[R, E](r: R; vm: EditorVM): E =
   ## M-EVP-6 note: the vector editor keeps its own top toolbar (title +
-  ## boolean ops + zoom + Save + Export SVG) because the shared chrome
+  ## boolean ops + zoom + Export SVG; source write state as attributes) because the shared chrome
   ## bar is hidden while the vector view is active (`shell.nim` sets
   ## `display: none` on `chromeBarEl` for `evVectorEditor`). The
   ## acceptance "exactly one top bar above the view body" already holds
@@ -125,7 +125,8 @@ proc renderVectorEditor*[R, E](r: R; vm: EditorVM): E =
       # Top toolbar
       var backBtn: E
       var symbolNameLabel: E
-      tdiv(display = "flex", align_items = "center",
+      var toolbar: E
+      tdiv(ref = toolbar, display = "flex", align_items = "center",
             justify_content = "space-between",
             height = "44px", min_height = "44px", padding = "0 16px",
             background_color = bgCard,
@@ -173,30 +174,22 @@ proc renderVectorEditor*[R, E](r: R; vm: EditorVM): E =
         tdiv(display = "flex", align_items = "center", gap = "8px"):
           span(font_size = "11px", color = textMuted):
             text "100%"
-          var saveTop: E
-          tdiv(ref = saveTop,
-                padding = "4px 10px", border_radius = "4px",
-                font_size = "11px", font_weight = "500",
-                background_color = bgSurface, color = textPrimary,
-                border = "1px solid " & border,
-                cursor = "pointer",
-                `role` = "button", tabindex = "0",
-                `aria-label` = "Save vector source edits"):
-            text "Save"
           tdiv(padding = "4px 10px", border_radius = "4px",
                 font_size = "11px", font_weight = "500",
                 background_color = accent, color = textPrimary,
                 cursor = "pointer"):
             text "Export SVG"
           block:
-            let save = proc() =
-              let state = vm.runEditorCommand(eckSave)
-              when defined(js):
-                if state.status == ecsSucceeded:
+            r.bindVectorSourceState(toolbar, vm)
+            # The browser adapter's "saved" marker follows the automatic
+            # write: a successful transaction that carried a vector plan.
+            when isDomViewHost(E):
+              createRenderEffect proc() =
+                let written = vm.workspaceEditPatches.val
+                if vm.workspaceEditStage.val == wesClean and
+                    written.anyIt(it.plan.originDetail.startsWith(
+                      "vector-symbol:")):
                   markFabricVectorSourceSaved(fabricHost)
-            r.addEventListener(saveTop, "click", save)
-            r.addEventListener(saveTop, "keydown", save)
-            r.bindVectorSaveState(saveTop, vm)
 
       block:
         # M-EVP-8: wire the back affordance + reactive symbol-name label.
@@ -435,7 +428,8 @@ proc renderVectorEditor*[R, E](r: R; vm: EditorVM): E =
               r.bindVectorLayerState(layerNode, vm, i)
 
   r.appendChild(mainArea, canvas)
-  when defined(js):
+  when isDomViewHost(E):
+    ownViewResources(fabricHost)
     r.addEventListener(fabricHost, "isonim-vector-source-change", proc() =
       let exported = currentFabricVectorSvg(fabricHost)
       if exported.len > 0:
@@ -709,7 +703,8 @@ proc renderVectorEditor*[R, E](r: R; vm: EditorVM): E =
         r.setStyle(carouselNext, "opacity", if atLast: "0.4" else: "1")
         # Rebuild dot indicators.
         r.clearChildren(carouselDots)
-        for i in 0 ..< count:
+        proc appendDot(i: int) =
+          # A proc call gives this item its own callback/effect environment.
           let capturedIdx = i
           let isActive = i == idx
           var dotNode: E
@@ -730,5 +725,8 @@ proc renderVectorEditor*[R, E](r: R; vm: EditorVM): E =
           r.addEventListener(dotNode, "keydown", proc() =
             capturedVm.vectorEditorUsageIndex.val = capturedIdx)
           r.appendChild(carouselDots, dot)
+
+        for i in 0 ..< count:
+          appendDot(i)
 
   container

@@ -3,7 +3,8 @@
 ## Fully dogfoods IsoNim: all elements via ui macro with if/for/case.
 ## Only uses manual setStyle for reactive effects (createRenderEffect).
 
-import std/[options, sets, strutils, tables]
+import isonim/editor/views/view_lifecycle
+import std/[json, options, sets, strutils, tables]
 
 import isonim/core/[signals, computation, owner]
 import isonim/dsl/ui
@@ -679,8 +680,8 @@ proc statusBreadcrumbParts(vm: EditorVM): seq[StatusBreadcrumbPart] =
       ancestorIndex: -1)
   result.add elementParts
 
-proc dispatchPreviewAncestorSelection(index: int) =
-  when defined(js):
+proc dispatchPreviewAncestorSelection[E](index: int) =
+  when isDomViewHost(E):
     {.emit: ["""
       window.dispatchEvent(new CustomEvent('isonim-select-preview-ancestor', {
         detail: { index: """, index, """ }
@@ -689,13 +690,13 @@ proc dispatchPreviewAncestorSelection(index: int) =
   else:
     discard index
 
-proc dispatchPreviewElementVisibility(id: string; visible: bool) =
+proc dispatchPreviewElementVisibility[E](id: string; visible: bool) =
   ## Show or hide the selected element in the preview.
   ##
   ## Preview-only and not written to source: this is the "what would it look
   ## like without this" gesture, and a source edit is a different intent
   ## that the inspector already has rows for.
-  when defined(js):
+  when isDomViewHost(E):
     let shown = visible
     {.emit: ["""
       (function () {
@@ -711,14 +712,14 @@ proc dispatchPreviewElementVisibility(id: string; visible: bool) =
     discard id
     discard visible
 
-proc dispatchPreviewElementHover(id: string) =
+proc dispatchPreviewElementHover[E](id: string) =
   ## Tell the preview which element the pointer is over, or "" for none.
   ##
   ## Window-scoped like the selection event: the injected bridge listens on
   ## `parent`, so the panel does not need a handle on the frame -- which
   ## matters because the Layers panel lives in the left sidebar and has no
   ## reason to know which view is currently mounting a preview.
-  when defined(js):
+  when isDomViewHost(E):
     {.emit: ["""
       (function () {
       const toJsString = (raw) => Array.isArray(raw)
@@ -732,8 +733,8 @@ proc dispatchPreviewElementHover(id: string) =
   else:
     discard id
 
-proc dispatchPreviewElementSelection(id: string) =
-  when defined(js):
+proc dispatchPreviewElementSelection[E](id: string) =
+  when isDomViewHost(E):
     {.emit: ["""
       (function () {
       const toJsString = (raw) => Array.isArray(raw)
@@ -747,11 +748,11 @@ proc dispatchPreviewElementSelection(id: string) =
   else:
     discard id
 
-proc previewAncestorSelectionHandler(vm: EditorVM; index: int; id: string): proc() =
+proc previewAncestorSelectionHandler[E](vm: EditorVM; index: int; id: string): proc() =
   let captured = index
   let capturedId = id
   result = proc() =
-    dispatchPreviewAncestorSelection(captured)
+    dispatchPreviewAncestorSelection[E](captured)
   if capturedId.len > 0:
     result = proc() =
       # ``soBreadcrumb`` is the whole difference between walking this
@@ -761,7 +762,7 @@ proc previewAncestorSelectionHandler(vm: EditorVM; index: int; id: string): proc
       # selection echo that the preview bridge sends back for the same
       # element a moment later.
       discard vm.selectInspectorElementById(capturedId, soBreadcrumb)
-      dispatchPreviewElementSelection(capturedId)
+      dispatchPreviewElementSelection[E](capturedId)
 
 func selectedOriginLabel(element: ElementRef): string =
   if element.properties.len == 0:
@@ -906,7 +907,8 @@ proc renderStatusBar[R, E](r: R; vm: EditorVM): E =
           text "No selection"
       r.appendChild(breadcrumbNode, empty)
     else:
-      for i, part in parts:
+      proc appendBreadcrumb(i: int; part: StatusBreadcrumbPart) =
+        # A proc call gives this item its own callback/effect environment.
         let label = part.label
         # Three element states, three fills. The selected segment is the
         # only one wearing the editor's selection colour; ancestors sit
@@ -942,7 +944,7 @@ proc renderStatusBar[R, E](r: R; vm: EditorVM): E =
                   of sbsTrail: textMuted)):
             text label
         if part.state != sbsStory:
-          let selectAncestor = previewAncestorSelectionHandler(vm,
+          let selectAncestor = previewAncestorSelectionHandler[E](vm,
             part.ancestorIndex, part.id)
           r.addEventListener(chip, "click", selectAncestor)
           r.addEventListener(chip, "keydown", selectAncestor)
@@ -965,6 +967,9 @@ proc renderStatusBar[R, E](r: R; vm: EditorVM): E =
               text "/"
           r.appendChild(breadcrumbNode, sep)
 
+      for i, part in parts:
+        appendBreadcrumb(i, part)
+
 proc bindSceneGraphRow[R, E](vm: EditorVM; r: R; node: E; rowId: string) =
   ## Route a scene-graph row click into the ONE selection the editor has.
   ##
@@ -986,7 +991,7 @@ proc bindSceneGraphRow[R, E](vm: EditorVM; r: R; node: E; rowId: string) =
     # `String(detail.id)` then read "47,85,115,..." and matched nothing, so a
     # row click moved the Inspector but never outlined the element. That
     # helper converts, and is the same one the status-bar breadcrumb uses.
-    dispatchPreviewElementSelection(capturedId)
+    dispatchPreviewElementSelection[E](capturedId)
   )
   # Hovering a row outlines the element in the preview, dimmer than the
   # selection. The signal alone was never enough: it flagged the ROW, and
@@ -998,11 +1003,11 @@ proc bindSceneGraphRow[R, E](vm: EditorVM; r: R; node: E; rowId: string) =
   # selected" needs no new styling -- only the message.
   r.addEventListener(node, "mouseenter", proc() =
     capturedVm.inspector.setLayerHover(capturedId)
-    dispatchPreviewElementHover(capturedId))
+    dispatchPreviewElementHover[E](capturedId))
   r.addEventListener(node, "mouseleave", proc() =
     if capturedVm.inspector.hoveredElementId.val == capturedId:
       capturedVm.inspector.setLayerHover("")
-      dispatchPreviewElementHover(""))
+      dispatchPreviewElementHover[E](""))
 
 proc installSceneGraphReader[R, E](vm: EditorVM; r: R; host: E) =
   ## Read the preview's element tree from the parent side. THE producer.
@@ -1103,10 +1108,19 @@ proc installSceneGraphReader[R, E](vm: EditorVM; r: R; host: E) =
     # lives at the producer, where the timing information is.
     capturedVm.inspector.setSelectionTree(parsed)
   let walkSource: cstring = cstring(sceneGraphWalkJs)
-  when defined(js):
+  when isDomViewHost(E):
     {.emit: ["""
-      (function(ingest, host, walkSource) {
-        if (window.__isonimSceneGraphReaderInstalled) return;
+      (function(ingest, host, walkSource, model) {
+        if (!host || typeof host.closest !== 'function') return;
+        // One parent producer per model; UI mounts own their registrations.
+        // A replacement mount joins before old cleanup without losing its
+        // reader, and another editor's teardown cannot clear this record.
+        const runtime = window.__isonimSceneGraphReaderRuntime ||= {records: new Map()};
+        const existing = runtime.records.get(model);
+        if (existing && !existing.closed) { existing.register(host); return; }
+        const record = {owners: new Set(), preferred: host, closed: false,
+          frame: null, doc: null, docObserver: null, roots: new Map()};
+        runtime.records.set(model, record);
         window.__isonimSceneGraphReaderInstalled = true;
         // The walk is a Nim const shared with the injected preview bridge.
         // The editor's own window needs its own instance of it; a script
@@ -1128,7 +1142,17 @@ proc installSceneGraphReader[R, E](vm: EditorVM; r: R; host: E) =
           // most elements alone kept returning a still-mounted previous
           // story, so switching stories left the tree showing the old page --
           // measured, not hypothetical.
-          var frames = document.querySelectorAll('iframe');
+          var frames = [];
+          const preferredRoot = record.preferred && record.preferred.isConnected &&
+            record.preferred.closest('[data-isonim-editor="true"]');
+          for (const owner of record.owners) {
+            if (!owner.isConnected || owner.__isonimViewDisposed) continue;
+            const root = owner.closest('[data-isonim-editor="true"]');
+            if (!root) continue;
+            for (const frame of root.querySelectorAll('iframe')) {
+              if (!frames.includes(frame)) frames.push(frame);
+            }
+          }
           var best = null, bestScore = -1;
           for (var i = 0; i < frames.length; i++) {
             try {
@@ -1143,6 +1167,7 @@ proc installSceneGraphReader[R, E](vm: EditorVM; r: R; host: E) =
               // Visibility dominates: a visible frame always outranks a
               // hidden one however many elements the hidden one carries.
               var score = (visible ? 1000000 : 0) + n;
+              if (visible && preferredRoot && preferredRoot.contains(f)) score += 10000000;
               if (score > bestScore) { bestScore = score; best = d; }
             } catch (e) {}
           }
@@ -1161,39 +1186,153 @@ proc installSceneGraphReader[R, E](vm: EditorVM; r: R; host: E) =
         // is the threshold -- a reload is far quicker than that, and a story
         // that genuinely renders nothing never stops being empty.
         var emptyPolls = 0;
-        function tick() {
+        function tick(notificationOnly) {
+          if (record.closed) return;
+          updateRoots();
           try {
             var doc = previewDoc();
+            observeDocument(doc);
             if (!doc) {
-              emptyPolls++;
+              // Notifications do not shorten the two real-poll empty guard.
+              if (notificationOnly !== true) emptyPolls++;
               if (emptyPolls === 2 && lastSignature !== 'EMPTY') {
                 lastSignature = 'EMPTY';
                 ingest('[]');
               }
               return;
             }
-            emptyPolls = 0;
             var rows = build(doc);
+            // An empty loaded document can contain injected editor chrome.
+            // Its DOM count is nonzero while the shared walk has no layers;
+            // preserve the same temporal reload guard as a missing document.
+            if (!rows.length) {
+              if (notificationOnly !== true) emptyPolls++;
+              if (emptyPolls === 2 && lastSignature !== 'EMPTY') {
+                lastSignature = 'EMPTY'; ingest('[]');
+              }
+              return;
+            }
+            emptyPolls = 0;
             // Signature-gated: the walk is cheap but re-entering the reactive
             // graph is not, and an unconditional publish every poll would
             // re-render the panel forever.
-            // Include a mid-row in the signature: two different stories can
-            // share a row count and the same first/last element (both start
-            // with the site header), which made the gate treat a story switch
-            // as "no change".
-            var mid = rows.length ? rows[Math.floor(rows.length / 2)].id : '';
-            var sig = rows.length + ':' +
-              (rows.length ? rows[0].id + '|' + mid + '|' +
-                rows[rows.length - 1].id : '');
+            // Interior identities, labels and source metadata can change
+            // while count/first/middle/last remain the same. Hover/selection
+            // belong to the VM and must not create a publication feedback loop.
+            var sig = JSON.stringify(rows.map(function (row) {
+              const value = Object.assign({}, row);
+              delete value.hovered; delete value.selected;
+              return value;
+            }));
             if (sig === lastSignature) return;
             lastSignature = sig;
             ingest(JSON.stringify(rows));
           } catch (e) {}
         }
-        setInterval(tick, 700);
-        setTimeout(tick, 300);
-      })(""", ingest, """, """, host, """, """, walkSource, """);
+        function schedule() {
+          if (record.closed || record.frame !== null) return;
+          record.frame = requestAnimationFrame(function () {
+            record.frame = null; tick(true);
+          });
+        }
+        function relevantMutation(mutation, walker) {
+          if (walker.isEditorChrome && walker.isEditorChrome(mutation.target)) return false;
+          if (mutation.type === 'attributes' &&
+              ['data-isonim-hovered', 'data-isonim-selected',
+               'data-editor-agent-highlight'].includes(mutation.attributeName)) return false;
+          if (mutation.type !== 'childList') return true;
+          return [...mutation.addedNodes, ...mutation.removedNodes].some(function (node) {
+            return !walker.isEditorChrome || !walker.isEditorChrome(node);
+          });
+        }
+        function observeDocument(doc) {
+          if (record.doc === doc) return;
+          if (record.docObserver) record.docObserver.disconnect();
+          record.doc = doc; record.docObserver = null;
+          if (!doc || !doc.body || typeof MutationObserver === 'undefined') return;
+          const walker = window.__isonimSceneGraphWalk(doc);
+          record.docObserver = new MutationObserver(function (mutations) {
+            if (record.closed || record.doc !== doc) return;
+            if (mutations.some(mutation => relevantMutation(mutation, walker))) schedule();
+          });
+          record.docObserver.observe(doc.body, {subtree: true, childList: true,
+            characterData: true, attributes: true});
+        }
+        function updateRoots() {
+          const roots = new Set();
+          for (const owner of record.owners) {
+            if (!owner.isConnected || owner.__isonimViewDisposed) continue;
+            const root = owner.closest('[data-isonim-editor="true"]');
+            if (root) roots.add(root);
+          }
+          for (const [root, observer] of record.roots) {
+            if (!roots.has(root)) { observer.disconnect(); record.roots.delete(root); }
+          }
+          if (typeof MutationObserver === 'undefined') return;
+          for (const root of roots) {
+            if (record.roots.has(root)) continue;
+            const observer = new MutationObserver(function (mutations) {
+              if (record.closed) return;
+              // Layers rebuilding and overlay chrome are outside the frame
+              // visibility ancestry, so they cannot schedule another walk.
+              const frames = Array.from(root.querySelectorAll('iframe'));
+              const changed = mutations.some(function (mutation) {
+                if (mutation.type === 'attributes') {
+                  return frames.some(frame => mutation.target === frame || mutation.target.contains(frame));
+                }
+                return [...mutation.addedNodes, ...mutation.removedNodes].some(function (node) {
+                  return node.nodeType === 1 && (node.tagName === 'IFRAME' || node.querySelector('iframe'));
+                });
+              });
+              if (changed) schedule();
+            });
+            observer.observe(root, {subtree: true, childList: true, attributes: true,
+              attributeFilter: ['style', 'class', 'hidden', 'src', 'srcdoc']});
+            record.roots.set(root, observer);
+          }
+        }
+        function frameLoaded(event) {
+          if (record.closed || !event.target || event.target.tagName !== 'IFRAME') return;
+          for (const owner of record.owners) {
+            const root = owner.isConnected && owner.closest('[data-isonim-editor="true"]');
+            if (root && root.contains(event.target)) {
+              record.preferred = owner; schedule(); return;
+            }
+          }
+        }
+        var interval = setInterval(tick, 700);
+        var timer = setTimeout(tick, 300);
+        document.addEventListener('load', frameLoaded, true);
+        window.addEventListener('resize', schedule);
+        function detach(owner) {
+          record.owners.delete(owner);
+          if (record.closed) return;
+          if (record.preferred === owner) record.preferred = record.owners.values().next().value;
+          if (record.owners.size) { updateRoots(); observeDocument(previewDoc()); schedule(); return; }
+          record.closed = true;
+          clearInterval(interval); clearTimeout(timer);
+          if (record.frame !== null) cancelAnimationFrame(record.frame);
+          record.frame = null;
+          if (record.docObserver) record.docObserver.disconnect();
+          record.docObserver = null; record.doc = null;
+          for (const observer of record.roots.values()) observer.disconnect();
+          record.roots.clear();
+          document.removeEventListener('load', frameLoaded, true);
+          window.removeEventListener('resize', schedule);
+          if (runtime.records.get(model) === record) runtime.records.delete(model);
+          window.__isonimSceneGraphReaderInstalled = runtime.records.size > 0;
+        }
+        record.register = function (owner) {
+          if (record.closed) return;
+          record.owners.add(owner); record.preferred = owner;
+          owner.__isonimSceneGraphCleanup = function () { detach(owner); };
+          schedule();
+        };
+        record.register(host);
+      })(""", ingest, """, """, host, """, """, walkSource, """, """, capturedVm, """);
     """].}
+    onCleanup proc() =
+      {.emit: ["if (", host, ".__isonimSceneGraphCleanup) ", host, ".__isonimSceneGraphCleanup();"].}
 
 proc bindSceneGraphTwisty[R, E](vm: EditorVM; r: R; node: E; rowId: string) =
   ## Expand/collapse without selecting. `stopPropagation` is the whole point:
@@ -1204,7 +1343,7 @@ proc bindSceneGraphTwisty[R, E](vm: EditorVM; r: R; node: E; rowId: string) =
   let capturedId = rowId
   r.addEventListener(node, "click", proc() =
     capturedVm.inspector.toggleLayerExpanded(capturedId))
-  when defined(js):
+  when isDomViewHost(E):
     {.emit: [node, """.addEventListener('click', function (e) {
       e.stopPropagation();
     });"""].}
@@ -1245,7 +1384,7 @@ proc renderSceneGraphPanel*[R, E](r: R; vm: EditorVM): E =
   ## The storyboard answers "which view am I looking at?"; this answers "what
   ## is it made of?". Both are questions about the same selection, which is
   ## why they share a panel rather than competing for one. See
-  ## `isonim-specs/isonim-editor.md` § "Scene Graph — the element tree".
+  ## Editor specification § "Layers — the element tree".
   ##
   ## It renders `vm.inspector.filteredLayers` — the SAME signal the Inspector's
   ## "Source / Cascade" tree reads. That is deliberate: one tree, two views of
@@ -1263,6 +1402,7 @@ proc renderSceneGraphPanel*[R, E](r: R; vm: EditorVM): E =
   let panel = ui(r):
     tdiv(class = "editor-scene-graph",
           `data-scene-graph` = "true",
+          role = "region", `aria-label` = "Layers",
           display = "flex", flex_direction = "column",
           border_top = "1px solid " & borderFaint,
           # A sibling of the story tree, not a child of it. `flex-shrink: 0`
@@ -1293,25 +1433,25 @@ proc renderSceneGraphPanel*[R, E](r: R; vm: EditorVM): E =
               margin_left = "auto", font_size = "10px", color = textDim):
           text ""
       tdiv(ref = rowsHost,
-            `data-scene-graph-rows` = "true",
+            `data-scene-graph-rows` = "true", role = "region",
+            tabindex = "-1", `aria-label` = "Layers",
             display = "flex", flex_direction = "column",
             overflow_y = "auto", overflow_x = "hidden",
             padding = "4px 0", flex = "1", min_height = "0")
   block:
     let layerSearch = renderSidebarSearchBox[R, E](r,
       "data-scene-graph-search", "Search layers",
-      "Search layers\xE2\x80\xA6")
+      "Search layers")
+    r.setAttribute(layerSearch.root, "data-sidebar-search-field", "layers")
     r.appendChild(layerSearchSlot, layerSearch.root)
     layerSearchEl = layerSearch.input
-    let field = layerSearchEl
-    r.addEventListener(field, "input", proc() =
-      capturedVm.inspector.setLayerSearch($r.inputValue(field)))
+    r.setAttribute(layerSearchEl, "data-layer-search", "true")
 
   # The preview tells us what the pointer is over; the rows show it softly.
   # `hoveredElementId` already drives `ElementLayerRow.hovered`, which
   # already renders a background four times fainter than the selection --
   # nothing was setting it from the preview side.
-  when defined(js):
+  when isDomViewHost(E):
     let hoverVm = vm
     let onPreviewHover = proc(id: cstring) =
       # `setLayerHover`, not the raw signal: the row flags are baked when the
@@ -1320,15 +1460,88 @@ proc renderSceneGraphPanel*[R, E](r: R; vm: EditorVM): E =
       # moved a value nothing re-read.
       hoverVm.inspector.setLayerHover($id)
     {.emit: ["""
-      (function (onHover) {
-        window.addEventListener('isonim-preview-element-hovered',
-          function (event) {
-            onHover(String((event.detail && event.detail.id) || ''));
-          });
-      })(""", onPreviewHover, ");"].}
+      (function (onHover, panel) {
+        function hovered(event) {
+          onHover(String((event.detail && event.detail.id) || ''));
+        }
+        window.addEventListener('isonim-preview-element-hovered', hovered);
+        panel.__isonimHoverCleanup = function () {
+          window.removeEventListener('isonim-preview-element-hovered', hovered);
+        };
+      })(""", onPreviewHover, ", ", panel, ");"].}
+    onCleanup proc() =
+      {.emit: ["if (", panel, ".__isonimHoverCleanup) ", panel, ".__isonimHoverCleanup();"].}
 
   result = panel
+  ownViewResources(rowsHost)
   vm.installSceneGraphReader(r, rowsHost)
+  when isDomViewHost(E):
+    let toggleExpanded = proc(id: cstring) =
+      capturedVm.inspector.toggleLayerExpanded($id)
+    {.emit: ["""
+      (function (host, search, toggle) {
+        if (!host || typeof host.querySelectorAll !== 'function') return;
+        function focusId(id, previous) {
+          function restore() {
+            const row = Array.from(host.querySelectorAll('[data-scene-graph-row]'))
+              .find(row => row.getAttribute('data-scene-graph-row') === id);
+            if (row) { row.focus(); return true; }
+            return false;
+          }
+          // Expansion/selection replaces the row synchronously. Keep rapid
+          // consecutive keyboard gestures on its real replacement, rather
+          // than leaving focus on body until the next animation frame.
+          const active = host.ownerDocument.activeElement;
+          if (!host.isConnected || host.__isonimViewDisposed) return;
+          if (active !== previous && active !== host.ownerDocument.body &&
+              active?.getAttribute('data-scene-graph-row') !== id) return;
+          restore();
+        }
+        function keydown(event) {
+          if (event.altKey || event.ctrlKey || event.metaKey || event.shiftKey) return;
+          const row = event.target.closest('[data-scene-graph-row]');
+          if (!row || !host.contains(row)) return;
+          const rows = Array.from(host.querySelectorAll('[data-scene-graph-row]'));
+          const index = rows.indexOf(row), depth = Number(row.getAttribute('data-scene-graph-depth'));
+          const id = row.getAttribute('data-scene-graph-row');
+          const expanded = row.getAttribute('aria-expanded');
+          let target = null;
+          if (event.key === 'Enter' || event.key === ' ') {
+            event.preventDefault(); row.click(); focusId(id, row); return;
+          }
+          if (event.key === 'ArrowDown') target = rows[Math.min(index + 1, rows.length - 1)];
+          else if (event.key === 'ArrowUp') target = rows[Math.max(0, index - 1)];
+          else if (event.key === 'Home') target = rows[0];
+          else if (event.key === 'End') target = rows[rows.length - 1];
+          else if (event.key === 'ArrowRight') {
+            if (expanded === 'false' && !search.value.trim()) {
+              event.preventDefault(); toggle(id); focusId(id, row); return;
+            }
+            if (expanded === 'true' && rows[index + 1] &&
+                Number(rows[index + 1].getAttribute('data-scene-graph-depth')) > depth) target = rows[index + 1];
+          } else if (event.key === 'ArrowLeft') {
+            if (expanded === 'true' && !search.value.trim()) {
+              event.preventDefault(); toggle(id); focusId(id, row); return;
+            }
+            for (let i = index - 1; i >= 0; i--) {
+              if (Number(rows[i].getAttribute('data-scene-graph-depth')) < depth) {target = rows[i]; break;}
+            }
+          } else return;
+          event.preventDefault(); if (target) target.focus();
+        }
+        host.addEventListener('keydown', keydown);
+        host.__isonimLayerKeyboardCleanup = function () { host.removeEventListener('keydown', keydown); };
+      })(""", rowsHost, ", ", layerSearchEl, ", ", toggleExpanded, """);
+    """].}
+    onCleanup proc() =
+      {.emit: ["if (", rowsHost, ".__isonimLayerKeyboardCleanup) ", rowsHost, ".__isonimLayerKeyboardCleanup();"].}
+  let onSearch = proc() =
+    capturedVm.inspector.setLayerSearch(r.inputValue(layerSearchEl))
+  r.addEventListener(layerSearchEl, "input", onSearch)
+  r.addEventListener(layerSearchEl, "change", onSearch)
+  createRenderEffect proc() =
+    let query = capturedVm.inspector.layerSearch.val
+    if r.inputValue(layerSearchEl) != query: r.setInputValue(layerSearchEl, query)
 
   # Rows are rebuilt by a render effect rather than by a `for` inside the DSL
   # block, because the row set changes identity wholesale on every republish
@@ -1341,6 +1554,7 @@ proc renderSceneGraphPanel*[R, E](r: R; vm: EditorVM): E =
     # computed here rather than pruning the model. That keeps a collapsed
     # subtree searchable and keeps the selection valid while hidden.
     let expanded = capturedVm.inspector.expandedLayerIds.val
+    let searching = capturedVm.inspector.layerSearch.val.strip.len > 0
     var collapsedIds: seq[string] = @[]
     var rows: seq[ElementLayerRow] = @[]
     for i in 0 ..< allRows.len:
@@ -1348,7 +1562,7 @@ proc renderSceneGraphPanel*[R, E](r: R; vm: EditorVM): E =
       var hiddenByAncestor = false
       # Walk up to find a collapsed ancestor.
       var cursor = row.parentId
-      while cursor.len > 0:
+      while not searching and cursor.len > 0:
         if cursor in collapsedIds:
           hiddenByAncestor = true
           break
@@ -1360,7 +1574,7 @@ proc renderSceneGraphPanel*[R, E](r: R; vm: EditorVM): E =
             break
         if not found: break
       if hiddenByAncestor: continue
-      if row.childCount > 0 and row.id notin expanded:
+      if not searching and row.childCount > 0 and row.id notin expanded:
         collapsedIds.add row.id
       rows.add row
     r.setTextContent(countEl,
@@ -1377,8 +1591,9 @@ proc renderSceneGraphPanel*[R, E](r: R; vm: EditorVM): E =
         tdiv(`data-scene-graph-empty` = "true",
               padding = "10px 12px", font_size = sidebarBodyFont,
               line_height = "1.5", color = textDim):
-          text "Nothing to show: this preview renders no visible " &
-               "elements, or has not rendered yet."
+          text (if searching: "No matching layers" else:
+            "Nothing to show: this preview renders no visible " &
+            "elements, or has not rendered yet.")
       r.appendChild(rowsHost, empty)
       return
 
@@ -1392,13 +1607,26 @@ proc renderSceneGraphPanel*[R, E](r: R; vm: EditorVM): E =
       let rowChildCount = rows[i].childCount
       let rowSelected = rows[i].selected
       let rowHovered = rows[i].hovered
-      let rowExpanded = rowChildCount == 0 or rowId in expanded
+      let rowExpanded = rowChildCount == 0 or rowId in expanded or
+        (searching and rows[i].expanded)
       let indent = 8 + rowDepth * 12
       let bg = if rowSelected: "rgba(124,122,237,0.35)"
                elif rowHovered: "rgba(255,255,255,0.04)"
                else: "transparent"
       let fg = if rowSelected: textPrimary else: textSecondary
       let label = if rows[i].label.len > 0: rows[i].label else: rows[i].tag
+      # Attribution is optional: a rendered string/client-built node still
+      # belongs in Layers without a compiler source stamp. Keep the full path
+      # available while the visible suffix fits beside an ellipsised label.
+      let sourceFile = rows[i].sourceFile
+      let sourceLine = rows[i].sourceLine
+      let sourcePath = sourceFile.replace('\\', '/')
+      let sourceName = sourcePath.split('/')[^1]
+      let sourceLabel = if sourceFile.len > 0:
+        sourceName & (if sourceLine > 0: ":" & $sourceLine else: "")
+        else: ""
+      let sourceDetail = sourceFile &
+        (if sourceLine > 0: ":" & $sourceLine else: "")
       var twisty: E
       let rowEl = ui(r):
         tdiv(class = "editor-scene-graph-row",
@@ -1419,17 +1647,27 @@ proc renderSceneGraphPanel*[R, E](r: R; vm: EditorVM): E =
           # what a designer expects. Clicking the label selects.
           span(ref = twisty,
                 `data-scene-graph-twisty` = (if rowChildCount > 0: rowId else: ""),
+                `aria-hidden` = "true",
                 color = textDim, font_size = sidebarCaptionFont, flex_shrink = "0",
                 width = "9px", text_align = "center",
                 cursor = (if rowChildCount > 0: "pointer" else: "default")):
             text (if rowChildCount == 0: "\xC2\xB7"
                   elif rowExpanded: "\xE2\x96\xBE"
                   else: "\xE2\x96\xB8")
-          span(overflow = "hidden", text_overflow = "ellipsis"):
+          span(flex = "1", min_width = "0", overflow = "hidden",
+                text_overflow = "ellipsis", title = label):
             text label
+          if sourceLabel.len > 0:
+            span(`data-scene-graph-source` = rowId, title = sourceDetail,
+                  color = textDim, font_size = sidebarCaptionFont,
+                  max_width = "45%", overflow = "hidden",
+                  text_overflow = "ellipsis", flex_shrink = "0"):
+              text sourceLabel
       # Selection routes through the same proc the preview's own click path
       # uses, so a tree click and a preview click are indistinguishable
       # downstream -- including to the Inspector, which is the point.
+      if rowChildCount > 0:
+        r.setAttribute(rowEl, "aria-expanded", if rowExpanded: "true" else: "false")
       capturedVm.bindSceneGraphRow(r, rowEl, rowId)
       if rowChildCount > 0:
         capturedVm.bindSceneGraphTwisty(r, twisty, rowId)
@@ -1447,7 +1685,7 @@ proc renderSceneGraphPanel*[R, E](r: R; vm: EditorVM): E =
   # id rather than run on every rebuild, because the reader republishes the
   # tree about twice a second and scrolling on each would fight the user's
   # own scrolling.
-  when defined(js):
+  when isDomViewHost(E):
     var lastScrolledTo = ""
     createRenderEffect proc() =
       let selectedId = capturedVm.inspector.selectedElement.val.id
@@ -1459,7 +1697,7 @@ proc renderSceneGraphPanel*[R, E](r: R; vm: EditorVM): E =
       {.emit: ["""
         (function (host, id) {
           // After the rebuild effect above has run.
-          requestAnimationFrame(function () {
+          globalThis.__isonimFrameView(host, function () {
             if (!host) return;
             var row = host.querySelector('[data-scene-graph-row="' +
               (window.CSS && CSS.escape ? CSS.escape(id) : id) + '"]');
@@ -1559,12 +1797,17 @@ proc renderSidebar*[R, E](r: R; vm: EditorVM): E =
         let storySearch = renderSidebarSearchBox[R, E](r,
           "data-sidebar-search", "Search stories",
           "Search stories\xE2\x80\xA6")
+        r.setAttribute(storySearch.root, "data-sidebar-search-field", "true")
         r.appendChild(storySearchSlot, storySearch.root)
         let searchInput = storySearch.input
         let onSearch = searchInputHandler[R, E](r, vm, searchInput)
         r.addEventListener(searchInput, "input", onSearch)
         r.addEventListener(searchInput, "change", onSearch)
         r.addEventListener(searchInput, "keyup", onSearch)
+        createRenderEffect proc() =
+          let query = vm.sidebar.searchQuery.val
+          if r.inputValue(searchInput) != query: r.setInputValue(searchInput, query)
+
 
       # M-EVP-9: Quick-navigation strip — one icon per canonical
       # design-system category. Click an icon to focus that category
@@ -1635,13 +1878,16 @@ proc renderSidebar*[R, E](r: R; vm: EditorVM): E =
               r.bindQuickNavIcon(iconNode, vm, cKind)
 
       # Story sections
-      tdiv(`data-sidebar-story-tree` = "true",
+      tdiv(`data-sidebar-story-tree` = "true", role = "region",
+            tabindex = "0", `aria-label` = "Stories",
             display = "flex", flex_direction = "column",
             gap = "2px", padding = "8px 8px 16px 8px",
             # `min-height: 0` is what lets a flex child shrink below its
             # content and scroll; without it the tree pushes the Layers panel
             # off the bottom instead.
-            flex = "1 1 auto", min_height = "0",
+            # Allocate from the shared viewport, not the long tree's intrinsic
+            # height; otherwise this sibling squeezes Layers down to one row.
+            flex = "1 1 55%", min_height = "0",
             overflow_y = "auto", overflow_x = "hidden"):
         for section in sidebarSections:
           let sLabel = sectionLabel(section)
@@ -1753,7 +1999,7 @@ proc renderSidebar*[R, E](r: R; vm: EditorVM): E =
                       # rag-right scroll.
                       span(font_size = sidebarBodyFont, font_weight = "500",
                             color = textPrimary,
-                            
+
                             white_space = "nowrap",
                             overflow = "hidden",
                             text_overflow = "ellipsis",
@@ -1902,7 +2148,7 @@ proc renderSidebar*[R, E](r: R; vm: EditorVM): E =
       r.setStyle(captSidebar, "flex-basis", wpx)
       r.setAttribute(captSidebar, "data-left-sidebar-width", $w)
 
-  when defined(js):
+  when isDomViewHost(E):
     # Mousedown on the handle records the starting cursor X + sidebar
     # width; mousemove computes the delta and pushes the new width
     # through the ``window.__isonimEditor.setLeftSidebarWidth`` hook
@@ -1914,7 +2160,7 @@ proc renderSidebar*[R, E](r: R; vm: EditorVM): E =
     let sidebarEl = sidebar
     {.emit: ["""
       (function (handle, sidebar) {
-        if (!handle || !document) return;
+        if (!handle || typeof document === 'undefined' || !document.addEventListener || !handle.addEventListener) return;
         var startX = 0;
         var startW = 0;
         var dragging = false;
@@ -1924,15 +2170,15 @@ proc renderSidebar*[R, E](r: R; vm: EditorVM): E =
           document.body.style.cursor = '';
           document.body.style.userSelect = '';
         }
-        handle.addEventListener('mousedown', function (e) {
+        function startDrag(e) {
           dragging = true;
           startX = e.clientX;
           startW = sidebar.getBoundingClientRect().width;
           document.body.style.cursor = 'col-resize';
           document.body.style.userSelect = 'none';
           if (e.preventDefault) e.preventDefault();
-        });
-        document.addEventListener('mousemove', function (e) {
+        }
+        function moveDrag(e) {
           if (!dragging) return;
           var delta = e.clientX - startX;
           var w = Math.max(180, Math.min(420, Math.round(startW + delta)));
@@ -1940,11 +2186,23 @@ proc renderSidebar*[R, E](r: R; vm: EditorVM): E =
               window.__isonimEditor.setLeftSidebarWidth) {
             window.__isonimEditor.setLeftSidebarWidth(w);
           }
-        });
+        }
+        handle.addEventListener('mousedown', startDrag);
+        document.addEventListener('mousemove', moveDrag);
         document.addEventListener('mouseup', endDrag);
         document.addEventListener('mouseleave', endDrag);
+        handle.__isonimResizeCleanup = function () {
+          endDrag();
+          handle.removeEventListener('mousedown', startDrag);
+          document.removeEventListener('mousemove', moveDrag);
+          document.removeEventListener('mouseup', endDrag);
+          document.removeEventListener('mouseleave', endDrag);
+        };
       })(""", handleEl, """, """, sidebarEl, """);
     """].}
+
+    onCleanup proc() =
+      {.emit: ["if (", handleEl, ".__isonimResizeCleanup) ", handleEl, ".__isonimResizeCleanup();"].}
 
   # SGR-M3: the scene graph sits below the storyboard in the same sidebar.
   # Appended after the resize wiring so the handle keeps covering the whole
@@ -2489,18 +2747,19 @@ const inspectorPlaceholderSections* = [
   ## user-decided order. Each entry is ``(slug, displayName)``.
   ## Phase C wires real expansion state + conditional visibility
   ## (Typography only when text element, Component properties only
-  ## for instances). Phase G progressively extracts per-section
-  ## content from ``populateInspectorManualBody`` in
-  ## ``component_edit.nim`` into per-section widget files.
+  ## for instances). Phase G moved per-section content into
+  ## per-section widget files; the retired single-body manual
+  ## inspector they were extracted from has been removed.
 
 const inspectorSectionsWithPlusAction = [
-  "fill", "stroke", "effects", "export"]
-  ## Phase B — sections whose header right slot renders a ``+`` plus
-  ## button placeholder ("add fill", "add stroke", "add effect",
-  ## "add export entry"). Selection colors / Appearance / Layout
-  ## carry richer affordances (swatches / eye+droplet / constraint
-  ## widget) that Phase G owns — for Phase B those sections render
-  ## an empty action slot so the right margin still lines up.
+  ("fill", "Adding another fill layer from this header is unavailable."),
+  ("stroke", "Adding another stroke layer from this header is unavailable."),
+  ("effects", "Adding another effect from this header is unavailable."),
+  ("export", "Adding another export target from this header is unavailable.")]
+  ## Reserved header Add slots have no action callback. Keep their reasons
+  ## together with slot membership so they cannot appear enabled by omission.
+  ## Body widgets retain their independent value/configuration controls.
+  ## Other section action slots stay empty for consistent chevron alignment.
 
 # `selectionDisplayName` moved to `editor/element_semantics.nim`: the Fill
 # section needs the same classification to decide which property it edits,
@@ -2695,7 +2954,7 @@ proc renderSelectionHeader[R, E](r: R; vm: EditorVM): E =
       if selected.id.len > 0: selected.id
       elif selected.sourceKey.len > 0: selected.sourceKey
       else: selected.schemaKey
-    dispatchPreviewElementVisibility(targetId, visible)
+    dispatchPreviewElementVisibility[E](targetId, visible)
 
   # A button that does nothing is worse than a button that is not there:
   # it spends a click and teaches the user that this corner is dead.
@@ -2739,14 +2998,17 @@ proc renderSectionFrame[R, E](r: R; vm: EditorVM;
   ## mirrors the live expanded state into ``data-expanded`` /
   ## ``aria-expanded`` on the header, the body's ``display``
   ## (``flex`` vs ``none``), and the chevron glyph (``▾`` vs
-  ## ``▸``). Phase G fills the body — the section frame doesn't
-  ## reach into ``populateInspectorManualBody``.
+  ## ``▸``). Phase G fills the body from per-section widget files.
   ##
   ## The header right slot is reserved per the section catalogue. In
   ## Phase B only Fill / Stroke / Effects / Export carry a ``+`` plus
   ## button placeholder — the other sections leave the slot empty so
   ## the right margin lines up but the chrome stays quiet.
-  let hasPlus = slug in inspectorSectionsWithPlusAction
+  var addUnavailableReason = ""
+  for (addSlug, reason) in inspectorSectionsWithPlusAction:
+    if addSlug == slug:
+      addUnavailableReason = reason
+  let hasPlus = addUnavailableReason.len > 0
   let section = inspectorSectionFromAttr(slug)
   var plusIcon: E
   var headerEl: E
@@ -2796,7 +3058,7 @@ proc renderSectionFrame[R, E](r: R; vm: EditorVM;
                  width = "20px", height = "20px",
                  border_radius = "4px",
                  color = textMuted,
-                 cursor = "pointer"):
+                 cursor = "default"):
               tdiv(ref = plusIcon,
                    `aria-hidden` = "true",
                    display = "flex", align_items = "center",
@@ -2825,6 +3087,8 @@ proc renderSectionFrame[R, E](r: R; vm: EditorVM;
   # the slot to be rendered.
   if hasPlus:
     r.setInnerHtml(plusIcon, plusSvg)
+    r.setAttribute(addBtn, "aria-disabled", "true")
+    r.setAttribute(addBtn, "title", addUnavailableReason)
 
   # Phase C reactive bind: the header's ``data-expanded`` /
   # ``aria-expanded`` attributes, the chevron glyph, and the body's
@@ -2857,7 +3121,7 @@ proc renderSectionFrame[R, E](r: R; vm: EditorVM;
   r.addEventListener(headerEl, "keydown", proc() =
     vm.inspector.toggleSectionExpanded(section))
 
-  when defined(js):
+  when isDomViewHost(E):
     let headerJsEl = headerEl
     {.emit: ["""
       (function (header) {
@@ -2891,6 +3155,13 @@ proc renderSectionFrame[R, E](r: R; vm: EditorVM;
           btn.addEventListener('click', function (ev) {
             if (ev && ev.stopPropagation) ev.stopPropagation();
           }, false);
+          if(btn.getAttribute('aria-disabled') === 'true') {
+            btn.addEventListener('keydown', function (ev) {
+              if(ev && (ev.key === 'Enter' || ev.key === ' ' || ev.key === 'Spacebar')) {
+                ev.preventDefault();ev.stopPropagation();
+              }
+            }, true);
+          }
         })(""", addBtnJsEl, """);
       """].}
 
@@ -2960,9 +3231,8 @@ proc renderInspectorPanel*[R, E](r: R; vm: EditorVM): E =
   ##   * Keep the sidebar root's ``data-test-id="property-panel"``
   ##     contract (existing e2e tests resolve the sidebar by it).
   ##   * Keep the left-edge drag-resize handle.
-  ##   * STILL skip ``populateInspectorManualBody`` — that proc is
-  ##     preserved in ``component_edit.nim`` for Phase G content
-  ##     extraction but is not mounted here.
+  ##   * Mount no single-body manual inspector; section content comes
+  ##     from the per-section widget files.
   ##
   ## All section bodies render as visible (empty) for Phase B. Every
   ## frame ships with ``data-expanded="true"`` so Phase C can flip
@@ -2984,10 +3254,12 @@ proc renderInspectorPanel*[R, E](r: R; vm: EditorVM): E =
          flex = "1", min_height = "0", min_width = "0",
          overflow_y = "auto", overflow_x = "hidden")
 
+  ownViewResources(sectionListEl)
+
   # `openSourceForSelection` expands the Source section and asks for it to
   # be brought into view; the scroll is here because only the view knows
   # where the section landed.
-  when defined(js):
+  when isDomViewHost(E):
     let revealVm = vm
     var lastReveal = 0
     createRenderEffect proc() =
@@ -2995,11 +3267,11 @@ proc renderInspectorPanel*[R, E](r: R; vm: EditorVM): E =
       if generation == lastReveal: return
       lastReveal = generation
       {.emit: ["""
-        requestAnimationFrame(function () {
-          var el = document.querySelector('[data-inspector-section-source]')
-            || document.querySelector('[data-inspector-section="source"]');
+        globalThis.__isonimFrameView(""", sectionListEl, """, function () {
+          var el = """, sectionListEl, """.querySelector('[data-inspector-section-source]')
+            || """, sectionListEl, """.querySelector('[data-inspector-section="source"]');
           if (!el) {
-            var heads = document.querySelectorAll('[data-inspector-section-title]');
+            var heads = """, sectionListEl, """.querySelectorAll('[data-inspector-section-title]');
             for (var i = 0; i < heads.length; i++) {
               if (/^source$/i.test(heads[i].textContent.trim())) {
                 el = heads[i];
@@ -3017,6 +3289,11 @@ proc renderInspectorPanel*[R, E](r: R; vm: EditorVM): E =
     let frame = renderSectionFrame[R, E](r, vm, slug, displayName)
     r.appendChild(sectionList, frame.row)
     mountInspectorSectionBody[R, E](r, vm, slug, frame.body)
+    if slug == "component-properties":
+      let componentFrame = frame.row
+      createRenderEffect proc() =
+        r.setStyle(componentFrame, "display",
+          if isComponentInstance(vm.inspector.selectedElement.val): "flex" else: "none")
 
   result = ui(r):
     tdiv(class = "editor-inspector",
@@ -3036,6 +3313,11 @@ proc renderInspectorPanel*[R, E](r: R; vm: EditorVM): E =
           overflow_x = "hidden")
 
   let sidebarRoot = result
+  createRenderEffect proc() =
+    let story = vm.selectedStory.val
+    r.setAttribute(sidebarRoot, "data-inspector-selection-context",
+      $(%*[story.group, story.name, $story.kind,
+        vm.inspector.selectedElement.val.id, $vm.preview.sourceGeneration.val]))
 
   # 2026-05-28: left-edge drag-resize handle. Symmetrical with the
   # left sidebar's right-edge handle; drives ``setRightPanelWidth``
@@ -3061,12 +3343,12 @@ proc renderInspectorPanel*[R, E](r: R; vm: EditorVM): E =
   r.appendChild(sidebarRoot, selectionHeaderEl)
   r.appendChild(sidebarRoot, sectionListEl)
 
-  when defined(js):
+  when isDomViewHost(E):
     let handleEl = rightResizeHandle
     let panelEl = sidebarRoot
     {.emit: ["""
       (function (handle, panel) {
-        if (!handle || !document) return;
+        if (!handle || typeof document === 'undefined' || !document.addEventListener || !handle.addEventListener) return;
         var startX = 0;
         var startW = 0;
         var dragging = false;
@@ -3076,15 +3358,15 @@ proc renderInspectorPanel*[R, E](r: R; vm: EditorVM): E =
           document.body.style.cursor = '';
           document.body.style.userSelect = '';
         }
-        handle.addEventListener('mousedown', function (e) {
+        function startDrag(e) {
           dragging = true;
           startX = e.clientX;
           startW = panel.getBoundingClientRect().width;
           document.body.style.cursor = 'col-resize';
           document.body.style.userSelect = 'none';
           if (e.preventDefault) e.preventDefault();
-        });
-        document.addEventListener('mousemove', function (e) {
+        }
+        function moveDrag(e) {
           if (!dragging) return;
           // Right panel grows when the cursor moves LEFT (delta < 0
           // means user wants a wider panel). Hence subtract.
@@ -3094,11 +3376,23 @@ proc renderInspectorPanel*[R, E](r: R; vm: EditorVM): E =
               window.__isonimEditor.setRightPanelWidth) {
             window.__isonimEditor.setRightPanelWidth(w);
           }
-        });
+        }
+        handle.addEventListener('mousedown', startDrag);
+        document.addEventListener('mousemove', moveDrag);
         document.addEventListener('mouseup', endDrag);
         document.addEventListener('mouseleave', endDrag);
+        handle.__isonimResizeCleanup = function () {
+          endDrag();
+          handle.removeEventListener('mousedown', startDrag);
+          document.removeEventListener('mousemove', moveDrag);
+          document.removeEventListener('mouseup', endDrag);
+          document.removeEventListener('mouseleave', endDrag);
+        };
       })(""", handleEl, """, """, panelEl, """);
     """].}
+
+    onCleanup proc() =
+      {.emit: ["if (", handleEl, ".__isonimResizeCleanup) ", handleEl, ".__isonimResizeCleanup();"].}
 
   # Phase C (2026-05-28): hydrate the inspector's expanded-section
   # set from ``localStorage`` BEFORE the first reactive paint so the
@@ -3114,7 +3408,7 @@ proc renderInspectorPanel*[R, E](r: R; vm: EditorVM): E =
   # ``localStorage["isonim:inspector:expanded"]``. The shim runs
   # only on JS targets; the native build still owns the
   # signal-write side but skips the storage emit.
-  when defined(js):
+  when isDomViewHost(E):
     createRenderEffect proc() =
       let payload = serializeExpandedSections(
         vm.inspector.expandedSections.val).cstring
@@ -3181,7 +3475,8 @@ proc renderCommandPalette[R, E](r: R; vm: EditorVM): E =
           discard
 
   let paletteRoot = result
-  when defined(js):
+  ownViewResources(paletteRoot)
+  when isDomViewHost(E):
     {.emit: ["""
       (function () {
         const root = """, paletteRoot, """;
@@ -3240,8 +3535,8 @@ proc renderCommandPalette[R, E](r: R; vm: EditorVM): E =
         const restoreReturnFocus = () => {
           const target = root.__isonimReturnFocus;
           if (target && target.focus) {
-            setTimeout(() => target.focus({ preventScroll: true }), 0);
-            setTimeout(() => target.focus({ preventScroll: true }), 25);
+            globalThis.__isonimDeferView(root, () => { if (target.isConnected) target.focus({ preventScroll: true }); }, 0);
+            globalThis.__isonimDeferView(root, () => { if (target.isConnected) target.focus({ preventScroll: true }); }, 25);
           }
         };
         root.__isonimPaletteReset = () => setActive(0, false);
@@ -3313,7 +3608,7 @@ proc renderCommandPalette[R, E](r: R; vm: EditorVM): E =
     r.setAttribute(paletteRoot, "aria-hidden", if open: "false" else: "true")
     r.clearChildren(listNode)
     if not open:
-      when defined(js):
+      when isDomViewHost(E):
         {.emit: ["""
           (function () {
             const root = """, paletteRoot, """;
@@ -3322,8 +3617,8 @@ proc renderCommandPalette[R, E](r: R; vm: EditorVM): E =
             const target = root.__isonimReturnFocus;
             root.__isonimReturnFocus = null;
             if (target && target.focus) {
-              setTimeout(() => target.focus({ preventScroll: true }), 0);
-              setTimeout(() => target.focus({ preventScroll: true }), 25);
+              globalThis.__isonimDeferView(root, () => { if (target.isConnected) target.focus({ preventScroll: true }); }, 0);
+              globalThis.__isonimDeferView(root, () => { if (target.isConnected) target.focus({ preventScroll: true }); }, 25);
             }
           })();
         """].}
@@ -3378,7 +3673,7 @@ proc renderCommandPalette[R, E](r: R; vm: EditorVM): E =
       bindPaletteItem(item, command)
       r.appendChild(listNode, item)
       inc index
-    when defined(js):
+    when isDomViewHost(E):
       if open:
         {.emit: ["""
           (function () {
@@ -3391,7 +3686,7 @@ proc renderCommandPalette[R, E](r: R; vm: EditorVM): E =
             }
             if (root && root.__isonimPaletteReset) root.__isonimPaletteReset();
             if (input && document.activeElement !== input) {
-              setTimeout(() => input.focus({ preventScroll: true }), 0);
+              globalThis.__isonimDeferView(root, () => input.focus({ preventScroll: true }), 0);
             }
           })();
         """].}
@@ -3513,8 +3808,8 @@ proc renderPreviewChromeBar*[R, E](r: R; vm: EditorVM): E =
   ## dedicated chrome-bar tab strip would duplicate the sidebar's role.
   ##
   ## Replaces the M57 left/right edge strips and the per-view
-  ## breadcrumb / "Edit | Code" toolbars. Wraps to a second row on
-  ## narrow viewports so the three groups stay readable at 1440x900.
+  ## breadcrumb / "Edit | Code" toolbars. The single row scrolls
+  ## horizontally within its column when the controls do not fit.
   # M-EVP-3: explicit `gap = "14px"` (centred in the spec's 12-16 px
   # band) gives every adjacent chip cluster a clearly-visible breathing
   # gap; `padding-right = "12px"` keeps the rightmost (mode) cluster
@@ -3539,7 +3834,8 @@ proc renderPreviewChromeBar*[R, E](r: R; vm: EditorVM): E =
   let toolbar = ui(r):
     tdiv(display = "flex", align_items = "center",
           justify_content = "flex-start",
-          gap = "12px",
+          gap = "12px", flex_shrink = "0",
+          overflow_x = "auto", overflow_y = "hidden",
           height = "44px", min_height = "44px",
           box_sizing = "border-box",
           padding_top = "0", padding_right = "12px",
@@ -3613,6 +3909,7 @@ proc renderPreviewChromeBar*[R, E](r: R; vm: EditorVM): E =
          `data-preview-edge-group` = "backend",
          `data-toolbar-cluster` = "backend",
          display = "inline-flex", align_items = "center",
+         flex_shrink = "0",
          `aria-label` = "Preview backend")
 
   var backendInitialIndex = 0
@@ -3799,7 +4096,7 @@ proc renderPreviewChromeBar*[R, E](r: R; vm: EditorVM): E =
          `data-preview-edge-group` = "viewport",
          `data-preview-viewport-strip` = "true",
          display = "inline-flex", align_items = "center",
-         gap = "4px",
+         gap = "4px", flex_shrink = "0",
          position = "relative")
 
   # Inner host — the strip (``mountSegmentedChoice`` mounts here). Kept
@@ -3813,13 +4110,18 @@ proc renderPreviewChromeBar*[R, E](r: R; vm: EditorVM): E =
 
   # Overflow dropdown open signal — flipped by the chevron button.
   let viewportDropdownOpen = createSignal(false)
+  let viewportPopupPositionRevision = createSignal(0)
+  r.addEventListener(toolbar, "scroll", proc() =
+    viewportPopupPositionRevision.val = viewportPopupPositionRevision.value + 1)
 
   # Chevron button — last element in the strip. Opens the dropdown of
-  # the popup-only viewports. Pill chrome chosen to read as the same
+  # all viewports in a compact column, or popup-only viewports when the
+  # pinned strip fits. Pill chrome chosen to read as the same
   # family as the segmented pills (transparent body, same border-
   # radius, small chevron glyph). ``data-preview-viewport-overflow``
   # is the canonical e2e selector.
   var viewportChevronBtn: E
+  var viewportCurrentLabel: E
   let viewportChevronWrap = ui(r):
     tdiv(ref = viewportChevronBtn,
          `role` = "button", tabindex = "0",
@@ -3840,7 +4142,13 @@ proc renderPreviewChromeBar*[R, E](r: R; vm: EditorVM): E =
          border_radius = "4px",
          cursor = "pointer",
          user_select = "none"):
+      tspan(ref = viewportCurrentLabel,
+            `data-preview-viewport-current` = "true",
+            display = "none", white_space = "nowrap"):
+        text capturedVm.viewport.value.label
       text "\xE2\x96\xBE"  # ▾
+  createRenderEffect proc() =
+    r.setTextContent(viewportCurrentLabel, capturedVm.viewport.val.label)
   r.appendChild(viewportClusterWrapper, viewportChevronWrap)
 
   # The active breakpoint, immediately right of the screen-size chips.
@@ -3903,11 +4211,16 @@ proc renderPreviewChromeBar*[R, E](r: R; vm: EditorVM): E =
     let openSig = viewportDropdownOpen
     let toggleHandler = proc() = openSig.val = not openSig.val
     r.addEventListener(viewportChevronBtn, "click", toggleHandler)
-    r.addEventListener(viewportChevronBtn, "keydown", toggleHandler)
+    when not defined(js):
+      r.addEventListener(viewportChevronBtn, "keydown", toggleHandler)
+    r.addEventListener(viewportChevronBtn, "isonim-close-viewport", proc() = openSig.val = false)
 
-  # Overflow dropdown — listbox of popup viewport options. Anchored
-  # below the cluster wrapper (position: absolute on the dropdown,
-  # position: relative on the wrapper, see above). The dropdown is
+  # Overflow dropdown — listbox of every viewport option. CSS keeps pinned
+  # entries in the strip at wide column widths and exposes them here when
+  # the strip becomes the compact current-viewport selector. Anchored
+  # below the cluster wrapper using its measured viewport coordinates.
+  # Fixed positioning keeps it outside the horizontal scrolling clip.
+  # The dropdown is
   # rebuilt on backend-flip alongside the strip.
   var viewportDropdownEl: E
   let viewportDropdownNode = ui(r):
@@ -3915,7 +4228,7 @@ proc renderPreviewChromeBar*[R, E](r: R; vm: EditorVM): E =
          `role` = "listbox",
          `aria-label` = "More viewport sizes",
          `data-preview-viewport-dropdown` = "true",
-         position = "absolute",
+         position = "fixed",
          left = "0", top = "100%",
          margin_top = "4px",
          min_width = "160px",
@@ -3937,6 +4250,23 @@ proc renderPreviewChromeBar*[R, E](r: R; vm: EditorVM): E =
     let openSig = viewportDropdownOpen
     createRenderEffect proc() =
       let open = openSig.val
+      discard viewportPopupPositionRevision.val
+      when isDomViewHost(E):
+        if open:
+          let cluster = viewportClusterWrapper
+          var popupLeft = 0.0
+          var popupTop = 0.0
+          {.emit: ["""
+            if (""", cluster, """.getBoundingClientRect) {
+              var clusterBox = """, cluster, """.getBoundingClientRect();
+              var column = """, cluster, """.closest('[data-preview-center-column]');
+              var columnBox = column ? column.getBoundingClientRect() : {left: 0, right: window.innerWidth};
+              """, popupLeft, """ = Math.max(columnBox.left, Math.min(clusterBox.left, columnBox.right - 170));
+              """, popupTop, """ = clusterBox.bottom;
+            }
+          """].}
+          r.setStyle(dropdown, "left", $popupLeft & "px")
+          r.setStyle(dropdown, "top", $popupTop & "px")
       r.setStyle(dropdown, "display", if open: "block" else: "none")
       r.setAttribute(chevron, "aria-expanded",
         if open: "true" else: "false")
@@ -3969,6 +4299,8 @@ proc renderPreviewChromeBar*[R, E](r: R; vm: EditorVM): E =
           tdiv(ref = entry,
                `role` = "option", tabindex = "-1",
                `aria-selected` = "false",
+               `data-preview-viewport-pinned-option` =
+                 (if vp in pinnedViewports(cvm.platform.value): "true" else: "false"),
                `data-preview-viewport-dropdown-option` = vp.slug,
                `data-preview-viewport-dropdown-option-label` = lbl,
                display = "flex", align_items = "center",
@@ -3985,9 +4317,60 @@ proc renderPreviewChromeBar*[R, E](r: R; vm: EditorVM): E =
           cvm.changeViewport(vp)
           openSig.val = false
         r.addEventListener(entry, "click", pickHandler)
-        r.addEventListener(entry, "keydown", pickHandler)
+        when not defined(js):
+          r.addEventListener(entry, "keydown", pickHandler)
 
-  rebuildViewportDropdown(viewportDropdownEl, viewportPopup)
+  rebuildViewportDropdown(viewportDropdownEl, viewportOptionList(capturedVm.platform.value))
+
+  when isDomViewHost(E):
+    let trigger = viewportChevronBtn
+    let dropdown = viewportDropdownEl
+    {.emit: ["""
+      (function (bar, trigger, dropdown) {
+        if (!trigger || !trigger.addEventListener) return;
+        function close(returnFocus) {
+          trigger.dispatchEvent(new Event('isonim-close-viewport'));
+          if (returnFocus) trigger.focus();
+        }
+        function outside(event) {
+          if (!trigger.contains(event.target) && !dropdown.contains(event.target)) close(false);
+        }
+        function escape(event) {
+          if (event.key === 'Escape' && trigger.getAttribute('aria-expanded') === 'true') {
+            event.preventDefault(); close(true);
+          }
+        }
+        function moved() { close(false); }
+        trigger.addEventListener('keydown', function (event) {
+          if (event.key !== 'Enter' && event.key !== ' ') return;
+          event.preventDefault(); trigger.click();
+          if (trigger.getAttribute('aria-expanded') === 'true') {
+            var first = Array.from(dropdown.querySelectorAll('[role=option]')).find(function (option) { return option.getClientRects().length; });
+            if (first) first.focus();
+          }
+        });
+        dropdown.addEventListener('keydown', function (event) {
+          var options = Array.from(dropdown.querySelectorAll('[role=option]')).filter(function (option) { return option.getClientRects().length; });
+          var index = options.indexOf(document.activeElement);
+          if (event.key === 'ArrowDown' || event.key === 'ArrowUp') {
+            event.preventDefault();
+            if (options.length) options[(index + (event.key === 'ArrowDown' ? 1 : options.length - 1)) % options.length].focus();
+          } else if (event.key === 'Enter' || event.key === ' ') {
+            event.preventDefault(); if (index >= 0) { options[index].click(); trigger.focus(); }
+          }
+        });
+        document.addEventListener('mousedown', outside);
+        document.addEventListener('keydown', escape);
+        window.addEventListener('resize', moved);
+        bar.__isonimViewportCleanup = function () {
+          document.removeEventListener('mousedown', outside);
+          document.removeEventListener('keydown', escape);
+          window.removeEventListener('resize', moved);
+        };
+      })(""", toolbar, """, """, trigger, """, """, dropdown, """);
+    """].}
+    onCleanup proc() =
+      {.emit: ["if (", toolbar, ".__isonimViewportCleanup) ", toolbar, ".__isonimViewportCleanup();"].}
 
   # Reactive rebuild — when the backend flips, BOTH the strip's pinned
   # set AND the dropdown's popup set change. We rebuild both in the
@@ -4062,9 +4445,9 @@ proc renderPreviewChromeBar*[R, E](r: R; vm: EditorVM): E =
           variant = cgvTransparent))
     else:
       viewportPinned = newPinned
-    if viewportSlugSeq(newPopup) != viewportSlugSeq(viewportPopup):
+    if needsRebuild or viewportSlugSeq(newPopup) != viewportSlugSeq(viewportPopup):
       viewportPopup = newPopup
-      rebuildViewportDropdown(viewportDropdownEl, viewportPopup)
+      rebuildViewportDropdown(viewportDropdownEl, viewportOptionList(backend))
     else:
       viewportPopup = newPopup
 
@@ -4126,6 +4509,7 @@ proc renderPreviewChromeBar*[R, E](r: R; vm: EditorVM): E =
          `data-toolbar-cluster` = "mode",
          `data-toolbar-cluster-docked` = "right",
          display = "inline-flex", align_items = "center",
+         flex_shrink = "0",
          `aria-label` = "Preview mode")
 
   var modeInitialIndex = 0
@@ -4242,6 +4626,15 @@ proc renderAiAssistantPanel*[R, E](r: R; vm: EditorVM): E =
   ## uses) so the inspector and AI assistant occupy the same
   ## horizontal slot.
   let capturedVm = vm
+  var panelAlive = true
+  onCleanup proc() = panelAlive = false
+  proc livePanel(): bool = panelAlive
+  let panelCurrent = livePanel
+  proc listen(node: E; event: string; callback: proc()) =
+    var listenerAlive = true
+    onCleanup proc() = listenerAlive = false
+    r.addEventListener(node, event, proc() =
+      if panelAlive and listenerAlive: callback())
 
   var tabStripEl: E
   var tabListEl: E
@@ -4300,11 +4693,20 @@ proc renderAiAssistantPanel*[R, E](r: R; vm: EditorVM): E =
         discard
   let panelRoot = result
 
-  # Mount the existing chat panel inside the content host. The chat
-  # panel reads ``vm.activeChat()`` so switching tabs (which flips
-  # ``activeChatId``) automatically swaps the visible chat content.
-  let chatPanel = renderChatPanel[R, E](r, vm)
-  r.appendChild(chatContentHost, chatPanel)
+  # Each active conversation owns a disposable view scope. Switching tabs
+  # rebinds every composer/activity effect to that conversation, while its VM
+  # retains the draft, transcript, backend identity and scroll position.
+  var disposeChatView: proc()
+  onCleanup proc() =
+    if disposeChatView != nil: disposeChatView()
+  createRenderEffect proc() =
+    discard vm.activeChatId.val
+    if disposeChatView != nil: disposeChatView()
+    r.clearChildren(chatContentHost)
+    createRoot proc(dispose: proc()) =
+      disposeChatView = dispose
+      let chatPanel = renderChatPanel[R, E](r, vm)
+      r.appendChild(chatContentHost, chatPanel)
 
   # Width binding — mirror the inspector's bindRightPanelWidth so
   # both right-sidebar surfaces occupy the same horizontal slot.
@@ -4323,42 +4725,58 @@ proc renderAiAssistantPanel*[R, E](r: R; vm: EditorVM): E =
          background_color = "transparent",
          z_index = "30")
   r.appendChild(panelRoot, aiResizeHandle)
-  when defined(js):
+  when isDomViewHost(E):
     let handleEl = aiResizeHandle
     let panelEl = panelRoot
     {.emit: ["""
-      (function (handle, panel) {
-        if (!handle || !document) return;
+      (function (handle, panel, live) {
+        if (!handle || typeof document === 'undefined' || !document.addEventListener || !handle.addEventListener) return;
         var startX = 0;
         var startW = 0;
         var dragging = false;
-        function endDrag() {
+        function releaseDrag() {
           if (!dragging) return;
           dragging = false;
           document.body.style.cursor = '';
           document.body.style.userSelect = '';
         }
-        handle.addEventListener('mousedown', function (e) {
+        function endDrag() {
+          if (live()) releaseDrag();
+        }
+        function startDrag(e) {
+          if (!live()) return;
           dragging = true;
           startX = e.clientX;
           startW = panel.getBoundingClientRect().width;
           document.body.style.cursor = 'col-resize';
           document.body.style.userSelect = 'none';
           if (e.preventDefault) e.preventDefault();
-        });
-        document.addEventListener('mousemove', function (e) {
-          if (!dragging) return;
+        }
+        function moveDrag(e) {
+          if (!live() || !dragging) return;
           var delta = startX - e.clientX;
           var w = Math.max(200, Math.min(420, Math.round(startW + delta)));
           if (window.__isonimEditor &&
               window.__isonimEditor.setRightPanelWidth) {
             window.__isonimEditor.setRightPanelWidth(w);
           }
-        });
+        }
+        handle.addEventListener('mousedown', startDrag);
+        document.addEventListener('mousemove', moveDrag);
         document.addEventListener('mouseup', endDrag);
         document.addEventListener('mouseleave', endDrag);
-      })(""", handleEl, """, """, panelEl, """);
+        handle.__isonimResizeCleanup = function () {
+          releaseDrag();
+          handle.removeEventListener('mousedown', startDrag);
+          document.removeEventListener('mousemove', moveDrag);
+          document.removeEventListener('mouseup', endDrag);
+          document.removeEventListener('mouseleave', endDrag);
+        };
+      })(""", handleEl, """, """, panelEl, """, """, panelCurrent, """);
     """].}
+
+    onCleanup proc() =
+      {.emit: ["if (", handleEl, ".__isonimResizeCleanup) ", handleEl, ".__isonimResizeCleanup();"].}
 
   # Overflow-dropdown open signal.
   let dropdownOpen = createSignal(false)
@@ -4408,8 +4826,8 @@ proc renderAiAssistantPanel*[R, E](r: R; vm: EditorVM): E =
   block:
     let cvm = capturedVm
     let newClick = proc() = discard cvm.createNewChat()
-    r.addEventListener(newChatBtn, "click", newClick)
-    r.addEventListener(newChatBtn, "keydown", newClick)
+    listen(newChatBtn, "click", newClick)
+    listen(newChatBtn, "keydown", newClick)
 
   # Overflow dropdown.
   let dropdownEl = ui(r):
@@ -4444,8 +4862,8 @@ proc renderAiAssistantPanel*[R, E](r: R; vm: EditorVM): E =
   block:
     let openSig = dropdownOpen
     let toggleHandler = proc() = openSig.val = not openSig.val
-    r.addEventListener(overflowBtn, "click", toggleHandler)
-    r.addEventListener(overflowBtn, "keydown", toggleHandler)
+    listen(overflowBtn, "click", toggleHandler)
+    listen(overflowBtn, "keydown", toggleHandler)
 
   # Tab strip rebuild: reactive on ``chats`` + ``activeChatId``.
   block:
@@ -4470,7 +4888,8 @@ proc renderAiAssistantPanel*[R, E](r: R; vm: EditorVM): E =
       let sessions = cvm.chats.val
       let activeId = cvm.activeChatId.val
 
-      for session in sessions:
+      proc appendSession(session: ChatSession) =
+        # A proc call gives this item its own callback/effect environment.
         let sessionId = session.id
         let title = session.title.val
         let isActive = sessionId == activeId
@@ -4527,8 +4946,8 @@ proc renderAiAssistantPanel*[R, E](r: R; vm: EditorVM): E =
         discard labelHost
 
         let click = tabClickHandler(cvm, sessionId)
-        r.addEventListener(tabEl, "click", click)
-        r.addEventListener(tabEl, "keydown", click)
+        listen(tabEl, "click", click)
+        listen(tabEl, "keydown", click)
         block:
           let dot = statusDot
           let chatVm = session.vm
@@ -4577,8 +4996,8 @@ proc renderAiAssistantPanel*[R, E](r: R; vm: EditorVM): E =
               text title
         r.appendChild(dropdown, entryEl)
         let entryClick = dropdownEntryClick(cvm, sessionId, openSig)
-        r.addEventListener(entryEl, "click", entryClick)
-        r.addEventListener(entryEl, "keydown", entryClick)
+        listen(entryEl, "click", entryClick)
+        listen(entryEl, "keydown", entryClick)
         block:
           let dot = dotEntryHost
           let chatVm = session.vm
@@ -4591,14 +5010,19 @@ proc renderAiAssistantPanel*[R, E](r: R; vm: EditorVM): E =
               of asError: "#EF4444"
             r.setStyle(dot, "background-color", color)
 
+      for session in sessions:
+        appendSession(session)
+
     createRenderEffect proc() =
       discard cvm.chats.val
       discard cvm.activeChatId.val
       renderTabStrip()
 
+    ownViewResources(tabList)
+
     # Overflow detection — reveal the chevron when the tab list's
     # scrollWidth exceeds its clientWidth.
-    when defined(js):
+    when isDomViewHost(E):
       let listJs = tabList
       let overflowJs = overflowBtn
       createRenderEffect proc() =
@@ -4606,7 +5030,7 @@ proc renderAiAssistantPanel*[R, E](r: R; vm: EditorVM): E =
         {.emit: ["""
           (function (list, btn) {
             if (!list || !btn) return;
-            setTimeout(function () {
+            globalThis.__isonimDeferView(list, function () {
               var overflowing = list.scrollWidth > list.clientWidth;
               btn.style.display = overflowing ? 'flex' : 'none';
             }, 0);
@@ -4614,15 +5038,16 @@ proc renderAiAssistantPanel*[R, E](r: R; vm: EditorVM): E =
         """].}
 
   # Click-outside / ESC closes the overflow dropdown when open.
-  when defined(js):
+  when isDomViewHost(E):
     let panelJs = panelRoot
     let dropdownJs = overflowDropdown
     {.emit: ["""
-      (function (panel, dropdown) {
+      (function (panel, dropdown, live) {
         if (!panel || !dropdown) return;
         if (panel.__isonimAiAssistantReady) return;
         panel.__isonimAiAssistantReady = true;
-        document.addEventListener('mousedown', function (event) {
+        function outside(event) {
+          if (!live()) return;
           if (dropdown.style.display === 'none') return;
           var target = event.target;
           if (!target) return;
@@ -4632,24 +5057,37 @@ proc renderAiAssistantPanel*[R, E](r: R; vm: EditorVM): E =
           if (trigger && trigger.contains(target)) return;
           dropdown.style.display = 'none';
           if (trigger) trigger.setAttribute('aria-expanded', 'false');
-        });
-        document.addEventListener('keydown', function (event) {
+        }
+        function escape(event) {
+          if (!live()) return;
           if (event.key !== 'Escape') return;
           if (dropdown.style.display === 'none') return;
           dropdown.style.display = 'none';
           var trigger = panel.querySelector(
             '[data-ai-assistant-overflow="true"]');
           if (trigger) trigger.setAttribute('aria-expanded', 'false');
-        });
-      })(""", panelJs, """, """, dropdownJs, """);
+        }
+        document.addEventListener('mousedown', outside);
+        document.addEventListener('keydown', escape);
+        panel.__isonimAiCleanup = function () {
+          document.removeEventListener('mousedown', outside);
+          document.removeEventListener('keydown', escape);
+        };
+      })(""", panelJs, """, """, dropdownJs, """, """, panelCurrent, """);
     """].}
+
+    onCleanup proc() =
+      {.emit: ["if (", panelJs, ".__isonimAiCleanup) ", panelJs, ".__isonimAiCleanup();"].}
 
   # TODO(spec): wire title summarization once agent emits summary
   # signal — the per-spec future-work item. Today titles default to
   # "New chat" / "New chat 2" / ... via ``createChatSession``.
   discard panelRoot
 
-proc renderEditorShell*[R, E](r: R; vm: EditorVM): E =
+proc renderEditorShell*[R, E](r: R; vm: EditorVM;
+    onSpecPaneMounted: proc(vm: spec_pane_view.SpecPaneVM) {.closure.} = nil): E =
+  ## Optionally observe the actual Spec VM once per mount. Its subscriptions
+  ## belong to this mount's owner; the default nil observer changes no behavior.
   ## Top-level editor layout: [sidebar | center column | inspector chat] +
   ## status bar. The global title bar and the M57 left/right edge strips
   ## are gone — backend / viewport / mode chips now live in the shared
@@ -4657,7 +5095,7 @@ proc renderEditorShell*[R, E](r: R; vm: EditorVM): E =
   ## (`renderPreviewChromeBar`). The shell row sits edge-to-edge at the
   ## top of the viewport.
   let shellRoot = ui(r):
-    tdiv(display = "flex", flex_direction = "column",
+    tdiv(`data-isonim-editor` = "true", display = "flex", flex_direction = "column",
           width = "100%", height = "100%",
           font_family = "-apple-system, BlinkMacSystemFont, 'Inter', 'Segoe UI', system-ui, sans-serif",
           font_size = "14px", background_color = bgBase,
@@ -4709,6 +5147,9 @@ proc renderEditorShell*[R, E](r: R; vm: EditorVM): E =
           # sidebar stays mounted so the user can keep talking to the
           # assistant.
           position = "relative",
+          # Keep chrome and center overlays in this column's stacking
+          # context. Dropdowns remain unclipped inside the preview.
+          z_index = "0",
           `data-preview-center-column` = "true")
   let viewStack = ui(r):
     tdiv(display = "flex", flex = "1", min_width = "0", min_height = "0",
@@ -4766,6 +5207,8 @@ proc renderEditorShell*[R, E](r: R; vm: EditorVM): E =
       cancelEdits(specPaneVm),
   )
   spec_pane_view.mountSpecPane[R, E](r, specPaneEl, specPaneVm, specPaneCallbacks)
+  if onSpecPaneMounted != nil:
+    onSpecPaneMounted(specPaneVm)
   # Reactively feed the active brief's markdown into the spec pane VM.
   # ``resolveBriefId`` follows the active story + selected backend.
   # We prepend the brief's ``title`` as an H1 so the rendered TipTap
@@ -5182,6 +5625,20 @@ proc renderEditorShell*[R, E](r: R; vm: EditorVM): E =
       variablePickerState.previouslyLinked.val =
         vm.previouslyLinkedVariables(key)
       openVariablePickerWithRect(variablePickerState, key, x, y, w, h)
+  # Popups belong to the selection that invoked them. Changing selection
+  # cancels token/value drafts rather than applying them to a new element.
+  var popupSelection = (id: vm.inspector.selectedElement.val.id,
+    story: vm.selectedStory.val, generation: vm.preview.sourceGeneration.val)
+  createRenderEffect proc() =
+    let selected = (id: vm.inspector.selectedElement.val.id,
+      story: vm.selectedStory.val, generation: vm.preview.sourceGeneration.val)
+    if selected != popupSelection:
+      popupSelection = selected
+      when isDomViewHost(E):
+        {.emit: ["if (globalThis.__isonimCloseInspectorPopovers) globalThis.__isonimCloseInspectorPopovers(", shellRoot, ");"].}
+      closeVariablePicker(variablePickerState)
+      closeVariableInlineEditor(variableInlineEditorState)
+
   # Wire the picker's per-row Edit affordance into the inline editor.
   # The picker's row knows the variable key; the inline editor opens
   # anchored to the picker by inheriting the picker's anchor rect.
@@ -5220,18 +5677,23 @@ proc renderEditorShell*[R, E](r: R; vm: EditorVM): E =
   r.addEventListener(escKeyNode, "keydown", proc() =
     if vm.activeView.val == evVectorEditor:
       vm.closeVectorEditor())
-  when defined(js):
+  when isDomViewHost(E):
     {.emit: ["""
       (function () {
         const node = """, escKeyNode, """;
         if (!node || node.__isonimEscBound) return;
         node.__isonimEscBound = true;
-        document.addEventListener('keydown', function (event) {
+        function escape(event) {
           if (event.key !== 'Escape') return;
           const ev = new Event('keydown', { bubbles: false });
           node.dispatchEvent(ev);
-        });
+        }
+        document.addEventListener('keydown', escape);
+        node.__isonimEscapeCleanup = () => document.removeEventListener('keydown', escape);
       })();
     """].}
+
+    onCleanup proc() =
+      {.emit: ["if (", escKeyNode, ".__isonimEscapeCleanup) ", escKeyNode, ".__isonimEscapeCleanup();"].}
 
   shellRoot

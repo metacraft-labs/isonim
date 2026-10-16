@@ -9,6 +9,7 @@ when not defined(js):
 import std/[dom, strutils]
 
 import isonim/core/[computation, owner, signals]
+import isonim/editor/control_browser
 import isonim/editor/dom_renderer
 import isonim/editor/streaming_preview
 import isonim/editor/types
@@ -17,9 +18,12 @@ import isonim/editor/workspace
 import isonim/editor/editable_cells
 import isonim/editor/views/shell
 import isonim/editor/design_review/editor_agent_adapter
+from isonim/editor/design_review/browser_agent_client import BrowserAgentClient
 
 var
   routeSyncScheduled = false
+  routeWriteTimer = 0
+  routeOwnerGeneration = 0
   routeHistoryInitialized = false
   applyingRoute = false
   lastSyncedRoute = ""
@@ -69,6 +73,17 @@ proc injectEditorStyles*() =
     .editor-manual-inspector {
       scrollbar-width: thin;
     }
+    /* Use platform-sized, visible scrollbars in high-contrast mode. Keep
+     * the same specificity as panel rules and override legacy hidden tabs. */
+    @media (forced-colors: active) {
+      *, .editor-sidebar, .editor-chat, .editor-manual-inspector {
+        scrollbar-color: auto;
+        scrollbar-width: auto;
+      }
+      ::-webkit-scrollbar { width: auto; height: auto; }
+      ::-webkit-scrollbar-thumb { background-color: CanvasText; }
+      .editor-tabbar::-webkit-scrollbar { display: revert; }
+    }
     .editor-sidebar::-webkit-resizer {
       background: #334155;
     }
@@ -82,6 +97,27 @@ proc injectEditorStyles*() =
     }
     .editor-manual-inspector details:not([open]) > *:not(summary) {
       display: none !important;
+    }
+    /* Adapt to the preview column, including a resizable chat/inspector.
+       The full chip strip remains unchanged when there is room. */
+    [data-preview-center-column] { container-type: inline-size; container-name: preview-chrome; }
+    [data-preview-viewport-pinned-option="true"] { display: none !important; }
+    @container preview-chrome (max-width: 1000px) {
+      [data-preview-chrome-bar] { gap: 4px !important; padding-left: 4px !important; padding-right: 4px !important; }
+      [data-preview-toolbar-spacer] { min-width: 0 !important; }
+      [data-preview-chrome-bar] [data-choice-group-has-icon="true"] {
+        min-width: 24px !important; width: 24px !important;
+        box-sizing: border-box; padding: 2px !important;
+      }
+      [data-preview-viewport-strip-host] [data-choice-group-pill] {
+        min-width: 0 !important; padding: 2px 6px !important;
+      }
+    }
+    @container preview-chrome (max-width: 640px) {
+      [data-preview-viewport-strip-host] { display: none !important; }
+      [data-preview-viewport-current] { display: inline !important; }
+      [data-preview-viewport-overflow] { gap: 4px; }
+      [data-preview-viewport-pinned-option="true"] { display: flex !important; }
     }
     /* Per-row "More" disclosure: hidden by default, revealed on row hover. */
     [data-inspector-control] > details > summary {
@@ -144,12 +180,17 @@ proc injectEditorStyles*() =
     @media (max-width: 1024px) and (min-width: 769px) {
       .editor-sidebar { width: 220px !important; min-width: 220px !important; }
       .editor-inspector,
-      .editor-chat,
       .editor-manual-inspector { width: min(320px, 38vw) !important; min-width: min(320px, 38vw) !important; max-width: min(320px, 38vw) !important; }
       .editor-tabbar > div { padding: 0 6px !important; font-size: 10px !important; }
     }
     .editor-input::placeholder { color: #475569; }
     .editor-input:focus { border-color: #3B82F6 !important; }
+    /* Programmatic agent focus and keyboard focus use the same visible ring.
+       The search input has no border; paint its enclosing field instead. */
+    [data-sidebar-search-field]:focus-within {
+      outline: 2px solid #3B82F6;
+      outline-offset: 2px;
+    }
 
     /* ---- Phase H — Property row visual polish (2026-05-28) ---- */
 
@@ -191,7 +232,7 @@ proc injectEditorStyles*() =
     [data-inspector-section-header]:hover [data-inspector-section-title] {
       color: #FFFFFF !important;
     }
-    [data-inspector-section-action="add"]:hover {
+    [data-inspector-section-action="add"]:not([aria-disabled="true"]):hover {
       background-color: #1F212C !important;
       color: #ECEDF3 !important;
     }
@@ -286,8 +327,8 @@ proc writeRouteUrl(url: string; replace: bool) =
   else:
     {.emit: ["window.history.pushState({ isonimEditor: true }, '', ", next, ")"].}
 
-proc deferRouteWrite(cb: proc()) =
-  {.emit: ["setTimeout(", cb, ", 0)"].}
+proc deferRouteWrite(cb: proc()): int =
+  {.emit: [result, " = setTimeout(", cb, ", 0);"].}
 
 proc addPopstateListener(handler: proc()) =
   {.emit: ["window.addEventListener('popstate', ", handler, ")"].}
@@ -476,8 +517,12 @@ proc installEditorKeyboardShortcuts(vm: EditorVM) =
     discard vm.runEditorCommand(eckUndo)
   let redo = proc() =
     discard vm.runEditorCommand(eckRedo)
-  {.emit: ["""
+  var cleanup: proc()
+  {.emit: [cleanup, " = ", """
     (function () {
+      let disposed = false;
+      const timers = new Set();
+      function deferFocus(fn) { const id = setTimeout(() => { timers.delete(id); if(!disposed) fn(); }, 0); timers.add(id); }
       const openPalette = """, openPalette, """;
       const closePalette = """, closePalette, """;
       const editMode = """, editMode, """;
@@ -524,7 +569,7 @@ proc installEditorKeyboardShortcuts(vm: EditorVM) =
         const palette = document.querySelector('[data-editor-command-palette="true"]');
         return palette && palette.getAttribute('aria-hidden') === 'false';
       };
-      window.addEventListener('keydown', function (event) {
+      function key(event) {
         const key = event.key;
         const code = event.code;
         const lower = String(key || '').toLowerCase();
@@ -536,17 +581,17 @@ proc installEditorKeyboardShortcuts(vm: EditorVM) =
           openPalette();
           const palette = document.querySelector('[data-editor-command-palette="true"]');
           if (palette) palette.__isonimReturnFocus = returnFocus;
-          setTimeout(() => {
+          deferFocus(() => {
             const input = document.querySelector('[aria-label="Search editor commands"]');
             if (input && input.focus) input.focus({ preventScroll: true });
-          }, 0);
+          });
           return;
         }
         if (key === 'Escape' && paletteOpen()) {
           event.preventDefault();
           closePalette();
           if (returnFocus && returnFocus.focus) {
-            setTimeout(() => returnFocus.focus({ preventScroll: true }), 0);
+            deferFocus(() => returnFocus.focus({ preventScroll: true }));
           }
           return;
         }
@@ -596,14 +641,17 @@ proc installEditorKeyboardShortcuts(vm: EditorVM) =
         } else if (lower === 'i') {
           event.preventDefault();
           focusInspector();
-          setTimeout(() => {
+          deferFocus(() => {
             const input = document.querySelector('[data-isonim-focus-id="section-search"]');
             if (input && input.focus) input.focus({ preventScroll: true });
-          }, 0);
+          });
         }
-      });
+      }
+      window.addEventListener('keydown', key);
+      return function() { disposed = true; window.removeEventListener('keydown', key); for(const id of timers) clearTimeout(id); timers.clear(); };
     })();
   """].}
+  onCleanup(cleanup)
 
 proc editorRouteUrl(vm: EditorVM): string =
   var parts = @[
@@ -642,7 +690,10 @@ proc scheduleEditorRouteSync(vm: EditorVM) =
     return
 
   routeSyncScheduled = true
-  deferRouteWrite proc() =
+  let generation = routeOwnerGeneration
+  routeWriteTimer = deferRouteWrite proc() =
+    if generation != routeOwnerGeneration: return
+    routeWriteTimer = 0
     routeSyncScheduled = false
     if not applyingRoute:
       syncEditorRouteNow(vm, replace = not routeHistoryInitialized)
@@ -691,6 +742,7 @@ proc applyEditorRoute(vm: EditorVM) =
       vm.activeView.val = viewFromSlug(viewParam, vm.activeView.val)
 
 proc installEditorHistorySync(vm: EditorVM) =
+  routeOwnerGeneration.inc
   routeSyncScheduled = false
   routeHistoryInitialized = false
   lastSyncedRoute = ""
@@ -719,6 +771,10 @@ proc installEditorHistorySync(vm: EditorVM) =
   addPopstateListener(onPopstate)
   onCleanup proc() =
     removePopstateListener(onPopstate)
+    routeOwnerGeneration.inc
+    {.emit: ["clearTimeout(", routeWriteTimer, ");"].}
+    routeWriteTimer = 0
+    routeSyncScheduled = false
 
 proc exposeWindowEditorHandle*(vm: EditorVM) =
   ## REV-M2: install a small ``window.__isonimEditor`` helper that the
@@ -838,9 +894,7 @@ proc exposeWindowEditorHandle*(vm: EditorVM) =
       # A failed build leaves the status bar saying so. Clear it on the next
       # success, or the editor keeps reporting a compile error that has been
       # fixed -- which teaches people to ignore the status bar.
-      if vm.workspaceEditStage.val == wesFailed:
-        vm.workspaceEditStage.val = wesClean
-        vm.workspaceEditDiagnostics.val = @[]
+      vm.recoverProjectBuild()
     {.emit: ["""
       (function (buildFailed, buildRecovered) {
         // Install once per DOCUMENT, not once per bundle.
@@ -915,6 +969,9 @@ proc exposeWindowEditorHandle*(vm: EditorVM) =
         }
         connect();
       })(""", buildFailed, ", ", buildRecovered, ");"].}
+
+  onCleanup proc() =
+    {.emit: "if (window.__isonimAutoSaveTimer) clearTimeout(window.__isonimAutoSaveTimer); window.__isonimAutoSaveTimer = null;".}
 
   # Auto-save. The VM bumps a generation when a commit stages an edit; the
   # debounce lives here because the VM has no timer and should not grow one
@@ -1059,6 +1116,80 @@ proc onProjectCodeReplaced() =
   ## which is a deliberate act rather than a side effect of compiling.
   discard
 
+proc unmountEditor*(vm: EditorVM): bool {.discardable.} =
+  ## Dispose this UI mount, retaining the application's model and backend
+  ## conversations. Repeated disposal is a no-op; another model is untouched.
+  {.emit: ["const mountedUI = globalThis.__isonimEditorMount; ", result,
+    " = false; if (mountedUI && mountedUI.vm === ", vm, ") {",
+    "globalThis.__isonimEditorMount = null; mountedUI.shell.setAttribute('data-isonim-unmounting','true'); mountedUI.dispose(); mountedUI.shell.remove();",
+    "globalThis.__isonimEditor = null; ", result, " = true; }"].}
+
+proc mountEditor*(vm: EditorVM; root: Element = document.body;
+                  useHashRoute = true; injectStyles = true): EditorVM =
+  ## Mount a retained model through the production view path. Ownership of the
+  ## model remains with its host; unmounting these views does not close sessions.
+  if vm == nil: raise newException(ValueError, "An editor model is required.")
+  var alreadyMounted = false
+  {.emit: [alreadyMounted, " = !!globalThis.__isonimEditorMount;"].}
+  if alreadyMounted:
+    if liveEditorVM() == vm: return vm
+    raise newException(ValueError, "Another editor UI is already mounted.")
+  if injectStyles:
+    injectEditorStyles()
+
+  when defined(js):
+    # RS-M11 Pattern A: the JS bundle needs the streaming-preview
+    # VM so the non-Web canvas can route F/M/I packets and surface
+    # manifest selections back to the sidebar. createEditorVM
+    # leaves the field nil per the M57 headless contract; the
+    # JS mount path opts in here.  Web stays the default backend;
+    # the chip click flips `vm.platform` AND
+    # `streamingPreview.selectedBackend`.
+    if vm.streamingPreview == nil:
+      vm.streamingPreview = newStreamingPreviewVM(initial = pbWeb,
+        available = @[pbWeb, pbTui, pbGpui, pbFreya, pbCocoa,
+                      pbAndroid, pbIos])
+  createRoot proc(dispose: proc()) =
+    # Phase C: install the daemon-driven agent adapter on top of any
+    # workspace-supplied placeholder.  The chat panel and the brief
+    # tab's "Review this preview" button both drive the daemon's
+    # ``/api/agent/*`` routes via the resolved base URL.  This is the
+    # production wiring; VM tests inject a fake client via
+    # ``configureAgentAdaptersWithClient`` instead.
+
+    vm.setTelemetryOverlayVisible(editorDebugEnabled())
+    if useHashRoute:
+      installEditorHistorySync(vm)
+    installEditorKeyboardShortcuts(vm)
+
+    let r = DomRenderer()
+    let shell = renderEditorShell[DomRenderer, DomElement](r, vm)
+    {.emit: [shell, ".style.position='fixed'"].}
+    {.emit: [shell, ".style.inset='0'"].}
+    {.emit: [shell, ".style.overflow='hidden'"].}
+    root.appendChild(shell)
+    let controlBridge = vm.installControlBridge(shell)
+    vm.configureChat = proc(chat: AgentChatVM) =
+      var client: BrowserAgentClient
+      {.emit: ["globalThis.__isonimEditorAgentClients ||= new WeakMap(); ", client,
+        " = globalThis.__isonimEditorAgentClients.get(", chat, ") || null;"].}
+      if client == nil:
+        client = configureDaemonAgentAdapters(chat)
+        {.emit: ["globalThis.__isonimEditorAgentClients.set(", chat, ", ", client, ");"].}
+      controlBridge.bindClient(client)
+    for session in vm.chats.val: vm.configureChat(session.vm)
+    # REV-M2: expose a tiny window-level handle so Playwright e2e
+    # tests can drive story selection without having to scrape the
+    # sidebar DOM (which omits stories that aren't part of the demo
+    # workspace).  The handle is intentionally minimal — production
+    # consumers should not rely on it.
+    exposeWindowEditorHandle(vm)
+    # Last thing on the first-mount path: from here on a re-run of this bundle
+    # is a swap, and `liveEditorVM` above is how it finds out.
+    rememberLiveEditorVM(vm)
+    {.emit: ["globalThis.__isonimEditorMount = {vm:", vm, ", shell:", shell, ", dispose:", dispose, "};"].}
+  vm
+
 proc mountEditor*(workspace: EditorWorkspace;
                   root: Element = document.body;
                   useHashRoute = true;
@@ -1092,53 +1223,21 @@ proc mountEditor*(workspace: EditorWorkspace;
       # rebuilds the preview: the overrides must be gone by the time the new
       # frame asks for them, or the frame-start re-apply puts them straight
       # back on top of the source that now carries the same values.
+      # Validate scope before clearing preview overrides or replacing any data.
+      try:
+        live.validateProjectRefresh(workspace)
+      except ValueError as error:
+        live.recordProjectRefreshRefusal(error.msg)
+        return live
       onProjectCodeReplaced()
       live.loadProjectData(workspace)
-      return live
+      live.clearProjectRefreshRefusal()
+      var hasView = false
+      {.emit: [hasView, " = !!document.querySelector('[data-sidebar-content=inspector]');"].}
+      if hasView: return live
+      return mountEditor(live, root, useHashRoute, injectStyles)
 
-  if injectStyles:
-    injectEditorStyles()
-
-  var mounted: EditorVM
-  createRoot proc(dispose: proc()) =
-    let vm = createEditorVM(workspace)
-    when defined(js):
-      # RS-M11 Pattern A: the JS bundle needs the streaming-preview
-      # VM so the non-Web canvas can route F/M/I packets and surface
-      # manifest selections back to the sidebar. createEditorVM
-      # leaves the field nil per the M57 headless contract; the
-      # JS mount path opts in here.  Web stays the default backend;
-      # the chip click flips `vm.platform` AND
-      # `streamingPreview.selectedBackend`.
-      vm.streamingPreview = newStreamingPreviewVM(initial = pbWeb,
-        available = @[pbWeb, pbTui, pbGpui, pbFreya, pbCocoa,
-                      pbAndroid, pbIos])
-    mounted = vm
-    # Phase C: install the daemon-driven agent adapter on top of any
-    # workspace-supplied placeholder.  The chat panel and the brief
-    # tab's "Review this preview" button both drive the daemon's
-    # ``/api/agent/*`` routes via the resolved base URL.  This is the
-    # production wiring; VM tests inject a fake client via
-    # ``configureAgentAdaptersWithClient`` instead.
-    discard configureDaemonAgentAdapters(vm.chat)
-    vm.setTelemetryOverlayVisible(editorDebugEnabled())
-    if useHashRoute:
-      installEditorHistorySync(vm)
-    installEditorKeyboardShortcuts(vm)
-
-    let r = DomRenderer()
-    let shell = renderEditorShell[DomRenderer, DomElement](r, vm)
-    {.emit: [shell, ".style.position='fixed'"].}
-    {.emit: [shell, ".style.inset='0'"].}
-    {.emit: [shell, ".style.overflow='hidden'"].}
-    root.appendChild(shell)
-    # REV-M2: expose a tiny window-level handle so Playwright e2e
-    # tests can drive story selection without having to scrape the
-    # sidebar DOM (which omits stories that aren't part of the demo
-    # workspace).  The handle is intentionally minimal — production
-    # consumers should not rely on it.
-    exposeWindowEditorHandle(vm)
-    # Last thing on the first-mount path: from here on a re-run of this bundle
-    # is a swap, and `liveEditorVM` above is how it finds out.
-    rememberLiveEditorVM(vm)
-  mounted
+  # Model computations belong to the host/session, independently of this
+  # disposable presentation root, so remounting the same VM keeps its state.
+  let vm = createEditorVM(workspace)
+  mountEditor(vm, root, useHashRoute, injectStyles)

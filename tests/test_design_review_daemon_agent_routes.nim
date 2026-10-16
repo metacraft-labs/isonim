@@ -6,7 +6,7 @@
 ## once as ``build/bin/fake-acp-agent`` and lives at
 ## ``tests/helpers/fake_acp_agent.nim``.
 
-import std/[json, net, os, strutils, times, unittest]
+import std/[options, json, net, os, strutils, times, unittest]
 
 import helpers/agent_routes_fixture
 
@@ -271,13 +271,16 @@ test "test_prompt_with_pngs_forwards_image_blocks":
     sleep(50)
   check entry != nil
   check entry["sessionId"].getStr == sessionId
-  check entry["promptBlocks"].getInt == 3
-  check entry["textBlocks"].getInt == 1
+  check entry["promptBlocks"].getInt == 4
+  check entry["textBlocks"].getInt == 2
   check entry["imageBlocks"].getInt == 2
   let blocks = entry["blocks"]
   check blocks.kind == JArray
-  check blocks.len == 3
+  check blocks.len == 4
   check blocks[0]["type"].getStr == "text"
+  check blocks[0]["textLen"].getInt == "review these".len
+  check blocks[3]["type"].getStr == "text"
+  check blocks[3]["textLen"].getInt > 100 # separate current project context
   check blocks[1]["type"].getStr == "image"
   check blocks[1]["mimeType"].getStr == "image/png"
   check blocks[1]["dataLen"].getInt > 0
@@ -338,3 +341,21 @@ test "test_prompt_with_non_png_returns_400":
   check node{"error"}.getStr("") == "bad_png_attachment"
   check node{"path"}.getStr("") == fakePng
   check node{"reason"}.getStr("").contains("not a valid PNG")
+
+# Registry admission uses its real draft implementation and a deliberately
+# unreachable REST endpoint. No HTTP transport is replaced: shutdown admission
+# must reject before any provider operation is attempted.
+import isonim/editor/design_review/agent_routes as registry_routes
+import nim_agents
+
+test "shutdown registry rejects new drafts and late backend admission":
+  let registry = registry_routes.newAgentRegistry(harborUrl = "http://127.0.0.1:1",
+    customCmd = "/unused/provider", primerEnabled = false)
+  let draft = registry.createAcpSession()
+  registry.shutdownAll()
+  check registry.getState(draft.sessionId).isNone
+  expect registry_routes.AgentBackendUnavailableError:
+    discard registry.createAcpSession()
+  expect HarborError:
+    discard registry.runAgentTurn(draft, @[], nil)
+  check registry.getState(draft.sessionId).isNone

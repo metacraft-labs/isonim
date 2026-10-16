@@ -1,7 +1,93 @@
+## Uses real reactive graph, owner, and scheduler implementations; no mocks.
+## Shared parent/child dependencies reproduce inspector rows queued during
+## source-catalog replacement, including disposal before the queue flushes.
 import unittest
 import isonim/core/[types, graph, signals, owner, computation, batch]
 
 suite "Effects":
+  test "queued replaced child cannot resurrect after parent rebuild":
+    let selected = createSignal(0)
+    var parentRuns, childRuns, childCleanups: int
+    var rootDispose: proc()
+    createRoot do (dispose: proc()):
+      rootDispose = dispose
+      createEffect do:
+        discard selected.val
+        inc parentRuns
+        createEffect do:
+          discard selected.val
+          inc childRuns
+          onCleanup do:
+            inc childCleanups
+    check selected.observers.len == 2
+    for generation in 1 .. 4:
+      selected.val = generation
+      check parentRuns == generation + 1
+      check childRuns == generation + 1
+      check childCleanups == generation
+      check selected.observers.len == 2
+    rootDispose()
+    check selected.observers.len == 0
+    check childCleanups == 5
+
+  test "root disposed inside batch cannot execute its queued child":
+    let selected = createSignal(0)
+    var runs, cleanups: int
+    var rootDispose: proc()
+    createRoot do (dispose: proc()):
+      rootDispose = dispose
+      createEffect do:
+        discard selected.val
+        inc runs
+        onCleanup do:
+          inc cleanups
+    batch proc() =
+      selected.val = 1
+      rootDispose()
+    check runs == 1
+    check cleanups == 1
+    check selected.observers.len == 0
+    selected.val = 2
+    check runs == 1
+
+  test "pure parent rebuild disposes queued nested memo exactly once":
+    let selected = createSignal(0)
+    let childValue = createSignal(0)
+    var parentRuns, childRuns, cleanups: int
+    var current: Memo[int]
+    var rootDispose: proc()
+    createRoot do (dispose: proc()):
+      rootDispose = dispose
+      discard createMemo(proc(): int =
+        inc parentRuns
+        let generation = selected.val
+        current = createMemo(proc(): int =
+          inc childRuns
+          onCleanup do:
+            inc cleanups
+          selected.val + childValue.val)
+        generation)
+    for generation in 1 .. 4:
+      selected.val = generation
+      check parentRuns == generation + 1
+      check childRuns == generation * 2
+      check cleanups == generation * 2 - 1
+      check selected.observers.len == 2
+      check childValue.observers.len == 1
+      childValue.val = generation
+      check current.val == generation * 2
+      check childRuns == generation * 2 + 1
+      check parentRuns == generation + 1
+    batch proc() =
+      selected.val = 9
+      childValue.val = 9
+      rootDispose()
+      rootDispose()
+    check childRuns == 9
+    check cleanups == 9
+    check selected.observers.len == 0
+    check childValue.observers.len == 0
+
   test "createEffect tracks signal and re-runs on change":
     createRoot do (dispose: proc()):
       let s = createSignal(0)

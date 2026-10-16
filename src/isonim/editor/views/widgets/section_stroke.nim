@@ -69,7 +69,9 @@ proc mountSectionStroke*[R, E](r: R; parent: E; vm: EditorVM) =
     options = @[
       (label: "Inside", value: "inside"),
       (label: "Center", value: "center"),
-      (label: "Outside", value: "outside")]))
+      (label: "Outside", value: "outside")],
+    wiring = InspectorRowWiring(commitMessage: createSignal(""), readOnlyReason: proc(): string =
+      "Stroke position cannot be edited in the inspector yet.")))
 
   var dashHostEl: E
   let dashHost = ui(r):
@@ -78,7 +80,9 @@ proc mountSectionStroke*[R, E](r: R; parent: E; vm: EditorVM) =
          display = "none", flex_direction = "column")
   r.appendChild(parent, dashHost)
   discard r.mountPropertyRow(dashHostEl, propertyRowText(
-    name = "Dash pattern", value = dashPattern))
+    name = "Dash pattern", value = dashPattern,
+    wiring = InspectorRowWiring(commitMessage: createSignal(""), readOnlyReason: proc(): string =
+      "Dash patterns cannot be edited in the inspector yet.")))
   createRenderEffect proc() =
     let solid = strokeStyle.val == "solid"
     r.setStyle(dashHostEl, "display", if solid: "none" else: "flex")

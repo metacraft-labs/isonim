@@ -82,7 +82,8 @@ proc createApp(): Node =
     else:
       let ul = document.createElement("ul")
       ul.className = "task-list"
-      for t in tasks:
+      proc appendTask(t: Task) =
+        # A proc call gives this item its own callback/effect environment.
         let task = t
         let li = document.createElement("li")
         if task.done:
@@ -112,6 +113,10 @@ proc createApp(): Node =
         )
         li.appendChild(removeBtn)
         ul.appendChild(li)
+
+      for t in tasks:
+        appendTask(t)
+
       discard section.appendChild(ul)
 
   # ---- Footer ----
@@ -132,7 +137,8 @@ proc createApp(): Node =
 
       let filtersDiv = document.createElement("div")
       filtersDiv.className = "filters"
-      for f in [fAll, fActive, fCompleted]:
+      proc appendFilter(f: Filter) =
+        # A proc call gives this item its own callback/effect environment.
         let filterVal = f
         let btn = document.createElement("button")
         btn.textContent = cstring($filterVal)
@@ -142,6 +148,10 @@ proc createApp(): Node =
           store.setFilter(filterVal)
         )
         filtersDiv.appendChild(btn)
+
+      for f in [fAll, fActive, fCompleted]:
+        appendFilter(f)
+
       footer.appendChild(filtersDiv)
 
       if store.completedCount.val > 0:

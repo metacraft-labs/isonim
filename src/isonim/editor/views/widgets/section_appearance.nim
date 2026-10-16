@@ -7,7 +7,7 @@
 ##   * Blend mode — choice (normal / multiply / screen / overlay / …).
 ##   * Individual corner radii toggle — when on, four numeric inputs.
 
-import std/[options, strutils]
+import std/[options, strutils, math]
 
 import isonim/core/signals
 import isonim/core/computation
@@ -22,6 +22,13 @@ const
   pctUnit = PropertyUnitOption(label: "%", code: "%")
   pxUnit = PropertyUnitOption(label: "px", code: "px")
 
+proc opacityPercent(ratio: float): float =
+  ## Prefer a whole percent only when converting it back preserves the exact
+  ## authored ratio. Keep distinct fractions and authored percent literals precise.
+  let projected = ratio * 100.0
+  let whole = round(projected)
+  if whole / 100.0 == ratio: whole else: projected
+
 proc mountSectionAppearance*[R, E](r: R; parent: E; vm: EditorVM) =
   let opacity = createSignal(100.0)
   let radius = createSignal(0.0)
@@ -33,6 +40,10 @@ proc mountSectionAppearance*[R, E](r: R; parent: E; vm: EditorVM) =
   let radiusBL = createSignal(0.0)
   let opacityUnit = createSignal(pctUnit)
   let radiusUnit = createSignal(pxUnit)
+  let radiusTLUnit = createSignal(pxUnit)
+  let radiusTRUnit = createSignal(pxUnit)
+  let radiusBRUnit = createSignal(pxUnit)
+  let radiusBLUnit = createSignal(pxUnit)
 
   createRenderEffect proc() =
     let props = vm.inspector.properties.val
@@ -41,19 +52,29 @@ proc mountSectionAppearance*[R, E](r: R; parent: E; vm: EditorVM) =
     # ``opacity: 1`` is shown as 100 % on the unit-chip row; we keep the
     # ratio→percentage conversion local to the section so the inspector
     # signal speaks user units.
-    opacity.val = parsed * 100.0
-    radius.val = parseLeadingFloat(findPropertyValue(props, "border-radius", "0"), 0.0)
+    opacity.val = if raw.strip().endsWith("%"): parsed else: opacityPercent(parsed)
+    # Read the source once; reading the local radius draft here would make
+    # this seeding effect overwrite a typed/scrubbed value before submission.
+    let authoredRadius = parseLeadingFloat(findPropertyValue(props, "border-radius", "0"), 0.0)
+    radius.val = authoredRadius
     blend.val = findPropertyValue(props, "mix-blend-mode", "normal")
     radiusTL.val = parseLeadingFloat(findPropertyValue(props,
-      "border-top-left-radius", $radius.val), radius.val)
+      "border-top-left-radius", $authoredRadius), authoredRadius)
     radiusTR.val = parseLeadingFloat(findPropertyValue(props,
-      "border-top-right-radius", $radius.val), radius.val)
+      "border-top-right-radius", $authoredRadius), authoredRadius)
     radiusBR.val = parseLeadingFloat(findPropertyValue(props,
-      "border-bottom-right-radius", $radius.val), radius.val)
+      "border-bottom-right-radius", $authoredRadius), authoredRadius)
     radiusBL.val = parseLeadingFloat(findPropertyValue(props,
-      "border-bottom-left-radius", $radius.val), radius.val)
+      "border-bottom-left-radius", $authoredRadius), authoredRadius)
 
   # The two things Figma puts on one line under Appearance.
+  var opacityWiring = vm.inspectorRowWiring("opacity")
+  let opacityAuthoredValue = opacityWiring.authoredValue
+  opacityWiring.authoredValue = proc(): string =
+    let authored = opacityAuthoredValue()
+    if authored.len == 0: return ""
+    if authored.strip().endsWith("%"): return authored.strip()
+    formatExactNumber(opacityPercent(parseLeadingFloat(authored, 1.0))) & "%"
   discard r.mountPropertyRowPair(parent,
     propertyRowNumeric(
     name = "Opacity", value = opacity, unit = opacityUnit,
@@ -62,7 +83,7 @@ proc mountSectionAppearance*[R, E](r: R; parent: E; vm: EditorVM) =
     bindingReactive = vm.inspectorBindingThunk("opacity"),
     onBindRequest = vm.inspectorBindRequestHandler("opacity"),
     onDetachRequest = vm.inspectorDetachRequestHandler("opacity"),
-    wiring = vm.inspectorRowWiring("opacity")),
+    wiring = opacityWiring),
     propertyRowNumeric(
     name = "Corner radius", value = radius, unit = radiusUnit,
     units = @[pxUnit], minValue = some(0.0),
@@ -93,26 +114,26 @@ proc mountSectionAppearance*[R, E](r: R; parent: E; vm: EditorVM) =
          display = "none", flex_direction = "column")
   r.appendChild(parent, perCornerHost)
   discard r.mountPropertyRow(perCornerHostEl, propertyRowNumeric(
-    name = "TL", value = radiusTL, unit = radiusUnit, units = @[pxUnit],
+    name = "TL", value = radiusTL, unit = radiusTLUnit, units = @[pxUnit],
     bindingReactive = vm.inspectorBindingThunk("border-top-left-radius"),
     onBindRequest = vm.inspectorBindRequestHandler("border-top-left-radius"),
     onDetachRequest = vm.inspectorDetachRequestHandler("border-top-left-radius"),
     wiring = vm.inspectorRowWiring("border-top-left-radius")))
   discard r.mountPropertyRow(perCornerHostEl, propertyRowNumeric(
-    name = "TR", value = radiusTR, unit = radiusUnit, units = @[pxUnit],
+    name = "TR", value = radiusTR, unit = radiusTRUnit, units = @[pxUnit],
     bindingReactive = vm.inspectorBindingThunk("border-top-right-radius"),
     onBindRequest = vm.inspectorBindRequestHandler("border-top-right-radius"),
     onDetachRequest = vm.inspectorDetachRequestHandler("border-top-right-radius"),
     wiring = vm.inspectorRowWiring("border-top-right-radius")))
   discard r.mountPropertyRow(perCornerHostEl, propertyRowNumeric(
-    name = "BR", value = radiusBR, unit = radiusUnit, units = @[pxUnit],
+    name = "BR", value = radiusBR, unit = radiusBRUnit, units = @[pxUnit],
     bindingReactive = vm.inspectorBindingThunk("border-bottom-right-radius"),
     onBindRequest =
       vm.inspectorBindRequestHandler("border-bottom-right-radius"),
     onDetachRequest = vm.inspectorDetachRequestHandler("border-bottom-right-radius"),
     wiring = vm.inspectorRowWiring("border-bottom-right-radius")))
   discard r.mountPropertyRow(perCornerHostEl, propertyRowNumeric(
-    name = "BL", value = radiusBL, unit = radiusUnit, units = @[pxUnit],
+    name = "BL", value = radiusBL, unit = radiusBLUnit, units = @[pxUnit],
     bindingReactive = vm.inspectorBindingThunk("border-bottom-left-radius"),
     onBindRequest =
       vm.inspectorBindRequestHandler("border-bottom-left-radius"),

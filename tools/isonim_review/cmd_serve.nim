@@ -26,14 +26,16 @@
 ## the next request boundary.  No fancy connection drain — this is a
 ## stub.
 
-import std/[asyncdispatch, asynchttpserver, json, os, posix, strutils,
+import std/[asyncdispatch, asynchttpserver, atomics, json, os, posix, strutils,
             tables, times]
 
 import nim_agents
 
 import ./config
+import ./harbor_preparation
 import ./cmd_db_health
 
+import isonim/editor/design_review/control_routes
 import isonim/editor/design_review/agent_routes
 import isonim/editor/design_review/api_handlers
 import isonim/editor/design_review/api_handlers_briefs
@@ -58,20 +60,18 @@ type
     port*: int
     stopRequested*: bool
     onLifecycle*: proc(message: string) {.gcsafe.}
+    controlRegistry*: EditorControlRegistry
     agentRegistry*: AgentRegistry
     campaignRegistry*: CampaignRegistry
 
 # ----- Lifecycle signal handling -------------------------------------------
 
-var GlobalStopFlag {.threadvar.}: bool
-  ## The signal handler can't reach into the ReviewServer instance
-  ## directly (signal callbacks are C-level, no closure context), so
-  ## we route the flag through a threadvar.  ``runReviewServer`` polls
-  ## it after every accepted request and propagates the value back
-  ## onto ``server.stopRequested`` before deciding to bail.
+var GlobalStopFlag: Atomic[bool]
+  ## Process-directed signals may be delivered to a prompt worker. The main
+  ## loop and startup poll share this lock-free flag across every thread.
 
 proc onTerm(sig: cint) {.noconv.} =
-  GlobalStopFlag = true
+  GlobalStopFlag.store(true)
 
 proc installSignalHandlers*() =
   ## Trap SIGTERM and SIGINT so a Ctrl-C or ``kill -TERM`` from the
@@ -85,7 +85,8 @@ proc installSignalHandlers*() =
 
 # ----- Public construction API ---------------------------------------------
 
-proc newReviewServer*(cfg: ReviewConfig; migDir: string = ""): ReviewServer =
+proc newReviewServer*(cfg: ReviewConfig; migDir: string = "";
+    browserBootstrap = getEnv("ISONIM_EDITOR_BROWSER_BOOTSTRAP")): ReviewServer =
   ## Build (do not start) a server bound to the configured address.
   ## REV-M7 will call ``registerHandler`` between ``new`` and ``run``
   ## to wire its routes in.
@@ -132,8 +133,14 @@ proc newReviewServer*(cfg: ReviewConfig; migDir: string = ""): ReviewServer =
       customArgs = cfg.agent.args,
       assistantPromptPath = resolvedAssistantPath,
       primerEnabled = cfg.agent.primerEnabled,
-      workspaceRoot = cfg.workspace.root),
+      workspaceRoot = cfg.workspace.root,
+      harborUrl = (if cfg.agent.backend == "harbor": cfg.agent.harborUrl else: ""),
+      harborToken = cfg.agent.harborToken,
+      harborAgent = cfg.agent.harborAgent,
+      harborModel = cfg.agent.model),
   )
+  result.controlRegistry = newEditorControlRegistry(browserBootstrap)
+  result.agentRegistry.controlRegistry = result.controlRegistry
   info "review server constructed", agentBackend = $backend,
     customCmd = cfg.agent.command, model = resolvedModel,
     extraArgs = resolvedExtraArgs,
@@ -198,7 +205,7 @@ proc dispatch(srv: ReviewServer; req: Request) {.async, gcsafe.} =
   if req.reqMethod == HttpOptions and
      (path.startsWith("/api/design-review/") or
       path.startsWith("/api/agent/") or
-      path.startsWith("/api/campaign/")):
+      path.startsWith("/api/campaign/") or path.startsWith("/api/editor/")):
     await respondCorsPreflight(req)
     info "http response", topics = "http", path = path, status = 204,
       durationMs = int((epochTime() - startedAt) * 1000)
@@ -232,11 +239,17 @@ proc acceptLoop(srv: ReviewServer;
   ## the OS-assigned port for the test-fixture READY handshake before
   ## any client can connect).  Uses the public ``acceptRequest`` helper
   ## so we don't depend on private ``processClient`` symbols.
-  while true:
-    if srv.server.shouldAcceptRequest():
-      await srv.server.acceptRequest(cb)
-    else:
-      poll()
+  while not srv.stopRequested:
+    try:
+      if srv.server.shouldAcceptRequest():
+        await srv.server.acceptRequest(cb)
+      else:
+        poll()
+    except OSError:
+      # Closing the listener wakes its pending accept during the final HTTP
+      # worker drain. Only the owned shutdown path treats that wakeup as EOF.
+      if srv.stopRequested: return
+      raise
 
 proc runReviewServer*(srv: ReviewServer) =
   ## Start the server and block until SIGTERM / SIGINT.  This is the
@@ -258,6 +271,7 @@ proc runReviewServer*(srv: ReviewServer) =
   # ``srv.port`` is 0 here and ``getPort`` returns the chosen port).
   srv.server.listen(Port(srv.port), srv.bindAddr)
   srv.port = int(srv.server.getPort())
+  srv.controlRegistry.endpoint = "http://127.0.0.1:" & $srv.port
 
   # READY handshake for test fixtures — must be the first stderr line
   # of the form ``READY <port>``.  Goes to stderr so it doesn't
@@ -289,7 +303,7 @@ proc runReviewServer*(srv: ReviewServer) =
   # on.  We don't block on accept() so SIGTERM gets serviced within
   # one poll quantum.
   while not srv.stopRequested:
-    if GlobalStopFlag:
+    if GlobalStopFlag.load():
       srv.stopRequested = true
       break
     try:
@@ -390,6 +404,7 @@ proc mountDesignReviewRoutes*(srv: ReviewServer) =
     promptPath = resolvedPromptPath
 
 proc mountAgentRoutes*(srv: ReviewServer) =
+  srv.registerHandler(ControlRoute, makeControlHandler(srv.controlRegistry))
   ## Phase B — wire the ``/api/agent/*`` endpoints against ``srv``.  Each
   ## handler bridges an HTTP call to the cached :type:`AgentRegistry`,
   ## which holds the live ACP transports.
@@ -399,6 +414,8 @@ proc mountAgentRoutes*(srv: ReviewServer) =
                       makePromptsHandler(srv.agentRegistry))
   srv.registerHandler(AgentCancelRoute,
                       makeCancelHandler(srv.agentRegistry))
+  srv.registerHandler(AgentCloseRoute,
+                      makeCloseHandler(srv.agentRegistry))
   info "agent routes mounted", topics = "daemon",
     sessions = AgentSessionsRoute, prompts = AgentPromptsRoute,
     cancel = AgentCancelRoute
@@ -411,7 +428,26 @@ proc cmdServe*(cfg: ReviewConfig; migDir: string = "";
   ## a Postgres connection) so Phase B agent-route tests can spin up
   ## the daemon without a PG cluster.  Production callers always
   ## leave it ``false`` — the editor needs design-review APIs too.
-  let srv = newReviewServer(cfg, migDir)
+  installSignalHandlers()
+  let browserBootstrap = getEnv("ISONIM_EDITOR_BROWSER_BOOTSTRAP")
+  # The owned Harbor and every provider inherit ordinary credentials, never the
+  # browser registration authority retained only in the control registry.
+  delEnv("ISONIM_EDITOR_BROWSER_BOOTSTRAP")
+  var cfg = cfg
+  normalizeExplicitHarbor(cfg)
+  let preparation = newHarborPreparation(cfg)
+  defer: preparation.stop()
+  let srv = newReviewServer(cfg, migDir, browserBootstrap)
+  if preparation != nil:
+    srv.agentRegistry.prepareBackend = proc(): Future[void] {.async, gcsafe.} =
+      let url = await preparation.ensureReady()
+      if GlobalStopFlag.load():
+        raise newException(AgentBackendUnavailableError, "Editor is closing")
+      if url.len > 0:
+        srv.agentRegistry.harborUrl = url
+        srv.cfg.agent.backend = "harbor"
+        srv.cfg.agent.harborUrl = url
+  defer: srv.agentRegistry.shutdownAll()
   if not agentRoutesOnly:
     try:
       mountDesignReviewRoutes(srv)
@@ -432,3 +468,15 @@ proc cmdServe*(cfg: ReviewConfig; migDir: string = "";
     error "daemon bind failed", reason = e.msg
     stderr.writeLine("isonim-review serve: bind/listen failed: " & e.msg)
     return 2
+
+proc cmdHarborPreparation*(repo, directory: string): int =
+  ## Internal owned subprocess entry; browser registration authority is removed
+  ## before any producer or provider starts.
+  installSignalHandlers()
+  runHarborPreparationChild(repo, directory, proc(): bool = GlobalStopFlag.load())
+
+proc cmdHarborVerification*(repo, executable, output, epoch: string): int =
+  ## Full filesystem/receipt validation runs in an owned child, never the HTTP loop.
+  delEnv("ISONIM_EDITOR_BROWSER_BOOTSTRAP")
+  delEnv("ISONIM_INTERNAL_HARBOR_EPOCH")
+  runHarborVerificationChild(repo, executable, output, epoch)

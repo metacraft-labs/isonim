@@ -25,6 +25,19 @@ import std/[algorithm, net, os, osproc, streams, strutils, times]
 const RepoRoot* = currentSourcePath().parentDir().parentDir().parentDir()
 const MigrationsDir* = RepoRoot / "db" / "migrations"
 
+const
+  NullStdio = when defined(windows): "" else: " </dev/null >/dev/null 2>&1"
+    ## ``execCmd`` runs its command through ``/bin/sh`` on POSIX, where the
+    ## daemonised server must not inherit our pipes (see ``newPgFixture``).
+    ## On Windows ``execCmd`` is a plain ``CreateProcessW``: no shell to
+    ## parse redirects, and no pipes for the server to hold open.
+  InitdbLocale = when defined(windows): "C" else: "C.UTF-8"
+    ## Windows has no ``C.UTF-8`` locale; ``C`` with ``--encoding=UTF8``
+    ## gives the same byte-order collation.
+  UnixSockets = not defined(windows)
+    ## Windows clusters listen on TCP only (every connection string the
+    ## fixture hands out is ``127.0.0.1:<port>`` anyway).
+
 type
   PgFixture* = ref object
     dataDir*:          string
@@ -50,7 +63,7 @@ proc detectPgBinDir(): string =
     "invocation in ``nix-shell -p postgresql_16 process-compose --run '...'``.")
 
 proc pgBin(binDir, name: string): string =
-  result = binDir / name
+  result = binDir / name.addFileExt(ExeExt)
   if not fileExists(result):
     raise newException(IOError,
       "design_review_pg_fixture: " & name & " not found at " & result)
@@ -121,6 +134,15 @@ proc waitForReady(binDir: string; port: int; timeoutSeconds = 30) =
 
 # ----- public API ----------------------------------------------------------
 
+proc migrationFiles*(): seq[string] =
+  ## ``db/migrations/NNN_*.sql``, in the order they are applied.
+  for kind, path in walkDir(MigrationsDir):
+    if kind == pcFile and path.endsWith(".sql"):
+      let base = path.extractFilename
+      if base.len >= 4 and base[0..2].allCharsInSet({'0'..'9'}) and base[3] == '_':
+        result.add path
+  result.sort()
+
 proc newPgFixture*(applyMigrations = true): PgFixture =
   ## 1) Allocate a genuinely-free ephemeral port atomically (bind :0).
   ## 2) Create a tmpdir as $PGDATA.
@@ -159,7 +181,8 @@ proc newPgFixture*(applyMigrations = true): PgFixture =
         $((int(epochTime() * 1000)) mod 1000000) & "-" & $attempt)
     createDir(dataDir)
 
-    let res = execCmdEx(initdb & " --locale=C.UTF-8 --encoding=UTF8 " &
+    let res = execCmdEx(initdb & " --locale=" & InitdbLocale &
+                        " --encoding=UTF8 " &
                         "--auth=trust -D " & dataDir.quoteShell)
     if res.exitCode != 0:
       lastErr = "initdb failed:\n" & res.output
@@ -168,8 +191,9 @@ proc newPgFixture*(applyMigrations = true): PgFixture =
 
     # Patch postgresql.conf in-place.
     let confPath = dataDir / "postgresql.conf"
+    let socketDirs = if UnixSockets: dataDir else: ""
     let configLines = "\nlisten_addresses = '127.0.0.1'\nport = " & $port &
-                      "\nunix_socket_directories = '" & dataDir &
+                      "\nunix_socket_directories = '" & socketDirs &
                       "'\nlog_statement = 'all'\nlog_connections = on\n" &
                       "log_disconnections = on\n"
     let f = open(confPath, fmAppend)
@@ -178,7 +202,7 @@ proc newPgFixture*(applyMigrations = true): PgFixture =
 
     let startCmd = pgCtl & " -D " & dataDir.quoteShell &
         " -l " & (dataDir / "postgres.log").quoteShell &
-        " -w start </dev/null >/dev/null 2>&1"
+        " -w start" & NullStdio
     let startCode = execCmd(startCmd)
     if startCode != 0:
       let logSlice =
@@ -189,7 +213,7 @@ proc newPgFixture*(applyMigrations = true): PgFixture =
       if logSlice.contains("Address already in use") or
          logSlice.contains("could not bind"):
         discard execCmd(pgCtl & " -D " & dataDir.quoteShell &
-                        " -m immediate stop </dev/null >/dev/null 2>&1")
+                        " -m immediate stop" & NullStdio)
         try: removeDir(dataDir) except OSError: discard
         lastErr = "pg_ctl start lost port " & $port & " (EADDRINUSE)"
         continue
@@ -237,16 +261,18 @@ proc newPgFixture*(applyMigrations = true): PgFixture =
             "version INT PRIMARY KEY, applied_at TIMESTAMPTZ NOT NULL " &
             "DEFAULT NOW(), content_sha TEXT)",
             role = "design_review_migrator")
-    var files: seq[string]
-    for kind, path in walkDir(MigrationsDir):
-      if kind == pcFile and path.endsWith(".sql"):
-        let base = path.extractFilename
-        if base.len >= 4 and base[0..2].allCharsInSet({'0'..'9'}) and base[3] == '_':
-          files.add path
-    files.sort()
-    for f in files:
+    for f in migrationFiles():
       runPsqlFile(binDir, port, "isonim_design_review", f,
                   role = "design_review_migrator")
+
+proc applyMigrationFile*(f: PgFixture; path: string) =
+  ## Apply one migration file as the migrator role, the way
+  ## ``newPgFixture`` applies each of them.  For upgrade tests: build a
+  ## ``newPgFixture(applyMigrations = false)`` cluster, apply the
+  ## migrations up to some version, write rows the way that schema
+  ## wrote them, then apply the rest.
+  runPsqlFile(detectPgBinDir(), f.port, "isonim_design_review", path,
+              role = "design_review_migrator")
 
 proc reset*(f: PgFixture) =
   ## TRUNCATE every base table.  Useful between tests in the same suite
@@ -270,9 +296,9 @@ proc shutdown*(f: PgFixture) =
     try: detectPgBinDir()
     except IOError: ""
   if binDir.len > 0:
-    let pgCtl = binDir / "pg_ctl"
+    let pgCtl = binDir / "pg_ctl".addFileExt(ExeExt)
     discard execCmd(pgCtl & " -D " & f.dataDir.quoteShell &
-                    " -m fast stop </dev/null >/dev/null 2>&1")
+                    " -m fast stop" & NullStdio)
   try:
     removeDir(f.dataDir)
   except OSError:

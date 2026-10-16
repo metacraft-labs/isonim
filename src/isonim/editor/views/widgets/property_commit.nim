@@ -166,7 +166,32 @@ proc firstDiagnosticMessage(diagnostics: seq[PropertyEditDiagnostic];
       return d.message
   fallback
 
-proc applyPreviewStyle*(elementId, domPath, property, value: string) =
+proc localPreviewRefusal(elementId, domPath, property: string): string =
+  ## Real preview capability check before any local transaction/cell mutation.
+  ## Native and non-DOM compositions retain their existing admission boundary.
+  when defined(js):
+    var reason: cstring
+    let id = cstring(elementId)
+    let path = cstring(domPath)
+    let prop = cstring(property)
+    {.emit: [reason, """ = (function(id,path,property) {
+      if (typeof document === 'undefined') return '';
+      for (const frame of document.querySelectorAll('iframe')) {
+        try {
+          const doc = frame.contentDocument;
+          if (!doc || !frame.getClientRects().length) continue;
+          const target = (id && doc.querySelector('[data-isonim-element-id="' + CSS.escape(id) + '"]')) ||
+            (path && doc.querySelector(path));
+          if (target && typeof frame.contentWindow.__isonimLocalDeclarationRefusal === 'function')
+            return frame.contentWindow.__isonimLocalDeclarationRefusal(id,path,property);
+        } catch(e) {}
+      }
+      return '';
+    })(""", id, ",", path, ",", prop, ");"].}
+    result = $reason
+
+proc applyPreviewStyle*(elementId, domPath, property, value: string;
+    sourceScope = sskLocalInstance) =
   ## Show the change in the preview, now.
   ##
   ## Without this the editor accepted a value, staged it, wrote it to source --
@@ -205,6 +230,8 @@ proc applyPreviewStyle*(elementId, domPath, property, value: string) =
   ## rebuilt before the source catches up gets the edit back on start. The
   ## records are short strings rather than the whole stylesheet, so there is
   ## nothing to cap or expire, and re-applying is idempotent.
+  if sourceScope == sskLocalInstance and
+      localPreviewRefusal(elementId, domPath, property).len > 0: return
   when defined(js):
     # The cell first, the rule second.
     #
@@ -219,11 +246,13 @@ proc applyPreviewStyle*(elementId, domPath, property, value: string) =
     # through to setting the declaration on the rule the cascade uses. The
     # fallback is not a lesser path -- it is the right answer for a value that
     # lives in CSS rather than in the block.
+    let scopeName = $sourceScope
     let writeCell = proc(sceneId: cstring): bool =
       if sceneId.len == 0: return false
       setEditableValue($sceneId, property, value)
     {.emit: ["""
       (function (writeCell) {
+      if (typeof document === 'undefined' || typeof window === 'undefined') return;
       const toJsString = (raw) => Array.isArray(raw)
         ? String.fromCharCode.apply(null, raw)
         : String(raw || '');
@@ -231,6 +260,7 @@ proc applyPreviewStyle*(elementId, domPath, property, value: string) =
       const path = toJsString(""", domPath, """);
       const property = toJsString(""", property, """);
       const value = toJsString(""", value, """);
+      const scope = toJsString(""", scopeName, """);
       if (!id || !property) return;
 
       // Resolve once, here, and hand the scene id to the cell registry.
@@ -249,7 +279,8 @@ proc applyPreviewStyle*(elementId, domPath, property, value: string) =
         }
         if (target) break;
       }
-      if (target && writeCell(target.getAttribute('data-isonim-src') || '')) {
+      if (scope === 'sskLocalInstance' && target &&
+          writeCell(target.getAttribute('data-isonim-src') || '')) {
         return;
       }
 
@@ -261,9 +292,9 @@ proc applyPreviewStyle*(elementId, domPath, property, value: string) =
         (window.__isonimPreviewDeclarations = {});
       const key = id + '|' + property;
       if (value === '') delete store[key];
-      else store[key] = { id: id, path: path, property: property, value: value };
+      else store[key] = { id: id, path: path, property: property, value: value, scope: scope };
       window.dispatchEvent(new CustomEvent('isonim-preview-set-declaration', {
-        detail: { id: id, path: path, property: property, value: value }
+        detail: { id: id, path: path, property: property, value: value, scope: scope }
       }));
       })(""", writeCell, ");"].}
   else:
@@ -312,6 +343,12 @@ proc commitInspectorValue*(vm: EditorVM; property, rawValue: string;
   if not vm.workspacePermissions.val.writeSource:
     return refusal("This workspace is read-only for source changes.", scope)
 
+  if vm.hasAsyncSourceProject:
+    return refusal("The editor must confirm the source edit before applying it.", scope)
+
+  if scope == sskLocalInstance:
+    let reason = localPreviewRefusal(element.id, element.domPath, property)
+    if reason.len > 0: return refusal(reason, scope)
   let normalized = normalizePrimitiveInputValue(property, rawValue)
 
   if scope == sskLocalInstance:
@@ -343,7 +380,7 @@ proc commitInspectorValue*(vm: EditorVM; property, rawValue: string;
     elif selected.sourceKey.len > 0: selected.sourceKey
     else: selected.schemaKey
   if previewId.len > 0:
-    applyPreviewStyle(previewId, selected.domPath, property, normalized)
+    applyPreviewStyle(previewId, selected.domPath, property, normalized, scope)
     # The write that follows must not reload the preview out from under this.
     vm.previewShowsPendingEdits.val = true
 
@@ -378,7 +415,15 @@ type
       ## eye slides past. A control that keeps a value the system rejected is
       ## lying about the document.
     scopeOptions*: proc(): seq[CompactChoiceOption]
+    selectedSourceScope*: proc(): Option[SourceScopeChoice]
+      ## Optional read-only projection of the exact choice used by commit.
     commit*: proc(value: string)
+    authoredValue*: proc(): string {.closure.}
+    numericCssValue*: proc(value: string): string {.closure.}
+    numericFormat*: proc(value: float): string {.closure.}
+      ## Optional numeric display-to-CSS adapter; nil preserves ordinary rows.
+    readOnlyReason*: proc(): string {.closure.}
+    commitAsync*: proc(value: string; done: proc(ok: bool) {.closure.}) {.closure.}
 
 proc inspectorRowWiring*(vm: EditorVM; property: string): InspectorRowWiring =
   ## Wire one row to ``property``.
@@ -398,7 +443,18 @@ proc inspectorRowWiring*(vm: EditorVM; property: string): InspectorRowWiring =
   proc currentChoices(): seq[SourceScopeChoice] =
     let found = vm.inspectorProperty(capturedProperty)
     if found.isNone: return @[]
-    vm.sourceScopeChoices(found.get)
+    result = vm.sourceScopeChoices(found.get)
+    if not vm.hasAsyncSourceProject:
+      discard vm.viewport.val
+      discard vm.previewRenderedWidth.val
+      discard vm.preview.sourceGeneration.val
+      let el = vm.inspector.selectedElement.val
+      let reason = localPreviewRefusal(el.id, el.domPath, capturedProperty)
+      if reason.len > 0:
+        for choice in result.mitems:
+          if choice.kind == sskLocalInstance:
+            choice.editable = false
+            choice.reason = reason
 
   proc effectiveScope(): SourceScopeChoiceKind =
     let choices = currentChoices()
@@ -421,7 +477,22 @@ proc inspectorRowWiring*(vm: EditorVM; property: string): InspectorRowWiring =
     if not outcome.ok:
       rejected.val = rejected.val + 1
 
+  proc scopeChoiceHandler(choice: SourceScopeChoice): proc() =
+    # Each displayed choice owns its callback values; capturing loop variables
+    # would make every chip act on the last choice in the list.
+    result = proc() =
+      if choice.editable:
+        selected.val = choice.kind
+        userPicked.val = true
+        message.val = ""
+      else:
+        message.val =
+          if choice.reason.len > 0: choice.reason
+          else: "This scope has no source-backed writer in the project schema."
+
   proc scopeOptions(): seq[CompactChoiceOption] =
+    let found = vm.inspectorProperty(capturedProperty)
+    let prop = if found.isSome: found.get else: PropertyInfo()
     let choices = currentChoices()
     if choices.len == 0:
       return @[]
@@ -438,9 +509,18 @@ proc inspectorRowWiring*(vm: EditorVM; property: string): InspectorRowWiring =
       let editable = choice.editable
       let label = choice.label
       let risk = choice.riskLevel.sourceScopeRiskLabel()
+      # A disabled chip cannot be chosen, so its click never reaches
+      # `scopeChoiceHandler`'s message: the reason travels on the chip
+      # itself, where the pointer and assistive technology find it.
+      var refusalAttrs: seq[(string, string)] = @[]
+      if not editable and choice.reason.len > 0:
+        refusalAttrs = @[("title", choice.reason),
+          ("data-source-scope-reason", choice.reason)]
       result.add CompactChoiceOption(
-        label: label & " " & risk,
-        shortLabel: kind.sourceScopeAbbrev(),
+        label: label & (if kind == sskSemanticToken and prop.tokenName.len > 0: " " & prop.tokenName else: "") & " " & risk &
+          (if kind == sskSemanticToken and prop.nativeSourceToken: ". Known direct matches; inherited or unsupported references may also change." else: ""),
+        shortLabel: (if kind == sskSemanticToken and prop.nativeSourceToken: prop.tokenName else: kind.sourceScopeAbbrev()) &
+          (if kind in {sskSharedClass,sskSemanticToken} and choice.usageCount > 0: "·" & $choice.usageCount & (if prop.nativeSourceToken: "+" else: "") else: ""),
         # Same phrasing as the old row so a caller (or a test) that
         # knows one knows the other.
         ariaLabel: "Apply " & kind.sourceScopeApplyLabel() &
@@ -449,21 +529,29 @@ proc inspectorRowWiring*(vm: EditorVM; property: string): InspectorRowWiring =
         enabled: editable,
         dataAttrs: @[("data-source-scope-editable",
           if editable: "true" else: "false"),
-          ("data-source-scope-kind", $kind)],
-        onChoose: (proc() =
-          if editable:
-            selected.val = kind
-            userPicked.val = true
-            message.val = ""
-          else:
-            # A non-editable scope is not silently inert. The old row
-            # made the chip unclickable and said nothing; saying why
-            # costs one line and is the difference between "this
-            # control is broken" and "this scope is read-only".
-            message.val =
-              if choice.reason.len > 0: choice.reason
-              else: "This scope has no source-backed writer in the " &
-                "project schema."))
+          ("data-source-scope-kind", $kind),
+          ("data-source-scope-schema", choice.schemaKey),
+          ("data-source-scope-token", prop.tokenName),
+          ("data-source-scope-count", $choice.usageCount),
+          ("data-source-scope-target", vm.inspector.selectedElement.val.id),
+          ("data-source-scope-story", vm.selectedStory.val.group & " / " & vm.selectedStory.val.name)] &
+          refusalAttrs,
+        onChoose: scopeChoiceHandler(choice))
+
+  let asyncCommit = proc(value: string; done: proc(ok: bool) {.closure.}) =
+    # Sections can mount before attachSourceProject installs its connection.
+    # Resolve the optional boundary when the user edits, never at row creation.
+    if vm.inspectorSourceCommit != nil:
+      let element = vm.inspector.selectedElement.val
+      vm.inspectorSourceCommit(element, capturedProperty, value, effectiveScope(),
+        proc(ok: bool; diagnostic: string) =
+          message.val = diagnostic
+          if not ok: rejected.val = rejected.val + 1
+          done(ok))
+    else:
+      let before = rejected.val
+      commit(value)
+      done(rejected.val == before)
 
   InspectorRowWiring(
     cssProperty: capturedProperty,
@@ -471,4 +559,36 @@ proc inspectorRowWiring*(vm: EditorVM; property: string): InspectorRowWiring =
     commitMessage: message,
     commitRejected: rejected,
     scopeOptions: scopeOptions,
-    commit: commit)
+    selectedSourceScope: proc(): Option[SourceScopeChoice] =
+      let active = effectiveScope()
+      for choice in currentChoices():
+        if choice.kind == active: return some(choice)
+      none(SourceScopeChoice),
+    commit: commit, commitAsync: asyncCommit,
+    authoredValue: proc(): string =
+      let property = vm.inspectorProperty(capturedProperty)
+      if property.isNone: return ""
+      let found = property.get
+      if found.authoredValue.len > 0: return found.authoredValue
+      # Existing synchronous adapters already provide authoring units in value.
+      # Unitless display transforms (such as opacity percent) remain section-owned.
+      let parsed = parseCssPropertyValue(capturedProperty, found.value)
+      if parsed.unit.len > 0: found.value else: "",
+    readOnlyReason: proc(): string =
+      if not vm.workspacePermissions.val.writeSource:
+        return "This workspace is read-only for source changes."
+      let ready = vm.sourceAdapterReady.val
+      if not vm.hasAsyncSourceProject:
+        discard vm.viewport.val
+        discard vm.previewRenderedWidth.val
+        discard vm.preview.sourceGeneration.val
+        if effectiveScope() == sskLocalInstance:
+          let el = vm.inspector.selectedElement.val
+          return localPreviewRefusal(el.id, el.domPath, capturedProperty)
+        return ""
+      if not ready: return "Loading editable properties."
+      let property = vm.inspectorProperty(capturedProperty)
+      if property.isSome and property.get.origin == poSetStyle:
+        return "Read-only: native source editing does not own this inline declaration."
+      if property.isSome and property.get.authoredValue.len > 0: return ""
+      "Read-only: the editor cannot safely edit this value’s source.")

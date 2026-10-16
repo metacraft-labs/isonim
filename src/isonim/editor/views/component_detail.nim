@@ -1,3 +1,4 @@
+import isonim/editor/views/view_lifecycle
 ## IsoNim Editor — Component Detail View.
 ##
 ## Storybook-style: each variant gets its own section with title,
@@ -8,6 +9,7 @@ import std/strutils
 import isonim/core/[computation, signals]
 import isonim/dsl/ui
 import isonim/editor/viewmodels
+import isonim/editor/preview_identity
 import isonim/editor/types
 import isonim/editor/streaming_preview
 import isonim/editor/views/canvas_mount
@@ -256,7 +258,7 @@ proc attachComponentPropertyLivePreview[R, E](r: R; inputNode, frame: E;
   ## `input` event, apply the matching preview mutations directly to the iframe
   ## DOM. This lets the user see live changes while typing without triggering
   ## a reactive rebuild that would steal focus from the input.
-  when defined(js):
+  when isDomViewHost(E):
     {.emit: ["""
       (function () {
         const input = """, inputNode, """;
@@ -507,8 +509,6 @@ proc populateComponentPropertyPanel[R, E](r: R; vm: EditorVM; panel, frame: E;
   vm.variants.stateDiagnostics.val = coverage
   r.setStyle(panel, "display", "flex")
 
-  var saveButton: E
-  var revertButton: E
   let header = ui(r):
     tdiv(display = "flex", justify_content = "space-between",
           align_items = "baseline", gap = "12px",
@@ -528,28 +528,9 @@ proc populateComponentPropertyPanel[R, E](r: R; vm: EditorVM; panel, frame: E;
           text ($coverage.len & " diagnostics")
         span(font_size = "10px", color = textDim):
           text ($pendingCount & " component plan(s) staged")
-        tdiv(ref = revertButton, role = "button", tabindex = "0",
-              padding = "4px 7px", border_radius = "4px",
-              background_color = bgCard, color = textMuted,
-              font_size = "10px", cursor = "pointer"):
-          text "Revert"
-        tdiv(ref = saveButton, role = "button", tabindex = "0",
-              padding = "4px 7px", border_radius = "4px",
-              background_color = accent, color = textPrimary,
-              font_size = "10px", font_weight = "600", cursor = "pointer"):
-          text "Save"
+        # No Save or Revert control: a property choice is written
+        # automatically (editor spec "Saving"); Mod+Z takes it back.
   r.appendChild(panel, header)
-  r.setAttribute(saveButton, "aria-label", "Save component property source edits")
-  r.setAttribute(revertButton, "aria-label",
-    "Revert component property source edits")
-  r.addEventListener(saveButton, "click", proc() =
-    discard vm.runEditorCommand(eckSave))
-  r.addEventListener(saveButton, "keydown", proc() =
-    discard vm.runEditorCommand(eckSave))
-  r.addEventListener(revertButton, "click", proc() =
-    discard vm.runEditorCommand(eckRevert))
-  r.addEventListener(revertButton, "keydown", proc() =
-    discard vm.runEditorCommand(eckRevert))
 
   # Property cards: show the first 3 by default; gate the rest behind a
   # native <details> disclosure so the panel stays compact.
@@ -881,8 +862,9 @@ proc renderComponentDetail*[R, E](r: R; vm: EditorVM): E =
   # Bumped when the frame is actually reloaded, so a restore still happens
   # even though the selected id did not change.
   let detailSrcdocGeneration = createSignal(0)
-  when defined(js):
+  when isDomViewHost(E):
     let bridgeBinding = newBridgeBinding()
+  ownViewResources(projectFrame)
   createRenderEffect proc() =
     let story = vm.selectedStory.val
     let preview = vm.preview.current.val
@@ -909,12 +891,16 @@ proc renderComponentDetail*[R, E](r: R; vm: EditorVM): E =
 
     r.setTextContent(projectName,
       if story.kind in {skComponent, skPattern, skGuideline}: story.name else: "")
-    r.setTextContent(projectDescription,
+    let projectDescriptionText =
       if story.kind in {skComponent, skPattern, skGuideline} and
           preview.bodyText.len > 0:
         preview.bodyText
       else:
-        "Project-owned component state")
+        "Project-owned component state"
+    r.setTextContent(projectDescription, projectDescriptionText)
+    # The duplicate painted card header is retired. Keep the real story
+    # description attached to the preview's accessible identity instead.
+    r.setAttribute(projectFrame, "aria-description", projectDescriptionText)
     r.setAttribute(projectFrame, "title", "Component preview " & title)
     r.setAttribute(projectFrame, "height", "1")
     let reloadGeneration = vm.livePreviewReloadGeneration.val
@@ -929,9 +915,8 @@ proc renderComponentDetail*[R, E](r: R; vm: EditorVM): E =
     # isn't active the section stays hidden via ``showProject``.
     let nextProjectSrcdoc =
       if showProject and vm.platform.val == pbWeb:
-        detailPreviewDocument(preview.documentHtml, preview.metadata,
-          vm.editMode.val) &
-          "\n<!-- isonim-reload:" & $reloadGeneration & " -->"
+        identifiedPreviewDocument(detailPreviewDocument(preview.documentHtml,
+          preview.metadata, vm.editMode.val), story, reloadGeneration)
       else:
         ""
     # Length first: `!=` on a Nim string walks two char arrays element by
@@ -940,7 +925,8 @@ proc renderComponentDetail*[R, E](r: R; vm: EditorVM): E =
       nextProjectSrcdoc.len != lastProjectSrcdoc.len or
       nextProjectSrcdoc != lastProjectSrcdoc
     if projectSrcdocChanged:
-      r.setAttribute(projectFrame, "srcdoc", nextProjectSrcdoc)
+      r.setAttribute(projectFrame, "srcdoc",
+        requestedPreviewMountDocument(projectFrame, mountState, nextProjectSrcdoc))
       lastProjectSrcdoc = nextProjectSrcdoc
       detailSrcdocGeneration.val = detailSrcdocGeneration.val + 1
 
@@ -966,7 +952,11 @@ proc renderComponentDetail*[R, E](r: R; vm: EditorVM): E =
     if showProject and vm.platform.val == pbWeb and
         vm.activeView.val == evComponentDetail:
       mountPreviewInto(projectFrame, story, vm.previewMount, mountState,
-                       projectSrcdocChanged)
+                       projectSrcdocChanged, proc(): bool =
+                         vm.platform.val == pbWeb and vm.activeView.val == evComponentDetail and
+                         vm.selectedStory.val == story)
+    else:
+      mountState.cancelPendingPreviewMount()
     r.setStyle(projectFrame, "width", "100%")
     r.setStyle(projectFrame, "min-height", "1px")
     r.setStyle(projectFrame, "overflow", "hidden")
@@ -1031,7 +1021,7 @@ proc renderComponentDetail*[R, E](r: R; vm: EditorVM): E =
     # callback that walks the sidebar for the matching skVectorSymbol
     # story and mirrors the resulting activeView under the
     # `__isonimTestMode === true` gate.
-    when defined(js):
+    when isDomViewHost(E):
       let editor = vm
       let onVectorDbl = proc(componentPath: string) =
         var story: StoryRef
@@ -1039,7 +1029,7 @@ proc renderComponentDetail*[R, E](r: R; vm: EditorVM): E =
             componentPath, story):
           return
         discard editor.openVectorEditor(story)
-        when defined(js):
+        when isDomViewHost(E):
           let activeView = $editor.activeView.val
           let targetPath =
             if editor.vectorEditorTarget.val.isSome:
@@ -1068,7 +1058,7 @@ proc renderComponentDetail*[R, E](r: R; vm: EditorVM): E =
                       previewViewportWidth(vp),
                       previewViewportHeight(vp))
 
-    when defined(js):
+    when isDomViewHost(E):
       let frame = projectFrame
       let variantScript = vm.componentPreviewVariantScript(preview)
       {.emit: ["""
@@ -1097,7 +1087,7 @@ proc renderComponentDetail*[R, E](r: R; vm: EditorVM): E =
               }
             });
           }
-          requestAnimationFrame(apply);
+          globalThis.__isonimFrameView(frame, apply);
         })(""", frame, ", ", variantScript, """);
       """].}
       {.emit: ["""
@@ -1127,9 +1117,9 @@ proc renderComponentDetail*[R, E](r: R; vm: EditorVM): E =
             }
           };
           frame.addEventListener('load', resizeFrame);
-          requestAnimationFrame(resizeFrame);
+          globalThis.__isonimFrameView(frame, resizeFrame);
         } else if (frame) {
-          requestAnimationFrame(() => {
+          globalThis.__isonimFrameView(frame, () => {
             try {
               const doc = frame.contentDocument;
               const body = doc?.body;
@@ -1163,7 +1153,13 @@ proc renderComponentDetail*[R, E](r: R; vm: EditorVM): E =
     if vm.activeView.val == evComponentDetail and
         detailSelectedId.len > 0 and stamp != lastRestoredDetailSelection:
       lastRestoredDetailSelection = stamp
-      r.restorePreviewSelection(projectFrame, detailSelectedId)
+      r.restorePreviewSelection(projectFrame, detailSelectedId, proc(): bool =
+        vm.activeView.val == evComponentDetail and
+          detailSelectedElementId.val == detailSelectedId and
+          detailSrcdocGeneration.val == generation)
+    elif vm.activeView.val != evComponentDetail or detailSelectedId.len == 0:
+      lastRestoredDetailSelection = ""
+      r.restorePreviewSelection(projectFrame, "", proc(): bool = false)
 
   bindCanvasOverlayEffect(r, vm, canvasMnt)
 

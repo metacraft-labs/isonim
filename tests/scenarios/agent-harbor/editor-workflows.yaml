@@ -1,0 +1,98 @@
+# Official AcpScenarioPlaybackAgent fixture. runCmd executes actual CLI commands;
+# result/progress are intentionally omitted. The real terminal output is evidence.
+# The provider replays this live transcript for every prompt. The driver chooses a
+# numbered phase file before each real user prompt; it never supplies tool results.
+# Shared native/browser decisions are visible here, not hidden in a fake adapter.
+name: IsoNim durable authoring and control workflows
+acp:
+  capabilities:
+    loadSession: true
+timeline:
+  - sessionStart:
+      sessionId: isonim-eac-m5
+  - userInputs:
+      - relativeTime: 0
+        input: Create the busy Card story, compile it, open it and capture its HTML.
+  - agentToolUse:
+      toolName: runCmd
+      args:
+        cwd: '@PROJECT@'
+        cmd: |
+          set -eu
+          phase=$(cat '@ARTIFACTS@/phase')
+          '@PYTHON@' '@BARRIER@' '@PRIVATE@/original-handoff.json'
+          environment=$('@PYTHON@' -c 'import json,sys;print(json.load(open(sys.argv[1]))["environment"])' '@PRIVATE@/original-handoff.json')
+          tool() { '@PYTHON@' '@WRAPPER@' --environment "$environment" -- '@CLI@' editor "$@"; }
+          '@PYTHON@' '@FSPROBE@' '@RESOURCE_MANIFEST@' '@ARTIFACTS@/resource-visibility.json'
+          case "$phase" in
+            1)
+              '@PYTHON@' '@NETPROBE@' '@PRIVATE@/provider-scope.json' '@ARTIFACTS@/terminal-network.json' '@PRIVATE@/original-handoff.json' '@WRAPPER@'
+              touch '@ARTIFACTS@/entered-1'
+              '@PYTHON@' '@BARRIER@' '@ARTIFACTS@/release-1'
+              tool capabilities
+              tool create-story Card --variant default --state busy --command-id create-busy --wait --timeout-ms 60000 | tee '@ARTIFACTS@/create-busy.json'
+              tool open-story 'Card / default busy' --command-id open-busy --wait
+              '@PYTHON@' '@BARRIER@' '@ARTIFACTS@/capture-ready-1'
+              tool capture-preview --command-id capture-busy --wait | tee '@ARTIFACTS@/capture-busy.json'
+              ;;
+            2)
+              '@PYTHON@' -c 'from pathlib import Path; p=Path("stories.nim");p.write_text(p.read_text().replace("Busy card","Followup card"))'
+              tool build --command-id build-followup --wait --timeout-ms 60000
+              '@PYTHON@' '@BARRIER@' '@ARTIFACTS@/capture-ready-2'
+              tool capture-preview --command-id capture-followup --wait | tee '@ARTIFACTS@/capture-followup.json'
+              ;;
+            3)
+              '@PYTHON@' -c 'import json;from pathlib import Path;p=Path(".isonim/source-project.json");d=json.loads(p.read_text());d["fixtures"][1]["declaration"]+="\nlet broken: int = \"wrong\"";p.write_text(json.dumps(d))'
+              tool create-story Card --variant default --state error --command-id fail-compile --wait --timeout-ms 60000
+              ;;
+            4)
+              tool select action --focus --highlight --command-id automatic-select --wait
+              tool focus composer --command-id automatic-focus --wait
+              ;;
+            5)
+              tool state | tee '@ARTIFACTS@/approval-before.json'
+              tool select secondary-action --focus --highlight --command-id approved-select
+              ;;
+            6)
+              tool state | tee '@ARTIFACTS@/rejection-before.json'
+              tool select action --focus --highlight --command-id rejected-focus
+              ;;
+            7)
+              revision=$('@PYTHON@' -c 'import json; print(json.load(open("@ARTIFACTS@/create-busy.json"))["request"]["expectedRevision"])')
+              tool create-story Card --variant default --state busy --command-id create-busy --expected-revision "$revision" --wait | tee '@ARTIFACTS@/retry-busy.json'
+              tool viewport mobile --command-id stale-revision --expected-revision 0 --wait
+              ;;
+            8) tool command eval-script --command-id unsupported --wait ;;
+            9) tool state ;;
+            10) tool focus composer --command-id reconnect-focus --wait ;;
+            11) tool build --command-id denied-build --wait ;;
+            12) tool open-story 'Card / default ready' --command-id native-approved-open ;;
+            13) tool open-story 'Card / default busy' --command-id native-rejected-open ;;
+            14)
+              touch '@ARTIFACTS@/entered-14'
+              '@PYTHON@' '@BARRIER@' '@ARTIFACTS@/release-14'
+              tool state
+              ;;
+            15)
+              tool state | tee '@ARTIFACTS@/narrow-approval-before.json'
+              tool select action --focus --highlight --command-id narrow-approved-select
+              ;;
+            16)
+              tool state | tee '@ARTIFACTS@/narrow-rejection-before.json'
+              tool select secondary-action --focus --highlight --command-id narrow-rejected-focus
+              ;;
+            17)
+              iteration=$(cat '@ARTIFACTS@/ownership-turn')
+              touch "@ARTIFACTS@/ownership-entered-$iteration"
+              '@PYTHON@' '@BARRIER@' "@ARTIFACTS@/ownership-release-$iteration"
+              tool state
+              ;;
+          esac
+  - llmResponse:
+      - assistant:
+          - relativeTime: 0
+            content: 'ISONIM_M5_STREAM_BEGIN. '
+          - relativeTime: 10
+            content: 'Inspect the actual tool results for this requested phase.'
+expect:
+  stopReason: end_turn

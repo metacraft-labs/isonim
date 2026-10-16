@@ -4,6 +4,10 @@
 # No filesystem/compiler boundary is mocked; real-server integration remains
 # a separate acceptance scope. Request field locations follow the immutable
 # public AgentHarbor OpenAPI CreateTaskRequest contract.
+## Controlled HTTP peers isolate existing adapter/wire normalization tests;
+## they do not represent model or production Harbor E2E behavior. The typed
+## input regression uses real common mapping and real editor ViewModel code
+## over contract DTO fixtures, with no ViewModel/process/OS metadata mocks.
 import unittest
 import std/json
 import std/sequtils
@@ -13,6 +17,7 @@ import nim_agents
 import isonim/core/signals
 import isonim/viewmodel
 import isonim/editor/agent_harbor
+import isonim/editor/design_review/editor_agent_adapter
 import isonim/editor/types
 import isonim/editor/viewmodels
 
@@ -55,6 +60,48 @@ proc editorHarborSseTransport(): HttpTransport =
     HttpResponse(status: 404, body: "not found")
 
 suite "editor Agent Harbor adapter":
+  test "typed human input preserves idle and active state without appending assistant text":
+    for preceding in [connectionEvent(acsConnected),
+        AgentEvent(kind: aekCompleted, state: acsCompleted, stopReason: srEndTurn)]:
+      let chat = createAgentChatVM()
+      chat.applyAgentEvent(preceding)
+      let connection = chat.connectionState.val
+      let sessionStatus = chat.sessionStatus.val
+      let prompt = "user: exact human input"
+      chat.addUserMessage(prompt)
+      let before = chat.messages.val.len
+      let raw = %* {"type": "user_input", "content": prompt,
+        "input_type": "text", "user_name": "user", "timestamp": 123}
+      let mapped = harborEventToAgentEvent("session", eventFromJson(raw))
+      check mapped.kind == aekStatus
+      check mapped.status == ""
+      check mapped.raw == raw
+      check mapped.text == prompt
+      let wire = toJson(mapped)
+      check not wire.hasKey("raw")
+      let decoded = agentEventFromSseJson(wire)
+      check decoded.raw == wire
+      check not decoded.raw.hasKey("type")
+      check not decoded.raw.hasKey("user_name")
+      check decoded.kind == aekStatus
+      check decoded.status == ""
+      check decoded.text == prompt
+      for activity in [mapped, decoded]:
+        chat.applyAgentEvent(activity)
+        check chat.connectionState.val == connection
+        check chat.sessionStatus.val == sessionStatus
+        check chat.messages.val.len == before
+        check not chat.messages.val.anyIt(it.kind == cmkAgent)
+      # Identical prefixed content remains legitimate assistant output when
+      # the actual event is a log; the production reducer must render it.
+      chat.applyAgentEvent(agentEventFromSseJson(toJson(harborEventToAgentEvent("session",
+        eventFromJson(%* {"type": "log", "message": prompt, "level": "info"})))))
+      check chat.messages.val.anyIt(it.kind == cmkAgent and it.text == prompt)
+      check chat.connectionState.val == connection
+      chat.applyAgentEvent(AgentEvent(kind: aekStatus, status: "retrying"))
+      check chat.connectionState.val == "retrying"
+      check chat.sessionStatus.val == asLoading
+
   test "editor_agent_harbor_task_request_includes_workspace_context":
     let config = EditorHarborConfig(
       enabled: true,

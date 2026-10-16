@@ -203,3 +203,17 @@ suite "Editor multi-chat tabs (Assistant tab)":
       check vm.chats.val.len == 1
       check vm.chat.messages.val[0].text == "first chat msg"
       dispose()
+
+  test "closing a middle tab never reuses a surviving session id":
+    createRoot proc(dispose: proc()) =
+      let vm = createEditorVM()
+      let middle = vm.createNewChat()
+      let survivor = vm.createNewChat()
+      check vm.closeChat(middle)
+      let added = vm.createNewChat()
+      check added != survivor
+      check added != middle
+      check vm.switchToChat(survivor)
+      check vm.activeChatId.val == survivor
+      check vm.chats.val.len == 3
+      dispose()
