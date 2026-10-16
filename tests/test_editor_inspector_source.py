@@ -518,5 +518,408 @@ writeFileSync(process.argv[2],JSON.stringify(proof,null,2));console.log('Actual 
         self.assertFalse(sidecar.exists())
         self.unchanged()
 
+class NativeDeclarationRemovalTests(InspectorSourceTransactionTests):
+    """Reset / Fill Delete through the native writer: remove the one owning
+    declaration (editor spec "Universal Patterns": Reset reverts to the
+    class, token or inherited value; each source-map entry states whether
+    its writer can remove the declaration it owns; undo puts back exactly the
+    line it removed. "Saving": a refusal known at the act is made there).
+
+    The same real worker, files and project compiler as the suite above; no
+    mock. Inherits its fixture and helpers only (the inherited cases are
+    filtered out below so they run once)."""
+
+    ACTION_LINE = (b"#action { width:120px; height:48px; padding:8px; padding-top:1em; "
+                   b"padding-right:2px; padding-bottom:3px; padding-left:4px; border-radius:4px; "
+                   b"border-top-left-radius:1em; border-top-right-radius:2px; "
+                   b"border-bottom-right-radius:3px; border-bottom-left-radius:4px; "
+                   b"background-color:#112233; color:#FFFFFF; }\n")
+
+    def file_hash(self, file="stories.nim"):
+        return next(row["sourceHash"] for row in self.metadata() if row["file"] == file)
+
+    def undo_removal(self, request, removed, expected=0, receipt=None, source_hash=None):
+        undo = dict(request, commandId="native-undo", value=removed["sourceEdit"]["before"],
+                    expectedValue="", restoreWrite=receipt or removed["sourceEdit"]["receipt"],
+                    expectedSourceHash=source_hash or self.file_hash())
+        return self.operate(undo, expected)
+
+    def manifest_path(self):
+        return self.project / ".isonim/source-project.json"
+
+    def test_each_editable_declaration_states_whether_it_can_be_removed(self):
+        self.assertIn(self.ACTION_LINE, self.original)
+        # #action declares padding and border-radius together with all four
+        # of their longhands: each of those is also set by another
+        # declaration in the rule, so removing it would not reset it.
+        overlapping = {"padding": "padding-top", "padding-top": "padding",
+                       "padding-right": "padding", "padding-bottom": "padding",
+                       "padding-left": "padding", "border-radius": "border-top-left-radius",
+                       "border-top-left-radius": "border-radius", "border-top-right-radius": "border-radius",
+                       "border-bottom-right-radius": "border-radius", "border-bottom-left-radius": "border-radius"}
+        for row in self.metadata():
+            with self.subTest(key=row["key"]):
+                self.assertIn("removals", row)
+                self.assertEqual(set(row["removals"]), set(row["values"]))
+                for property, reason in row["removals"].items():
+                    if row["key"] == "style.action" and property in overlapping:
+                        self.assertIn("`" + overlapping[property] + "` also sets `" + property + "` for `#action`", reason)
+                    else:
+                        self.assertEqual(reason, "", property)
+        # A duplicate, a conditional override and an absent declaration are
+        # each stated per declaration, not by the project kind.
+        manifest = json.loads(self.manifest_path().read_text())
+        next(row for row in manifest["editableStyles"] if row["key"] == "style.action")["properties"].append("opacity")
+        self.manifest_path().write_text(json.dumps(manifest))
+        self.source.write_bytes(self.original
+            .replace(b"#secondary-action { width:160px;", b"#secondary-action { width:160px; width:161px;")
+            .replace(b'#alternate-action { width:180px; height:56px; padding:10px; border-radius:8px; background-color:#556677; color:#FFFFFF; }\n',
+                     b'#alternate-action { width:180px; height:56px; padding:10px; border-radius:8px; background-color:#556677; color:#FFFFFF; }\n'
+                     b'@media (max-width: 600px) { #alternate-action { color:#000000; } }\n'))
+        rows = {row["key"]: row for row in self.metadata()}
+        self.assertTrue(all("removals" in row for row in rows.values()))
+        self.assertIn("2 declarations set `width`", rows["style.secondary-action"]["removals"]["width"])
+        self.assertEqual(rows["style.secondary-action"]["removals"]["height"], "")
+        self.assertIn("2 declarations set `color`", rows["style.alternate-action"]["removals"]["color"])
+        self.assertIn("There is no `opacity` declaration", rows["style.action"]["removals"]["opacity"])
+        self.assertEqual(rows["style.action"]["removals"]["width"], "")
+
+    def test_removal_deletes_exactly_the_one_owning_declaration_and_undo_restores_its_line(self):
+        request = self.request(property="background-color", value="")
+        removed = self.operate(request)
+        self.assertTrue(removed["ok"])
+        expected = self.original.replace(b"border-bottom-left-radius:4px; background-color:#112233; color:#FFFFFF; }",
+                                         b"border-bottom-left-radius:4px; color:#FFFFFF; }", 1)
+        self.assertNotEqual(expected, self.original)
+        self.assertEqual(self.source.read_bytes(), expected)
+        self.assertFalse((self.project / ".isonim/source-transaction.json").exists())
+        self.assertEqual(removed["sourceEdit"]["before"], "#112233")
+        self.assertEqual(removed["sourceEdit"]["after"], "")
+        self.assertTrue(removed["sourceEdit"]["removed"])
+        receipt = removed["sourceEdit"]["receipt"]
+        self.assertEqual(receipt["file"], "stories.nim")
+        self.assertEqual(receipt["before"].encode(), self.ACTION_LINE)
+        self.assertEqual(receipt["after"].encode(), self.ACTION_LINE.replace(b"background-color:#112233; ", b""))
+        self.assertTrue(receipt["unique"])
+        self.assertEqual(receipt["afterHash"], hashlib.sha1(expected).hexdigest().upper())
+        self.assertEqual(json.loads(self.catalog.read_text()), removed["catalog"])
+        card = next(story["documentHtml"] for story in removed["catalog"]["stories"] if story["group"] == "Card")
+        self.assertNotIn("background-color:#112233", card)
+        self.assertIn("background-color:#224466", card)
+        action = next(row for row in removed["editableStyles"] if row["key"] == "style.action")
+        self.assertEqual(action["values"]["background-color"], "")
+        self.assertIn("There is no `background-color` declaration", action["removals"]["background-color"])
+        # Undo puts back exactly the removed line, through its receipt.
+        restored = self.undo_removal(request, removed)
+        self.assertTrue(restored["ok"], restored)
+        self.assertEqual(self.source.read_bytes(), self.original)
+        self.assertEqual(json.loads(self.catalog.read_text()), json.loads(self.original_catalog))
+        self.assertFalse((self.project / ".isonim/source-transaction.json").exists())
+        # Redo is the same single-match removal again; its undo is exact too.
+        again_request = self.request(property="background-color", value="")
+        again = self.operate(again_request)
+        self.assertEqual(self.source.read_bytes(), expected)
+        self.assertEqual(again["sourceEdit"]["receipt"], receipt)
+        self.assertTrue(self.undo_removal(again_request, again)["ok"])
+        self.assertEqual(self.source.read_bytes(), self.original)
+
+    def test_a_declaration_on_its_own_line_takes_the_line_with_it(self):
+        multiline = self.original.replace(b"#reused-card { width:110px; height:40px; background-color:#224466; }\n",
+                                          b"#reused-card {\n  width:110px;\n  height:40px;\n  background-color:#224466;\n}\n")
+        self.source.write_bytes(multiline)
+        request = self.request(target="reused", property="height", value="")
+        removed = self.operate(request)
+        self.assertEqual(self.source.read_bytes(), multiline.replace(b"  height:40px;\n", b"", 1))
+        # Whole lines: the removed line plus the line the change ends on.
+        receipt = removed["sourceEdit"]["receipt"]
+        self.assertEqual(receipt["before"], "  height:40px;\n  background-color:#224466;\n")
+        self.assertEqual(receipt["after"], "  background-color:#224466;\n")
+        self.assertTrue(self.undo_removal(request, removed)["ok"])
+        self.assertEqual(self.source.read_bytes(), multiline)
+
+    def test_a_property_another_declaration_also_sets_is_refused_on_real_files(self):
+        # The fixture's own #action: padding-top after padding, padding before
+        # all four longhands (review P1/P2).
+        for property, other in [("padding-top", "padding"), ("padding", "padding-top")]:
+            with self.subTest(property=property):
+                refused = self.operate(self.request(property=property, value=""), expected=4)
+                self.assertIn("`" + other + "` also sets `" + property + "` for `#action`", refused["diagnostic"])
+                self.unchanged()
+        # A background shorthand before background-color (review P3).
+        covered = self.original.replace(b"#secondary-action { width:160px; height:52px; padding:12px; border-radius:6px; background-color:#334455;",
+                                        b"#secondary-action { width:160px; height:52px; padding:12px; border-radius:6px; background:#000000; background-color:#334455;")
+        self.assertNotEqual(covered, self.original)
+        self.source.write_bytes(covered)
+        row = next(row for row in self.metadata() if row["key"] == "style.secondary-action")
+        self.assertIn("`background` also sets `background-color` for `#secondary-action`", row["removals"]["background-color"])
+        refused = self.operate(self.request(target="secondary-action", property="background-color", value=""), expected=4)
+        self.assertEqual(refused["diagnostic"], row["removals"]["background-color"])
+        self.assertEqual(self.source.read_bytes(), covered)
+        self.assertEqual(self.catalog.read_bytes(), self.original_catalog)
+
+    def compile_provider(self, properties, replacements):
+        manifest = json.loads(self.manifest_path().read_text())
+        manifest.pop("editableStyles")
+        manifest["editableStyleSources"] = [{"file": "stories.nim", "const": "cardStyles", "properties": properties}]
+        self.manifest_path().write_text(json.dumps(manifest))
+        source = self.original
+        for old, new in replacements:
+            self.assertIn(old, source)
+            source = source.replace(old, new, 1)
+        self.source.write_bytes(source)
+        built = subprocess.run(["python3", str(REPO / "tools/build_source_catalog.py"), str(self.project)],
+                               env=self.env, capture_output=True, text=True, timeout=70)
+        self.assertEqual(built.returncode, 0, built.stdout + built.stderr)
+        return source, self.catalog.read_bytes()
+
+    def provider_request(self, entry, target, property):
+        return {"command": "inspector-edit", "commandId": "native-provider", "expectedRevision": 0,
+                "schemaKey": entry["key"], "target": target, "storyId": entry["storyId"],
+                "property": property, "value": "", "expectedValue": entry["values"][property],
+                "expectedSourceHash": entry["sourceHash"], "viewportWidth": 1440}
+
+    def test_provider_bindings_refuse_overlapping_declarations(self):
+        # Review P4: compiled bindings name each explicit declaration as its
+        # own owner; another declaration in the rule still sets it.
+        source, catalog = self.compile_provider(["padding", "padding-top", "background-color", "width"], [
+            (b"#secondary-action { width:160px; height:52px; padding:12px;", b"#secondary-action { width:160px; height:52px; padding:12px; padding-top:3px;"),
+            (b"background-color:#334455;", b"background:#000000; background-color:#334455;")])
+        entry = next(row for row in self.metadata() if row["elementId"] == "secondary-action")
+        self.assertIn("`padding` also sets `padding-top` for `#secondary-action`", entry["removals"]["padding-top"])
+        self.assertIn("`padding-top` also sets `padding` for `#secondary-action`", entry["removals"]["padding"])
+        self.assertIn("`background` also sets `background-color` for `#secondary-action`", entry["removals"]["background-color"])
+        self.assertEqual(entry["removals"]["width"], "")
+        for property in ["padding-top", "padding", "background-color"]:
+            with self.subTest(property=property):
+                refused = self.operate(self.provider_request(entry, "secondary-action", property), expected=4)
+                self.assertEqual(refused["diagnostic"], entry["removals"][property])
+                self.assertEqual(self.source.read_bytes(), source)
+                self.assertEqual(self.catalog.read_bytes(), catalog)
+
+    def test_provider_value_owned_by_a_wider_shorthand_is_refused_not_removed_whole(self):
+        # background-color whose current value comes from a later
+        # `background` shorthand: removing "it" would remove the whole
+        # background declaration (review B2).
+        source, catalog = self.compile_provider(["background", "background-color"], [
+            (b"#secondary-action { width:160px; height:52px; padding:12px; border-radius:6px; background-color:#334455;",
+             b"#secondary-action { width:160px; height:52px; padding:12px; border-radius:6px; background:#445566;")])
+        entry = next(row for row in self.metadata() if row["elementId"] == "secondary-action")
+        self.assertEqual(entry["sourceDeclarations"]["background-color"]["property"], "background")
+        self.assertEqual(entry["removals"]["background-color"],
+            "background-color is set by the background declaration; removing it would also remove what it sets for other properties.")
+        refused = self.operate(self.provider_request(entry, "secondary-action", "background-color"), expected=4)
+        self.assertEqual(refused["diagnostic"], entry["removals"]["background-color"])
+        self.assertEqual(self.source.read_bytes(), source)
+        self.assertEqual(self.catalog.read_bytes(), catalog)
+        self.assertIn(b"background:#445566;", self.source.read_bytes())
+
+    def test_removal_is_refused_at_the_act_unless_exactly_one_declaration_owns_it(self):
+        # Stale capability: a human added a second declaration after describe.
+        request = self.request(property="width", value="")
+        duplicate = self.original.replace(b"#action { width:120px;", b"#action { width:120px; width:121px;")
+        self.source.write_bytes(duplicate)
+        refused = self.operate(request, expected=4)
+        self.assertIn("Source changed", refused["diagnostic"])
+        self.assertEqual(self.source.read_bytes(), duplicate)
+        # Current capability: refused with the statement, nothing written or built.
+        refused = self.operate(self.request(property="width", value=""), expected=4)
+        self.assertIn("2 declarations set `width` for `#action`", refused["diagnostic"])
+        self.assertEqual(self.source.read_bytes(), duplicate)
+        self.assertEqual(self.catalog.read_bytes(), self.original_catalog)
+        self.assertFalse((self.project / ".isonim/source-transaction.json").exists())
+        self.source.write_bytes(self.original)
+        # Absent declaration.
+        manifest = json.loads(self.manifest_path().read_text())
+        manifest["editableStyles"][0]["properties"].append("opacity")
+        self.manifest_path().write_text(json.dumps(manifest))
+        refused = self.operate(self.request(property="opacity", value=""), expected=4)
+        self.assertIn("There is no `opacity` declaration", refused["diagnostic"])
+        self.unchanged()
+
+    def test_undo_of_a_removal_restores_only_the_removed_declaration(self):
+        request = self.request(property="height", value="")
+        removed = self.operate(request)
+        after, after_catalog = self.source.read_bytes(), self.catalog.read_bytes()
+        self.assertEqual(after, self.original.replace(b"#action { width:120px; height:48px; ", b"#action { width:120px; ", 1))
+        self.assertIn("receipt", removed["sourceEdit"])
+        receipt = removed["sourceEdit"]["receipt"]
+        forged = [
+            dict(receipt, before=receipt["before"].replace("height:48px;", "height:48px; color:red;")),
+            dict(receipt, before=receipt["before"] + "echo 1\n"),
+            dict(receipt, before=receipt["before"].replace("height:48px;", "height:49px;")),
+            dict(receipt, offset=10 ** 6),
+            dict(receipt, after="#nothing { }\n"),
+            dict(receipt, file="../outside.nim"),
+            dict(receipt, file="build_catalog.py"),
+            # Review P5: a comment the removal never removed.
+            dict(receipt, before=receipt["before"].replace("height:48px;", "height:48px /* injected */;")),
+            dict(receipt, before=receipt["before"].replace("height:48px;", "/* injected */ height:48px;")),
+            dict(receipt, before=receipt["before"].replace("height:48px;", "height:48px !important;")),
+            dict(receipt, unique=not receipt["unique"]),
+            dict(receipt, afterHash=hashlib.sha1(b"other").hexdigest().upper()),
+        ]
+        for index, shape in enumerate(forged):
+            with self.subTest(index=index):
+                refused = self.undo_removal(request, removed, expected=4, receipt=shape)
+                self.assertFalse(refused["ok"])
+                self.assertEqual(self.source.read_bytes(), after)
+                self.assertEqual(self.catalog.read_bytes(), after_catalog)
+                self.assertFalse((self.project / ".isonim/source-transaction.json").exists())
+        for key, value in [("offset", "0"), ("unique", "yes"), ("afterHash", 7), ("extra", "x")]:
+            with self.subTest(key=key):
+                self.undo_removal(request, removed, expected=4, receipt=dict(receipt, **{key: value}))
+                self.assertEqual(self.source.read_bytes(), after)
+        # The restored value must be the one removed.
+        wrong = dict(request, commandId="native-undo", value="49px", expectedValue="",
+                     restoreWrite=receipt, expectedSourceHash=self.file_hash())
+        self.operate(wrong, expected=4)
+        self.assertEqual(self.source.read_bytes(), after)
+        # A later edit to the same line: the lines the removal wrote are gone.
+        self.operate(self.request(property="width", value="130px"))
+        later = self.source.read_bytes()
+        refused = self.undo_removal(request, removed, expected=4)
+        self.assertIn("Undo refused", refused["diagnostic"])
+        self.assertEqual(self.source.read_bytes(), later)
+        # Undoing that edit makes the receipt exact again.
+        self.operate(self.request(property="width", value="120px"))
+        self.assertEqual(self.source.read_bytes(), after)
+        self.assertTrue(self.undo_removal(request, removed)["ok"])
+        self.assertEqual(self.source.read_bytes(), self.original)
+
+    def store(self):
+        return self.project / ".isonim/removal-receipts.json"
+
+    def test_receipt_store_is_part_of_the_removal_and_its_undo(self):
+        request = self.request(property="height", value="")
+        removed = self.operate(request)
+        records = json.loads(self.store().read_text())
+        self.assertEqual([row["receipt"] for row in records], [removed["sourceEdit"]["receipt"]])
+        self.assertTrue(self.undo_removal(request, removed)["ok"])
+        self.assertEqual(json.loads(self.store().read_text()), [])
+        self.assertEqual(self.source.read_bytes(), self.original)
+
+    def test_an_unreadable_receipt_store_refuses_removal_and_undo_before_any_write(self):
+        # Review C1: the store is validated before the transaction writes.
+        for label, prepare in [("corrupt", lambda: self.store().write_text("{not json")),
+                               ("object", lambda: self.store().write_text("{}")),
+                               ("directory", lambda: self.store().mkdir())]:
+            with self.subTest(store=label):
+                prepare()
+                refused = self.operate(self.request(property="height", value=""), expected=4)
+                self.assertIn("removal receipt store", refused["diagnostic"])
+                self.assertIn("Nothing was changed", refused["diagnostic"])
+                self.unchanged()
+                if self.store().is_dir(): self.store().rmdir()
+                else: self.store().unlink()
+        # A genuine removal, then the store breaks: its undo is refused too.
+        request = self.request(property="height", value="")
+        removed = self.operate(request)
+        after, after_catalog = self.source.read_bytes(), self.catalog.read_bytes()
+        self.store().write_text("{not json")
+        refused = self.undo_removal(request, removed, expected=4)
+        self.assertIn("removal receipt store", refused["diagnostic"])
+        self.assertEqual(self.source.read_bytes(), after)
+        self.assertEqual(self.catalog.read_bytes(), after_catalog)
+
+    def test_a_receipt_store_write_that_fails_rolls_the_removal_back(self):
+        # Review C1: the store cannot be written after validation (here the
+        # project's own build makes its path a directory, as a full disk or a
+        # permission change would make the write fail). The source and catalog
+        # the transaction already wrote are restored and the act is refused.
+        manifest = json.loads(self.manifest_path().read_text())
+        manifest["build"] = ["sh", "-c", "mkdir -p .isonim/removal-receipts.json/blocked && exec python3 build_catalog.py"]
+        self.manifest_path().write_text(json.dumps(manifest))
+        refused = self.operate(self.request(property="height", value=""), expected=4)
+        self.assertIn("could not be written", refused["diagnostic"])
+        self.assertIn("source and catalog were restored", refused["diagnostic"])
+        self.unchanged()
+        # An ordinary edit with the same build is unaffected by the store.
+        self.store().joinpath("blocked").rmdir(); self.store().rmdir()
+        self.assertTrue(self.operate(self.request(property="width", value="130px"))["ok"])
+        self.assertIn(b"width:130px;", self.source.read_bytes())
+
+    def test_undo_cannot_insert_a_declaration_no_removal_removed(self):
+        # Review P6: a well-formed receipt the worker never issued, for an
+        # allowed property with a valid value, is refused unchanged.
+        manifest = json.loads(self.manifest_path().read_text())
+        manifest["editableStyles"][0]["properties"].append("opacity")
+        self.manifest_path().write_text(json.dumps(manifest))
+        current = self.source.read_bytes()
+        text = current.decode()
+        line = self.ACTION_LINE.decode()
+        receipt = {"file": "stories.nim", "offset": text.index(line),
+                   "before": line.replace("color:#FFFFFF;", "color:#FFFFFF; opacity:0.5;"), "after": line,
+                   "unique": True, "afterHash": hashlib.sha1(current).hexdigest().upper()}
+        request = {"command": "inspector-edit", "commandId": "never-removed", "expectedRevision": 0,
+                   "schemaKey": "style.action", "target": "action", "storyId": "Card / default ready",
+                   "property": "opacity", "value": "0.5", "expectedValue": "", "restoreWrite": receipt,
+                   "expectedSourceHash": hashlib.sha1(current).hexdigest().upper(), "viewportWidth": 1440}
+        refused = self.operate(request, expected=4)
+        self.assertIn("was not issued by a removal", refused["diagnostic"])
+        self.unchanged()
+        # A genuine receipt is spent by its undo: replaying it is refused too.
+        removal = self.request(property="height", value="")
+        removed = self.operate(removal)
+        self.assertTrue(self.undo_removal(removal, removed)["ok"])
+        self.assertEqual(self.source.read_bytes(), self.original)
+        replay = self.undo_removal(removal, removed, expected=4)
+        self.assertIn("was not issued by a removal", replay["diagnostic"])
+        self.assertEqual(self.source.read_bytes(), self.original)
+
+    def test_provider_bindings_state_removal_per_declaration_and_shared_rules_restore_exactly(self):
+        manifest = json.loads(self.manifest_path().read_text())
+        manifest.pop("editableStyles")
+        manifest["editableStyleSources"] = [{"file": "stories.nim", "const": "cardStyles",
+            "properties": ["padding", "width", "--brand", "background-color"]}]
+        self.manifest_path().write_text(json.dumps(manifest))
+        source = self.original.replace(b'const cardStyles* = """\n', b'const cardStyles* = """\n:root { --brand:#224466; }\n', 1) \
+            .replace(b"#reused-card { width:110px; height:40px; background-color:#224466; }",
+                     b"#reused-card { width:110px; height:40px; background-color:var(--brand); }")
+        self.source.write_bytes(source)
+        built = subprocess.run(["python3", str(REPO / "tools/build_source_catalog.py"), str(self.project)],
+                               env=self.env, capture_output=True, text=True, timeout=70)
+        self.assertEqual(built.returncode, 0, built.stdout + built.stderr)
+        rows = self.metadata()
+        self.assertTrue(rows and all("removals" in row for row in rows))
+        shared = next(row for row in rows if row["elementId"] == "reused" and row["scope"] == "shared-class"
+                      and row["storyId"] == "Card / default ready")
+        token = next(row for row in rows if row["elementId"] == "reused" and row["scope"] == "semantic-token")
+        secondary = next(row for row in rows if row["elementId"] == "secondary-action")
+        self.assertEqual(shared["properties"], ["width"])
+        self.assertEqual(shared["removals"]["width"], "")
+        self.assertIn("design token --brand", token["removals"]["background-color"])
+        self.assertEqual(secondary["removals"]["padding"], "")
+        self.assertIn("padding shorthand", secondary["removals"]["padding-top"])
+        catalog_before = self.catalog.read_bytes()
+        for target, property, entry in [("secondary-action", "padding-top", secondary),
+                                        ("reused", "background-color", token)]:
+            with self.subTest(property=property):
+                request = {"command": "inspector-edit", "commandId": "native-refused", "expectedRevision": 0,
+                           "schemaKey": entry["key"], "target": target, "storyId": entry["storyId"],
+                           "property": property, "value": "", "expectedValue": entry["values"][property],
+                           "expectedSourceHash": entry["sourceHash"], "viewportWidth": 1440}
+                refused = self.operate(request, expected=4)
+                self.assertEqual(refused["diagnostic"], entry["removals"][property])
+                self.assertEqual(self.source.read_bytes(), source)
+                self.assertEqual(self.catalog.read_bytes(), catalog_before)
+        # The shared rule's only bound declaration: the binding itself goes
+        # away with it, and undo still restores exactly that line.
+        request = {"command": "inspector-edit", "commandId": "native-shared", "expectedRevision": 0,
+                   "schemaKey": shared["key"], "target": "reused", "storyId": shared["storyId"],
+                   "property": "width", "value": "", "expectedValue": "110px",
+                   "expectedSourceHash": shared["sourceHash"], "viewportWidth": 1440}
+        removed = self.operate(request)
+        self.assertEqual(self.source.read_bytes(), source.replace(b"#reused-card { width:110px; ", b"#reused-card { ", 1))
+        self.assertFalse(any(row["key"] == shared["key"] for row in removed["editableStyles"]))
+        restored = self.undo_removal(request, removed)
+        self.assertTrue(restored["ok"], restored)
+        self.assertEqual(self.source.read_bytes(), source)
+        self.assertTrue(any(row["key"] == shared["key"] and row["values"]["width"] == "110px"
+                            for row in restored["editableStyles"]))
+
+for _name in list(vars(InspectorSourceTransactionTests)):
+    if _name.startswith("test_") and _name not in vars(NativeDeclarationRemovalTests):
+        setattr(NativeDeclarationRemovalTests, _name, None)
+
 if __name__ == "__main__":
     unittest.main()

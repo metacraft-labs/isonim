@@ -2,6 +2,18 @@
 ## isolate instances. Only an application acknowledgement completes an operation.
 import std/[asyncdispatch, asynchttpserver, json, locks, os, strutils, sysrand, tables, times, monotimes, sets]
 
+
+proc validNativeRestoreWrite*(value: JsonNode): bool =
+  ## The exact shape of a native removal's undo receipt: the file, the offset
+  ## and whole lines a removal replaced, whether its lines were unique when
+  ## written, and the SHA-1 of the file it left. Shared with the native worker.
+  if value == nil or value.kind != JObject or value.len != 6: return false
+  for (key, kind) in [("file", JString), ("offset", JInt), ("before", JString),
+      ("after", JString), ("unique", JBool), ("afterHash", JString)]:
+    if value{key} == nil or value[key].kind != kind: return false
+  value["file"].getStr().len > 0 and value["offset"].getInt() >= 0 and
+    value["afterHash"].getStr().len == 40
+
 type
   ControlScope* = object
     workspace*, instance*, epoch*, conversation*, token*: string
@@ -198,10 +210,17 @@ proc rpcDispatch*(reg: EditorControlRegistry; request: JsonNode; token: string):
             raise newException(ControlError, "invalid_binding_source_request")
         else:
           for key, value in request:
-            if key notin ["commandId", "command", "storyId", "target", "schemaKey", "property", "value", "expectedValue", "expectedSourceHash", "expectedRevision", "viewportWidth", "sourceValue"]:
+            if key notin ["commandId", "command", "storyId", "target", "schemaKey", "property", "value", "expectedValue", "expectedSourceHash", "expectedRevision", "viewportWidth", "sourceValue", "restoreWrite"]:
               raise newException(ControlError, "unknown_inspector_source_field")
             if key in ["expectedRevision", "viewportWidth"]:
               if value.kind != JInt: raise newException(ControlError, "invalid_inspector_source_field_type")
+            elif key == "restoreWrite":
+              # Undo of a removal (Reset / Fill Delete): the removal's line
+              # receipt, in exactly the shape the native worker accepts
+              # (tools/isonim_review/cmd_source_project.nim). The worker, not
+              # this admission, decides whether it restores only that line.
+              if not validNativeRestoreWrite(value):
+                raise newException(ControlError, "invalid_inspector_source_field_type")
             elif value.kind != JString:
               raise newException(ControlError, "invalid_inspector_source_field_type")
           for key in ["commandId", "command", "storyId", "target", "schemaKey", "property", "value", "expectedValue", "expectedSourceHash", "expectedRevision", "viewportWidth"]:

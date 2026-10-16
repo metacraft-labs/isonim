@@ -2,3 +2,4 @@
 .isonim/catalog-producer
 .isonim/catalog-producer.exe
 .isonim/source-transaction.json
+.isonim/removal-receipts.json

@@ -209,7 +209,7 @@ try {
  const unsupportedOpen=await snapshot();
  await unsupportedPicker.locator('[data-color-popover-input]').fill('#AABBCC');
  await unsupportedPicker.locator('[data-color-popover-apply]').click();
- assert((await unsupportedPicker.locator('[data-color-popover-error]').innerText()).includes('cannot safely edit'));
+ assert((await unsupportedPicker.locator('[data-color-popover-error]').innerText()).includes('no editable source declaration in this project owns border-color'));
  assert.equal(await unsupportedPicker.locator('[data-color-popover-input]').inputValue(),'#AABBCC');
  assert.deepEqual(await snapshot(),unsupportedOpen);assert.equal(proof.sourceRequests.length,unsupportedRequests);
  assert.equal(source(),unsupportedSource);assert.equal(readFileSync(project+'/.isonim/catalog.json','utf8'),unsupportedCatalog);

@@ -992,7 +992,7 @@ package isonim:
     testExecuteActions.add(c2GuardEdge)
     c2HeadlessActions.add(c2GuardEdge)
     var c2SourceActions: seq[BuildActionDef] = @[]
-    for stem in ["test_editor_fill_readonly_gui", "test_editor_inspector_source_gui"]:
+    for stem in ["test_editor_fill_readonly_gui", "test_editor_inspector_source_gui", "test_editor_native_reset_gui"]:
       let edge = sh.shell(
         command = "\"${ISONIM_SCENARIO_NODE:-node}\" tests/" & stem & ".mjs", cacheable = false,
         actionId = "isonim.c2_execute." & stem,

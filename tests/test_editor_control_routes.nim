@@ -356,6 +356,43 @@ suite "browser-origin inspector source admission":
     viewport["request"]["viewportWidth"] = %0
     check rpc(registry,"editor.inspector-source",viewport,browser["browserToken"].getStr())["error"]["message"].getStr() == "invalid_inspector_viewport"
 
+  test "a removal's undo receipt is admitted only in its exact shape":
+    # Reset / Fill Delete remove a declaration (empty value); undo hands the
+    # native writer the removal's line receipt (editor spec "Universal
+    # Patterns": undo puts back exactly the line it removed).
+    let registry = newEditorControlRegistry("browser-bootstrap")
+    let browser = register(registry)
+    let credential = browser["browserToken"].getStr()
+    let removal = inspectorSource(browser, "removal-1")
+    removal["request"]["value"] = %""
+    let removalReply = rpc(registry,"editor.inspector-source",removal,credential)
+    check removalReply{"error"} == nil
+    check removalReply{"result", "status"}.getStr() == "running"
+    proc receipt(): JsonNode =
+      %* {"file": "stories.nim", "offset": 12, "before": "#action { width:120px; }\n",
+        "after": "#action { }\n", "unique": true,
+        "afterHash": "0123456789012345678901234567890123456789"}
+    let restore = inspectorSource(browser, "restore-1")
+    restore["request"]["expectedValue"] = %""
+    restore["request"]["restoreWrite"] = receipt()
+    let restoreReply = rpc(registry,"editor.inspector-source",restore,credential)
+    check restoreReply{"error"} == nil
+    check restoreReply{"result", "status"}.getStr() == "running"
+    var malformed: seq[JsonNode] = @[%"stories.nim", newJNull(), newJArray()]
+    for (key, value) in [("file", %1), ("offset", %"12"), ("offset", %(-1)),
+        ("before", %1), ("after", newJNull()), ("unique", %"true"),
+        ("afterHash", %"short"), ("extra", %"field")]:
+      var shape = receipt()
+      shape[key] = value
+      malformed.add shape
+    var missing = receipt()
+    missing.delete("afterHash")
+    malformed.add missing
+    for index, shape in malformed:
+      let request = inspectorSource(browser, "restore-bad-" & $index)
+      request["request"]["restoreWrite"] = shape
+      check rpc(registry,"editor.inspector-source",request,credential)["error"]["message"].getStr() == "invalid_inspector_source_field_type"
+
   test "selection, story and revision changes prevent admission":
     let registry = newEditorControlRegistry("browser-bootstrap")
     let browser = register(registry)

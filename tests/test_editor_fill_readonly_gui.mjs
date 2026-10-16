@@ -23,7 +23,7 @@ cpSync(repo+'/tests/fixtures/editor_inspector_project',project,{recursive:true})
 for(const [from,to] of [['src/isonim/editor/index.html','index.html'],['build/editor-inspector/editor.js','editor.js'],['node_modules/fabric/dist/index.min.js','fabric.min.js'],['node_modules/paper/dist/paper-core.min.js','paper-core.min.js'],['node_modules/svgo/dist/svgo.browser.js','svgo.browser.js']])copyFileSync(repo+'/'+from,pub+'/'+to);
 const build=spawnSync('python3',[repo+'/tools/build_source_catalog.py',project],{env:{...process.env,ISONIM_SOURCE_FRAMEWORK:repo},encoding:'utf8',timeout:70000});
 writeFileSync(root+'/catalog-build.log',build.stdout+build.stderr);assert.equal(build.status,0,build.stdout+build.stderr);
-const proof={project,head:process.env.ISONIM_TEST_HEAD||spawnSync('git',['rev-parse','HEAD'],{cwd:repo,encoding:'utf8'}).stdout.trim(),sourceState:process.env.ISONIM_TEST_SOURCE_STATE||'M3 uncommitted working copy',nativeSha256:createHash('sha256').update(readFileSync(repo+'/build/bin/isonim-review')).digest('hex'),bundleSha256:createHash('sha256').update(readFileSync(pub+'/editor.js')).digest('hex'),cases:[],errors:[],agentRequests:[],sourceRequests:[]};
+const proof={project,head:process.env.ISONIM_TEST_HEAD||spawnSync('git',['rev-parse','HEAD'],{cwd:repo,encoding:'utf8'}).stdout.trim(),sourceState:process.env.ISONIM_TEST_SOURCE_STATE||'M3 uncommitted working copy',nativeSha256:createHash('sha256').update(readFileSync(repo+'/build/bin/isonim-review')).digest('hex'),bundleSha256:createHash('sha256').update(readFileSync(pub+'/editor.js')).digest('hex'),cases:[],errors:[],inspectorRequests:[],deleteRequests:[],agentRequests:[],sourceRequests:[]};
 const record=name=>{proof.cases.push(name);writeFileSync(root+'/proof-partial.json',JSON.stringify(proof,null,2));};
 const config=root+'/agent.toml';writeFileSync(config,'[agent]\nbackend="custom"\ncommand="python3"\nargs='+JSON.stringify([repo+'/tests/helpers/editor_control_peer.py'])+'\nprimer_enabled=false\n');
 const server=spawn('python3',[repo+'/tools/editor_server.py','--directory',pub,'--project-root',project,'--port','0','--bind','127.0.0.1','--config',config,'--daemon-binary',repo+'/build/bin/isonim-review'],{env:{...process.env,ISONIM_SOURCE_FRAMEWORK:repo},stdio:['ignore','pipe',openSync(root+'/server.log','w')]});
@@ -35,6 +35,7 @@ try {
  const context=await browser.newContext({viewport:{width:1440,height:900},permissions:['clipboard-read','clipboard-write']});const page=await context.newPage();page.setDefaultTimeout(30000);
  page.on('pageerror',error=>proof.errors.push(error.message));
  page.on('request',request=>{const url=new URL(request.url());if(url.pathname.startsWith('/api/agent/'))proof.agentRequests.push(url.pathname);if(url.pathname==='/api/editor/source/operation')proof.sourceRequests.push(request.postDataJSON());});
+ page.on('request',request=>{try{const body=request.postDataJSON();if(body?.method==='editor.inspector-source')proof.inspectorRequests.push(body.params.request);}catch(error){}});
  await page.goto(origin);await page.waitForFunction(()=>!!window.__popupAcceptance);
  await page.locator('[data-toolbar-cluster="mode"] [aria-label="Edit"]').click();
  await page.locator('[data-scene-graph-row="action"]').click();
@@ -46,26 +47,57 @@ try {
  const fill=page.locator('[data-fill-row="0"]');
  const swatch=fill.locator('[data-fill-row-swatch="0"]');
  await swatch.waitFor({state:'visible'});assert.equal(await swatch.count(),1);
- // Public Delete must refuse unsupported removal even with genuine source
- // permission. These are physical browser inputs, not synthetic source results.
+ // Public Delete removes the fill's one owning declaration through the real
+ // native writer (editor spec "Universal Patterns": a fill's delete is Reset's
+ // removal, enabled where Reset is; undo puts back exactly the line it
+ // removed). Physical browser inputs against the real worker, files and
+ // compiler; no source result is simulated. The worker's refusals (several or
+ // no owning declarations, shorthand parts, tokens, forged receipts) are
+ // covered on real files by test_editor_inspector_source.py.
  const deleteButton=fill.locator('[data-fill-row-delete="0"]');
  await page.waitForFunction(()=>document.querySelector('[data-fill-row="0"]')?.getAttribute('data-fill-row-readonly')==='false');
  await deleteButton.hover();await page.waitForFunction(()=>JSON.parse(window.__popupAcceptance.snapshot()).hover==='');
  const deleteBefore={source:source(),catalog:catalog(),state:await snapshot(),preview:await preview(),hex:await fill.locator('[data-fill-row-hex]').inputValue()};
  const fillMessage=page.locator('[data-fill-message="true"]');
- assert.equal(await deleteButton.getAttribute('aria-disabled'),'true');
- const deleteNode=await deleteButton.elementHandle();
- for(const activation of ['click','Enter','Space']){
+ const removedSource=deleteBefore.source.replace('border-bottom-left-radius:4px; background-color:#112233; color:#FFFFFF; }','border-bottom-left-radius:4px; color:#FFFFFF; }');
+ assert.notEqual(removedSource,deleteBefore.source);assert.equal(proof.sourceRequests.length,0);
+ const settled=count=>page.waitForFunction(count=>{const s=JSON.parse(window.__popupAcceptance.snapshot());return s.stage==='wesClean'&&!s.sourceInFlight&&s.undoCount===count;},count,{timeout:70000});
+ const previewBackground=expected=>page.waitForFunction(([expected,same])=>{const frame=[...document.querySelectorAll('iframe')].find(frame=>frame.getClientRects().length&&frame.contentDocument?.querySelector('#action'));if(!frame)return false;const value=frame.contentWindow.getComputedStyle(frame.contentDocument.querySelector('#action')).backgroundColor;return same?value===expected:value!==expected;},[expected.value,expected.same],{timeout:70000});
+ for(const [index,activation] of ['click','Enter','Space'].entries()){
+  if(index>0)await page.waitForFunction(()=>document.querySelector('[data-fill-row-delete="0"]')?.getAttribute('aria-disabled')==='false');
+  assert.equal(await deleteButton.getAttribute('aria-disabled'),'false','Delete is enabled where the native entry states removal');
+  assert.equal(await deleteButton.getAttribute('title'),'Delete fill');
+  const undoBefore=(await snapshot()).undoCount;
   await deleteButton.scrollIntoViewIfNeeded();assert(await deleteButton.evaluate(el=>{const r=el.getBoundingClientRect();return el.contains(document.elementFromPoint(r.x+r.width/2,r.y+r.height/2));}));
   if(activation==='click'){const box=await deleteButton.boundingBox();assert(box);await page.mouse.click(box.x+box.width/2,box.y+box.height/2);}else{await deleteButton.focus();await deleteButton.press(activation);}
-  assert.equal(await fill.count(),1);assert(await deleteNode.evaluate(el=>el.isConnected));
-  await fillMessage.waitFor({state:'visible'});assert.equal(await fillMessage.textContent(),'The native source writer cannot remove a declaration.');
+  await settled(undoBefore+1);
+  assert.equal(source(),removedSource,'Delete removes exactly the one owning declaration');
+  assert.notEqual(catalog(),deleteBefore.catalog);assert(!JSON.parse(catalog()).stories.find(story=>story.group==='Card').documentHtml.includes('background-color:#112233'));
+  await previewBackground({value:deleteBefore.preview.background,same:false});
+  assert.equal(proof.sourceRequests.length,2*index+1);
+  const removal=proof.inspectorRequests.at(-1);assert.equal(removal.property,'background-color');assert.equal(removal.value,'');assert.equal(removal.restoreWrite,undefined);
+  // The declaration is gone: a further removal is refused at the act with
+  // the worker's per-entry statement, before any request (spec "Saving").
+  const attempt=JSON.parse(await page.evaluate(()=>window.__popupAcceptance.attemptSelectedNativeProperty('background-color','')));
+  assert.equal(attempt.completed,true);assert.equal(attempt.ok,false);assert.match(attempt.diagnostic,/^There is no `background-color` declaration for `#action` to remove\.$/);
+  assert.equal(proof.sourceRequests.length,2*index+1);assert.equal(source(),removedSource);
+  // Undo puts back exactly the removed line through the removal's receipt.
+  await page.evaluate(()=>window.__popupAcceptance.history(false));
+  await settled(undoBefore);
+  assert.equal(source(),deleteBefore.source,'Undo restores the exact source bytes');
+  assert.deepEqual(JSON.parse(catalog()),JSON.parse(deleteBefore.catalog));
+  await previewBackground({value:deleteBefore.preview.background,same:true});assert.deepEqual(await preview(),deleteBefore.preview);
+  assert.equal(proof.sourceRequests.length,2*index+2);
+  const restore=proof.inspectorRequests.at(-1);assert.equal(restore.value,'#112233');assert.equal(restore.restoreWrite.file,'stories.nim');assert.equal(restore.restoreWrite.before.includes('background-color:#112233;'),true);
+  await page.waitForFunction(()=>document.querySelector('[data-fill-row="0"]')?.getAttribute('data-fill-row-readonly')==='false');
   assert.equal(await fill.locator('[data-fill-row-hex]').inputValue(),deleteBefore.hex);
-  assert.equal(source(),deleteBefore.source);assert.equal(catalog(),deleteBefore.catalog);assert.deepEqual(await snapshot(),deleteBefore.state);assert.deepEqual(await preview(),deleteBefore.preview);
-  assert.equal(proof.sourceRequests.length,0);assert.deepEqual(proof.agentRequests,[]);
+  assert.deepEqual((await snapshot()).properties,deleteBefore.state.properties);assert.equal(await fill.count(),1);
+  assert.deepEqual(proof.agentRequests,[]);
  }
- for(const key of ['Tab','Escape']){await deleteButton.focus();await deleteButton.press(key);assert.equal(await fill.count(),1);assert.deepEqual(await snapshot(),deleteBefore.state);assert.equal(await fillMessage.textContent(),'The native source writer cannot remove a declaration.');}
- record('editable public Delete click/Enter/Space explains unsupported removal with exact row/source/catalog/preview/history and zero requests; Tab/Escape are inert');
+ for(const key of ['Tab','Escape']){const message=await fillMessage.textContent();await deleteButton.focus();await deleteButton.press(key);assert.equal(await fill.count(),1);assert.equal(source(),deleteBefore.source);assert.equal(proof.sourceRequests.length,6);assert.equal(await fillMessage.textContent(),message);}
+ // Later cases count their own source requests from zero; the removals keep theirs.
+ proof.deleteRequests=proof.sourceRequests.splice(0);assert.equal(proof.deleteRequests.length,6);
+ record('editable public Delete click/Enter/Space removes exactly the one owning declaration through the native writer and undo restores the exact source, catalog, preview and row; Tab/Escape are inert');
  await page.evaluate(()=>window.__popupAcceptance.readOnly(true));
  await page.waitForFunction(()=>document.querySelector('[data-fill-row="0"]')?.getAttribute('data-fill-row-readonly')==='true');
  await swatch.hover();await page.waitForFunction(()=>JSON.parse(window.__popupAcceptance.snapshot()).hover==='');

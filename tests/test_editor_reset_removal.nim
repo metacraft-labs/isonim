@@ -633,3 +633,133 @@ suite "property-row colour picker with an asynchronous commit":
       check r.inputValue(findByAttr(popup, "data-color-popover-input", "true")) ==
         "#FF2233"
       dispose()
+
+suite "native source projects: Reset and Fill Delete follow each entry's removal statement":
+  # Mock justification: the native bridge (`source_browser.nim`, JS only)
+  # installs two boundaries on the EditorVM -- `inspectorSourceCommit` (the
+  # asynchronous write) and `inspectorSourceRemovalRefusal` (each editable
+  # declaration's removal statement, shipped by the native worker with the
+  # editable-style metadata). Here both are recording stand-ins, so the
+  # production property row, actions menu and Fill section are tested
+  # against what the bridge states; no write is claimed. The real worker's
+  # statement, single-match removal and receipt undo are exercised on real
+  # files by tests/test_editor_inspector_source.py
+  # (NativeDeclarationRemovalTests), and the mounted bridge by the c2/c3
+  # source GUI suites (test_editor_fill_readonly_gui.mjs,
+  # test_editor_color_picker_gui.mjs).
+  proc nativeVm(statement: Signal[string]; commits: ref seq[string];
+      states = true): EditorVM =
+    result = createEditorVM()
+    var permissions = result.workspacePermissions.val
+    permissions.writeSource = true
+    result.workspacePermissions.val = permissions
+    result.hasAsyncSourceProject = true
+    result.sourceAdapterReady.val = true
+    result.inspector.selectedElement.val = ElementRef(id: "card", tag: "div",
+      properties: @[
+        PropertyInfo(name: "background-color", value: "#112233",
+          authoredValue: "#112233", directStyleAllowed: true),
+        PropertyInfo(name: "width", value: "120px", authoredValue: "120px",
+          directStyleAllowed: true)])
+    result.inspectorSourceCommit = proc(element: ElementRef; property, value: string;
+        scope: SourceScopeChoiceKind;
+        done: proc(ok: bool; diagnostic: string) {.closure.}) =
+      commits[].add property & "=" & value
+      done(true, "")
+    if states:
+      result.inspectorSourceRemovalRefusal = proc(element: ElementRef;
+          property: string; scope: SourceScopeChoiceKind): string =
+        statement.val
+
+  test "an entry that states removal enables Reset and Delete, which commit the empty value":
+    createRoot proc(dispose: proc()) =
+      let r = MockRenderer()
+      let root = r.createElement("div")
+      let commits = new(seq[string])
+      let vm = nativeVm(createSignal(""), commits)
+      check vm.propertyResetRefusal("background-color", sskLocalInstance) == ""
+      mountSectionFill[MockRenderer, MockNode](r, root, vm)
+      let row = findByAttr(root, "data-fill-row", "0")
+      need(row)
+      let delete = findByAttr(row, "data-fill-row-delete", "0")
+      need(delete)
+      check delete.attributes.getOrDefault("aria-disabled") == "false"
+      row.fireEvent("contextmenu")
+      let menu = findByAttr(row, "data-property-actions-menu", "true")
+      need(menu)
+      check findByAttr(menu, "data-property-action", "reset").attributes.getOrDefault(
+        "aria-disabled") == "false"
+      delete.fireEvent("click")
+      check commits[] == @["background-color="]
+      # The property row's Reset commits through the same native boundary.
+      let host = r.createElement("div")
+      let widthRow = r.mountPropertyRow(host, propertyRowText("Width",
+        createSignal("120px"), wiring = vm.inspectorRowWiring("width")))
+      widthRow.fireEvent("contextmenu")
+      let widthMenu = findByAttr(widthRow, "data-property-actions-menu", "true")
+      need(widthMenu)
+      let reset = findByAttr(widthMenu, "data-property-action", "reset")
+      need(reset)
+      check reset.attributes.getOrDefault("aria-disabled") == "false"
+      reset.fireEvent("click")
+      check commits[] == @["background-color=", "width="]
+      dispose()
+
+  test "an entry that cannot remove shows its own reason and nothing is requested":
+    createRoot proc(dispose: proc()) =
+      let r = MockRenderer()
+      let root = r.createElement("div")
+      let commits = new(seq[string])
+      const reason = "2 declarations set `background-color` for `#card`. " &
+        "Reset removes exactly one owning declaration and cannot tell which " &
+        "of them is meant; edit the stylesheet directly."
+      let statement = createSignal(reason)
+      let vm = nativeVm(statement, commits)
+      check vm.propertyResetRefusal("background-color", sskLocalInstance) == reason
+      mountSectionFill[MockRenderer, MockNode](r, root, vm)
+      let row = findByAttr(root, "data-fill-row", "0")
+      need(row)
+      let delete = findByAttr(row, "data-fill-row-delete", "0")
+      need(delete)
+      # The statement reads no source file, so the tracked state shows it
+      # before the user reaches for the button.
+      check delete.attributes.getOrDefault("aria-disabled") == "true"
+      check delete.attributes.getOrDefault("title") == reason
+      delete.fireEvent("click")
+      check findByAttr(root, "data-fill-message", "true").textContent == reason
+      row.fireEvent("contextmenu")
+      let menu = findByAttr(row, "data-property-actions-menu", "true")
+      need(menu)
+      let reset = findByAttr(menu, "data-property-action", "reset")
+      need(reset)
+      check reset.attributes.getOrDefault("aria-disabled") == "true"
+      check reset.attributes.getOrDefault("title") == reason
+      reset.fireEvent("click")
+      check commits[].len == 0
+      check vm.inspector.undoStack.val.len == 0
+      check vm.inspector.pendingSourceEdits.val.len == 0
+      # A refreshed statement (the worker re-describes after every write)
+      # re-enables both, without the user reaching for them.
+      statement.val = ""
+      check delete.attributes.getOrDefault("aria-disabled") == "false"
+      check delete.attributes.getOrDefault("title") == "Delete fill"
+      dispose()
+
+  test "a native connection that states nothing about removal refuses it":
+    createRoot proc(dispose: proc()) =
+      let r = MockRenderer()
+      let root = r.createElement("div")
+      let commits = new(seq[string])
+      let vm = nativeVm(createSignal(""), commits, states = false)
+      let reason = vm.propertyResetRefusal("background-color", sskLocalInstance)
+      check reason == "This source connection does not state whether it can " &
+        "remove the background-color declaration."
+      mountSectionFill[MockRenderer, MockNode](r, root, vm)
+      let delete = findByAttr(root, "data-fill-row-delete", "0")
+      need(delete)
+      check delete.attributes.getOrDefault("aria-disabled") == "true"
+      check delete.attributes.getOrDefault("title") == reason
+      delete.fireEvent("click")
+      check findByAttr(root, "data-fill-message", "true").textContent == reason
+      check commits[].len == 0
+      dispose()

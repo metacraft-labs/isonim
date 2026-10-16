@@ -580,8 +580,13 @@ proc inspectorRowWiring*(vm: EditorVM; property: string): InspectorRowWiring =
     let property = vm.inspectorProperty(capturedProperty)
     if property.isSome and property.get.origin == poSetStyle:
       return "Read-only: native source editing does not own this inline declaration."
-    if property.isSome and property.get.authoredValue.len > 0: return ""
-    "Read-only: the editor cannot safely edit this value’s source."
+    # An explicit binding that offers the property owns it even with no
+    # declaration (after Reset): the worker inserts a typed value into the
+    # binding's rule.
+    if property.isSome and (property.get.authoredValue.len > 0 or
+        property.get.nativeSourceOffered): return ""
+    "Read-only: no editable source declaration in this project owns " &
+      capturedProperty & "."
 
   InspectorRowWiring(
     cssProperty: capturedProperty,

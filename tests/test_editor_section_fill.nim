@@ -199,7 +199,11 @@ suite "Phase G section_fill":
       fireEvent(deleteButton, "click")
       check findByAttr(root, "data-fill-row", "0") == row
       check findByAttr(root, "data-fill-row", "1") == nil
-      check message.textContent == "The native source writer cannot remove a declaration."
+      # Editor spec "Universal Patterns": each source-map entry states whether
+      # its writer can remove the declaration it owns. This recording
+      # boundary states nothing, so removal is refused with that reason.
+      check message.textContent == "This source connection does not state " &
+        "whether it can remove the background-color declaration."
       check message.attributes.getOrDefault("data-fill-message-visible") == "true"
       check r.inputValue(findByAttr(root, "data-fill-row-hex", "0")) == "#112233"
       check calls == 0

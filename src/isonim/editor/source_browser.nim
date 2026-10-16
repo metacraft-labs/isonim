@@ -2,8 +2,8 @@
 ## filesystem work runs on the browser thread. Only successful compiled catalogs
 ## replace preview data; build-start acknowledgement is never completion.
 when not defined(js): {.error: "Source browser bridge requires JS".}
-import std/[json, options]
-import isonim/core/[signals, computation, owner]
+import std/[json, options, strutils]
+import isonim/core/[signals, computation, owner, batch]
 import isonim/editor/[viewmodels, workspace, source_catalog, control]
 
 proc attachSourceProject*(vm: EditorVM; base: EditorWorkspace; inspectorEditing = true) =
@@ -25,6 +25,7 @@ proc attachSourceProject*(vm: EditorVM; base: EditorWorkspace; inspectorEditing 
     if (!Object.prototype.hasOwnProperty.call(""", vm, """, 'sourceBindingMetadataSaving')) """, vm, """.sourceBindingMetadataSaving = false;
     if (!Object.prototype.hasOwnProperty.call(""", vm, """, 'sourceBindingMetadataSaveAgain')) """, vm, """.sourceBindingMetadataSaveAgain = false;
     if (!Object.prototype.hasOwnProperty.call(""", vm, """, 'sourceBindingMetadataWaiters')) """, vm, """.sourceBindingMetadataWaiters = [];
+    if (!Object.prototype.hasOwnProperty.call(""", vm, """, 'inspectorSourceRemovalRefusal')) """, vm, """.inspectorSourceRemovalRefusal = null;
   """].}
   vm.inspector.ensureBindingRevision()
   vm.hasAsyncSourceProject = inspectorEditing
@@ -132,7 +133,28 @@ proc attachSourceProject*(vm: EditorVM; base: EditorWorkspace; inspectorEditing 
         let storyId = controlStoryId(vm.selectedStory.val)
         var selected = element
         var changed = false
-        for mapping in editableStyles.val:
+        # Offered and stated only while a current mapping offers the property
+        # for this element and story; cleared when it no longer does (another
+        # story, a refreshed catalog without it, an inline owner).
+        var offered: seq[string]
+        # One read: each read of a signal in an effect is another observer.
+        let mappings = editableStyles.val
+        for mapping in mappings:
+          if mapping{"elementId"}.getStr() != element.id or mapping{"storyId"}.getStr() != storyId: continue
+          for property in selected.properties:
+            if property.origin != poSetStyle and mapping{"values", property.name} != nil and
+                property.name notin offered:
+              offered.add property.name
+        for property in selected.properties.mitems:
+          let isOffered = property.name in offered
+          if property.nativeSourceOffered != isOffered:
+            property.nativeSourceOffered = isOffered
+            changed = true
+          if not isOffered and (property.nativeRemovalStated or property.nativeRemovalRefusal.len > 0):
+            property.nativeRemovalStated = false
+            property.nativeRemovalRefusal = ""
+            changed = true
+        for mapping in mappings:
           if mapping{"elementId"}.getStr() != element.id or mapping{"storyId"}.getStr() != storyId: continue
           for property in selected.properties.mitems:
             # This native capability owns const CSS declarations, never the
@@ -158,43 +180,73 @@ proc attachSourceProject*(vm: EditorVM; base: EditorWorkspace; inspectorEditing 
             if property.authoredValue != authored:
               property.authoredValue = authored
               changed = true
+            # The worker's removal statement for this declaration rides on the
+            # property, as its authored value does, so Reset and Fill Delete
+            # read it with the selection and never subscribe to the mappings.
+            let statement = mapping{"removals", property.name}
+            let stated = statement != nil and statement.kind == JString
+            let refusal = if stated: statement.getStr() else: ""
+            if property.nativeRemovalStated != stated or property.nativeRemovalRefusal != refusal:
+              property.nativeRemovalStated = stated
+              property.nativeRemovalRefusal = refusal
+              changed = true
         if changed: vm.inspector.selectedElement.val = selected
 
   proc transact(element: ElementRef; property, value, storyId, schemaKey: string;
-      done: proc(ok: bool; diagnostic, sourceBefore, sourceAfter: string; unchanged: bool) {.closure.}; restoreLiteral = "") =
+      done: proc(ok: bool; diagnostic, sourceBefore, sourceAfter: string; unchanged: bool;
+        edit: JsonNode) {.closure.}; restoreLiteral = ""; restoreWrite: JsonNode = nil) =
     if vm.sourceBindingMetadataSaving or (vm.sourceBindingMetadataDirty != nil and vm.sourceBindingMetadataDirty.val):
-      done(false, "Save the pending binding metadata before editing source.", "", "", false)
+      done(false, "Save the pending binding metadata before editing source.", "", "", false, nil)
       return
     if vm.sourceProjectBuildInFlight:
-      done(false, "Wait for the current source build to complete.", "", "", false)
+      done(false, "Wait for the current source build to complete.", "", "", false, nil)
       return
     if not vm.workspacePermissions.val.writeSource:
-      done(false, "This workspace is read-only for source changes.", "", "", false)
+      done(false, "This workspace is read-only for source changes.", "", "", false, nil)
       return
     if vm.controlSourceTransport == nil:
-      done(false, "Source connection unavailable.", "", "", false)
+      done(false, "Source connection unavailable.", "", "", false, nil)
       return
-    var mapping: JsonNode
-    for entry in editableStyles.val:
-      if entry{"elementId"}.getStr() == element.id and entry{"storyId"}.getStr() == storyId and
-          (schemaKey.len == 0 or entry{"key"}.getStr() == schemaKey) and entry{"values", property} != nil:
-        if mapping != nil:
-          done(false, "Ambiguous editable source ownership.", "", "", false)
-          return
-        mapping = entry
-    if mapping == nil or mapping{"values", property} == nil:
-      done(false, "The editor cannot safely edit this value’s source.", "", "", false)
-      return
+    var mappingKey, sourceHash: string
+    var expected: JsonNode
+    if restoreWrite != nil:
+      # Undo of a removal: the entry may be gone with its only declaration,
+      # so it is named by the key the removal was written through. The
+      # worker checks the restoration against the project, not this mapping.
+      for entry in editableStyles.val:
+        if entry{"file"}.getStr() == restoreWrite{"file"}.getStr():
+          sourceHash = entry{"sourceHash"}.getStr()
+      if schemaKey.len == 0 or sourceHash.len == 0:
+        done(false, "Undo refused: the removed declaration's source is no longer offered for editing. No source was changed.", "", "", false, nil)
+        return
+      mappingKey = schemaKey
+      expected = %""
+    else:
+      var mapping: JsonNode
+      for entry in editableStyles.val:
+        if entry{"elementId"}.getStr() == element.id and entry{"storyId"}.getStr() == storyId and
+            (schemaKey.len == 0 or entry{"key"}.getStr() == schemaKey) and entry{"values", property} != nil:
+          if mapping != nil:
+            done(false, "Ambiguous editable source ownership.", "", "", false, nil)
+            return
+          mapping = entry
+      if mapping == nil or mapping{"values", property} == nil:
+        done(false, "No editable source declaration in this project owns " & property & ".", "", "", false, nil)
+        return
+      mappingKey = mapping{"key"}.getStr()
+      sourceHash = mapping{"sourceHash"}.getStr()
+      expected = mapping["values"][property]
     vm.sourceProjectBuildInFlight = true
     inc vm.sourceProjectOperationSerial
     vm.workspaceEditStage.val = wesCompiling
     let request = %* {"command": "inspector-edit",
       "commandId": vm.controlInstanceId & "-inspector-" & $vm.sourceProjectOperationSerial,
-      "storyId": storyId, "target": element.id, "schemaKey": mapping{"key"}.getStr(),
-      "property": property, "value": value, "expectedValue": mapping["values"][property],
-      "expectedSourceHash": mapping{"sourceHash"}.getStr(),
+      "storyId": storyId, "target": element.id, "schemaKey": mappingKey,
+      "property": property, "value": value, "expectedValue": expected,
+      "expectedSourceHash": sourceHash,
       "viewportWidth": vm.viewport.val.width}
     if restoreLiteral.len > 0: request["sourceValue"] = %restoreLiteral
+    if restoreWrite != nil: request["restoreWrite"] = restoreWrite
     vm.controlSourceTransport(request, proc(reply: JsonNode) =
       vm.sourceProjectBuildInFlight = false
       if reply{"ok"}.getBool():
@@ -203,26 +255,48 @@ proc attachSourceProject*(vm: EditorVM; base: EditorWorkspace; inspectorEditing 
           if not unchanged: applyCatalog(reply)
           vm.workspaceEditStage.val = wesClean
           vm.workspaceEditDiagnostics.val = @[]
-          done(true, "", reply{"sourceEdit", "before"}.getStr(), reply{"sourceEdit", "after"}.getStr(), unchanged)
+          done(true, "", reply{"sourceEdit", "before"}.getStr(), reply{"sourceEdit", "after"}.getStr(), unchanged,
+            reply{"sourceEdit"})
           if vm.sourceBindingMetadataSaveAgain: saveMetadata(nil)
         except CatchableError as error:
           vm.workspaceEditStage.val = wesFailed
-          done(false, "Source catalog could not be applied: " & error.msg, "", "", false)
+          done(false, "Source catalog could not be applied: " & error.msg, "", "", false, nil)
           if vm.sourceBindingMetadataSaveAgain: saveMetadata(nil)
       else:
         let diagnostic = reply{"diagnostic"}.getStr("Source edit failed.")
         vm.workspaceEditStage.val = wesFailed
         vm.workspaceEditDiagnostics.val = @[WorkspaceEditDiagnostic(kind: wedCompileFailed, message: diagnostic)]
-        done(false, diagnostic, "", "", false)
+        done(false, diagnostic, "", "", false, nil)
         if vm.sourceBindingMetadataSaveAgain: saveMetadata(nil))
 
+  proc nativeReceipt(edit: JsonNode): SourceWriteReceipt =
+    ## A removal's line receipt as the worker returned it (no file content:
+    ## the worker that restores it reads the file and compares hashes).
+    let receipt = if edit == nil: nil else: edit{"receipt"}
+    if receipt == nil or receipt.kind != JObject: return SourceWriteReceipt()
+    SourceWriteReceipt(recorded: true, file: receipt{"file"}.getStr(),
+      offset: receipt{"offset"}.getInt(), before: receipt{"before"}.getStr(),
+      after: receipt{"after"}.getStr(), uniqueWhenWritten: receipt{"unique"}.getBool(),
+      afterHash: receipt{"afterHash"}.getStr())
+
+  proc receiptJson(receipt: SourceWriteReceipt): JsonNode =
+    %* {"file": receipt.file, "offset": receipt.offset, "before": receipt.before,
+      "after": receipt.after, "unique": receipt.uniqueWhenWritten, "afterHash": receipt.afterHash}
+
+  proc ownMapping(element: ElementRef; property, storyId: string): tuple[entry: JsonNode, refusal: string] =
+    ## The one editable declaration that owns `property` on `element`.
+    for entry in editableStyles.val:
+      if entry{"elementId"}.getStr() == element.id and entry{"storyId"}.getStr() == storyId and
+          entry{"values", property} != nil:
+        if result.entry != nil: return (nil, "Ambiguous editable source ownership.")
+        result.entry = entry
+    if result.entry == nil: result.refusal = "No editable source declaration in this project owns " & property & "."
+
   if inspectorEditing:
-    vm.inspectorSourceCommit = proc(element: ElementRef; property, value: string;
-        scope: SourceScopeChoiceKind; done: proc(ok: bool; diagnostic: string) {.closure.}) =
+    proc ownershipRefusal(element: ElementRef; property: string; scope: SourceScopeChoiceKind): string =
       for currentProperty in vm.inspector.selectedElement.val.properties:
         if currentProperty.name == property and currentProperty.origin == poSetStyle:
-          done(false, "The native source writer cannot edit this inline declaration.")
-          return
+          return "The native source writer cannot edit this inline declaration."
       var shared = false
       var token = false
       for candidate in element.properties:
@@ -231,8 +305,48 @@ proc attachSourceProject*(vm: EditorVM; base: EditorWorkspace; inspectorEditing 
           token = candidate.nativeSourceToken
       if element.id != vm.inspector.selectedElement.val.id or
           (shared and scope != (if token: sskSemanticToken else: sskSharedClass)) or (not shared and scope != sskLocalInstance):
-        done(false, "The source target or ownership scope changed.")
+        return "The source target or ownership scope changed."
+      ""
+
+    vm.inspectorSourceRemovalRefusal = proc(element: ElementRef; property: string;
+        scope: SourceScopeChoiceKind): string =
+      ## The worker's statement for the one declaration that owns `property`
+      ## (editor spec "Universal Patterns"), from the editable-style metadata
+      ## it refreshes after every write. Reads no file.
+      result = ownershipRefusal(element, property, scope)
+      if result.len > 0: return
+      # Ownership is asked of the mappings untracked: a control that shows
+      # this reactively follows the selection, which hydration refreshes
+      # whenever the mappings change.
+      let storyId = controlStoryId(vm.selectedStory.val)
+      let owned = untrack(proc(): tuple[entry: JsonNode, refusal: string] =
+        ownMapping(element, property, storyId))
+      if owned.entry == nil: return owned.refusal
+      for candidate in vm.inspector.selectedElement.val.properties:
+        if candidate.name == property and candidate.nativeRemovalStated:
+          return candidate.nativeRemovalRefusal
+      result = "This source entry does not state whether its writer can remove " & property & "."
+
+    vm.inspectorSourceCommit = proc(element: ElementRef; property, value: string;
+        scope: SourceScopeChoiceKind; done: proc(ok: bool; diagnostic: string) {.closure.}) =
+      let ownership = ownershipRefusal(element, property, scope)
+      if ownership.len > 0:
+        done(false, ownership)
         return
+      # Reset and Fill Delete commit an empty value: remove the declaration.
+      # Refused here, at the act and before any request, where the entry
+      # states that its writer cannot remove it (editor spec "Saving").
+      let removal = value.strip().len == 0
+      var removalKey = ""
+      if removal:
+        let refusal = vm.inspectorSourceRemovalRefusal(element, property, scope)
+        if refusal.len > 0:
+          done(false, refusal)
+          return
+        removalKey = ownMapping(element, property, controlStoryId(vm.selectedStory.val)).entry{"key"}.getStr()
+      var shared = false
+      for candidate in element.properties:
+        if candidate.name == property: shared = candidate.nativeSourceShared
       let prepared = vm.inspector.preparePropertyEdit(PropertyEditRequest(
         property: property, newValue: value, scope: if shared: pesShared else: pesLocal, origin: peoInspector, kind: pekCss))
       if prepared.outcome.status != pesAccepted:
@@ -243,14 +357,19 @@ proc attachSourceProject*(vm: EditorVM; base: EditorWorkspace; inspectorEditing 
       for mapping in editableStyles.val:
         if mapping{"elementId"}.getStr() == element.id and mapping{"storyId"}.getStr() == storyId and mapping{"values", property} != nil:
           authoredBefore = mapping["values"][property].getStr()
-      transact(element, property, prepared.outcome.sourceEdit.newValue, storyId, "",
-        proc(ok: bool; diagnostic, sourceBefore, sourceAfter: string; unchanged: bool) =
+      transact(element, property, prepared.outcome.sourceEdit.newValue, storyId, removalKey,
+        proc(ok: bool; diagnostic, sourceBefore, sourceAfter: string; unchanged: bool; edit: JsonNode) =
           if ok and not unchanged:
             var confirmed = prepared
             confirmed.transaction.sourceEdit.originDetail = storyId
             confirmed.transaction.sourceEdit.oldValue = authoredBefore
             confirmed.transaction.sourceEdit.nativeSourceBefore = sourceBefore
             confirmed.transaction.sourceEdit.nativeSourceAfter = sourceAfter
+            if removal:
+              # Undo puts back exactly the removed line through this receipt.
+              confirmed.transaction.sourceEdit.planKind = cspPropertyRemoval
+              confirmed.transaction.sourceEdit.nativeSchemaKey = removalKey
+              confirmed.transaction.lastWrite = nativeReceipt(edit)
             # The refreshed catalog owns selected properties/authoring metadata.
             # A prior snapshot must never replace another story with the same ID.
             vm.inspector.acceptPreparedPropertyEdit(confirmed, saved = true, applySelection = false)
@@ -296,21 +415,34 @@ proc attachSourceProject*(vm: EditorVM; base: EditorWorkspace; inspectorEditing 
       let element = if redo: transaction.afterElement else: transaction.beforeElement
       discard vm.selectInspectorElementById(element.id)
       let value = if redo: transaction.sourceEdit.newValue else: transaction.sourceEdit.oldValue
-      transact(element, transaction.sourceEdit.property, value, storyId, "",
-        proc(ok: bool; diagnostic, sourceBefore, sourceAfter: string; unchanged: bool) =
+      let removal = transaction.sourceEdit.planKind == cspPropertyRemoval and
+        transaction.sourceEdit.nativeSchemaKey.len > 0
+      if removal and not redo and not transaction.lastWrite.recorded:
+        vm.workspaceEditDiagnostics.val = @[WorkspaceEditDiagnostic(kind: wedSourceConflict,
+          message: "Undo refused: no record of the source lines this removal wrote. No source was changed.")]
+        return true
+      # Undo of a removal restores the removed line through its receipt; redo
+      # is the same single-match removal again, with a fresh receipt.
+      transact(element, transaction.sourceEdit.property, value, storyId,
+        (if removal: transaction.sourceEdit.nativeSchemaKey else: ""),
+        proc(ok: bool; diagnostic, sourceBefore, sourceAfter: string; unchanged: bool; edit: JsonNode) =
           if not ok: return
+          var moved = transaction
+          if removal and redo: moved.lastWrite = nativeReceipt(edit)
           if redo:
             vm.inspector.redoStack.val = stack[0 ..< stack.len - 1]
             vm.inspector.undoStack.update proc(previous: seq[CSSPropertyEditTransaction]): seq[CSSPropertyEditTransaction] =
               result = previous
-              result.add transaction
+              result.add moved
           else:
             vm.inspector.undoStack.val = stack[0 ..< stack.len - 1]
             vm.inspector.redoStack.update proc(previous: seq[CSSPropertyEditTransaction]): seq[CSSPropertyEditTransaction] =
               result = previous
-              result.add transaction
+              result.add moved
           # Catalog hydration owns current selection, including cross-story IDs.
-          discard, restoreLiteral = if redo: transaction.sourceEdit.nativeSourceAfter else: transaction.sourceEdit.nativeSourceBefore)
+          discard,
+        restoreLiteral = (if removal: "" elif redo: transaction.sourceEdit.nativeSourceAfter else: transaction.sourceEdit.nativeSourceBefore),
+        restoreWrite = (if removal and not redo: receiptJson(transaction.lastWrite) else: nil))
       true
 
   let initialOperationSerial = vm.sourceProjectOperationSerial

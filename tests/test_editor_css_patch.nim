@@ -293,3 +293,88 @@ const structureCssText* = """ & "\"\"\"" & """
     check r.ok
     check r.outcome == cpoUnchanged
     check r.content == module
+
+suite "css_patch: removing the one owning declaration (Reset)":
+  # Editor spec "Universal Patterns": Reset removes the one declaration that
+  # sets the property; anything but exactly one unconditional declaration is
+  # refused with the reason, and every other byte stays where it was.
+  test "a declaration sharing its line takes itself and the space after it":
+    let r = removeCssDeclaration("#a { width:1px; height:2px; color:red; }\n",
+      "#a", "height")
+    check r.ok
+    check r.outcome == cpoRemoved
+    check r.oldValue == "2px"
+    check r.content == "#a { width:1px; color:red; }\n"
+
+  test "the last declaration without a semicolon leaves the rule well formed":
+    let r = removeCssDeclaration("#a { width:1px; color:red }\n", "#a", "color")
+    check r.ok
+    check r.content == "#a { width:1px; }\n"
+
+  test "a declaration on its own line takes the line; a later comment stays":
+    let css = ".card {\n  padding: 18px;\n  margin:0; /* why */\n}\n"
+    let r = removeCssDeclaration(css, ".card", "padding")
+    check r.ok
+    check r.content == ".card {\n  margin:0; /* why */\n}\n"
+    let m = removeCssDeclaration(css, ".card", "margin")
+    check m.ok
+    check m.content == ".card {\n  padding: 18px;\n  /* why */\n}\n"
+
+  test "a longhand never matches its shorthand or a longer name":
+    let css = "#a { padding:8px; margin-top:1em; background-color:#123; }\n"
+    let r = removeCssDeclaration(css, "#a", "padding")
+    check r.ok
+    check r.content == "#a { margin-top:1em; background-color:#123; }\n"
+    check not removeCssDeclaration(css, "#a", "color").ok
+
+  test "a property another declaration also sets is refused unchanged":
+    # Reset must fall back to the class, token or inherited value: removing a
+    # longhand that a shorthand in the same rule also sets, or a shorthand
+    # whose longhands follow it, changes nothing or something else.
+    for (css, property, other) in [
+        ("#a { padding:8px; padding-top:1em; }\n", "padding-top", "padding"),
+        ("#a { padding:8px; padding-top:1em; padding-right:2px; padding-bottom:3px; padding-left:4px; }\n", "padding", "padding-top"),
+        ("#a { background:#000000; background-color:#334455; }\n", "background-color", "background"),
+        ("#a { background-color:#334455; background:#000000; }\n", "background", "background-color"),
+        ("#a { border-radius:4px; border-top-left-radius:1em; }\n", "border-top-left-radius", "border-radius"),
+        ("#a { border-radius:4px; border-top-left-radius:1em; }\n", "border-radius", "border-top-left-radius"),
+        ("#a { font-size:12px; }\n@media (max-width:600px) { #a { font:14px serif; } }\n", "font-size", "font"),
+        ("#a { width:1px; all:unset; }\n", "width", "all")]:
+      let r = removeCssDeclaration(css, "#a", property)
+      check not r.ok
+      check r.outcome == cpoAmbiguous
+      check r.content.len == 0
+      check ("`" & other & "` also sets `" & property & "` for `#a`") in r.message
+
+  test "a grouped rule is the declaration's one owner":
+    let r = removeCssDeclaration("html,body { margin:0; color:red; }\n", "body", "margin")
+    check r.ok
+    check r.content == "html,body { color:red; }\n"
+
+  test "two declarations, a conditional one, or none are refused unchanged":
+    let duplicate = removeCssDeclaration("#a { width:1px; width:2px; }\n", "#a", "width")
+    check not duplicate.ok
+    check duplicate.outcome == cpoAmbiguous
+    check "2 declarations set `width` for `#a`" in duplicate.message
+    check duplicate.content.len == 0
+    let overridden = removeCssDeclaration(
+      "#a { width:1px; }\n@media (max-width:600px) { #a { width:2px; } }\n", "#a", "width")
+    check not overridden.ok
+    check "2 declarations" in overridden.message
+    let conditional = removeCssDeclaration(
+      "#a { color:red; }\n@media (max-width:600px) { #a { width:2px; } }\n", "#a", "width")
+    check not conditional.ok
+    check "inside `@media (max-width:600px)`" in conditional.message
+    let absent = removeCssDeclaration("#a { color:red; }\n", "#a", "width")
+    check not absent.ok
+    check "There is no `width` declaration for `#a`" in absent.message
+    let noRule = removeCssDeclaration("#b { width:1px; }\n", "#a", "width")
+    check not noRule.ok
+    check noRule.outcome == cpoRuleNotFound
+
+  test "inside a Nim const only the literal is searched and the module is returned":
+    let module = "const s* = \"\"\"\n#a { width:1px; height:2px; }\n\"\"\"\n# #a { height:9px; }\n"
+    let r = removeCssInNimConst(module, "s", "#a", "height")
+    check r.ok
+    check r.content == "const s* = \"\"\"\n#a { width:1px; }\n\"\"\"\n# #a { height:9px; }\n"
+    check not removeCssInNimConst(module, "missing", "#a", "height").ok

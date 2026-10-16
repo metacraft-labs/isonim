@@ -415,6 +415,15 @@ type
       scope: SourceScopeChoiceKind; done: proc(ok: bool; diagnostic: string) {.closure.}) {.closure.}
       ## Optional asynchronous native source transaction. Completion is delivered
       ## only after source validation, build and catalog publication or rollback.
+    inspectorSourceRemovalRefusal*: proc(element: ElementRef; property: string;
+      scope: SourceScopeChoiceKind): string {.closure.}
+      ## The native source project's statement, for the declaration that owns
+      ## ``property`` on ``element``, of why its writer cannot remove it ("" when
+      ## it can). Installed with ``inspectorSourceCommit``. The native worker
+      ## states removal per editable declaration and ships the statement with
+      ## the editable-style metadata it refreshes after every write, so this
+      ## reads no source file. Nil: the connection states nothing, and Reset
+      ## and Fill Delete are refused with that reason.
     sourceBindingMetadataHash*, sourceBindingMetadataSaved*: string
     sourceBindingMetadataSaving*, sourceBindingMetadataSaveAgain*: bool
     sourceBindingMetadataWaiters*: seq[proc(ok: bool; diagnostic: string) {.closure.}]
@@ -7002,10 +7011,27 @@ proc propertyResetRefusal*(editor: EditorVM; property: string;
   if not editor.workspacePermissions.val.writeSource:
     return "This workspace is read-only for source changes."
   # The row's commit goes to the native source writer whenever that boundary
-  # is installed (`inspectorRowWiring.commitAsync`); it does not remove
-  # declarations.
+  # is installed (`inspectorRowWiring.commitAsync`). Whether it can remove the
+  # declaration is stated per editable declaration by the native project
+  # (`inspectorSourceRemovalRefusal`), from metadata it already holds -- no
+  # file is read here, whatever ``checkWrite`` says. The worker repeats the
+  # check under the project lock at the act.
   if editor.hasAsyncSourceProject or editor.inspectorSourceCommit != nil:
-    return "The native source writer cannot remove a declaration."
+    if editor.inspectorSourceRemovalRefusal == nil:
+      return "This source connection does not state whether it can remove " &
+        "the " & property & " declaration."
+    let statement = editor.inspectorSourceRemovalRefusal(element, property,
+      scope)
+    if statement.len > 0: return statement
+    let prepared = editor.inspector.preparePropertyEdit(PropertyEditRequest(
+      property: property, newValue: "", kind: pekCss,
+      scope: if scope == sskLocalInstance: pesLocal else: pesShared,
+      origin: peoInspector))
+    if prepared.outcome.status != pesAccepted:
+      for d in prepared.outcome.diagnostics:
+        if d.message.len > 0: return d.message
+      return "This " & property & " declaration cannot be removed."
+    return ""
   if editor.workspaceEditAdapter.isNil:
     return "No source edit adapter is ready to remove this declaration."
   var plan: SourceEditPlan

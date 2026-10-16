@@ -613,6 +613,15 @@ type
     authoredValue*: string ## Optional exact declared value, kept distinct from geometry.
     nativeSourceShared*: bool ## Compiler binding owns a shared CSS rule, never a local override.
     nativeSourceToken*: bool ## Verified direct reference edits its declared literal token owner.
+    nativeSourceOffered*: bool
+      ## An explicit native binding offers this property for editing, also
+      ## when no declaration sets it (e.g. after Reset removed it): a value
+      ## typed into it is inserted into the binding's rule.
+    nativeRemovalStated*: bool
+      ## The native source project stated whether its writer can remove the
+      ## declaration that owns this property (``nativeRemovalRefusal``).
+    nativeRemovalRefusal*: string
+      ## Why the native writer cannot remove that declaration, "" when it can.
     origin*: PropertyOrigin
     originDetail*: string ## e.g. "class:p-4" or "themeColor(\"primary\")"
     sourceLine*: int      ## Line in source file
@@ -1055,6 +1064,12 @@ type
       ## declaration the cascade discards. Zero means "not supplied", which
       ## adapters read as the unconditional base-rule behaviour.
     nativeSourceBefore*, nativeSourceAfter*: string ## Guarded owned declaration receipts for exact undo.
+    nativeSchemaKey*: string
+      ## The native source project's editable-declaration key a removal was
+      ## written through. Its undo restores the removed line through
+      ## ``restoreWrite``-style receipt (the transaction's ``lastWrite``) and
+      ## must name the entry, which may no longer be offered once its only
+      ## declaration is gone.
     historyId*: int
       ## The inspector history transaction this plan belongs to; 0 for plans
       ## that no history entry owns. Lets a completed write be credited to
@@ -1091,6 +1106,10 @@ type
       ## ``afterContent``. Only then can a later single occurrence be known
       ## to be the one this write produced rather than an identical,
       ## pre-existing line.
+    afterHash*: string
+      ## SHA-1 of ``afterContent``, carried INSTEAD of it by a native source
+      ## project's receipt: its browser never holds the file, and the worker
+      ## that restores the receipt reads the file itself and compares.
 
   SourceEditAdapter* = proc(plan: SourceEditPlan): bool {.closure.}
 

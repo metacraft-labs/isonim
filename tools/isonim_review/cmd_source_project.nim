@@ -2,10 +2,16 @@
 ## dispatcher and WorkspaceEditAdapter transaction against actual source files.
 ## The manifest belongs to the project, never to an RPC caller. Build stdout is
 ## a rendered catalog JSON document; failed builds never publish a new catalog.
-import std/[json, os, osproc, strutils, tempfiles, sha1]
+import std/[json, os, osproc, strutils, tempfiles, sha1, tables]
 import source_project_lock
 import isonim/core/[signals, owner]
-import isonim/editor/[control, source_catalog, workspace, css_patch, viewmodels, source_style_bindings, source_style_values]
+import isonim/editor/[control, source_catalog, workspace, css_patch, viewmodels, source_style_bindings, source_style_values, types]
+from isonim/editor/design_review/control_routes import validNativeRestoreWrite
+
+const removalReceiptsRelPath = ".isonim/removal-receipts.json"
+  ## The receipts this worker issued for removals (Reset / Fill Delete) not
+  ## yet undone. An undo is honoured only for a receipt recorded here, so it
+  ## can put back only what a removal actually removed.
 
 proc safePath(root, relative: string): string =
   if relative.len == 0 or relative.isAbsolute:
@@ -35,6 +41,9 @@ proc recoverSourceTransaction(root: string) =
   if not fileExists(journal): return
   for row in parseFile(journal):
     let target = safePath(root, row["file"].getStr())
+    if row["file"].getStr() == removalReceiptsRelPath and not fileExists(target):
+      # A first store write that never landed: nothing to restore.
+      continue
     let current = readFile(target)
     if current == row["after"].getStr():
       atomicSourceWrite(target, row["before"].getStr())
@@ -43,23 +52,83 @@ proc recoverSourceTransaction(root: string) =
         "Interrupted source transaction conflicts with a later edit: " & row["file"].getStr())
   removeFile(journal)
 
-proc describeEditableStyles(root: string; manifest: JsonNode): JsonNode =
+proc removalStatement(source: string; entry: JsonNode; property: string): string =
+  ## Whether this writer can remove the one declaration that owns
+  ## `property` for `entry`: "" when it can, otherwise why not, in the words
+  ## Reset and Fill Delete show (editor spec "Universal Patterns": each
+  ## source-map entry states whether its writer can remove the declaration it
+  ## owns). Stated per declaration, from the file as it is now.
+  if entry{"scope"}.getStr() == "semantic-token":
+    return "This value comes from the design token " & entry{"tokenName"}.getStr() &
+      "; Reset cannot remove a token's definition, which every reference to it shares."
+  let declaration = entry{"sourceDeclarations", property}
+  if declaration != nil:
+    let owner = declaration{"property"}.getStr()
+    if declaration{"component"} != nil:
+      return property & " comes from the " & owner & " shorthand; the native " &
+        "source writer cannot remove one part of a shorthand."
+    if owner != property:
+      return property & " is set by the " & owner & " declaration; removing it " &
+        "would also remove what it sets for other properties."
+  let removed = removeCssInNimConst(source, entry{"const"}.getStr(),
+    entry{"selector"}.getStr(), property)
+  if removed.ok: "" else: removed.message
+
+proc describeEditableStyles(root: string; manifest: JsonNode; overrideFile = "";
+    overrideContent = ""): JsonNode =
+  ## Every editable declaration with its value and its removal statement.
+  ## With `overrideFile`, as the project would be if that file held
+  ## `overrideContent` (an undo is checked before it is written).
+  var sources = initTable[string, string]()
+  proc read(file: string): string =
+    if overrideFile.len > 0 and file == overrideFile: return overrideContent
+    if not sources.hasKey(file): sources[file] = readFile(safePath(root, file))
+    sources[file]
   result = compiledStyleBindings(parseFile(safePath(root, manifest{"catalog"}.getStr())),
-    manifest, proc(file: string): string = readFile(safePath(root, file)))
+    manifest, proc(file: string): string = read(file))
+  for binding in result:
+    var removals = newJObject()
+    for property, _ in binding{"values"}:
+      removals[property] = %removalStatement(read(binding["file"].getStr()), binding, property)
+    binding["removals"] = removals
   if manifest{"editableStyles"} == nil: return
   if manifest["editableStyles"].kind != JArray:
     raise newException(ValueError, "Editable source declarations must be an array.")
   for entry in manifest{"editableStyles"}:
-    let source = readFile(safePath(root, entry{"file"}.getStr()))
+    let source = read(entry{"file"}.getStr())
     var values = newJObject()
+    var removals = newJObject()
     for property in entry{"properties"}:
       let probe = patchCssInNimConstAt(source, entry{"const"}.getStr(),
         entry{"selector"}.getStr(), property.getStr(), "0", 0)
-      if probe.ok: values[property.getStr()] = %probe.oldValue
+      if probe.ok:
+        values[property.getStr()] = %probe.oldValue
+        removals[property.getStr()] = %removalStatement(source, entry, property.getStr())
     result.add(%* {"key": entry{"key"}.getStr(), "elementId": entry{"elementId"}.getStr(),
       "storyId": entry{"storyId"}.getStr(), "file": entry{"file"}.getStr(),
       "const": entry{"const"}, "selector": entry{"selector"}, "properties": entry{"properties"},
-      "sourceHash": $secureHash(source), "values": values})
+      "sourceHash": $secureHash(source), "values": values, "removals": removals})
+
+proc removalReceipts(root: string): JsonNode =
+  ## The issued receipts, validated. Read before a removal or its undo
+  ## writes anything: a store that cannot be read refuses the act with
+  ## nothing written. Empty content is an empty store (a rolled-back first
+  ## write leaves the journal's empty "before").
+  let file = safePath(root, removalReceiptsRelPath)
+  if symlinkExists(file) or dirExists(file):
+    raise newException(ValueError, "The removal receipt store " & removalReceiptsRelPath &
+      " is not a file. Nothing was changed.")
+  if not fileExists(file): return newJArray()
+  let raw = readFile(file)
+  if raw.strip().len == 0: return newJArray()
+  try:
+    result = parseJson(raw)
+  except CatchableError:
+    raise newException(ValueError, "The removal receipt store " & removalReceiptsRelPath &
+      " is unreadable. Nothing was changed.")
+  if result.kind != JArray:
+    raise newException(ValueError, "The removal receipt store " & removalReceiptsRelPath &
+      " is unreadable. Nothing was changed.")
 
 proc bindingSnapshot(root: string): JsonNode =
   let file = safePath(root, bindingSidecarRelPath)
@@ -141,60 +210,160 @@ proc cmdSourceProject*(args: seq[string]): int =
     let inspectorEdit = request{"command"}.getStr() == "inspector-edit"
     var literalMap: JsonNode
     var nativeProperty, nativeBefore, nativeAfter: string
+    # Reset / Fill Delete send an empty value: remove the one owning
+    # declaration. Their undo sends the removal's line receipt back
+    # (`restoreWrite`): put back exactly the removed line.
+    var removal, restore = false
+    var restoreReceipt: SourceWriteReceipt
+    var restoreRecord = -1
+    var issuedReceipts: JsonNode
+    var removalBefore, removalAfter: string
     if inspectorEdit:
       for key, value in request:
-        if key notin ["commandId", "command", "storyId", "target", "schemaKey", "property", "value", "expectedValue", "expectedSourceHash", "expectedRevision", "viewportWidth", "sourceValue"]:
+        if key notin ["commandId", "command", "storyId", "target", "schemaKey", "property", "value", "expectedValue", "expectedSourceHash", "expectedRevision", "viewportWidth", "sourceValue", "restoreWrite"]:
           raise newException(ValueError, "Unknown inspector source field.")
         if key in ["expectedRevision", "viewportWidth"]:
           if value.kind != JInt: raise newException(ValueError, "Invalid inspector source field type.")
+        elif key == "restoreWrite":
+          if not validNativeRestoreWrite(value): raise newException(ValueError, "Invalid inspector source field type.")
         elif value.kind != JString:
           raise newException(ValueError, "Invalid inspector source field type.")
       for key in ["commandId", "command", "storyId", "target", "schemaKey", "property", "value", "expectedValue", "expectedSourceHash", "expectedRevision", "viewportWidth"]:
         if request{key} == nil: raise newException(ValueError, "Missing inspector source field.")
       if request{"viewportWidth"}.getInt() < 1 or request{"expectedSourceHash"}.getStr().len != 40:
         raise newException(ValueError, "Invalid inspector source revision.")
+      restore = request{"restoreWrite"} != nil
+      removal = not restore and request["value"].getStr().len == 0
+      # Validated before anything is written: the store update is part of the
+      # transaction below and must not be the first thing to fail.
+      if removal or restore: issuedReceipts = removalReceipts(root)
+      if restore and (request["value"].getStr().len == 0 or request["expectedValue"].getStr().len > 0 or
+          request{"sourceValue"} != nil):
+        raise newException(ValueError, "An undone removal restores its removed value and expects none.")
+      if removal and request{"sourceValue"} != nil:
+        raise newException(ValueError, "A removal restores no source value.")
       for delimiter in [";", "{", "}", "\n", "\r", "\x00", "\"\"\""]:
         if delimiter in request{"value"}.getStr():
           raise newException(ValueError, "A property value cannot contain declaration delimiters.")
-      for entry in describeEditableStyles(root, manifest):
-        if entry{"key"}.getStr() == request{"schemaKey"}.getStr():
-          if literalMap != nil: raise newException(ValueError, "Ambiguous editable source schema.")
-          literalMap = entry
-      if literalMap == nil: raise newException(ValueError, "Unsupported editable source schema.")
+      let property = request["property"].getStr()
+      if restore:
+        # The receipt comes back from the browser, so nothing in it is
+        # trusted: the file must be one the project declares editable, the
+        # restoration must leave exactly the removed declaration back in the
+        # entry that owned it, and removing that declaration again must give
+        # back the file as it is now -- so nothing else can be written.
+        let receipt = request["restoreWrite"]
+        # Only a receipt this worker issued for a removal of exactly this
+        # declaration and value, and not yet undone, may be restored.
+        let issued = issuedReceipts
+        for index in 0 ..< issued.len:
+          let row = issued[index]
+          if row{"receipt"} == receipt and row{"schemaKey"}.getStr() == request["schemaKey"].getStr() and
+              row{"property"}.getStr() == property and row{"value"}.getStr() == request["value"].getStr():
+            restoreRecord = index
+        if restoreRecord < 0:
+          raise newException(ValueError, "Undo refused: this receipt was not issued by a removal of " &
+            property & " in this project, or that removal was already undone. No source was changed.")
+        let file = receipt["file"].getStr()
+        var declared = false
+        for list in [manifest{"editableStyles"}, manifest{"editableStyleSources"}]:
+          if list == nil or list.kind != JArray: continue
+          for entry in list:
+            if entry{"file"}.getStr() == file: declared = true
+        if not declared:
+          raise newException(ValueError, "Undo refused: " & file & " is not an editable project source. No source was changed.")
+        let current = readFile(safePath(root, file))
+        if $secureHash(current) != request["expectedSourceHash"].getStr():
+          raise newException(ValueError, "Source changed since this inspector edit began.")
+        restoreReceipt = SourceWriteReceipt(recorded: true, file: file,
+          offset: receipt["offset"].getInt(), before: receipt["before"].getStr(),
+          after: receipt["after"].getStr(), uniqueWhenWritten: receipt["unique"].getBool(),
+          afterHash: receipt["afterHash"].getStr())
+        if $secureHash(current) == restoreReceipt.afterHash:
+          # The file the removal left: its lines must be where it wrote them.
+          if restoreReceipt.offset + restoreReceipt.after.len > current.len or
+              current[restoreReceipt.offset ..< restoreReceipt.offset + restoreReceipt.after.len] != restoreReceipt.after:
+            raise newException(ValueError, "Undo refused: the removal's receipt does not describe " & file & ". No source was changed.")
+          restoreReceipt.afterContent = current
+        else:
+          # Changed since: only the receipt's unique-lines rule may place it.
+          # A NUL never equals a source file, so the exact-file path is off.
+          restoreReceipt.afterContent = "\x00"
+        let restored = restoreSourceWrite(current, restoreReceipt, "Undo")
+        if not restored.ok: raise newException(ValueError, restored.message)
+        for entry in describeEditableStyles(root, manifest, file, restored.content):
+          if entry{"key"}.getStr() == request["schemaKey"].getStr():
+            if literalMap != nil: raise newException(ValueError, "Ambiguous editable source schema.")
+            literalMap = entry
+        let refused = "Undo refused: the receipt does not put back exactly the removed " & property &
+          " declaration. No source was changed."
+        if literalMap == nil or literalMap{"file"}.getStr() != file or
+            literalMap{"values", property} == nil or
+            literalMap["values"][property].getStr() != request["value"].getStr():
+          raise newException(ValueError, refused)
+        let declaration = literalMap{"sourceDeclarations", property}
+        if declaration != nil and (declaration{"component"} != nil or declaration{"property"}.getStr() != property):
+          raise newException(ValueError, refused)
+        let inverse = removeCssInNimConst(restored.content, literalMap{"const"}.getStr(),
+          literalMap{"selector"}.getStr(), property)
+        if not inverse.ok or inverse.content != current or inverse.oldValue != request["value"].getStr():
+          raise newException(ValueError, refused)
+        nativeProperty = property
+        nativeAfter = request["value"].getStr()
+      else:
+        for entry in describeEditableStyles(root, manifest):
+          if entry{"key"}.getStr() == request{"schemaKey"}.getStr():
+            if literalMap != nil: raise newException(ValueError, "Ambiguous editable source schema.")
+            literalMap = entry
+        if literalMap == nil: raise newException(ValueError, "Unsupported editable source schema.")
       if literalMap{"elementId"}.getStr() != request{"target"}.getStr() or
           literalMap{"storyId"}.getStr() != request{"storyId"}.getStr():
         raise newException(ValueError, "Editable source target mismatch.")
       var allowed = false
-      for property in literalMap{"properties"}:
-        if property.getStr() == request{"property"}.getStr(): allowed = true
+      for candidate in literalMap{"properties"}:
+        if candidate.getStr() == property: allowed = true
       if not allowed: raise newException(ValueError, "Property is not owned by this source schema.")
-      let source = readFile(safePath(root, literalMap{"file"}.getStr()))
-      if $secureHash(source) != request{"expectedSourceHash"}.getStr():
-        raise newException(ValueError, "Source changed since this inspector edit began.")
-      let parsed = parseCssPropertyValue(request{"property"}.getStr(), request{"value"}.getStr())
-      let validation = validateCssPropertyValue(PropertyInfo(name: request{"property"}.getStr(),
-        directStyleAllowed: true), PropertyEditRequest(property: request{"property"}.getStr(),
-        newValue: request{"value"}.getStr(), kind: pekCss, scope: pesLocal), parsed)
-      if validation.len > 0: raise newException(ValueError, validation[0].message)
-      if literalMap{"values", request["property"].getStr()} == nil or
-          literalMap["values"][request["property"].getStr()].getStr() != request["expectedValue"].getStr():
-        raise newException(ValueError, "Authored property changed before this edit.")
-      let declaration = literalMap{"sourceDeclarations", request["property"].getStr()}
-      nativeProperty = if declaration == nil: request["property"].getStr() else: declaration["property"].getStr()
-      nativeBefore = if declaration == nil: request["expectedValue"].getStr() else: declaration["value"].getStr()
-      if declaration != nil and declaration{"component"} != nil:
-        nativeAfter = patchCssQuad(nativeProperty,nativeBefore,request["value"].getStr(),
-          declaration["component"].getInt(),request{"sourceValue"}.getStr())
-        if nativeAfter.len == 0: raise newException(ValueError, "Unsupported compound edit or stale sibling restoration.")
-      else:
-        nativeAfter = request["value"].getStr()
-        if request{"sourceValue"} != nil and request["sourceValue"].getStr() != nativeAfter:
-          raise newException(ValueError, "Source restoration does not match this property value.")
+      if not restore:
+        let source = readFile(safePath(root, literalMap{"file"}.getStr()))
+        if $secureHash(source) != request{"expectedSourceHash"}.getStr():
+          raise newException(ValueError, "Source changed since this inspector edit began.")
+      var parsed: CSSPropertyValue
+      if not removal:
+        parsed = parseCssPropertyValue(property, request{"value"}.getStr())
+        let validation = validateCssPropertyValue(PropertyInfo(name: property,
+          directStyleAllowed: true), PropertyEditRequest(property: property,
+          newValue: request{"value"}.getStr(), kind: pekCss, scope: pesLocal), parsed)
+        if validation.len > 0: raise newException(ValueError, validation[0].message)
+      if not restore:
+        if literalMap{"values", property} == nil or
+            literalMap["values"][property].getStr() != request["expectedValue"].getStr():
+          raise newException(ValueError, "Authored property changed before this edit.")
+        let declaration = literalMap{"sourceDeclarations", property}
+        nativeProperty = if declaration == nil: property else: declaration["property"].getStr()
+        nativeBefore = if declaration == nil: request["expectedValue"].getStr() else: declaration["value"].getStr()
+        if removal:
+          # Each editable declaration states whether this writer can remove
+          # it (`removalStatement`); the same statement, re-derived from the
+          # file under the project lock, is the act-time answer.
+          let statement = literalMap{"removals", property}
+          if statement == nil or statement.kind != JString:
+            raise newException(ValueError, "This source entry does not state whether its writer can remove " & property & ".")
+          if statement.getStr().len > 0: raise newException(ValueError, statement.getStr())
+          nativeAfter = ""
+        elif declaration != nil and declaration{"component"} != nil:
+          nativeAfter = patchCssQuad(nativeProperty,nativeBefore,request["value"].getStr(),
+            declaration["component"].getInt(),request{"sourceValue"}.getStr())
+          if nativeAfter.len == 0: raise newException(ValueError, "Unsupported compound edit or stale sibling restoration.")
+        else:
+          nativeAfter = request["value"].getStr()
+          if request{"sourceValue"} != nil and request["sourceValue"].getStr() != nativeAfter:
+            raise newException(ValueError, "Source restoration does not match this property value.")
       # Even a canonical no-op must validate the actual declaration under the
       # project lock. An explicit restoration may still change compound siblings.
-      if parseCssPropertyValue(request["property"].getStr(),
+      if not removal and not restore and parseCssPropertyValue(property,
           request["expectedValue"].getStr()).canonical == parsed.canonical and
           (request{"sourceValue"} == nil or nativeAfter == nativeBefore):
+        let source = readFile(safePath(root, literalMap{"file"}.getStr()))
         let validated = patchCssInNimConstAt(source, literalMap{"const"}.getStr(),
           literalMap{"selector"}.getStr(), nativeProperty, nativeAfter,
           request{"viewportWidth"}.getInt())
@@ -247,12 +416,14 @@ proc cmdSourceProject*(args: seq[string]): int =
     if inspectorEdit:
       adapter.schema.add WorkspaceEditableSchemaEntry(key: literalMap{"key"}.getStr(),
         file: literalMap{"file"}.getStr(), kind: wskSourceMap,
-        property: request{"property"}.getStr())
+        property: request{"property"}.getStr(), removable: removal)
     adapter.readFile = proc(file: string): WorkspaceReadResult =
       WorkspaceReadResult(ok: true, content: readFile(safePath(root, file)))
     adapter.writeFile = proc(file, content: string): WorkspaceOperationResult =
       let target = safePath(root, file)
-      var original = readFile(target)
+      # The receipt store is the one transaction file that may not exist yet;
+      # its journaled "before" is then empty (an empty store).
+      var original = if file == removalReceiptsRelPath and not fileExists(target): "" else: readFile(target)
       var found = false
       for row in journal:
         if row["file"].getStr() == file:
@@ -267,6 +438,17 @@ proc cmdSourceProject*(args: seq[string]): int =
       atomicSourceWrite(target, content)
       WorkspaceOperationResult(ok: true)
     adapter.patchFile = proc(plan: SourceEditPlan; content: string; schema: WorkspaceEditableSchemaEntry): WorkspacePatchResult =
+      if inspectorEdit and removal:
+        let removed = removeCssInNimConst(content, literalMap{"const"}.getStr(),
+          literalMap{"selector"}.getStr(), nativeProperty)
+        if not removed.ok or removed.oldValue != nativeBefore:
+          return WorkspacePatchResult(ok: false, diagnostics: @[WorkspaceEditDiagnostic(
+            kind: wedSourceConflict, message: if removed.ok:
+              "Source declaration changed or cannot be safely removed." else: removed.message)])
+        removalBefore = content
+        removalAfter = removed.content
+        return WorkspacePatchResult(ok: true, patch: WorkspaceFilePatch(file: schema.file,
+          beforeContent: content, afterContent: removed.content, fullReload: true))
       if inspectorEdit:
         let patched = patchCssInNimConstAt(content, literalMap{"const"}.getStr(),
           literalMap{"selector"}.getStr(), nativeProperty, nativeAfter,
@@ -303,11 +485,18 @@ proc cmdSourceProject*(args: seq[string]): int =
       var diagnostic = ""
       var storyId = ""
       if inspectorEdit:
-        vm.inspector.journalSourceEdit(SourceEditPlan(file: literalMap{"file"}.getStr(),
+        var plan = SourceEditPlan(file: literalMap{"file"}.getStr(),
           schemaKey: literalMap{"key"}.getStr(), property: request{"property"}.getStr(),
           oldValue: request{"expectedValue"}.getStr(), expectedOldValue: nativeBefore,
           newValue: request{"value"}.getStr(), scope: pesLocal, sourceScope: sskLocalInstance,
-          reversible: true))
+          reversible: true)
+        if removal: plan.planKind = cspPropertyRemoval
+        if restore:
+          # The framework puts back exactly the receipt's lines and never asks
+          # `patchFile` for a value (`restoreSourceWrite`).
+          plan.restoreWrite = restoreReceipt
+          plan.expectedOldValue = ""
+        vm.inspector.journalSourceEdit(plan)
         let outcome = vm.applyWorkspaceFileEdits()
         ok = outcome.ok
         for row in outcome.diagnostics: diagnostic.add row.message & "\n"
@@ -330,7 +519,36 @@ proc cmdSourceProject*(args: seq[string]): int =
         let refreshedStyles = describeEditableStyles(root, manifest)
         var response = %* {"ok": true, "catalog": built, "manifest": manifest, "storyId": storyId,
           "editableStyles": refreshedStyles}
-        if inspectorEdit: response["sourceEdit"] = %* {"before":nativeBefore,"after":nativeAfter}
+        if inspectorEdit:
+          response["sourceEdit"] = %* {"before":nativeBefore,"after":nativeAfter}
+          if removal:
+            # What undo hands back: the whole lines this removal replaced.
+            let receipt = sourceWriteReceipt(literalMap{"file"}.getStr(), removalBefore, removalAfter)
+            response["sourceEdit"]["removed"] = %true
+            response["sourceEdit"]["receipt"] = %* {"file": receipt.file, "offset": receipt.offset,
+              "before": receipt.before, "after": receipt.after, "unique": receipt.uniqueWhenWritten,
+              "afterHash": $secureHash(removalAfter)}
+          if restore: response["sourceEdit"]["restored"] = %true
+        if inspectorEdit and (removal or restore):
+          # Part of the transaction: written through the journaled writer
+          # before the journal is retired, so a store that cannot be written
+          # rolls the source and catalog back (the `defer` recovery) and the
+          # act is reported refused -- never a write behind a failed ACK.
+          var issued = issuedReceipts.copy()
+          if removal:
+            issued.add(%* {"schemaKey": literalMap{"key"}.getStr(), "property": request["property"].getStr(),
+              "value": nativeBefore, "receipt": response["sourceEdit"]["receipt"]})
+            while issued.len > 64: issued.elems.delete(0)
+          else:
+            issued.elems.delete(restoreRecord)
+          var stored: WorkspaceOperationResult
+          try:
+            stored = adapter.writeFile(removalReceiptsRelPath, $issued)
+          except CatchableError as error:
+            stored = WorkspaceOperationResult(ok: false, message: error.msg)
+          if not stored.ok:
+            raise newException(ValueError, "The removal receipt store " & removalReceiptsRelPath &
+              " could not be written (" & stored.message & "); the source and catalog were restored. Nothing was changed.")
         if fileExists(journalFile): removeFile(journalFile)
         echo $response
       dispose()

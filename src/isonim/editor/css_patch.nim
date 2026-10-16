@@ -35,6 +35,7 @@ type
     cpoUnchanged         ## The declaration already held this value.
     cpoRuleNotFound      ## No top-level rule with that selector.
     cpoAmbiguous         ## More than one top-level rule with that selector.
+    cpoRemoved           ## The one owning declaration was removed.
 
   CssPatchResult* = object
     ok*: bool
@@ -166,6 +167,7 @@ func selectorMatches(ruleSelector, wanted: string): bool =
   false
 
 type DeclSpan = object
+  nameStart: int   ## first byte of the property name
   valueStart: int  ## first byte after the `:`
   valueEnd: int    ## exclusive; the `;` or the closing `}`
 
@@ -186,7 +188,7 @@ func findDeclaration(css: string; body: RuleSpan;
   ## `font-size`, and `size` does not match inside `font-size` either. That
   ## pair is not hypothetical: the grip pilot's `.tagline` declares the `font`
   ## shorthand, and the inspector's Font size row edits `font-size`.
-  result = DeclSpan(valueStart: -1, valueEnd: -1)
+  result = DeclSpan(nameStart: -1, valueStart: -1, valueEnd: -1)
   var i = body.bodyStart
   while i < body.bodyEnd:
     if css[i] in {'\'', '"'}:
@@ -219,7 +221,7 @@ func findDeclaration(css: string; body: RuleSpan;
               valueEnd = if close < 0: body.bodyEnd else: close + 2
               continue
             valueEnd += 1
-          return DeclSpan(valueStart: j + 1, valueEnd: valueEnd)
+          return DeclSpan(nameStart: i, valueStart: j + 1, valueEnd: valueEnd)
     i += 1
 
 func trailingComment(text: string): string =
@@ -824,6 +826,141 @@ proc patchCssInNimConstAt*(nimSource, constName, selector, property,
     return
   result.content = nimSource[0 ..< bodyStart] & result.content &
     nimSource[bodyEnd .. ^1]
+
+const radiusLonghands = ["border-top-left-radius", "border-top-right-radius",
+  "border-bottom-right-radius", "border-bottom-left-radius"]
+
+func removalOverlaps(property: string): seq[string] =
+  ## Every other declaration that also sets `property`: the shorthands that
+  ## reset it, `all` (which spares custom properties, `direction` and
+  ## `unicode-bidi`), and -- for a shorthand -- the longhands that override
+  ## it. Corner radii are paired here because `shorthandsFor` does not list
+  ## them.
+  for name in property.resettersOf():
+    if name != property: result.add name
+  if property in radiusLonghands: result.add "border-radius"
+  if not property.startsWith("--") and
+      property.toLowerAscii() notin ["direction", "unicode-bidi"]:
+    result.add "all"
+  for (longhand, shorthands) in shorthandsFor:
+    if property in shorthands and longhand notin result: result.add longhand
+  if property == "border-radius":
+    for side in radiusLonghands: result.add side
+
+proc removeCssDeclaration*(css, selector, property: string): CssPatchResult =
+  ## Remove the ONE declaration of `property` that the rule for `selector`
+  ## owns, leaving every other byte where it was.
+  ##
+  ## Reset (editor spec "Universal Patterns") reverts a property to its
+  ## class, token or inherited value by removing the declaration that sets
+  ## it. Exactly one declaration may be removed: every rule for `selector`,
+  ## at any depth and under any condition, is searched, and anything but a
+  ## single unconditional declaration is refused with the reason. Two
+  ## declarations (a duplicate, or a `@media` override) are a cascade the
+  ## author built on purpose; removing one of them is a guess about which
+  ## one Reset means, and removing a conditional one would leave the base
+  ## value standing while claiming the property was reset.
+  ##
+  ## A declaration on a line of its own takes the whole line with it; one
+  ## that shares its line (`#a { width:1px; height:2px; }`) takes itself and
+  ## the spaces after it. A comment after its `;` stays: it may describe the
+  ## rule rather than this declaration, and losing it cannot be undone from
+  ## the value alone.
+  if selector.len == 0 or property.len == 0:
+    return CssPatchResult(ok: false, outcome: cpoRuleNotFound,
+      message: "A CSS removal needs both a selector and a property.")
+  var hits: seq[tuple[condition: string, body: RuleSpan, decl: DeclSpan]] = @[]
+  var rules = 0
+  for rule in css.allRules():
+    if not rule.selector.selectorMatches(selector): continue
+    inc rules
+    let body = RuleSpan(selector: rule.selector, bodyStart: rule.bodyStart,
+                        bodyEnd: rule.bodyEnd)
+    var remaining = body
+    while remaining.bodyStart < remaining.bodyEnd:
+      let decl = css.findDeclaration(remaining, property)
+      if decl.valueStart < 0: break
+      hits.add (rule.condition, body, decl)
+      remaining.bodyStart = decl.valueEnd + 1
+  if rules == 0:
+    return CssPatchResult(ok: false, outcome: cpoRuleNotFound,
+      message: "No rule for `" & selector & "` declares `" & property &
+        "`, so there is no declaration to remove.")
+  if hits.len == 0:
+    return CssPatchResult(ok: false, outcome: cpoRuleNotFound,
+      message: "There is no `" & property & "` declaration for `" & selector &
+        "` to remove.")
+  if hits.len > 1:
+    return CssPatchResult(ok: false, outcome: cpoAmbiguous,
+      message: $hits.len & " declarations set `" & property & "` for `" &
+        selector & "`. Reset removes exactly one owning declaration and " &
+        "cannot tell which of them is meant; edit the stylesheet directly.")
+  let hit = hits[0]
+  if hit.condition.len > 0:
+    return CssPatchResult(ok: false, outcome: cpoAmbiguous,
+      message: "The `" & property & "` declaration for `" & selector &
+        "` is inside `" & hit.condition & "`. Reset removes only a " &
+        "declaration that applies at every width.")
+  # The one declaration must be the property's only setter for the selector.
+  # A shorthand (or `all`) that also sets it, or longhands that override a
+  # removed shorthand, keep a value in place: the property would not fall
+  # back to its class, token or inherited value.
+  for other in property.removalOverlaps():
+    for rule in css.allRules():
+      if not rule.selector.selectorMatches(selector): continue
+      let body = RuleSpan(selector: rule.selector, bodyStart: rule.bodyStart,
+                          bodyEnd: rule.bodyEnd)
+      if css.findDeclaration(body, other).valueStart >= 0:
+        return CssPatchResult(ok: false, outcome: cpoAmbiguous,
+          message: "`" & other & "` also sets `" & property & "` for `" &
+            selector & "`, so removing this declaration would not reset " &
+            "it to its class, token or inherited value. Edit the " &
+            "stylesheet directly.")
+  let existing = css[hit.decl.valueStart ..< hit.decl.valueEnd]
+  let comment = existing.trailingComment()
+  let current = (if comment.len > 0: existing[0 ..< existing.find("/*")]
+                 else: existing).strip()
+  var start = hit.decl.nameStart
+  var stop = hit.decl.valueEnd
+  if stop < hit.body.bodyEnd and css[stop] == ';': inc stop
+  var lineStart = start
+  while lineStart > 0 and css[lineStart - 1] in {' ', '\t'}: dec lineStart
+  var after = stop
+  while after < css.len and css[after] in {' ', '\t', '\r'}: inc after
+  let ownLine = (lineStart == 0 or css[lineStart - 1] == '\n') and
+    after < css.len and css[after] == '\n'
+  if ownLine:
+    start = lineStart
+    stop = after + 1
+  else:
+    while stop < hit.body.bodyEnd and css[stop] in {' ', '\t'}: inc stop
+  CssPatchResult(ok: true, outcome: cpoRemoved, oldValue: current,
+    content: css[0 ..< start] & css[stop .. ^1])
+
+proc removeCssInNimConst*(nimSource, constName, selector,
+                          property: string): CssPatchResult =
+  ## `removeCssDeclaration` inside a Nim raw-string const, located exactly as
+  ## `patchCssInNimConst` locates it.
+  let decl = "const " & constName & "* = \"\"\""
+  var start = nimSource.find(decl)
+  var declLen = decl.len
+  if start < 0:
+    let unexported = "const " & constName & " = \"\"\""
+    start = nimSource.find(unexported)
+    declLen = unexported.len
+  if start < 0:
+    return CssPatchResult(ok: false, outcome: cpoRuleNotFound,
+      message: "`" & constName & "` is not a raw-string const in this file.")
+  let bodyStart = start + declLen
+  let bodyEnd = nimSource.find("\"\"\"", bodyStart)
+  if bodyEnd < 0:
+    return CssPatchResult(ok: false, outcome: cpoRuleNotFound,
+      message: "`" & constName & "` has no closing `\"\"\"`.")
+  result = removeCssDeclaration(nimSource[bodyStart ..< bodyEnd], selector,
+    property)
+  if result.ok:
+    result.content = nimSource[0 ..< bodyStart] & result.content &
+      nimSource[bodyEnd .. ^1]
 
 func editTargetInNimConst*(nimSource, constName, selector, property: string;
                            width: int): CssEditTarget =
