@@ -1095,9 +1095,9 @@ bench-build-hmr:
 
 # Show benchmark bundle size (raw, minified, gzipped)
 bench-size:
-    @echo "Raw:      $$(wc -c < benchmarks/keyed/isonim/dist/main.raw.js 2>/dev/null || echo '?') bytes"
-    @echo "Minified: $$(wc -c < benchmarks/keyed/isonim/dist/main.js) bytes"
-    @echo "Gzipped:  $$(gzip -c benchmarks/keyed/isonim/dist/main.js | wc -c) bytes"
+    @echo "Raw:      $(wc -c < benchmarks/keyed/isonim/dist/main.raw.js 2>/dev/null || echo '?') bytes"
+    @echo "Minified: $(wc -c < benchmarks/keyed/isonim/dist/main.js) bytes"
+    @echo "Gzipped:  $(gzip -c benchmarks/keyed/isonim/dist/main.js | wc -c) bytes"
 
 # Run benchmark tests
 bench-test:
