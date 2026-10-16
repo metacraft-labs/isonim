@@ -254,8 +254,11 @@ try {
       r.url().endsWith("/api/editor/rpc") &&
       r.request().postDataJSON()?.method === "editor.register",
   );
-  await page.goto(origin);
-  scope = (await (await registration).json()).result;
+  const [registrationResponse] = await Promise.all([
+    registration,
+    page.goto(origin),
+  ]);
+  scope = (await registrationResponse.json()).result;
   assert.equal(scope.workspace, "grip-web-site");
   writeFileSync(
     path.join(artifacts, "private/registration.json"),

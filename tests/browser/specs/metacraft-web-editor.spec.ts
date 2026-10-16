@@ -2905,7 +2905,7 @@ test.describe("metacraft-web IsoNim editor consumer", () => {
           () =>
             (window as any).__isonimEditorVm.inspector.undoStack.value.length,
         );
-      const pending = () =>
+      const pendingSourceEditCount = () =>
         page.evaluate(
           () =>
             (window as any).__isonimEditorVm.inspector.pendingSourceEdits.value
@@ -2949,7 +2949,7 @@ test.describe("metacraft-web IsoNim editor consumer", () => {
       await tokenChip.click({ force: true });
       await expect(tokenChip).toHaveAttribute("aria-pressed", "false");
       expect(await history()).toBe(startHistory);
-      expect(await pending()).toBe(0);
+      expect(await pendingSourceEditCount()).toBe(0);
       await page.keyboard.press("Escape");
 
       // The scope the row will commit at is one this host can write.

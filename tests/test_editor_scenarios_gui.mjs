@@ -434,8 +434,11 @@ try {
       response.url().endsWith("/api/editor/rpc") &&
       response.request().postDataJSON()?.method === "editor.register",
   );
-  await page.goto(origin);
-  scope = (await (await registered).json()).result;
+  const [registrationResponse] = await Promise.all([
+    registered,
+    page.goto(origin),
+  ]);
+  scope = (await registrationResponse.json()).result;
   writeFileSync(
     path.join(artifacts, "private/browser-registration.json"),
     JSON.stringify(scope),
@@ -1253,8 +1256,11 @@ try {
       r.url().endsWith("/api/editor/rpc") &&
       r.request().postDataJSON()?.method === "editor.register",
   );
-  await other.goto(origin);
-  const stale = (await (await otherRegistration).json()).result;
+  const [otherRegistrationResponse] = await Promise.all([
+    otherRegistration,
+    other.goto(origin),
+  ]);
+  const stale = (await otherRegistrationResponse.json()).result;
   const beforeStaleTarget = await cli(["state"]);
   await rpc("editor.disconnect", {}, stale.browserToken, stale);
   assert.equal(
@@ -1337,9 +1343,12 @@ try {
       r.url().endsWith("/api/editor/rpc") &&
       r.request().postDataJSON()?.method === "editor.register",
   );
-  await page.reload();
+  const [reloadRegistrationResponse] = await Promise.all([
+    reloadRegistration,
+    page.reload(),
+  ]);
   const previous = scope;
-  scope = (await (await reloadRegistration).json()).result;
+  scope = (await reloadRegistrationResponse.json()).result;
   assert.notEqual(scope.instance, previous.instance);
   await until(
     async () =>

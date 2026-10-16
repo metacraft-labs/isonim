@@ -150,8 +150,8 @@ async function registered(page) {
       r.url().endsWith("/api/editor/rpc") &&
       r.request().postDataJSON()?.method === "editor.register",
   );
-  await page.goto(origin);
-  const data = await (await reply).json();
+  const [registrationResponse] = await Promise.all([reply, page.goto(origin)]);
+  const data = await registrationResponse.json();
   assert(data.result, "Browser registration failed");
   const scope = data.result;
   await page.waitForSelector('[data-editor-control-focus="composer"]');
@@ -811,8 +811,10 @@ try {
             response.url().endsWith("/api/agent/close") &&
             response.request().method() === "POST",
         );
-        await page.locator("[data-agent-close]").click();
-        const closed = await closeReply;
+        const [closed] = await Promise.all([
+          closeReply,
+          page.locator("[data-agent-close]").click(),
+        ]);
         assert.equal(closed.status(), 200);
         assert.deepEqual(await closed.json(), { closed: true });
         terminal = (

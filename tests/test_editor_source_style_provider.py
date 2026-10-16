@@ -15,6 +15,10 @@ import unittest
 
 REPO = Path(__file__).resolve().parent.parent
 
+
+from helpers.grip_source_project import register_disposable_grip_source_bridge
+
+
 class SourceStyleProviderTests(unittest.TestCase):
     def test_real_grip_compiled_targets_shared_scope_and_follow_up_source_edit(self):
         prototype = Path(os.environ.get("ISONIM_SOURCE_PROVIDER_PROJECT", REPO.parent / "web-site-prototypes/grip/isonim"))
@@ -22,6 +26,7 @@ class SourceStyleProviderTests(unittest.TestCase):
         directory = Path(tempfile.mkdtemp(prefix="source-provider-", dir=os.environ.get("ISONIM_POPUP_ARTIFACTS")))
         project = directory / "project"
         shutil.copytree(prototype, project, ignore=shutil.ignore_patterns(".git", ".repro", "build", "node_modules", "catalog-producer"))
+        register_disposable_grip_source_bridge(project)
         (project / "config.nims").write_text('switch("nimcache", ' + json.dumps(str(project / "native-cache")) + ')\n')
         source = project / "src/components/styles.nim"
         original = source.read_bytes()
@@ -87,6 +92,7 @@ class SourceStyleProviderTests(unittest.TestCase):
         directory = Path(tempfile.mkdtemp(prefix="source-values-provider-", dir=os.environ.get("ISONIM_POPUP_ARTIFACTS")))
         project = directory / "project"
         shutil.copytree(prototype, project, ignore=shutil.ignore_patterns(".git", ".repro", "build", "node_modules", "catalog-producer"))
+        register_disposable_grip_source_bridge(project)
         (project / "config.nims").write_text('switch("nimcache", ' + json.dumps(str(project / "native-cache")) + ')\n')
         source = project / "src/components/styles.nim"
         original = source.read_text()

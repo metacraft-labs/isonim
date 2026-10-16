@@ -47,6 +47,12 @@ cpSync(prototype, project, {
         ].includes(part),
       ),
 });
+const registration = spawnSync(
+  "python3",
+  [repo + "/tests/helpers/grip_source_project.py", project],
+  { cwd: repo, env: process.env, encoding: "utf8", timeout: 5000 },
+);
+assert.equal(registration.status, 0, registration.stdout + registration.stderr);
 mkdirSync(pub);
 writeFileSync(
   project + "/config.nims",

@@ -248,13 +248,15 @@ async function stable(scope) {
   throw new Error("Revision did not stabilize");
 }
 async function mounted(page) {
-  const registration = page.waitForResponse(
-    (r) =>
-      r.url().endsWith("/api/editor/rpc") &&
-      r.request().postDataJSON()?.method === "editor.register",
-  );
-  await page.goto(origin);
-  const scope = (await (await registration).json()).result;
+  const [registration] = await Promise.all([
+    page.waitForResponse(
+      (r) =>
+        r.url().endsWith("/api/editor/rpc") &&
+        r.request().postDataJSON()?.method === "editor.register",
+    ),
+    page.goto(origin),
+  ]);
+  const scope = (await registration.json()).result;
   assert(scope);
   for (let step = 0; step < 100; step++) {
     const state = cli(scope, ["state"]);

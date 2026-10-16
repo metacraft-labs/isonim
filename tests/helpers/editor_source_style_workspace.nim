@@ -5,7 +5,10 @@ import std/[json, options]
 import isonim/editor/[browser, source_browser, viewmodels, types]
 import isonim/core/signals
 import mount as source_workspace
-let project = newGripEditorWorkspace()
+# This composition mounts only the owned disposable GRIP copy. The live
+# prototype remains read-only; explicitly opt this source-persistence fixture in.
+var project = newGripEditorWorkspace()
+project.permissions.writeSource = true
 let editor = mountEditor(project)
 editor.attachSourceProject(project)
 proc openStory(group, name: cstring): bool =

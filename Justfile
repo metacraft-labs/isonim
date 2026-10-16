@@ -1762,7 +1762,7 @@ test-editor-inspector: test-editor-shell-current test-editor-inspector-native-so
     python3 tools/run_nim_js_test.py build/test_editor_source_markup.js
 
 # Real native guarded-source transactions and disposable compiled GRIP provider.
-test-editor-inspector-native-source: isonim-review-build
+test-editor-inspector-native-source: isonim-review-build build-tailwind
     python3 tests/test_editor_inspector_source.py
     python3 tests/test_editor_source_style_provider.py
     timeout --signal=TERM --kill-after=15s 180s "${ISONIM_SCENARIO_NODE:-node}" tests/test_editor_source_bindings_gui.mjs

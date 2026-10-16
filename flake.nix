@@ -226,6 +226,7 @@
           shellHook = ''
             ${pkgs.lib.optionalString pkgs.stdenv.isLinux ''
               export LD_LIBRARY_PATH="${pkgs.libwebp}/lib''${LD_LIBRARY_PATH:+:$LD_LIBRARY_PATH}"
+              export PLAYWRIGHT_CHROMIUM_EXECUTABLE="${pkgs.chromium}/bin/chromium"
             ''}
             ${pkgs.lib.optionalString pkgs.stdenv.isDarwin ''
               export DYLD_FALLBACK_LIBRARY_PATH="${pkgs.libwebp}/lib''${DYLD_FALLBACK_LIBRARY_PATH:+:$DYLD_FALLBACK_LIBRARY_PATH}"

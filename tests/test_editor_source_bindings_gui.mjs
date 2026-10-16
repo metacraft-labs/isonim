@@ -224,8 +224,11 @@ try {
         response.url().endsWith("/api/editor/rpc") &&
         response.request().postDataJSON()?.method === "editor.register",
     );
-    await target.goto(origin);
-    const scope = (await (await registration).json()).result;
+    const [registrationResponse] = await Promise.all([
+      registration,
+      target.goto(origin),
+    ]);
+    const scope = (await registrationResponse.json()).result;
     assert(scope);
     await target.waitForFunction(
       () => globalThis.__isonimEditorVm?.sourceAdapterReady?.value === true,
