@@ -607,7 +607,16 @@ proc installEditorKeyboardShortcuts(vm: EditorVM) =
         // Editor spec "Section catalogue": the inspector's search field takes
         // ⌘F focus. Only while that field is actually on screen (Edit mode
         // with the inspector open); otherwise the browser's own Find stays.
-        if (mod && !event.shiftKey && !event.altKey && lower === 'f') {
+        // Not when another handler has already handled the keystroke (an
+        // in-page editor with its own Find calls preventDefault): this
+        // listener is on the window, so it runs after every handler on the
+        // focused element, and taking the key from them would break theirs.
+        // Nor while a focused preview canvas owns the keyboard (its own
+        // per-key handlers; see `isEditable`).
+        const canvasScope = editable &&
+          String(event.target && event.target.tagName || '').toLowerCase() === 'canvas';
+        if (mod && !event.shiftKey && !event.altKey && lower === 'f' &&
+            !event.defaultPrevented && !canvasScope) {
           const search = document.querySelector('[data-isonim-focus-id="section-search"]');
           if (search && search.getClientRects().length && search.focus) {
             event.preventDefault();

@@ -199,6 +199,9 @@ type
       ## The editor's property clipboard (see `InspectorRowWiring`). Drives
       ## the row's Copy property / Paste property actions; nil disables them
       ## with a reason.
+    resetReason*: proc(): string {.closure.}
+      ## Why Reset cannot run now, or "" when it can (see
+      ## `InspectorRowWiring.resetReason`). Nil disables Reset with a reason.
 
 # --------------------------------------------------------------------------- #
 #  Visual contract — pulled from the spec's editing-control reference.
@@ -553,7 +556,7 @@ proc propertyRowNumeric*(name: string;
     commitMessage: wiring.commitMessage,
     commitRejected: wiring.commitRejected,
     onCommitValue: wiring.commit, onAsyncCommitValue: wiring.commitAsync,
-    clipboard: wiring.clipboard)
+    clipboard: wiring.clipboard, resetReason: wiring.resetReason)
 
 proc propertyRowColor*(name: string;
                        value: Signal[string];
@@ -579,7 +582,7 @@ proc propertyRowColor*(name: string;
     commitMessage: wiring.commitMessage,
     commitRejected: wiring.commitRejected,
     onCommitValue: wiring.commit, onAsyncCommitValue: wiring.commitAsync,
-    clipboard: wiring.clipboard)
+    clipboard: wiring.clipboard, resetReason: wiring.resetReason)
 
 proc propertyRowChoice*(name: string;
                         value: Signal[string];
@@ -605,7 +608,7 @@ proc propertyRowChoice*(name: string;
     commitMessage: wiring.commitMessage,
     commitRejected: wiring.commitRejected,
     onCommitValue: wiring.commit, onAsyncCommitValue: wiring.commitAsync,
-    clipboard: wiring.clipboard)
+    clipboard: wiring.clipboard, resetReason: wiring.resetReason)
 
 proc propertyRowText*(name: string;
                       value: Signal[string];
@@ -630,7 +633,7 @@ proc propertyRowText*(name: string;
     commitMessage: wiring.commitMessage,
     commitRejected: wiring.commitRejected,
     onCommitValue: wiring.commit, onAsyncCommitValue: wiring.commitAsync,
-    clipboard: wiring.clipboard)
+    clipboard: wiring.clipboard, resetReason: wiring.resetReason)
 
 proc propertyRowBoolean*(name: string;
                          value: Signal[bool];
@@ -655,7 +658,7 @@ proc propertyRowBoolean*(name: string;
     commitMessage: wiring.commitMessage,
     commitRejected: wiring.commitRejected,
     onCommitValue: wiring.commit, onAsyncCommitValue: wiring.commitAsync,
-    clipboard: wiring.clipboard)
+    clipboard: wiring.clipboard, resetReason: wiring.resetReason)
 
 # --------------------------------------------------------------------------- #
 #  Mount.
@@ -1027,9 +1030,8 @@ proc mountPropertyRow*[R, E](r: R; parent: E;
   var rowAlive = true
   var valueSlotGeneration = 0
   onCleanup(proc() = rowAlive = false)
-  proc commitValue(restore: proc() {.closure.} = nil) =
-    ## Commit the row's current value, and put the control back if the
-    ## pipeline refuses it.
+  proc commitText(value: string; restore: proc() {.closure.} = nil) =
+    ## Commit ``value``, and put the control back if the pipeline refuses it.
     ##
     ## `restore` is supplied by the caller because only the caller still
     ## holds the previous value: every kind's input handler writes the new
@@ -1044,7 +1046,7 @@ proc mountPropertyRow*[R, E](r: R; parent: E;
       return
     if cfg.onAsyncCommitValue != nil:
       let submittedGeneration = valueSlotGeneration
-      cfg.onAsyncCommitValue(currentCssValue(), proc(ok: bool) =
+      cfg.onAsyncCommitValue(value, proc(ok: bool) =
         # A native result belongs to the submitted target. Rebuilt selection
         # controls must not receive an old draft's rollback or notification.
         if not rowAlive or submittedGeneration != valueSlotGeneration: return
@@ -1055,7 +1057,7 @@ proc mountPropertyRow*[R, E](r: R; parent: E;
     let hadRejections =
       if cfg.commitRejected != nil: cfg.commitRejected.val else: 0
     if cfg.onCommitValue != nil:
-      cfg.onCommitValue(currentCssValue())
+      cfg.onCommitValue(value)
     if cfg.commitRejected != nil and
        cfg.commitRejected.val != hadRejections:
       if restore != nil:
@@ -1063,6 +1065,10 @@ proc mountPropertyRow*[R, E](r: R; parent: E;
       return
     if cfg.onChange != nil:
       cfg.onChange()
+
+  proc commitValue(restore: proc() {.closure.} = nil) =
+    ## Commit the row's current value (see `commitText`).
+    commitText(currentCssValue(), restore)
 
   # ------------------------------------------------------------------------- #
   #  Value-slot content per kind. When ``binding.isSome`` we render a
@@ -1513,16 +1519,26 @@ proc mountPropertyRow*[R, E](r: R; parent: E;
               # open; read the popup's choice now, before completion.
               let closeOnSuccess = colorState.commitCloses
               colorState.pending.val = true
+              var completed = false
+              var accepted = false
               cfg.onAsyncCommitValue(value, proc(ok: bool) =
+                completed = true
+                accepted = ok
                 if not rowAlive or submittedGeneration != valueSlotGeneration: return
                 colorState.pending.val = false
                 if ok:
                   cfg.colorValue.val = value
                   if closeOnSuccess: colorState.open.val = false
+                  # Still open after a committed Enter: Cancel / Escape now
+                  # return to the committed colour, also when the source
+                  # confirmed it asynchronously.
+                  else: colorState.markColorDraftCommitted()
                   if cfg.onChange != nil: cfg.onChange()
                 else:
                   colorState.diagnostic.val = "The source color edit was refused.")
-              return false
+              # A commit that completed before returning reports its result,
+              # so the popup does not mistake a confirmed edit for a refusal.
+              return completed and accepted
             let rejected = if cfg.commitRejected != nil: cfg.commitRejected.val else: 0
             # Refusal must not transiently mutate the reactive value: that
             # rebuilds this slot and disposes the still-open error/draft UI.
@@ -1880,6 +1896,12 @@ proc mountPropertyRow*[R, E](r: R; parent: E;
       cfg.booleanValue.val = value == "true"
       commitValue(proc() = cfg.booleanValue.val = previous)
 
+  # Reset commits an empty value through this row's own commit, which plans
+  # it as removing the declaration that sets the property: the same
+  # validation, write-back, preview and undo entry as a typed value.
+  var resetAction: proc() {.closure.} = nil
+  if cfg.resetReason != nil:
+    resetAction = proc() = commitText("")
   let actionsConfig = PropertyActionsConfig(
     name: cfg.name,
     clipboard: cfg.clipboard,
@@ -1891,7 +1913,8 @@ proc mountPropertyRow*[R, E](r: R; parent: E;
         "This row is not connected to a source property."
       elif cfg.readOnlyReason != nil: cfg.readOnlyReason()
       else: "",
-    resetReason: propertyResetUnavailableReason,
+    resetReason: cfg.resetReason,
+    reset: resetAction,
     detach: cfg.onDetachRequest,
     isBound: proc(): bool =
       if cfg.bindingReactive != nil: cfg.bindingReactive().isSome
@@ -1916,6 +1939,9 @@ proc mountPropertyRow*[R, E](r: R; parent: E;
   installPopoverTrigger(moreNode)
   r.addEventListener(root, "contextmenu", proc(ev: auto) =
     mixin preventDefault
+    # Inside the row's text field the browser's own Cut / Copy / Paste menu
+    # is what the user is asking for.
+    if isEditableEventTarget(ev): return
     when compiles(ev.preventDefault()):
       ev.preventDefault()
     elif defined(js):

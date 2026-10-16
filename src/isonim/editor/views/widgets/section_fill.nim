@@ -51,8 +51,6 @@ const
   secondaryFillNotice =
     "Only the first fill maps to a source property; additional fills " &
     "are preview-only."
-  fillDeleteNotice =
-    "The editor cannot remove this fill from its source yet."
   fillAlphaNotice =
     "Fill opacity is preview-only until fills compose an rgba() source value."
 
@@ -276,7 +274,6 @@ proc mountSectionFill*[R, E](r: R; parent: E; vm: EditorVM) =
               `data-fill-row-delete` = $idx,
               `aria-label` = "Delete fill",
               `aria-disabled` = "true",
-              title = fillDeleteNotice,
               width = "20px", height = "20px",
               display = "flex", align_items = "center",
               justify_content = "center",
@@ -376,6 +373,10 @@ proc mountSectionFill*[R, E](r: R; parent: E; vm: EditorVM) =
             colorState.pending.val = false
             if ok:
               if closeOnSuccess: colorState.open.val = false
+              # Still open after a committed Enter: the committed colour is
+              # the new point Cancel / Escape return to, also when the
+              # source confirmed it asynchronously.
+              else: colorState.markColorDraftCommitted()
             else: colorState.diagnostic.val = fillWiringNow().commitMessage.val)
           completed and accepted)
       createRenderEffect proc() =
@@ -417,6 +418,19 @@ proc mountSectionFill*[R, E](r: R; parent: E; vm: EditorVM) =
     # property -> Copy, then paste onto another element"). A fill entry has
     # no More slot, so right-click is its entry point.
     discard registerInspectorSearchText("fill " & fillProperty())
+    proc removalAdmission(): string =
+      ## Everything `removalReason` asks except the file read.
+      if idx != 0: secondaryFillNotice
+      elif binding.isSome:
+        "Detach the variable before removing this fill."
+      else: fillWiringNow().resetAdmission()
+    proc removalReason(): string =
+      let cheap = removalAdmission()
+      if cheap.len > 0: cheap else: fillWiringNow().resetReason()
+    proc removeFill() =
+      # The empty commit is planned as removing the owning declaration.
+      if rowActive and currentTarget() and idx == 0:
+        fillWiringNow().commitAsync("", proc(ok: bool) = discard)
     let actionsConfig = PropertyActionsConfig(
       name: "Fill",
       clipboard: vm.inspector.propertyClipboard,
@@ -429,7 +443,10 @@ proc mountSectionFill*[R, E](r: R; parent: E; vm: EditorVM) =
         elif binding.isSome:
           "Detach the variable before pasting a value into this fill."
         else: fillWiringNow().readOnlyReason(),
-      resetReason: propertyResetUnavailableReason,
+      # Reset commits an empty fill through the fill's own commit, which
+      # plans it as removing the declaration that sets it (as Delete does).
+      resetReason: removalReason,
+      reset: removeFill,
       detach: (if idx == 0 and binding.isSome:
                  vm.inspectorDetachRequestHandler(fillProperty())
                else: nil),
@@ -446,21 +463,47 @@ proc mountSectionFill*[R, E](r: R; parent: E; vm: EditorVM) =
       if not actionsMenu.state.isOpen.val: actionsMenu.open()
     r.addEventListener(row, "contextmenu", proc(ev: auto) =
       mixin preventDefault
+      # The hex and opacity fields keep the browser's own text menu.
+      if isEditableEventTarget(ev): return
       when compiles(ev.preventDefault()):
         ev.preventDefault()
       elif defined(js):
         proc prevent(event: typeof(ev)) {.importjs: "#.preventDefault()".}
         prevent(ev)
       openActions())
+    # Delete (−) of the fill removes the declaration that sets it: for a
+    # single fill that is exactly what Reset does, so it commits the same
+    # empty value through the same fill commit, and is enabled exactly where
+    # Reset is (`removalReason`). Elsewhere it stays in place, disabled with
+    # that reason, and a click explains it without changing anything.
+    #
+    # Tracked: only the answers that read no source file (permissions,
+    # binding, secondary fill, native writer, schema admission). Whether the
+    # write finds exactly one declaration reads the file -- a bridge request
+    # in a consumer -- so it is asked untracked when the user reaches for the
+    # button (hover, focus, click), as Reset asks it when its menu opens,
+    # never on every selection, viewport or pending-edit change.
+    proc showDeleteState(reason: string) =
+      r.setAttribute(deleteEl, "aria-disabled",
+        if reason.len > 0: "true" else: "false")
+      r.setAttribute(deleteEl, "title",
+        if reason.len > 0: reason else: "Delete fill")
+    proc checkDelete(): string =
+      result = untrack(removalReason)
+      showDeleteState(result)
+    createRenderEffect proc() =
+      showDeleteState(if rowActive: removalAdmission() else: "")
+    r.addEventListener(deleteEl, "pointerenter", proc() =
+      if rowActive and currentTarget(): discard checkDelete())
+    r.addEventListener(deleteEl, "focus", proc() =
+      if rowActive and currentTarget(): discard checkDelete())
     r.addEventListener(deleteEl, "click", proc() =
       if not rowActive or not currentTarget(): return
-      let reason = fillWiringNow().readOnlyReason()
+      let reason = checkDelete()
       if reason.len > 0:
         fillWiringNow().commitMessage.val = reason
         return
-      # Removal has no authored source operation. Keep the selected fill and
-      # explain refusal; a local row deletion would misrepresent persistence.
-      fillWiringNow().commitMessage.val = fillDeleteNotice)
+      removeFill())
     installPopoverTrigger(deleteEl)
 
   proc rebuildList(count: int) =

@@ -59,12 +59,12 @@ try {
   await deleteButton.scrollIntoViewIfNeeded();assert(await deleteButton.evaluate(el=>{const r=el.getBoundingClientRect();return el.contains(document.elementFromPoint(r.x+r.width/2,r.y+r.height/2));}));
   if(activation==='click'){const box=await deleteButton.boundingBox();assert(box);await page.mouse.click(box.x+box.width/2,box.y+box.height/2);}else{await deleteButton.focus();await deleteButton.press(activation);}
   assert.equal(await fill.count(),1);assert(await deleteNode.evaluate(el=>el.isConnected));
-  await fillMessage.waitFor({state:'visible'});assert.equal(await fillMessage.textContent(),'The editor cannot remove this fill from its source yet.');
+  await fillMessage.waitFor({state:'visible'});assert.equal(await fillMessage.textContent(),'The native source writer cannot remove a declaration.');
   assert.equal(await fill.locator('[data-fill-row-hex]').inputValue(),deleteBefore.hex);
   assert.equal(source(),deleteBefore.source);assert.equal(catalog(),deleteBefore.catalog);assert.deepEqual(await snapshot(),deleteBefore.state);assert.deepEqual(await preview(),deleteBefore.preview);
   assert.equal(proof.sourceRequests.length,0);assert.deepEqual(proof.agentRequests,[]);
  }
- for(const key of ['Tab','Escape']){await deleteButton.focus();await deleteButton.press(key);assert.equal(await fill.count(),1);assert.deepEqual(await snapshot(),deleteBefore.state);assert.equal(await fillMessage.textContent(),'The editor cannot remove this fill from its source yet.');}
+ for(const key of ['Tab','Escape']){await deleteButton.focus();await deleteButton.press(key);assert.equal(await fill.count(),1);assert.deepEqual(await snapshot(),deleteBefore.state);assert.equal(await fillMessage.textContent(),'The native source writer cannot remove a declaration.');}
  record('editable public Delete click/Enter/Space explains unsupported removal with exact row/source/catalog/preview/history and zero requests; Tab/Escape are inert');
  await page.evaluate(()=>window.__popupAcceptance.readOnly(true));
  await page.waitForFunction(()=>document.querySelector('[data-fill-row="0"]')?.getAttribute('data-fill-row-readonly')==='true');

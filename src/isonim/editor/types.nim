@@ -1516,6 +1516,15 @@ type
     generatedModule*: string
     story*: StoryRef
     property*: string
+    removable*: bool
+      ## The project's writer can remove the declaration this entry owns:
+      ## handed a ``cspPropertyRemoval`` plan (an empty value, which is what
+      ## Reset commits), ``patchFile`` deletes exactly the one declaration
+      ## that owns the property and refuses when none or more than one does.
+      ## False (the default) states that it cannot, and the editor refuses
+      ## such an edit when it is committed and shows Reset disabled with that
+      ## reason, instead of handing the writer a plan it would turn into an
+      ## empty declaration.
 
   WorkspaceEditDiagnostic* = object
     kind*: WorkspaceEditDiagnosticKind

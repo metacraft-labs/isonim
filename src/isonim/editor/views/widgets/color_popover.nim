@@ -28,6 +28,10 @@ when defined(js):
 proc pickerKey[E](ev: E): string =
   ev.key
 
+type ColorDraftSnapshot* = object
+  draft*: string
+  hue*, saturation*, brightness*: float
+
 type ColorPopoverState* = ref object
   open*: Signal[bool]
   draft*: Signal[string]
@@ -40,6 +44,13 @@ type ColorPopoverState* = ref object
     ## true for Apply / Enter in the hex field, false for Enter in a channel
     ## or the HSL field. A caller that completes asynchronously reads it when
     ## the commit starts to decide whether success closes the picker.
+  cancelPoint: ColorDraftSnapshot
+    ## What Cancel / Escape / an outside click restore: the draft the picker
+    ## opened with, moved to each committed colour while it stays open.
+  transparentOrigin: bool
+    ## The picker opened on a fully transparent colour and the user has not
+    ## chosen an opacity since. Only then does a typed RGB channel make the
+    ## draft opaque; a deliberate Alpha of 0% is kept.
 
 func normalizedHexColor*(raw: string): string =
   let value = raw.strip()
@@ -149,10 +160,6 @@ proc createColorPopoverState*(): ColorPopoverState =
     hue: createSignal(0.0), saturation: createSignal(0.0), brightness: createSignal(0.0),
     commitCloses: true)
 
-type ColorDraftSnapshot* = object
-  draft*: string
-  hue*, saturation*, brightness*: float
-
 proc captureColorDraft*(state: ColorPopoverState): ColorDraftSnapshot =
   ColorDraftSnapshot(draft: state.draft.val, hue: state.hue.val,
     saturation: state.saturation.val, brightness: state.brightness.val)
@@ -164,6 +171,15 @@ proc restoreColorDraft*(state: ColorPopoverState; snapshot: ColorDraftSnapshot) 
     state.saturation.val = snapshot.saturation
     state.brightness.val = snapshot.brightness
     state.draft.val = snapshot.draft)
+
+proc markColorDraftCommitted*(state: ColorPopoverState) =
+  ## The draft was committed and the picker stays open: Cancel / Escape now
+  ## return to it, not to the colour the picker opened with. Called by the
+  ## popup for a synchronous commit, and by a caller whose commit completed
+  ## asynchronously (edits are blocked while one is pending, so the draft is
+  ## still the committed colour).
+  if state.open.val:
+    state.cancelPoint = state.captureColorDraft()
 
 proc setColorHsv*(state: ColorPopoverState; hue, saturation, brightness: float; alpha: int) =
   ## Coordinates retain user intent through black/grey and RGB quantization.
@@ -291,8 +307,13 @@ proc mountColorPopover*[R, E](r: R; parent, invoker: E;
       # A colour typed into a fully transparent draft (a fill that is
       # `transparent`, i.e. no visible colour) would stay invisible and the
       # edit would look like it did nothing. A typed hex or HSL value without
-      # alpha is opaque; so is a typed channel here. Alpha % still sets it.
-      if index < 3 and channels.alpha == 0: channels.alpha = 255
+      # alpha is opaque; so is a typed channel here -- but only for a colour
+      # that was transparent when the picker opened, before any opacity was
+      # chosen. An Alpha of 0% the user set deliberately is kept.
+      if index == 3: state.transparentOrigin = false
+      elif channels.alpha == 0 and state.transparentOrigin:
+        channels.alpha = 255
+        state.transparentOrigin = false
       if index == 3:
         state.setColorHsv(hue.val, state.saturation.val, state.brightness.val, channels.alpha)
       else:
@@ -324,6 +345,8 @@ proc mountColorPopover*[R, E](r: R; parent, invoker: E;
       return false
     if normalizedHexColor(color) != normalizedHexColor(state.draft.val):
       state.draft.val = color
+    # A typed HSL value carries its own alpha (opaque when it has none).
+    state.transparentOrigin = false
     state.diagnostic.val = ""
     true
   r.addEventListener(hslNode, "change", proc() = discard updateHsl())
@@ -414,9 +437,8 @@ proc mountColorPopover*[R, E](r: R; parent, invoker: E;
   for color in ["#FFFFFF", "#000000", "#EF4444", "#F59E0B", "#22C55E", "#3B82F6", "#7C7AED", "#EC4899"]:
     addSwatch(color)
   installAnchoredPopover(rootNode, "isonim-color-close")
-  var openingDraft: ColorDraftSnapshot
   proc cancelDraft() =
-    if state.open.val: state.restoreColorDraft(openingDraft)
+    if state.open.val: state.restoreColorDraft(state.cancelPoint)
     state.open.val = false
   r.addEventListener(rootNode, "isonim-color-close", cancelDraft)
   r.addEventListener(cancelNode, "click", cancelDraft)
@@ -444,7 +466,7 @@ proc mountColorPopover*[R, E](r: R; parent, invoker: E;
         else:
           # Committed and still open: the committed value is the new point
           # Cancel / Escape return to, not the colour the picker opened with.
-          openingDraft = state.captureColorDraft()
+          state.markColorDraftCommitted()
       elif not state.pending.val and state.diagnostic.val.len == 0:
         state.diagnostic.val = "The color edit was refused."
   commitDraft = applyDraft
@@ -453,13 +475,16 @@ proc mountColorPopover*[R, E](r: R; parent, invoker: E;
   r.addEventListener(inputNode, "input", proc() =
     if not mountedActive or not state.open.val or state.pending.val: return
     state.draft.val = r.inputValue(inputNode)
+    # A typed hex value carries its own alpha (opaque when it has none).
+    state.transparentOrigin = false
     state.diagnostic.val = "")
   r.addEventListener(invoker, "click", proc() =
     if not mountedActive: return
     state.projectedDraft = ""
     state.draft.val = normalizedSourceColor(current())
     state.syncColorCoordinates()
-    openingDraft = state.captureColorDraft()
+    state.cancelPoint = state.captureColorDraft()
+    state.transparentOrigin = colorChannels(state.draft.val).alpha == 0
     state.diagnostic.val = ""
     when defined(js):
       {.emit: [state, ".__isonimAnchor = ", invoker, ";"].}

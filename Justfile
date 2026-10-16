@@ -1676,7 +1676,17 @@ test-editor-inspector-controls:
     nim js -d:nodejs --out:build/test_editor_inspector_controls.js tests/test_editor_inspector_controls.nim
     python3 tools/run_nim_js_test.py build/test_editor_inspector_controls.js
 
-test-editor-c4a: test-editor-selection-keys test-editor-source-write-receipts test-editor-save-pipeline test-editor-act-time-refusals test-editor-inspector-controls test-editor-c4a-headless test-editor-c4a-compounds test-editor-c4a-properties test-editor-c4a-remaining test-editor-inline-preview test-editor-c4a-gestures test-editor-c4a-color test-editor-c4a-grip
+# Reset to default: an empty commit removes the declaration that owns the
+# property through the editor example's real writer (admission per schema
+# entry, act-time refusal, undo through the write receipt); plus the
+# inspector-controls review notes (text-field right-click, deliberate Alpha 0%,
+# asynchronous Cancel point). Native and strict executed Node JS.
+test-editor-reset-removal: build-tailwind
+    nim c -r --out:build/test_editor_reset_removal tests/test_editor_reset_removal.nim
+    nim js -d:nodejs --out:build/test_editor_reset_removal.js tests/test_editor_reset_removal.nim
+    python3 tools/run_nim_js_test.py build/test_editor_reset_removal.js
+
+test-editor-c4a: test-editor-selection-keys test-editor-source-write-receipts test-editor-save-pipeline test-editor-act-time-refusals test-editor-inspector-controls test-editor-reset-removal test-editor-c4a-headless test-editor-c4a-compounds test-editor-c4a-properties test-editor-c4a-remaining test-editor-inline-preview test-editor-c4a-gestures test-editor-c4a-color test-editor-c4a-grip
 
 # Source ownership presentation; real native/JS signals and shell, no transports.
 test-editor-source-labels: build-tailwind

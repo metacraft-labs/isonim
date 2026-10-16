@@ -45,9 +45,15 @@ type
     unavailableReason*: proc(): string {.closure.}
       ## Non-empty when the property cannot be edited at all (read-only
       ## workspace, unmapped row). Paste is then disabled with this reason.
-    resetReason*: string
-      ## Reset is shown as the spec requires; while it cannot run it is
-      ## disabled and says why.
+    resetReason*: proc(): string {.closure.}
+      ## Non-empty while Reset cannot run: it is then shown disabled and says
+      ## why. Read each time the menu opens, because whether the removal
+      ## Reset commits can be written depends on the selection, the scope and
+      ## the file. Nil disables Reset with `propertyResetUnavailableReason`.
+    reset*: proc() {.closure.}
+      ## Reset to default: commit an empty value through the property's own
+      ## commit path, which plans it as removing the declaration that sets
+      ## the property (validated, written and undoable like any edit).
     detach*: proc() {.closure.}
       ## Non-nil, together with `isBound`, adds "Detach variable".
     isBound*: proc(): bool {.closure.}
@@ -65,13 +71,29 @@ type
 const
   propertyResetUnavailableReason* =
     "Reset returns the property to its token, class or inherited value. " &
-    "The source writer cannot remove a declaration yet, so Reset is unavailable."
+    "This property is not connected to a source writer, so Reset is unavailable."
   menuBg = "#16171F"
   menuBorder = "#2D2D3A"
   itemColor = "#F1F5F9"
   itemDisabledColor = "#6B6F80"
   copyNothingReason = "This property has no value to copy."
   pasteEmptyReason = "Copy a property first."
+
+proc isEditableEventTarget*[T](ev: T): bool =
+  ## Whether a (context-menu) event comes from a field the user types in.
+  ## Right-click there keeps the browser's own Cut / Copy / Paste menu for
+  ## the text: the property menu opens only outside editable fields.
+  when compiles(ev.target.tag):
+    # The test renderer's event (MockEvent), natively and under Node.
+    ev.target != nil and ev.target.tag in ["input", "textarea", "select"]
+  elif defined(js):
+    var editable: bool
+    {.emit: [editable, " = !!(", ev, " && ", ev, ".target && typeof ", ev,
+      ".target.closest === 'function' && ", ev,
+      ".target.closest('input, textarea, select, [contenteditable]:not([contenteditable=\"false\"])'));"].}
+    editable
+  else:
+    false
 
 proc mountPropertyActionsMenu*[R, E](r: R; parent, anchor: E;
     cfg: PropertyActionsConfig): PropertyActionsMenu[E] =
@@ -131,6 +153,11 @@ proc mountPropertyActionsMenu*[R, E](r: R; parent, anchor: E;
     if cfg.clipboard.val.value.len == 0: return pasteEmptyReason
     ""
 
+  proc resetReason(): string =
+    if cfg.reset == nil or cfg.resetReason == nil:
+      return propertyResetUnavailableReason
+    cfg.resetReason()
+
   proc bound(): bool =
     cfg.detach != nil and cfg.isBound != nil and cfg.isBound()
 
@@ -152,7 +179,7 @@ proc mountPropertyActionsMenu*[R, E](r: R; parent, anchor: E;
       # another row enables this row's Paste.
       setItemState(copyNode, copyReason())
       setItemState(pasteNode, pasteReason())
-      setItemState(resetNode, cfg.resetReason)
+      setItemState(resetNode, untrack(resetReason))
       r.setStyle(detachNode, "display", if bound(): "block" else: "none")
       setItemState(detachNode, "")
     r.setTextContent(messageNode, state.message.val)
@@ -193,7 +220,13 @@ proc mountPropertyActionsMenu*[R, E](r: R; parent, anchor: E;
       close()
       cfg.paste(value)
     of "reset":
-      state.message.val = cfg.resetReason
+      let reason = resetReason()
+      if reason.len > 0:
+        state.message.val = reason
+        return
+      # Close first, as for Paste: the commit can rebuild the row.
+      close()
+      cfg.reset()
     of "detach":
       if bound():
         close()

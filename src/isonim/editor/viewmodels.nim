@@ -4759,7 +4759,26 @@ proc sourcePlanAdmissionRefusal(editor: EditorVM;
       plan.file.len > 0 and resolved.entry.file != plan.file:
     return "The source plan file does not match the resolved project " &
       "schema file."
+  # An empty value is planned as a removal (`cssSourcePlanKind`), and Reset
+  # commits exactly that. Each schema entry states whether its writer can
+  # remove the declaration it owns; one that cannot would otherwise be handed
+  # a removal and leave an empty declaration behind.
+  if plan.planKind == cspPropertyRemoval and not resolved.entry.removable:
+    let file =
+      if resolved.entry.file.len > 0: resolved.entry.file else: plan.file
+    return "This project's source writer cannot remove the " & plan.property &
+      " declaration from " & file & "."
   ""
+
+proc removalWriteRefusal(editor: EditorVM; plan: SourceEditPlan): string
+
+proc sourcePlanCommitRefusal(editor: EditorVM; plan: SourceEditPlan): string =
+  ## Everything a commit of ``plan`` is refused for at the act: the schema
+  ## admission, and -- for a removal -- whether the write it joins can find
+  ## the one declaration to remove (`removalWriteRefusal`).
+  result = editor.sourcePlanAdmissionRefusal(plan)
+  if result.len == 0:
+    result = editor.removalWriteRefusal(plan)
 
 proc editInspectorProperty*(editor: EditorVM;
     request: PropertyEditRequest): PropertyEditResult {.discardable.} =
@@ -4768,7 +4787,7 @@ proc editInspectorProperty*(editor: EditorVM;
     # Refused here, before the model, history or journal move, rather than
     # by the automatic write afterwards. See `sourcePlanAdmissionRefusal`.
     let plan = prepared.transaction.sourceEdit
-    let refusal = editor.sourcePlanAdmissionRefusal(plan)
+    let refusal = editor.sourcePlanCommitRefusal(plan)
     if refusal.len > 0:
       prepared.outcome = PropertyEditResult(status: pesRejected,
         diagnostics: @[PropertyEditDiagnostic(kind: pedSchemaViolation,
@@ -6793,6 +6812,11 @@ func sharedScopePlan(prop: PropertyInfo; request: PropertyEditRequest;
   result = prop.sourcePlan(request, choices)
   result.sourceScope = choice.kind
   result.planKind = choice.kind.sourcePlanKindForScope(result.planKind)
+  # An empty value at any scope removes the declaration that scope owns
+  # (Reset), as it does locally. A property with no value has nothing to
+  # remove, and its empty plan keeps the scope's ordinary kind.
+  if request.newValue.strip.len == 0 and prop.value.strip.len > 0:
+    result.planKind = cspPropertyRemoval
   if choice.sourceFile.len > 0:
     result.file = choice.sourceFile
   if choice.sourceLine > 0:
@@ -6813,8 +6837,14 @@ func sharedScopePlan(prop: PropertyInfo; request: PropertyEditRequest;
     result.property & ":" & $choice.kind
 
 proc sharedDesignEditorFor(editor: EditorVM; prop: PropertyInfo;
-    choice: SourceScopeChoice; proposedValue = ""): SharedDesignPropertyEditor =
-  let valueText = if proposedValue.len > 0: proposedValue else: prop.value
+    choice: SourceScopeChoice; proposedValue = "";
+    removal = false): SharedDesignPropertyEditor =
+  ## ``removal`` plans an empty value (Reset). Without it an empty proposal
+  ## means "no proposal" and the current value stands in.
+  let valueText =
+    if removal: ""
+    elif proposedValue.len > 0: proposedValue
+    else: prop.value
   let request = PropertyEditRequest(property: prop.name, newValue: valueText,
     kind: if cssPropertyCategory(prop.name) in {cpcLayout, cpcFlexGrid}: pekLayout else: pekCss,
     scope: if choice.kind == sskLocalInstance: pesLocal else: pesShared,
@@ -6927,13 +6957,76 @@ proc planSharedDesignEdit*(editor: EditorVM; property, newValue: string;
     return SharedDesignEditResult(status: pesRejected,
       diagnostics: scopeDiagnostics)
 
-  let editorVm = editor.sharedDesignEditorFor(prop, choice, newValue)
+  let editorVm = editor.sharedDesignEditorFor(prop, choice, newValue,
+    removal = newValue.strip.len == 0 and prop.value.strip.len > 0)
   if editorVm.status != sdesEditable or editorVm.diagnostics.len > 0:
     return SharedDesignEditResult(status: pesRejected, editor: editorVm,
       diagnostics: editorVm.diagnostics)
 
   SharedDesignEditResult(status: pesAccepted, editor: editorVm,
     sourceEdit: editorVm.commitPreview.plan)
+
+proc propertyResetRefusal*(editor: EditorVM; property: string;
+    scope: SourceScopeChoiceKind; checkWrite = true): string =
+  ## Why Reset cannot run for ``property`` at ``scope`` now, or "" when it can.
+  ##
+  ## Editor spec "Universal Patterns": Reset reverts a property to its token,
+  ## class or inherited value, by removing the declaration that sets it.
+  ## Reset commits an empty value through the row's normal commit, which
+  ## plans it as a removal. This plans that very edit without staging it and
+  ## asks the questions its commit will ask -- the project schema entry must
+  ## state that its writer can remove the declaration, and the write the
+  ## removal joins must find exactly one declaration to remove -- so Reset is
+  ## enabled only where the write would succeed (editor spec "Saving": a
+  ## refusal the editor can know at the act is made at the act).
+  ##
+  ## ``checkWrite = false`` skips the one question that reads source files
+  ## (whether the write finds exactly one declaration). Every other answer
+  ## is the same. A control that re-evaluates reactively uses it, and asks
+  ## the full question untracked when the user reaches for the control: in
+  ## a bridge-backed project every file read is a request.
+  let element = editor.inspector.selectedElement.val
+  if element.tag.len == 0:
+    return "Select an element before resetting " & property & "."
+  var prop = PropertyInfo()
+  var found = false
+  for candidate in element.properties:
+    if candidate.name == property:
+      prop = candidate
+      found = true
+      break
+  if not found:
+    return "The selected element does not expose " & property & "."
+  if prop.value.strip.len == 0:
+    return "There is no " & property & " declaration to reset."
+  if not editor.workspacePermissions.val.writeSource:
+    return "This workspace is read-only for source changes."
+  # The row's commit goes to the native source writer whenever that boundary
+  # is installed (`inspectorRowWiring.commitAsync`); it does not remove
+  # declarations.
+  if editor.hasAsyncSourceProject or editor.inspectorSourceCommit != nil:
+    return "The native source writer cannot remove a declaration."
+  if editor.workspaceEditAdapter.isNil:
+    return "No source edit adapter is ready to remove this declaration."
+  var plan: SourceEditPlan
+  if scope == sskLocalInstance:
+    let prepared = editor.inspector.preparePropertyEdit(PropertyEditRequest(
+      property: property, newValue: "", kind: pekCss, scope: pesLocal,
+      origin: peoInspector))
+    if prepared.outcome.status != pesAccepted:
+      for d in prepared.outcome.diagnostics:
+        if d.message.len > 0: return d.message
+      return "This " & property & " declaration cannot be removed."
+    plan = prepared.transaction.sourceEdit
+  else:
+    let planned = editor.planSharedDesignEdit(property, "", scope)
+    if planned.status != pesAccepted:
+      for d in planned.diagnostics:
+        if d.message.len > 0: return d.message
+      return "This scope has no source-backed writer in the project schema."
+    plan = planned.sourceEdit
+  if checkWrite: editor.sourcePlanCommitRefusal(plan)
+  else: editor.sourcePlanAdmissionRefusal(plan)
 
 proc editSharedDesignProperty*(editor: EditorVM; property, newValue: string;
     sourceScope: SourceScopeChoiceKind): SharedDesignEditResult {.discardable.} =
@@ -6944,8 +7037,9 @@ proc editSharedDesignProperty*(editor: EditorVM; property, newValue: string;
 
   # The scope was admitted on the field's current value, but a plan's
   # identity can depend on the value committed (a token reference sets its
-  # token). Check the plan that will actually be journaled.
-  let admission = editor.sourcePlanAdmissionRefusal(result.sourceEdit)
+  # token, an empty value removes the declaration). Check the plan that will
+  # actually be journaled.
+  let admission = editor.sourcePlanCommitRefusal(result.sourceEdit)
   if admission.len > 0:
     let refused = PropertyEditDiagnostic(kind: pedSchemaViolation,
       message: admission & " Nothing was changed.",
@@ -9511,6 +9605,41 @@ proc journalAfterHistoryCommand(editor: EditorVM; redo: bool;
     pending.historyJournal(editor.variants.undoStack.val,
       editor.variants.redoStack.val, step, redo,
       replaceExisting = true, restagesBelow = true)
+
+proc removalWriteRefusal(editor: EditorVM; plan: SourceEditPlan): string =
+  ## Why the write a removal joins could not remove its declaration, or "".
+  ##
+  ## Which declaration owns a property is a fact of the file, but it is known
+  ## at the act: the write is one transaction over the journal, so the check
+  ## drafts the journal this commit leaves (`journaledPlans`: the plan
+  ## replaces a pending one for the same slot), in order, with the write's
+  ## own per-plan step (`draftWorkspacePlan`), exactly as the undo/redo
+  ## pre-check does (`inspectorHistoryRefusal`). Nothing is written. A removal
+  ## whose writer finds no declaration, or more than one, is refused at the
+  ## commit instead of being previewed, journaled and refused by the write.
+  ##
+  ## Only removals: every other edit's file-dependent failure stays with the
+  ## write (editor spec "Saving"). A pending edit that cannot be written is
+  ## reported by the write, not blamed on the removal.
+  if plan.planKind != cspPropertyRemoval or editor.hasAsyncSourceProject:
+    return
+  let adapter = editor.workspaceEditAdapter
+  if adapter.isNil or adapter.patchFile.isNil or adapter.readFile.isNil:
+    return
+  let journal = editor.inspector.pendingSourceEdits.val.journaledPlans(plan,
+    replaceExisting = true).plans
+  var drafts: seq[WorkspaceFileDraft] = @[]
+  for i, pending in journal:
+    let drafted = adapter.draftWorkspacePlan(drafts,
+      editor.stampedForWrite(pending))
+    if drafted.ok:
+      continue
+    if i < journal.high:
+      return
+    let reason =
+      if drafted.diagnostics.len > 0: drafted.diagnostics[0].message
+      else: "The " & plan.property & " declaration cannot be removed."
+    return reason
 
 proc inspectorHistoryRefusal(editor: EditorVM; redo: bool): PropertyEditDiagnostic =
   ## Why the next undo/redo must be refused, or an empty message.

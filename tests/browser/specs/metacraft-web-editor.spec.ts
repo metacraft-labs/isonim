@@ -1823,8 +1823,9 @@ test.describe("metacraft-web IsoNim editor consumer", () => {
   // was inert and right-click opened nothing. A paste is committed by the
   // target control's own commit path (one undoable, written edit); a value
   // the target cannot take is refused with the row's message. Reset is listed
-  // and disabled with its reason (the source writer cannot remove a
-  // declaration).
+  // and, once the fill's declaration has been written, enabled (it is
+  // exercised by metacraft_property_reset_removes_the_declaration_and_undo_
+  // restores_it).
   test("metacraft_property_copy_paste_reachable_from_row_more_and_right_click", async ({
     page,
   }) => {
@@ -1850,14 +1851,14 @@ test.describe("metacraft-web IsoNim editor consumer", () => {
       await expect.poll(history).toBe(startHistory + 1);
       await expectNoPendingSourceEdits(page);
 
-      // Right-click on the fill entry: Copy property.
-      await page.locator('[data-fill-row="0"]').click({ button: "right" });
+      // Right-click on the fill entry (its swatch: inside the entry's hex
+      // field the browser's own text menu stays): Copy property.
+      await page.locator('[data-fill-row-swatch="0"]').click({ button: "right" });
       const fillMenu = page.getByRole("menu", { name: "Actions for Fill" });
       await expect(fillMenu).toBeVisible();
       const reset = fillMenu.getByRole("menuitem", { name: "Reset" });
       await expect(reset).toBeVisible();
-      await expect(reset).toHaveAttribute("aria-disabled", "true");
-      await expect(reset).toHaveAttribute("title", /cannot remove a declaration/);
+      await expect(reset).toHaveAttribute("aria-disabled", "false");
       await fillMenu.getByRole("menuitem", { name: "Copy property" }).click();
       await expect(fillMenu).toBeHidden();
 
@@ -1903,6 +1904,171 @@ test.describe("metacraft-web IsoNim editor consumer", () => {
     } finally {
       await restoreDevWorkspace(page, workspaceBefore);
     }
+  });
+
+  // isonim-pm issue 2026-10-14-property-copy-paste-is-unreachable-row-more-
+  // menu-is-inert-and-right-click-offers-no-copy (Reset). Editor spec
+  // "Universal Patterns": "Reset to default -- right-click -> Reset; reverts
+  // to the token/class/inherited value"; "Saving": a refusal the editor can
+  // know at the act is made at the act. Reset commits an empty value through
+  // the row's own commit; the consumer writer removes the one declaration
+  // line the editor wrote for the property, and undo puts back exactly that
+  // line. Where nothing the editor wrote owns the property, Reset is
+  // disabled with the writer's reason.
+  test("metacraft_property_reset_removes_the_declaration_and_undo_restores_it", async ({
+    page,
+  }) => {
+    test.setTimeout(90_000);
+    await page.goto("/");
+    const workspaceBefore = snapshotDevWorkspace();
+    try {
+      await expectWritableBridge(page);
+      const { topbar } = await openTopbarInEditMode(page);
+      await selectTopbarElement(page, topbar);
+      const history = () => page.evaluate(() =>
+        (window as any).__isonimEditorVm.inspector.undoStack.value.length);
+      const startHistory = await history();
+      const original = readFileSync(devBridgeSourceFile, "utf8");
+      const paddingTop = () => topbar.evaluate(
+        (node) => getComputedStyle(node).paddingTop);
+      const originalPadding = await paddingTop();
+      const row = page.locator('[data-property-row="pad-top"]');
+      const label = row.locator('[data-property-row-field-label="true"]');
+      const menu = row.locator('[data-property-actions-menu="true"]');
+      const reset = menu.getByRole("menuitem", { name: "Reset" });
+
+      // Nothing the editor wrote owns padding-top: disabled, with the reason.
+      await label.click({ button: "right" });
+      await expect(menu).toBeVisible();
+      await expect(reset).toHaveAttribute("aria-disabled", "true");
+      await expect(reset).toHaveAttribute("title",
+        /no editor declaration of padding-top/);
+      // A disabled item is not clickable for Playwright; dispatch the click
+      // a pointer would deliver.
+      await reset.dispatchEvent("click");
+      await expect(menu.locator('[data-property-actions-message="true"]'))
+        .toContainText("no editor declaration of padding-top");
+      expect(await history()).toBe(startHistory);
+      await page.keyboard.press("Escape");
+      await expect(menu).toBeHidden();
+
+      const input = propertyRowInput(page, "pad-top");
+      await input.click();
+      await input.fill("12");
+      await input.press("Enter");
+      await expect.poll(paddingTop).toBe("12px");
+      await expectNoPendingSourceEdits(page);
+      await expect.poll(history).toBe(startHistory + 1);
+      const edited = readFileSync(devBridgeSourceFile, "utf8");
+      expect(edited).toContain(
+        "# isonim-editor dom.component-topbar.padding-top padding-top=12px");
+
+      // Reset: one written, undoable edit that removes exactly that line.
+      await label.click({ button: "right" });
+      await expect(menu).toBeVisible();
+      await expect(reset).toHaveAttribute("aria-disabled", "false");
+      await reset.click();
+      await expect(menu).toBeHidden();
+      await expect.poll(paddingTop).toBe(originalPadding);
+      await expectNoPendingSourceEdits(page);
+      await expect.poll(history).toBe(startHistory + 2);
+      expect(readFileSync(devBridgeSourceFile, "utf8")).toBe(original);
+
+      // Undo restores the exact removed line.
+      await pressHistoryShortcut(page);
+      await expect.poll(() => readFileSync(devBridgeSourceFile, "utf8"))
+        .toBe(edited);
+      await expect.poll(paddingTop).toBe("12px");
+      await expectNoPendingSourceEdits(page);
+
+      await undoInspectorHistoryTo(page, startHistory);
+      await expectNoPendingSourceEdits(page);
+      expect(readFileSync(devBridgeSourceFile, "utf8")).toBe(original);
+      await expect.poll(paddingTop).toBe(originalPadding);
+
+      // The Fill entry's Delete (−) removes the fill's declaration the same
+      // way, with the same enablement as its Reset.
+      const background = () => topbar.evaluate(
+        (node) => getComputedStyle(node).backgroundColor);
+      const originalBackground = await background();
+      const fillHex = page.getByRole("textbox", { name: "Edit fill hex" }).first();
+      await fillHex.fill("#F8FAFC");
+      await fillHex.press("Enter");
+      await expect.poll(background).toBe("rgb(248, 250, 252)");
+      await expectNoPendingSourceEdits(page);
+      await expect.poll(history).toBe(startHistory + 1);
+      const filled = readFileSync(devBridgeSourceFile, "utf8");
+      expect(filled).toContain(
+        "# isonim-editor dom.component-topbar.background-color background-color=#f8fafc");
+      const deleteFill = page.locator('[data-fill-row-delete="0"]');
+      await expect(deleteFill).toHaveAttribute("aria-disabled", "false");
+      await deleteFill.click();
+      await expect.poll(background).toBe(originalBackground);
+      await expectNoPendingSourceEdits(page);
+      await expect.poll(history).toBe(startHistory + 2);
+      expect(readFileSync(devBridgeSourceFile, "utf8")).toBe(original);
+      await pressHistoryShortcut(page);
+      await expect.poll(() => readFileSync(devBridgeSourceFile, "utf8"))
+        .toBe(filled);
+      await expect.poll(background).toBe("rgb(248, 250, 252)");
+      await expectNoPendingSourceEdits(page);
+      await undoInspectorHistoryTo(page, startHistory);
+      await expectNoPendingSourceEdits(page);
+      expect(readFileSync(devBridgeSourceFile, "utf8")).toBe(original);
+    } finally {
+      await restoreDevWorkspace(page, workspaceBefore);
+    }
+  });
+
+  // Inspector-controls review notes (UX-M3 inspector controls, ACCEPT with
+  // notes N1, N2). Editor spec "Section catalogue": the search field takes
+  // ⌘F focus -- but not a keystroke another handler already handled; and a
+  // right-click inside a row's text field keeps the browser's own Cut / Copy
+  // / Paste menu (the property menu opens outside editable fields).
+  test("metacraft_find_shortcut_and_field_context_menu_defer_to_their_owners", async ({
+    page,
+  }) => {
+    await page.goto("/");
+    const { topbar } = await openTopbarInEditMode(page);
+    await selectTopbarElement(page, topbar);
+    const search = page.locator('[data-sidebar-content="inspector"]')
+      .getByRole("textbox", { name: "Search inspector sections" });
+    await expect(search).toBeVisible();
+    const chip = modeChip(page, "Edit");
+    await chip.evaluate((node) => {
+      (window as any).__claimFind = (event: KeyboardEvent) => {
+        if ((event.ctrlKey || event.metaKey) && event.key.toLowerCase() === "f") {
+          event.preventDefault();
+        }
+      };
+      node.addEventListener("keydown", (window as any).__claimFind);
+    });
+    await chip.focus();
+    await page.keyboard.press("ControlOrMeta+F");
+    await expect(chip).toBeFocused();
+    await expect(search).not.toBeFocused();
+    await chip.evaluate((node) =>
+      node.removeEventListener("keydown", (window as any).__claimFind));
+    await chip.focus();
+    await page.keyboard.press("ControlOrMeta+F");
+    await expect(search).toBeFocused();
+
+    await page.evaluate(() => {
+      (window as any).__contextMenus = [];
+      window.addEventListener("contextmenu", (event) =>
+        (window as any).__contextMenus.push(event.defaultPrevented));
+    });
+    const row = page.locator('[data-property-row="pad-top"]');
+    const menu = row.locator('[data-property-actions-menu="true"]');
+    await propertyRowInput(page, "pad-top").click({ button: "right" });
+    await expect.poll(() => page.evaluate(() =>
+      (window as any).__contextMenus)).toEqual([false]);
+    await expect(menu).toBeHidden();
+    await row.locator('[data-property-row-field-label="true"]')
+      .click({ button: "right" });
+    await expect(menu).toBeVisible();
+    expect(await page.evaluate(() => (window as any).__contextMenus))
+      .toEqual([false, true]);
   });
 
   // isonim-pm issue 2026-10-14-fill-colour-picker-rgb-and-swatches-do-not-

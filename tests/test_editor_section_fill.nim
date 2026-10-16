@@ -199,7 +199,7 @@ suite "Phase G section_fill":
       fireEvent(deleteButton, "click")
       check findByAttr(root, "data-fill-row", "0") == row
       check findByAttr(root, "data-fill-row", "1") == nil
-      check message.textContent == "The editor cannot remove this fill from its source yet."
+      check message.textContent == "The native source writer cannot remove a declaration."
       check message.attributes.getOrDefault("data-fill-message-visible") == "true"
       check r.inputValue(findByAttr(root, "data-fill-row-hex", "0")) == "#112233"
       check calls == 0

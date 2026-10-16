@@ -427,6 +427,14 @@ type
     clipboard*: Signal[PropertyClipboardEntry]
       ## The editor's property clipboard, behind the row's Copy property /
       ## Paste property actions. Nil (a zeroed wiring) leaves them disabled.
+    resetReason*: proc(): string {.closure.}
+      ## Why the row's Reset cannot run now, or "" when the empty commit it
+      ## makes would be admitted and written (`propertyResetRefusal` at the
+      ## scope the row commits at). Reads source files: ask it when the user
+      ## reaches for Reset, untracked. Nil (a zeroed wiring) disables Reset.
+    resetAdmission*: proc(): string {.closure.}
+      ## `resetReason` without the question that reads source files, for a
+      ## control that shows Reset's availability reactively.
 
 proc inspectorRowWiring*(vm: EditorVM; property: string): InspectorRowWiring =
   ## Wire one row to ``property``.
@@ -556,6 +564,25 @@ proc inspectorRowWiring*(vm: EditorVM; property: string): InspectorRowWiring =
       commit(value)
       done(rejected.val == before)
 
+  proc readOnlyReason(): string =
+    if not vm.workspacePermissions.val.writeSource:
+      return "This workspace is read-only for source changes."
+    let ready = vm.sourceAdapterReady.val
+    if not vm.hasAsyncSourceProject:
+      discard vm.viewport.val
+      discard vm.previewRenderedWidth.val
+      discard vm.preview.sourceGeneration.val
+      if effectiveScope() == sskLocalInstance:
+        let el = vm.inspector.selectedElement.val
+        return localPreviewRefusal(el.id, el.domPath, capturedProperty)
+      return ""
+    if not ready: return "Loading editable properties."
+    let property = vm.inspectorProperty(capturedProperty)
+    if property.isSome and property.get.origin == poSetStyle:
+      return "Read-only: native source editing does not own this inline declaration."
+    if property.isSome and property.get.authoredValue.len > 0: return ""
+    "Read-only: the editor cannot safely edit this value’s source."
+
   InspectorRowWiring(
     cssProperty: capturedProperty,
     scopeSelected: selected,
@@ -578,21 +605,13 @@ proc inspectorRowWiring*(vm: EditorVM; property: string): InspectorRowWiring =
       # Unitless display transforms (such as opacity percent) remain section-owned.
       let parsed = parseCssPropertyValue(capturedProperty, found.value)
       if parsed.unit.len > 0: found.value else: "",
-    readOnlyReason: proc(): string =
-      if not vm.workspacePermissions.val.writeSource:
-        return "This workspace is read-only for source changes."
-      let ready = vm.sourceAdapterReady.val
-      if not vm.hasAsyncSourceProject:
-        discard vm.viewport.val
-        discard vm.previewRenderedWidth.val
-        discard vm.preview.sourceGeneration.val
-        if effectiveScope() == sskLocalInstance:
-          let el = vm.inspector.selectedElement.val
-          return localPreviewRefusal(el.id, el.domPath, capturedProperty)
-        return ""
-      if not ready: return "Loading editable properties."
-      let property = vm.inspectorProperty(capturedProperty)
-      if property.isSome and property.get.origin == poSetStyle:
-        return "Read-only: native source editing does not own this inline declaration."
-      if property.isSome and property.get.authoredValue.len > 0: return ""
-      "Read-only: the editor cannot safely edit this value’s source.")
+    readOnlyReason: readOnlyReason,
+    resetReason: proc(): string =
+      let reason = readOnlyReason()
+      if reason.len > 0: return reason
+      vm.propertyResetRefusal(capturedProperty, effectiveScope()),
+    resetAdmission: proc(): string =
+      let reason = readOnlyReason()
+      if reason.len > 0: return reason
+      vm.propertyResetRefusal(capturedProperty, effectiveScope(),
+        checkWrite = false))
