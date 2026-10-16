@@ -49,14 +49,19 @@ async function waitHydrated(page: Page) {
 
 // Gives every element under #root a marker property and records its
 // server-rendered textContent; returns how many elements and #root's text.
-async function markServerNodes(page: Page): Promise<{ count: number; text: string }> {
+async function markServerNodes(
+  page: Page,
+): Promise<{ count: number; text: string }> {
   return page.evaluate(() => {
     const els = Array.from(document.querySelectorAll("#root *"));
     els.forEach((el, i) => {
       (el as any).__ssrMark = i + 1;
       (el as any).__ssrText = el.textContent;
     });
-    return { count: els.length, text: document.getElementById("root")!.textContent! };
+    return {
+      count: els.length,
+      text: document.getElementById("root")!.textContent!,
+    };
   });
 }
 
@@ -68,7 +73,9 @@ async function textReport(page: Page) {
     return {
       text: document.getElementById("root")!.textContent!,
       changed: els.filter(
-        (el) => (el as any).__ssrMark !== undefined && el.textContent !== (el as any).__ssrText,
+        (el) =>
+          (el as any).__ssrMark !== undefined &&
+          el.textContent !== (el as any).__ssrText,
       ).length,
     };
   });
@@ -96,20 +103,26 @@ for (const [mode, path] of [
       const page = await context.newPage();
       await page.goto(path);
 
-      await expect(page.locator("h1").first()).toHaveText("IsoNim Task Manager");
+      await expect(page.locator("h1").first()).toHaveText(
+        "IsoNim Task Manager",
+      );
       await expect(page.locator(".task-list li")).toHaveCount(3);
-      await expect(page.locator(".task-list li").nth(0).locator("span")).toHaveText(
-        "Buy groceries",
-      );
-      await expect(page.locator(".task-list li").nth(1).locator("span")).toHaveText(
-        "Write tests",
-      );
-      await expect(page.locator(".task-list li").nth(2).locator("span")).toHaveText(
-        "Deploy app",
-      );
+      await expect(
+        page.locator(".task-list li").nth(0).locator("span"),
+      ).toHaveText("Buy groceries");
+      await expect(
+        page.locator(".task-list li").nth(1).locator("span"),
+      ).toHaveText("Write tests");
+      await expect(
+        page.locator(".task-list li").nth(2).locator("span"),
+      ).toHaveText("Deploy app");
       await expect(page.locator(".task-list li.completed")).toHaveCount(1);
-      await expect(page.locator(".task-list li").nth(2)).toHaveClass(/completed/);
-      await expect(page.locator(".task-footer span")).toContainText("2 items left");
+      await expect(page.locator(".task-list li").nth(2)).toHaveClass(
+        /completed/,
+      );
+      await expect(page.locator(".task-footer span")).toContainText(
+        "2 items left",
+      );
 
       await context.close();
     });
@@ -147,26 +160,37 @@ for (const [mode, path] of [
       // The hydrated elements are the server's: every element under #root
       // still carries its marker, and there are no others (no second copy).
       const r = await identityReport(page);
-      expect(r).toEqual({ total: server.count, unmarked: 0, mismatches: 0, rootChildren: 1 });
+      expect(r).toEqual({
+        total: server.count,
+        unmarked: 0,
+        mismatches: 0,
+        rootChildren: 1,
+      });
       // The text nodes are re-created; their content is the server's,
       // element by element.
       expect(await textReport(page)).toEqual({ text: server.text, changed: 0 });
 
-      await expect(page.locator("h1").first()).toHaveText("IsoNim Task Manager");
+      await expect(page.locator("h1").first()).toHaveText(
+        "IsoNim Task Manager",
+      );
       await expect(page.locator(".task-list li")).toHaveCount(3);
-      await expect(page.locator(".task-list li").nth(0).locator("span")).toHaveText(
-        "Buy groceries",
-      );
-      await expect(page.locator(".task-list li").nth(1).locator("span")).toHaveText(
-        "Write tests",
-      );
-      await expect(page.locator(".task-list li").nth(2).locator("span")).toHaveText(
-        "Deploy app",
-      );
+      await expect(
+        page.locator(".task-list li").nth(0).locator("span"),
+      ).toHaveText("Buy groceries");
+      await expect(
+        page.locator(".task-list li").nth(1).locator("span"),
+      ).toHaveText("Write tests");
+      await expect(
+        page.locator(".task-list li").nth(2).locator("span"),
+      ).toHaveText("Deploy app");
       await expect(page.locator(".task-list li.completed")).toHaveCount(1);
-      await expect(page.locator(".task-footer span")).toContainText("2 items left");
+      await expect(page.locator(".task-footer span")).toContainText(
+        "2 items left",
+      );
       // The completed task's checkbox is checked as a property too.
-      await expect(page.locator(".task-list li").nth(2).locator("input")).toBeChecked();
+      await expect(
+        page.locator(".task-list li").nth(2).locator("input"),
+      ).toBeChecked();
     });
 
     test("hydrated page is interactive - toggle task", async ({ page }) => {
@@ -175,8 +199,12 @@ for (const [mode, path] of [
 
       await page.click('.task-list li:first-child input[type="checkbox"]');
 
-      await expect(page.locator(".task-list li").first()).toHaveClass(/completed/);
-      await expect(page.locator(".task-footer span")).toContainText("1 item left");
+      await expect(page.locator(".task-list li").first()).toHaveClass(
+        /completed/,
+      );
+      await expect(page.locator(".task-footer span")).toContainText(
+        "1 item left",
+      );
     });
 
     test("hydrated page is interactive - add task", async ({ page }) => {
@@ -187,10 +215,12 @@ for (const [mode, path] of [
       await page.click('button[type="submit"]');
 
       await expect(page.locator(".task-list li")).toHaveCount(4);
-      await expect(page.locator(".task-list li").nth(3).locator("span")).toHaveText(
-        "New hydrated task",
+      await expect(
+        page.locator(".task-list li").nth(3).locator("span"),
+      ).toHaveText("New hydrated task");
+      await expect(page.locator(".task-footer span")).toContainText(
+        "3 items left",
       );
-      await expect(page.locator(".task-footer span")).toContainText("3 items left");
       // The submission was handled by the client, not by a navigation.
       expect(new URL(page.url()).pathname).toBe(path);
     });
@@ -203,19 +233,21 @@ for (const [mode, path] of [
 
       await page.click('.filters button:has-text("active")');
       await expect(page.locator(".task-list li")).toHaveCount(2);
-      await expect(page.locator(".task-list li").nth(0).locator("span")).toHaveText(
-        "Buy groceries",
+      await expect(
+        page.locator(".task-list li").nth(0).locator("span"),
+      ).toHaveText("Buy groceries");
+      await expect(
+        page.locator(".task-list li").nth(1).locator("span"),
+      ).toHaveText("Write tests");
+      await expect(page.locator(".filters button.selected")).toHaveText(
+        "active",
       );
-      await expect(page.locator(".task-list li").nth(1).locator("span")).toHaveText(
-        "Write tests",
-      );
-      await expect(page.locator(".filters button.selected")).toHaveText("active");
 
       await page.click('.filters button:has-text("completed")');
       await expect(page.locator(".task-list li")).toHaveCount(1);
-      await expect(page.locator(".task-list li").first().locator("span")).toHaveText(
-        "Deploy app",
-      );
+      await expect(
+        page.locator(".task-list li").first().locator("span"),
+      ).toHaveText("Deploy app");
 
       await page.click('.filters button:has-text("all")');
       await expect(page.locator(".task-list li")).toHaveCount(3);
@@ -231,7 +263,9 @@ for (const [mode, path] of [
 
       await expect(page.locator(".task-list li")).toHaveCount(2);
       await expect(page.locator(".task-list li.completed")).toHaveCount(0);
-      await expect(page.locator('button:has-text("Clear completed")')).toHaveCount(0);
+      await expect(
+        page.locator('button:has-text("Clear completed")'),
+      ).toHaveCount(0);
     });
 
     test("event replay during hydration", async ({ page }) => {
@@ -246,7 +280,9 @@ for (const [mode, path] of [
         (window as any)._$HY.events.map((e: [Element, Event]) => e[1].type),
       );
       expect(recorded.filter((t: string) => t === "click")).toHaveLength(1);
-      await expect(page.locator(".task-footer span")).toContainText("2 items left");
+      await expect(page.locator(".task-footer span")).toContainText(
+        "2 items left",
+      );
 
       gate.release();
       await waitHydrated(page);
@@ -254,8 +290,12 @@ for (const [mode, path] of [
       // Replayed exactly once: the store toggled the task (zero replays
       // would leave it active, two would toggle it back), and the checkbox
       // the user checked stays checked (no second activation).
-      await expect(page.locator(".task-list li").first()).toHaveClass(/completed/);
-      await expect(page.locator(".task-footer span")).toContainText("1 item left");
+      await expect(page.locator(".task-list li").first()).toHaveClass(
+        /completed/,
+      );
+      await expect(page.locator(".task-footer span")).toContainText(
+        "1 item left",
+      );
       await expect(
         page.locator('.task-list li:first-child input[type="checkbox"]'),
       ).toBeChecked();
@@ -264,7 +304,12 @@ for (const [mode, path] of [
 
       // And it happened on the server's nodes.
       const r = await identityReport(page);
-      expect(r).toEqual({ total: server.count, unmarked: 0, mismatches: 0, rootChildren: 1 });
+      expect(r).toEqual({
+        total: server.count,
+        unmarked: 0,
+        mismatches: 0,
+        rootChildren: 1,
+      });
     });
   });
 }

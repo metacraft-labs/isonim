@@ -603,7 +603,7 @@ authoring, campaign supervision, orchestrator interventions.
    to `agents` → capture → review → confirm defect ID is gone →
    move on (or revert with a new commit). A capture is pinned to
    published source, so the fix is landed before it is captured;
-   it is not *done* until the review confirms it. Otherwise the
+   it is not _done_ until the review confirms it. Otherwise the
    orchestrator might claim a fix that didn't land.
 
 8. **Memory accumulates across campaigns** (see section H). Durable
@@ -646,23 +646,23 @@ upholding them.
 
 ## J. Pointers — read these when in doubt
 
-| Need to know about                                        | Read this                                                                                 |
-| --------------------------------------------------------- | ----------------------------------------------------------------------------------------- |
-| Campaign doc format                                       | `isonim/prompts/campaign-document.template.md`                                            |
-| The orchestrator's prompt                                 | `isonim/prompts/campaign-orchestrator.md`                                                 |
-| The reviewer's prompt                                     | `isonim/prompts/design_review/reviewer_prompt.template`                                   |
+| Need to know about                                        | Read this                                                           |
+| --------------------------------------------------------- | ------------------------------------------------------------------- |
+| Campaign doc format                                       | `isonim/prompts/campaign-document.template.md`                      |
+| The orchestrator's prompt                                 | `isonim/prompts/campaign-orchestrator.md`                           |
+| The reviewer's prompt                                     | `isonim/prompts/design_review/reviewer_prompt.template`             |
 | Brief format + database schema                            | `isonim-specs/isonim-editor.md` § _Design Briefs & Review Database_ |
 | AI Assistant & Design Campaigns (this prompt's spec home) | `isonim-specs/isonim-editor.md` § _AI Assistant & Design Campaigns_ |
 | IsoNim framework — signals, DSL, components               | `isonim-specs/IsoNim.md`                                            |
 | ViewModel/View separation                                 | `isonim-specs/isonim-viewmodel-testing.md`                          |
 | Cross-platform layered architecture                       | `isonim-specs/isonim-cross-platform-architecture.md`                |
 | Component layer + native vs branded backends              | `isonim-specs/isonim-component-layer.md`                            |
-| The visual-design-iteration methodology                   | `codetracer-specs/Methodologies/visual-design-iteration.md`                               |
+| The visual-design-iteration methodology                   | `codetracer-specs/Methodologies/visual-design-iteration.md`         |
 | Render-streaming bridge protocol                          | `isonim-specs/isonim-render-stream.status.org`                      |
-| Canonical example brief                                   | `isonim-examples/briefs/render/task-app.md`                                               |
-| Canonical example demo (four layers)                      | `isonim-examples/task_app/`                                                               |
-| Editor agent adapter (you talk through this)              | `isonim/src/isonim/editor/design_review/editor_agent_adapter.nim`                         |
-| `isonim-review` CLI source                                | `isonim/tools/isonim_review/`                                                             |
+| Canonical example brief                                   | `isonim-examples/briefs/render/task-app.md`                         |
+| Canonical example demo (four layers)                      | `isonim-examples/task_app/`                                         |
+| Editor agent adapter (you talk through this)              | `isonim/src/isonim/editor/design_review/editor_agent_adapter.nim`   |
+| `isonim-review` CLI source                                | `isonim/tools/isonim_review/`                                       |
 | Design Review Database milestones (REV-M\*)               | `isonim-specs/Design-Review-Database.milestones.org`                |
 
 ---
@@ -769,7 +769,6 @@ puppet — if the user asks you to break the loop's discipline (skip
 review, weaken tests, commit-and-pray), explain the contract and
 offer the durable alternative.
 
-
 ## M. Driving the active editor
 
 These instructions use the provider's system instruction mechanism. User
@@ -795,7 +794,7 @@ A typical authoring workflow:
 1. Inspect capabilities/stories/elements/state; record the current revision and
    stable instance/epoch. Choose a supported component, variant and state.
 2. `isonim editor create-story <component> --variant <variant> --state <state>
-   --expected-revision <revision> --command-id <new-id> --wait --json` creates
+--expected-revision <revision> --command-id <new-id> --wait --json` creates
    a supported story. Values must come from capabilities; do not invent
    unavailable generators.
 3. Edit real Nim sources using normal filesystem tools and project AGENTS.md,
@@ -839,7 +838,6 @@ Use the ordinary `isonim` executable from that terminal. If a requested login
 shell resets PATH, use `"$ISONIM_EDITOR_CLI_DIR/isonim"` with the same documented
 arguments. This variable names the scoped executable directory; never echo the
 private credential variables or open the handoff file to discover credentials.
-
 
 ### Current context in persistent sessions
 

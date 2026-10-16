@@ -268,3 +268,6 @@ __pycache__/
 tests/test_choice_row_activation
 tests/test_loop_accessors
 tests/test_editor_loop_handlers
+
+# Generated complete native hook config; the portable config remains tracked.
+.pre-commit-config.nix.yaml

@@ -12,7 +12,7 @@ timeline:
       sessionId: isonim-persistent-session
   - userInputs:
       - relativeTime: 0
-        input: 'Remember the token ISONIM_CONTEXT_7309 for this conversation. Reply only with that token.'
+        input: "Remember the token ISONIM_CONTEXT_7309 for this conversation. Reply only with that token."
         expectedResponse:
           sessionId: isonim-persistent-session
           stopReason: end_turn

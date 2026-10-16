@@ -50,16 +50,30 @@ async function setInspectorProperty(
 // ("Saving" / "Only failures surface"), so the same signal is read directly:
 // a degraded or absent bridge still yields `writeSource == false`.
 async function expectWritableBridge(page) {
-  await expect.poll(() => page.evaluate(() =>
-    (window as any).__isonimEditorVm.workspacePermissions.value.writeSource)).toBe(true);
+  await expect
+    .poll(() =>
+      page.evaluate(
+        () =>
+          (window as any).__isonimEditorVm.workspacePermissions.value
+            .writeSource,
+      ),
+    )
+    .toBe(true);
   await expect(page.locator('[data-save-error="true"]')).toBeHidden();
 }
 
 // Edits are staged and then written automatically after the editor's ~900 ms
 // debounce; nothing is pending once the write has landed.
 async function expectNoPendingSourceEdits(page) {
-  await expect.poll(() => page.evaluate(() =>
-    (window as any).__isonimEditorVm.inspector.pendingSourceEdits.value.length)).toBe(0);
+  await expect
+    .poll(() =>
+      page.evaluate(
+        () =>
+          (window as any).__isonimEditorVm.inspector.pendingSourceEdits.value
+            .length,
+      ),
+    )
+    .toBe(0);
   await expect(page.locator('[data-save-error="true"]')).toBeHidden();
 }
 
@@ -68,7 +82,9 @@ async function expectNoPendingSourceEdits(page) {
 // the single chrome bar's mode cluster (Spec | View | Comment | Edit) is the
 // only mode control (editor spec "Preview-pane chrome layout", item 5).
 function modeChip(page, mode: "Spec" | "View" | "Comment" | "Edit") {
-  return page.locator(`[data-toolbar-cluster="mode"] [data-choice-group-label="${mode}"]`);
+  return page.locator(
+    `[data-toolbar-cluster="mode"] [data-choice-group-label="${mode}"]`,
+  );
 }
 
 async function switchMode(page, mode: "Spec" | "View" | "Comment" | "Edit") {
@@ -78,14 +94,21 @@ async function switchMode(page, mode: "Spec" | "View" | "Comment" | "Edit") {
 
 async function openTopbarInEditMode(page) {
   await page.getByRole("button", { name: "Open Components section" }).click();
-  await page.getByRole("button", {
-    name: "Select story Operational components / Topbar", exact: true,
-  }).click();
+  await page
+    .getByRole("button", {
+      name: "Select story Operational components / Topbar",
+      exact: true,
+    })
+    .click();
   await switchMode(page, "Edit");
-  const editFrame = page.frameLocator('iframe[title="Editable component preview"]');
+  const editFrame = page.frameLocator(
+    'iframe[title="Editable component preview"]',
+  );
   const topbar = editFrame.getByTestId("component-topbar");
   await expect(topbar).toBeVisible();
-  await expect.poll(() => topbar.evaluate(node => node.ownerDocument.readyState)).toBe("complete");
+  await expect
+    .poll(() => topbar.evaluate((node) => node.ownerDocument.readyState))
+    .toBe("complete");
   return { editFrame, topbar, title: topbar.locator("h1.bo-title") };
 }
 
@@ -100,8 +123,10 @@ async function pressHistoryShortcut(page, redo = false) {
 }
 
 async function undoInspectorHistoryTo(page, length: number) {
-  const history = () => page.evaluate(() =>
-    (window as any).__isonimEditorVm.inspector.undoStack.value.length);
+  const history = () =>
+    page.evaluate(
+      () => (window as any).__isonimEditorVm.inspector.undoStack.value.length,
+    );
   while ((await history()) > length) {
     const before = await history();
     await pressHistoryShortcut(page);
@@ -114,25 +139,37 @@ async function undoInspectorHistoryTo(page, length: number) {
 // stamps, so the stamped title is itself the nearest source-bearing element;
 // the Layers row is the deterministic way to select the topbar.
 async function selectTopbarElement(page, topbar) {
-  await page.getByRole("button", {
-    name: "header[data-testid=component-topbar]", exact: true,
-  }).click();
+  await page
+    .getByRole("button", {
+      name: "header[data-testid=component-topbar]",
+      exact: true,
+    })
+    .click();
   await expect(topbar).toHaveAttribute("data-isonim-selected", "true");
 }
 
 // Inspector rows are addressed by their stable `data-property-row` key.
 function propertyRowInput(page, row: string) {
-  return page.locator(`[data-property-row="${row}"] input[data-property-row-input]`);
+  return page.locator(
+    `[data-property-row="${row}"] input[data-property-row-input]`,
+  );
 }
 
 // Restore a generated dev-workspace source after a case. If the page is gone
 // (e.g. a timeout closed it), write the copy directly so a failure here cannot
 // leak into later cases -- the same fallback as the sibling-undo case.
-async function restoreDevBridgeFile(page, file: string, path: string, beforeText: string) {
+async function restoreDevBridgeFile(
+  page,
+  file: string,
+  path: string,
+  beforeText: string,
+) {
   const current = readFileSync(path, "utf8");
   if (current === beforeText) return;
   try {
-    await revertDevBridgeFiles(page, [{ file, beforeText, afterText: current }]);
+    await revertDevBridgeFiles(page, [
+      { file, beforeText, afterText: current },
+    ]);
   } catch (error) {
     writeFileSync(path, beforeText);
     throw error;
@@ -145,10 +182,17 @@ async function restoreDevBridgeFile(page, file: string, path: string, beforeText
 // whatever happened, so no marker leaks into a later case.
 const devWorkspaceFiles: Array<[string, string]> = [
   ["apps/back-office/src/backoffice_ui/components.nim", devBridgeSourceFile],
-  ["packages/metacraft-design/src/metacraft_design/tokens.nim", devBridgeTokenFile],
+  [
+    "packages/metacraft-design/src/metacraft_design/tokens.nim",
+    devBridgeTokenFile,
+  ],
   [componentSchemaBridgeFile, devBridgeComponentSchemaFile],
-  ["apps/back-office/src/backoffice_editor/story_fixtures.schema", resolve(
-    "../../../metacraft-web/dist/editor-dev-workspace/apps/back-office/src/backoffice_editor/story_fixtures.schema")],
+  [
+    "apps/back-office/src/backoffice_editor/story_fixtures.schema",
+    resolve(
+      "../../../metacraft-web/dist/editor-dev-workspace/apps/back-office/src/backoffice_editor/story_fixtures.schema",
+    ),
+  ],
 ];
 
 function snapshotDevWorkspace(): string[] {
@@ -185,7 +229,9 @@ async function revertDevBridgeFiles(page, files) {
 // former `isonim-reload:N` comment carried the same counter.
 async function iframeReloadGeneration(frame) {
   const srcdoc = (await frame.getAttribute("srcdoc")) ?? "";
-  const match = srcdoc.match(/<meta name="isonim-rendered-generation" content="(\d+)">/);
+  const match = srcdoc.match(
+    /<meta name="isonim-rendered-generation" content="(\d+)">/,
+  );
   return match ? Number(match[1]) : -1;
 }
 
@@ -208,85 +254,163 @@ test.describe("metacraft-web IsoNim editor consumer", () => {
   // Current case1 keeps the real consumer file/preview/CAS responsibility.
   // The frontend is compiled; consumer post-write compile callbacks are
   // declarative descriptors, not evidence of a subsequent compiler execution.
-  test("e2e_metacraft_editor_writes_real_design_schema_files", async ({ page }) => {
+  test("e2e_metacraft_editor_writes_real_design_schema_files", async ({
+    page,
+  }) => {
     await page.goto("/?writeBridge=1");
-    await expect.poll(() => readFileSync(devBridgeSourceFile, "utf8"))
+    await expect
+      .poll(() => readFileSync(devBridgeSourceFile, "utf8"))
       .toContain("component-topbar");
     const beforeText = readFileSync(devBridgeSourceFile, "utf8");
     const errors: string[] = [];
-    page.on("pageerror", error => errors.push(error.message));
+    page.on("pageerror", (error) => errors.push(error.message));
     const applies: any[] = [];
-    page.on("request", request => {
+    page.on("request", (request) => {
       if (request.url().endsWith("/__isonim-dev-bridge/transaction")) {
         const body = request.postDataJSON();
         if (body.mode === "apply") applies.push(body);
       }
     });
     try {
-      await page.getByRole("button", { name: "Open Components section" }).click();
-      await page.getByRole("button", {
-        name: "Select story Operational components / Topbar", exact: true,
-      }).click();
-      await page.locator('[data-toolbar-cluster="mode"] [data-choice-group-label="View"]').click();
-      await page.locator('[data-toolbar-cluster="mode"] [data-choice-group-label="Edit"]').click();
-      const topbar = page.frameLocator('iframe[title="Editable component preview"]')
+      await page
+        .getByRole("button", { name: "Open Components section" })
+        .click();
+      await page
+        .getByRole("button", {
+          name: "Select story Operational components / Topbar",
+          exact: true,
+        })
+        .click();
+      await page
+        .locator(
+          '[data-toolbar-cluster="mode"] [data-choice-group-label="View"]',
+        )
+        .click();
+      await page
+        .locator(
+          '[data-toolbar-cluster="mode"] [data-choice-group-label="Edit"]',
+        )
+        .click();
+      const topbar = page
+        .frameLocator('iframe[title="Editable component preview"]')
         .getByTestId("component-topbar");
       await expect(topbar).toBeVisible();
-      await page.getByRole("button", {
-        name: "header[data-testid=component-topbar]", exact: true,
-      }).click();
+      await page
+        .getByRole("button", {
+          name: "header[data-testid=component-topbar]",
+          exact: true,
+        })
+        .click();
       await expect(topbar).toHaveAttribute("data-isonim-selected", "true");
-      await expect.poll(() => topbar.evaluate(node => getComputedStyle(node).display)).toBe("flex");
+      await expect
+        .poll(() => topbar.evaluate((node) => getComputedStyle(node).display))
+        .toBe("flex");
       const beforeHistory = await page.evaluate(() => {
         const inspector = (window as any).__isonimEditorVm.inspector;
-        if (!Array.isArray(inspector.undoStack.value)) throw new Error("Missing actual history");
+        if (!Array.isArray(inspector.undoStack.value))
+          throw new Error("Missing actual history");
         return inspector.undoStack.value.length;
       });
-      await page.locator('[data-layout-source-scope-property="display"]')
-        .getByRole("button", { name: "Apply local instance scope for display", exact: true }).click();
-      const displayImpact = page.locator('[data-layout-source-impact-property="display"]');
+      await page
+        .locator('[data-layout-source-scope-property="display"]')
+        .getByRole("button", {
+          name: "Apply local instance scope for display",
+          exact: true,
+        })
+        .click();
+      const displayImpact = page.locator(
+        '[data-layout-source-impact-property="display"]',
+      );
       await expect(displayImpact).toContainText("display · Local instance");
       await expect(displayImpact).toContainText("Owner: Selected instance");
       await expect(displayImpact).toContainText("Known uses: 1");
       const compilerStamp = await topbar.getAttribute("data-isonim-src");
       const compilerLocation = compilerStamp?.match(/^(.*):(\d+):\d+$/);
-      if (!compilerLocation) throw new Error("Missing actual compiler source location");
-      expect(realpathSync(compilerLocation[1])).toBe(realpathSync(resolve("../../../metacraft-web/apps/back-office/src/backoffice_ui/components.nim")));
-      await expect(displayImpact).toContainText(`Source: ${compilerLocation[1]}:${compilerLocation[2]}`);
-      await expect(displayImpact).not.toContainText("Changes the shared source definition");
+      if (!compilerLocation)
+        throw new Error("Missing actual compiler source location");
+      expect(realpathSync(compilerLocation[1])).toBe(
+        realpathSync(
+          resolve(
+            "../../../metacraft-web/apps/back-office/src/backoffice_ui/components.nim",
+          ),
+        ),
+      );
+      await expect(displayImpact).toContainText(
+        `Source: ${compilerLocation[1]}:${compilerLocation[2]}`,
+      );
+      await expect(displayImpact).not.toContainText(
+        "Changes the shared source definition",
+      );
       // 'flex' is already the authored value; choose a genuinely different
       // supported mode instead of demanding a source write for a valid no-op.
-      await page.getByRole("button", { name: "Set layout to none", exact: true }).click();
-      await expect.poll(() => topbar.evaluate(node => getComputedStyle(node).display)).toBe("block");
-      await expect.poll(() => readFileSync(devBridgeSourceFile, "utf8"))
-        .toContain("# isonim-editor dom.component-topbar.display display=block");
-      await expect.poll(() => page.evaluate(() => (window as any).__isonimEditor.pendingSourceEdits())).toBe(0);
+      await page
+        .getByRole("button", { name: "Set layout to none", exact: true })
+        .click();
+      await expect
+        .poll(() => topbar.evaluate((node) => getComputedStyle(node).display))
+        .toBe("block");
+      await expect
+        .poll(() => readFileSync(devBridgeSourceFile, "utf8"))
+        .toContain(
+          "# isonim-editor dom.component-topbar.display display=block",
+        );
+      await expect
+        .poll(() =>
+          page.evaluate(() =>
+            (window as any).__isonimEditor.pendingSourceEdits(),
+          ),
+        )
+        .toBe(0);
       await expect(page.locator('[data-save-error="true"]')).toBeHidden();
       await expect(topbar).toHaveAttribute("data-isonim-selected", "true");
-      expect(await page.evaluate(() => (window as any).__isonimEditorVm.inspector.undoStack.value.length))
-        .toBe(beforeHistory + 1);
+      expect(
+        await page.evaluate(
+          () =>
+            (window as any).__isonimEditorVm.inspector.undoStack.value.length,
+        ),
+      ).toBe(beforeHistory + 1);
       expect(applies).toHaveLength(1);
       expect(applies[0].files).toHaveLength(1);
-      expect(applies[0].files[0].file).toBe("apps/back-office/src/backoffice_ui/components.nim");
+      expect(applies[0].files[0].file).toBe(
+        "apps/back-office/src/backoffice_ui/components.nim",
+      );
       expect(readFileSync(devBridgeSourceFile, "utf8")).not.toBe(beforeText);
       expect(errors).toEqual([]);
     } finally {
       const afterText = readFileSync(devBridgeSourceFile, "utf8");
       if (afterText !== beforeText) {
-        await revertDevBridgeFiles(page, [{
-          file: "apps/back-office/src/backoffice_ui/components.nim", beforeText, afterText,
-        }]);
+        await revertDevBridgeFiles(page, [
+          {
+            file: "apps/back-office/src/backoffice_ui/components.nim",
+            beforeText,
+            afterText,
+          },
+        ]);
       }
       expect(readFileSync(devBridgeSourceFile, "utf8")).toBe(beforeText);
     }
     await page.goto("/?writeBridge=1");
-    await page.getByRole("button", { name: "Select story Operational components / Topbar", exact: true }).click();
-    await page.locator('[data-toolbar-cluster="mode"] [data-choice-group-label="View"]').click();
-    await page.locator('[data-toolbar-cluster="mode"] [data-choice-group-label="Edit"]').click();
-    const restoredTopbar = page.frameLocator('iframe[title="Editable component preview"]')
+    await page
+      .getByRole("button", {
+        name: "Select story Operational components / Topbar",
+        exact: true,
+      })
+      .click();
+    await page
+      .locator('[data-toolbar-cluster="mode"] [data-choice-group-label="View"]')
+      .click();
+    await page
+      .locator('[data-toolbar-cluster="mode"] [data-choice-group-label="Edit"]')
+      .click();
+    const restoredTopbar = page
+      .frameLocator('iframe[title="Editable component preview"]')
       .getByTestId("component-topbar");
     await expect(restoredTopbar).toBeVisible();
-    await expect.poll(() => restoredTopbar.evaluate(node => getComputedStyle(node).display)).toBe("flex");
+    await expect
+      .poll(() =>
+        restoredTopbar.evaluate((node) => getComputedStyle(node).display),
+      )
+      .toBe("flex");
     expect(errors).toEqual([]);
   });
 
@@ -305,7 +429,9 @@ test.describe("metacraft-web IsoNim editor consumer", () => {
         .getByRole("button", { name: "Select foundation category Spacing" })
         .click();
       await page
-        .getByRole("button", { name: "Select foundation token space.table.cell" })
+        .getByRole("button", {
+          name: "Select foundation token space.table.cell",
+        })
         .click();
       await page
         .getByRole("textbox", { name: "Foundation token value" })
@@ -318,7 +444,13 @@ test.describe("metacraft-web IsoNim editor consumer", () => {
       );
       // Saving is automatic (editor spec "Saving"; the Save control is gone):
       // the token commit is written without a further gesture.
-      await expect.poll(() => page.evaluate(() => (window as any).__isonimEditor.pendingSourceEdits())).toBe(0);
+      await expect
+        .poll(() =>
+          page.evaluate(() =>
+            (window as any).__isonimEditor.pendingSourceEdits(),
+          ),
+        )
+        .toBe(0);
       await expect(page.locator('[data-save-error="true"]')).toBeHidden();
       await expect
         .poll(() => readFileSync(devBridgeTokenFile, "utf8"))
@@ -339,10 +471,13 @@ test.describe("metacraft-web IsoNim editor consumer", () => {
     } finally {
       const afterText = readFileSync(devBridgeTokenFile, "utf8");
       if (afterText !== beforeText) {
-        await revertDevBridgeFiles(page, [{
-          file: "packages/metacraft-design/src/metacraft_design/tokens.nim",
-          beforeText, afterText,
-        }]);
+        await revertDevBridgeFiles(page, [
+          {
+            file: "packages/metacraft-design/src/metacraft_design/tokens.nim",
+            beforeText,
+            afterText,
+          },
+        ]);
       }
       expect(readFileSync(devBridgeTokenFile, "utf8")).toBe(beforeText);
     }
@@ -369,10 +504,15 @@ test.describe("metacraft-web IsoNim editor consumer", () => {
     await selectTopbarElement(page, topbar);
 
     const setRawCss = async (section: string, declaration: string) => {
-      const header = page.locator(`[data-inspector-section-header="${section}"]`);
-      if ((await header.getAttribute("aria-expanded")) !== "true") await header.click();
+      const header = page.locator(
+        `[data-inspector-section-header="${section}"]`,
+      );
+      if ((await header.getAttribute("aria-expanded")) !== "true")
+        await header.click();
       const label = section[0].toUpperCase() + section.slice(1);
-      const raw = page.getByRole("textbox", { name: `Edit raw CSS for ${label} section` });
+      const raw = page.getByRole("textbox", {
+        name: `Edit raw CSS for ${label} section`,
+      });
       await expect(raw).toBeVisible();
       await raw.fill(declaration);
       await raw.press("Enter");
@@ -380,9 +520,13 @@ test.describe("metacraft-web IsoNim editor consumer", () => {
     const setChoice = async (row: string, option: string) => {
       const target = page.locator(`[data-property-row="${row}"]`);
       await target.locator("[data-choice-group-trigger]").click();
-      await page.locator("[data-choice-group-option]").filter({
-        hasText: new RegExp(`^${option}$`, "i"),
-      }).first().click();
+      await page
+        .locator("[data-choice-group-option]")
+        .filter({
+          hasText: new RegExp(`^${option}$`, "i"),
+        })
+        .first()
+        .click();
     };
     const setNumeric = async (row: string, value: string) => {
       const input = propertyRowInput(page, row);
@@ -421,8 +565,12 @@ test.describe("metacraft-web IsoNim editor consumer", () => {
       expect(afterText).toContain("background-size=contain");
       expect(afterText).toContain("letter-spacing=0.03em");
     } finally {
-      await restoreDevBridgeFile(page, "apps/back-office/src/backoffice_ui/components.nim",
-        devBridgeSourceFile, beforeText);
+      await restoreDevBridgeFile(
+        page,
+        "apps/back-office/src/backoffice_ui/components.nim",
+        devBridgeSourceFile,
+        beforeText,
+      );
     }
     await expect
       .poll(() => readFileSync(devBridgeSourceFile, "utf8"))
@@ -464,15 +612,19 @@ test.describe("metacraft-web IsoNim editor consumer", () => {
       .click();
     await expect(
       page.getByRole("button", {
-        name: "Open Partner operations journey", exact: true,
+        name: "Open Partner operations journey",
+        exact: true,
       }),
     ).toBeHidden();
     await page
       .getByRole("button", { name: "Toggle User Journeys section" })
       .click();
-    await expect(page.getByRole("button", {
-      name: "Open Partner operations journey", exact: true,
-    })).toBeVisible();
+    await expect(
+      page.getByRole("button", {
+        name: "Open Partner operations journey",
+        exact: true,
+      }),
+    ).toBeVisible();
 
     await page
       .getByRole("button", { name: "Open User Journeys section" })
@@ -516,7 +668,8 @@ test.describe("metacraft-web IsoNim editor consumer", () => {
     await expect(frame).toHaveCSS("height", "900px");
 
     const dashboardStory = page.getByRole("button", {
-      name: "Select story Back-office pages / Operations dashboard", exact: true,
+      name: "Select story Back-office pages / Operations dashboard",
+      exact: true,
     });
     await expect(dashboardStory).toBeVisible();
     await expect(dashboardStory).toHaveAttribute("aria-current", "true");
@@ -526,8 +679,11 @@ test.describe("metacraft-web IsoNim editor consumer", () => {
     // Search must hide a row proven present, while leaving the actual preview
     // selection intact; an already absent journey story is not that oracle.
     await expect(dashboardStory).toHaveCount(0);
-    await expect(page.frameLocator('iframe[title="Project preview"]')
-      .getByTestId("back-office-app")).toBeVisible();
+    await expect(
+      page
+        .frameLocator('iframe[title="Project preview"]')
+        .getByTestId("back-office-app"),
+    ).toBeVisible();
     await expect(
       page.getByRole("button", {
         name: "Select story Back-office pages / Customer detail",
@@ -543,28 +699,44 @@ test.describe("metacraft-web IsoNim editor consumer", () => {
     await expect(dashboardStory).toHaveAttribute("aria-current", "true");
 
     await expect(
-      page.locator('[data-toolbar-cluster="viewport"]').getByRole("button", { name: "Desktop", exact: true }),
+      page
+        .locator('[data-toolbar-cluster="viewport"]')
+        .getByRole("button", { name: "Desktop", exact: true }),
     ).toHaveAttribute("aria-pressed", "true");
 
-    await page.locator('[data-toolbar-cluster="viewport"]').getByRole("button", { name: "Tablet", exact: true }).click();
+    await page
+      .locator('[data-toolbar-cluster="viewport"]')
+      .getByRole("button", { name: "Tablet", exact: true })
+      .click();
     await expect(
-      page.locator('[data-toolbar-cluster="viewport"]').getByRole("button", { name: "Tablet", exact: true }),
+      page
+        .locator('[data-toolbar-cluster="viewport"]')
+        .getByRole("button", { name: "Tablet", exact: true }),
     ).toHaveAttribute("aria-pressed", "true");
     await expect(
-      page.locator('[data-toolbar-cluster="viewport"]').getByRole("button", { name: "Desktop", exact: true }),
+      page
+        .locator('[data-toolbar-cluster="viewport"]')
+        .getByRole("button", { name: "Desktop", exact: true }),
     ).toHaveAttribute("aria-pressed", "false");
     await expect(frame).toHaveCSS("width", "1024px");
     await expect(frame).toHaveCSS("height", "768px");
 
-    await page.locator('[data-toolbar-cluster="viewport"]').getByRole("button", { name: "Phone", exact: true }).click();
+    await page
+      .locator('[data-toolbar-cluster="viewport"]')
+      .getByRole("button", { name: "Phone", exact: true })
+      .click();
     await expect(
-      page.locator('[data-toolbar-cluster="viewport"]').getByRole("button", { name: "Phone", exact: true }),
+      page
+        .locator('[data-toolbar-cluster="viewport"]')
+        .getByRole("button", { name: "Phone", exact: true }),
     ).toHaveAttribute("aria-pressed", "true");
     await expect(frame).toHaveCSS("width", "390px");
     await expect(frame).toHaveCSS("height", "844px");
 
-    await page.locator('[data-toolbar-cluster="viewport"]')
-      .getByRole("button", { name: "Desktop", exact: true }).click();
+    await page
+      .locator('[data-toolbar-cluster="viewport"]')
+      .getByRole("button", { name: "Desktop", exact: true })
+      .click();
     await expect(frame).toHaveCSS("width", "1440px");
 
     await expect(page).toHaveURL(/view=page/);
@@ -582,16 +754,29 @@ test.describe("metacraft-web IsoNim editor consumer", () => {
     await expect(page.locator(".editor-sidebar")).toBeVisible();
     await expect(page.locator(".editor-chat")).toBeVisible();
 
-    await page.locator('[data-toolbar-cluster="mode"]').getByRole("button", { name: "Edit", exact: true }).click();
+    await page
+      .locator('[data-toolbar-cluster="mode"]')
+      .getByRole("button", { name: "Edit", exact: true })
+      .click();
     await expect(
-      page.locator('[data-toolbar-cluster="mode"]').getByRole("button", { name: "Edit", exact: true }),
+      page
+        .locator('[data-toolbar-cluster="mode"]')
+        .getByRole("button", { name: "Edit", exact: true }),
     ).toHaveAttribute("aria-pressed", "true");
     await expect(
-      page.locator('[data-toolbar-cluster="mode"]').getByRole("button", { name: "View", exact: true }),
+      page
+        .locator('[data-toolbar-cluster="mode"]')
+        .getByRole("button", { name: "View", exact: true }),
     ).toHaveAttribute("aria-pressed", "false");
-    await expect(page.locator('[data-sidebar-content="inspector"]')).toBeVisible();
-    await expect(page.locator('[data-sidebar-content="ai-assistant"]')).toHaveCount(0);
-    await expect(page.locator('[data-inspector-section-header]').first()).toBeVisible();
+    await expect(
+      page.locator('[data-sidebar-content="inspector"]'),
+    ).toBeVisible();
+    await expect(
+      page.locator('[data-sidebar-content="ai-assistant"]'),
+    ).toHaveCount(0);
+    await expect(
+      page.locator("[data-inspector-section-header]").first(),
+    ).toBeVisible();
     await expect(page.getByText("Project component preview")).toHaveCount(0);
 
     await expect(
@@ -616,10 +801,15 @@ test.describe("metacraft-web IsoNim editor consumer", () => {
         .frameLocator('iframe[title="Project preview"]')
         .getByTestId("customer-detail"),
     ).toBeVisible();
-    const pageSource = page.locator('[data-scene-graph-source]')
-      .filter({ hasText: /components\.nim:\d+/ }).first();
+    const pageSource = page
+      .locator("[data-scene-graph-source]")
+      .filter({ hasText: /components\.nim:\d+/ })
+      .first();
     await expect(pageSource).toBeVisible();
-    await expect(pageSource).toHaveAttribute("title", /apps\/back-office\/src\/backoffice_ui\/components\.nim:\d+$/);
+    await expect(pageSource).toHaveAttribute(
+      "title",
+      /apps\/back-office\/src\/backoffice_ui\/components\.nim:\d+$/,
+    );
 
     await page.getByRole("button", { name: "Open Components section" }).click();
     await page
@@ -730,7 +920,10 @@ test.describe("metacraft-web IsoNim editor consumer", () => {
         .getByTestId("customer-detail"),
     ).toBeVisible();
     await expect(pageSource).toBeVisible();
-    await expect(pageSource).toHaveAttribute("title", /apps\/back-office\/src\/backoffice_ui\/components\.nim:\d+$/);
+    await expect(pageSource).toHaveAttribute(
+      "title",
+      /apps\/back-office\/src\/backoffice_ui\/components\.nim:\d+$/,
+    );
 
     await page.goto("/?view=vector#vector-editor");
     await expect(page.getByText("Vector Editor")).toBeVisible();
@@ -793,8 +986,9 @@ test.describe("metacraft-web IsoNim editor consumer", () => {
     await page.goto("/");
     const workspaceBefore = snapshotDevWorkspace();
     try {
-
-      await page.getByRole("button", { name: "Open Components section" }).click();
+      await page
+        .getByRole("button", { name: "Open Components section" })
+        .click();
       await page
         .getByRole("button", {
           name: "Select story Operational components / Topbar",
@@ -811,7 +1005,9 @@ test.describe("metacraft-web IsoNim editor consumer", () => {
       await switchMode(page, "Edit");
       await expect(page).toHaveURL(/view=edit/);
       await expect(page.getByText("Project component preview")).toHaveCount(0);
-      await expect(page.locator('[data-sidebar-content="ai-assistant"]')).toHaveCount(0);
+      await expect(
+        page.locator('[data-sidebar-content="ai-assistant"]'),
+      ).toHaveCount(0);
       const inspector = page.locator('[data-sidebar-content="inspector"]');
       await expect(inspector).toBeVisible();
 
@@ -828,47 +1024,80 @@ test.describe("metacraft-web IsoNim editor consumer", () => {
       await expect(title).toHaveAttribute("data-isonim-selected", "true");
       await expect(statusBar.getByText("h1", { exact: true })).toBeVisible();
       const headerCrumb = page.getByRole("button", {
-        name: "Select breadcrumb header[data-testid=component-topbar]", exact: true,
+        name: "Select breadcrumb header[data-testid=component-topbar]",
+        exact: true,
       });
       await expect(headerCrumb).toBeVisible();
       await headerCrumb.click();
       await expect(topbar).toHaveAttribute("data-isonim-selected", "true");
 
       await selectTopbarElement(page, topbar);
-      await expect(statusBar.getByText("header", { exact: true })).toBeVisible();
-      for (const slug of ["layout", "fill", "stroke", "typography", "effects"]) {
-        await expect(page.locator(`[data-inspector-section-header="${slug}"]`)).toBeVisible();
+      await expect(
+        statusBar.getByText("header", { exact: true }),
+      ).toBeVisible();
+      for (const slug of [
+        "layout",
+        "fill",
+        "stroke",
+        "typography",
+        "effects",
+      ]) {
+        await expect(
+          page.locator(`[data-inspector-section-header="${slug}"]`),
+        ).toBeVisible();
       }
       for (const row of ["w", "h", "pad-top"]) {
-        await expect(page.locator(`[data-property-row="${row}"]`)).toBeVisible();
+        await expect(
+          page.locator(`[data-property-row="${row}"]`),
+        ).toBeVisible();
       }
       const source = page.locator('[data-inspector-section-header="source"]');
-      if ((await source.getAttribute("aria-expanded")) !== "true") await source.click();
-      await expect(page.locator('[data-inspector-section-body="source"]'))
-        .toContainText("apps/back-office/src/backoffice_ui/components.nim:51");
+      if ((await source.getAttribute("aria-expanded")) !== "true")
+        await source.click();
+      await expect(
+        page.locator('[data-inspector-section-body="source"]'),
+      ).toContainText("apps/back-office/src/backoffice_ui/components.nim:51");
 
-      const colorInput = page.getByRole("textbox", { name: "Edit fill hex" }).first();
+      const colorInput = page
+        .getByRole("textbox", { name: "Edit fill hex" })
+        .first();
       await expect(colorInput).toBeVisible();
       // Cascade origin / scope of the fill (spec "Cascade indicator").
-      await expect(page.getByLabel("Choose fill source scope", { exact: true })).toBeVisible();
-      await expect(page.getByLabel("Edit raw CSS for Fill section")).toBeVisible();
+      await expect(
+        page.getByLabel("Choose fill source scope", { exact: true }),
+      ).toBeVisible();
+      await expect(
+        page.getByLabel("Edit raw CSS for Fill section"),
+      ).toBeVisible();
       // The former Space section's padding rows live in Layout.
-      await expect(page.getByLabel("Edit raw CSS for Layout section")).toBeVisible();
+      await expect(
+        page.getByLabel("Edit raw CSS for Layout section"),
+      ).toBeVisible();
       // Advanced colour controls: the fill swatch opens the shared picker.
       await page.locator('[data-fill-row-swatch="0"]').click();
-      const picker = page.getByLabel("Edit color", { exact: true }).filter({ visible: true });
-      await expect(picker.getByLabel("Color saturation and brightness")).toBeVisible();
+      const picker = page
+        .getByLabel("Edit color", { exact: true })
+        .filter({ visible: true });
+      await expect(
+        picker.getByLabel("Color saturation and brightness"),
+      ).toBeVisible();
       await expect(picker.getByLabel("Hue", { exact: true })).toBeVisible();
       await page.keyboard.press("Escape");
       await expect(
         page.getByRole("button", { name: "Bind fill to variable" }).first(),
       ).toBeVisible();
       // "Element tree selected header": the Layers row of the selection.
-      await expect(page.getByRole("button", {
-        name: "header[data-testid=component-topbar]", exact: true,
-      })).toHaveAttribute("data-selected", "true");
-      const history = () => page.evaluate(() =>
-        (window as any).__isonimEditorVm.inspector.undoStack.value.length);
+      await expect(
+        page.getByRole("button", {
+          name: "header[data-testid=component-topbar]",
+          exact: true,
+        }),
+      ).toHaveAttribute("data-selected", "true");
+      const history = () =>
+        page.evaluate(
+          () =>
+            (window as any).__isonimEditorVm.inspector.undoStack.value.length,
+        );
       const startHistory = await history();
       const originalColor = await topbar.evaluate(
         (node) => getComputedStyle(node).color,
@@ -891,7 +1120,9 @@ test.describe("metacraft-web IsoNim editor consumer", () => {
       // Stroke Color row through its More (⫶) menu.
       await page.locator('[data-fill-row="0"]').click({ button: "right" });
       await page.getByRole("menuitem", { name: "Copy property" }).click();
-      await page.getByRole("button", { name: "More actions for Color" }).click();
+      await page
+        .getByRole("button", { name: "More actions for Color" })
+        .click();
       await page.getByRole("menuitem", { name: "Paste property" }).click();
       await expect
         .poll(() =>
@@ -918,50 +1149,77 @@ test.describe("metacraft-web IsoNim editor consumer", () => {
       await padTop.focus();
       await page.keyboard.press("ArrowUp");
       await expect
-        .poll(() => topbar.evaluate((node) => getComputedStyle(node).paddingTop))
+        .poll(() =>
+          topbar.evaluate((node) => getComputedStyle(node).paddingTop),
+        )
         .toBe("1px");
       await padTop.press("Enter");
       await undoAll();
       await expect
-        .poll(() => topbar.evaluate((node) => getComputedStyle(node).paddingTop))
+        .poll(() =>
+          topbar.evaluate((node) => getComputedStyle(node).paddingTop),
+        )
         .toBe(originalPadding);
       // "Scrub padding-top value": click-drag on the row's label (spec
       // "Numeric Inputs", "Property row pattern — Label scrubber"). The
       // `label-scrubber` slot is zero-sized; the visible label inside the
       // value pill is the scrub handle.
       await selectTopbarElement(page, topbar);
-      const scrub = page.locator('[data-property-row="pad-top"] [data-property-row-field-label="true"]');
+      const scrub = page.locator(
+        '[data-property-row="pad-top"] [data-property-row-field-label="true"]',
+      );
       await expect(scrub).toBeVisible();
       const scrubBox = await scrub.boundingBox();
       if (!scrubBox) throw new Error("padding-top scrub label is not visible");
-      await page.mouse.move(scrubBox.x + scrubBox.width / 2, scrubBox.y + scrubBox.height / 2);
+      await page.mouse.move(
+        scrubBox.x + scrubBox.width / 2,
+        scrubBox.y + scrubBox.height / 2,
+      );
       await page.mouse.down();
-      await page.mouse.move(scrubBox.x + scrubBox.width / 2 + 12,
-        scrubBox.y + scrubBox.height / 2, { steps: 4 });
+      await page.mouse.move(
+        scrubBox.x + scrubBox.width / 2 + 12,
+        scrubBox.y + scrubBox.height / 2,
+        { steps: 4 },
+      );
       await page.mouse.up();
       await expect
-        .poll(() => topbar.evaluate((node) => getComputedStyle(node).paddingTop))
+        .poll(() =>
+          topbar.evaluate((node) => getComputedStyle(node).paddingTop),
+        )
         .not.toBe(originalPadding);
       await expect.poll(history).toBe(startHistory + 1);
       await undoAll();
       await expect
-        .poll(() => topbar.evaluate((node) => getComputedStyle(node).paddingTop))
+        .poll(() =>
+          topbar.evaluate((node) => getComputedStyle(node).paddingTop),
+        )
         .toBe(originalPadding);
       await selectTopbarElement(page, topbar);
       await padTop.click();
       await padTop.fill("20");
       await padTop.press("Enter");
       await expect
-        .poll(() => topbar.evaluate((node) => getComputedStyle(node).paddingTop))
+        .poll(() =>
+          topbar.evaluate((node) => getComputedStyle(node).paddingTop),
+        )
         .toBe("20px");
       await expect.poll(history).toBe(startHistory + 1);
       await undoAll();
       await expect
-        .poll(() => topbar.evaluate((node) => getComputedStyle(node).paddingTop))
+        .poll(() =>
+          topbar.evaluate((node) => getComputedStyle(node).paddingTop),
+        )
         .toBe(originalPadding);
-      await page.locator('[data-layout-source-scope-property="display"]')
-        .getByRole("button", { name: "Apply local instance scope for display", exact: true }).click();
-      await page.getByRole("button", { name: "Set layout to none", exact: true }).click();
+      await page
+        .locator('[data-layout-source-scope-property="display"]')
+        .getByRole("button", {
+          name: "Apply local instance scope for display",
+          exact: true,
+        })
+        .click();
+      await page
+        .getByRole("button", { name: "Set layout to none", exact: true })
+        .click();
       await expect
         .poll(() => topbar.evaluate((node) => getComputedStyle(node).display))
         .toBe("block");
@@ -992,45 +1250,69 @@ test.describe("metacraft-web IsoNim editor consumer", () => {
     await page.goto("/");
     const workspaceBefore = snapshotDevWorkspace();
     try {
-
       const { topbar } = await openTopbarInEditMode(page);
       await selectTopbarElement(page, topbar);
 
       const row = page.locator('[data-property-row="pad-top"]');
       const padTop = propertyRowInput(page, "pad-top");
-      const scopes = row.getByRole("group", { name: /^Choose source scope for / });
+      const scopes = row.getByRole("group", {
+        name: /^Choose source scope for /,
+      });
       await expect(scopes).toBeVisible();
-      for (const scope of ["local instance", "shared class", "story fixture",
-          "component schema", "component token", "semantic token",
-          "global primitive token"]) {
-        await expect(row.locator(
-          `[aria-label="Apply ${scope} scope for padding-top"]`).first()).toBeAttached();
+      for (const scope of [
+        "local instance",
+        "shared class",
+        "story fixture",
+        "component schema",
+        "component token",
+        "semantic token",
+        "global primitive token",
+      ]) {
+        await expect(
+          row
+            .locator(`[aria-label="Apply ${scope} scope for padding-top"]`)
+            .first(),
+        ).toBeAttached();
       }
       const bind = row.getByRole("button", { name: /^Bind .* to variable$/ });
       await expect(bind).toBeVisible();
       // "Search reusable styles" -> the variable picker's search field (spec
       // "Variable picker — Search field at the top").
       await bind.click();
-      await expect(page.getByRole("textbox", { name: "Filter variables" })).toBeVisible();
+      await expect(
+        page.getByRole("textbox", { name: "Filter variables" }),
+      ).toBeVisible();
       await page.keyboard.press("Escape");
       const source = page.locator('[data-inspector-section-header="source"]');
-      if ((await source.getAttribute("aria-expanded")) !== "true") await source.click();
-      await expect(page.locator('[data-inspector-section-body="source"]'))
-        .toContainText("Scope");
-      await expect(page.locator('[data-inspector-section-body="source"]'))
-        .toContainText("Ownership", { ignoreCase: true });
+      if ((await source.getAttribute("aria-expanded")) !== "true")
+        await source.click();
+      await expect(
+        page.locator('[data-inspector-section-body="source"]'),
+      ).toContainText("Scope");
+      await expect(
+        page.locator('[data-inspector-section-body="source"]'),
+      ).toContainText("Ownership", { ignoreCase: true });
 
-      const history = () => page.evaluate(() =>
-        (window as any).__isonimEditorVm.inspector.undoStack.value.length);
+      const history = () =>
+        page.evaluate(
+          () =>
+            (window as any).__isonimEditorVm.inspector.undoStack.value.length,
+        );
       const startHistory = await history();
-      await row.getByRole("button", {
-        name: "Apply local instance scope for padding-top", exact: true,
-      }).first().click();
+      await row
+        .getByRole("button", {
+          name: "Apply local instance scope for padding-top",
+          exact: true,
+        })
+        .first()
+        .click();
       await padTop.click();
       await padTop.fill("20");
       await padTop.press("Enter");
       await expect
-        .poll(() => topbar.evaluate((node) => getComputedStyle(node).paddingTop))
+        .poll(() =>
+          topbar.evaluate((node) => getComputedStyle(node).paddingTop),
+        )
         .toBe("20px");
       // Choosing a scope re-commits the row's current value into it, so the
       // count is relative rather than exactly one edit.
@@ -1038,25 +1320,33 @@ test.describe("metacraft-web IsoNim editor consumer", () => {
       await expectNoPendingSourceEdits(page);
       const localHistory = await history();
 
-      const sharedScope = row.locator(
-        '[aria-label="Apply shared class scope for padding-top"]').first();
+      const sharedScope = row
+        .locator('[aria-label="Apply shared class scope for padding-top"]')
+        .first();
       await expect(sharedScope).toHaveAttribute("aria-disabled", "false");
       if (!(await sharedScope.isVisible())) {
-        await row.locator('[aria-label^="More Choose source scope for "]').first().click();
+        await row
+          .locator('[aria-label^="More Choose source scope for "]')
+          .first()
+          .click();
       }
       await sharedScope.click();
       await padTop.click();
       await padTop.fill("24");
       await padTop.press("Enter");
       await expect
-        .poll(() => topbar.evaluate((node) => getComputedStyle(node).paddingTop))
+        .poll(() =>
+          topbar.evaluate((node) => getComputedStyle(node).paddingTop),
+        )
         .toBe("24px");
       await expect.poll(history).toBeGreaterThan(localHistory);
       const sharedHistory = await history();
       await expectNoPendingSourceEdits(page);
       await pressHistoryShortcut(page);
       await expect
-        .poll(() => topbar.evaluate((node) => getComputedStyle(node).paddingTop))
+        .poll(() =>
+          topbar.evaluate((node) => getComputedStyle(node).paddingTop),
+        )
         .toBe("20px");
       await expect.poll(history).toBe(sharedHistory - 1);
       await expectNoPendingSourceEdits(page);
@@ -1065,16 +1355,22 @@ test.describe("metacraft-web IsoNim editor consumer", () => {
       // gives only this element an inline override.
       await pressHistoryShortcut(page, true);
       await expect
-        .poll(() => topbar.evaluate((node) => getComputedStyle(node).paddingTop))
+        .poll(() =>
+          topbar.evaluate((node) => getComputedStyle(node).paddingTop),
+        )
         .toBe("24px");
       const detach = row.getByRole("button", { name: /^Detach/ }).first();
       await expect(detach).toBeVisible();
       await detach.click();
-      await expect(row.locator(
-        '[aria-label="Apply local instance scope for padding-top"]').first())
-        .toHaveAttribute("aria-pressed", "true");
+      await expect(
+        row
+          .locator('[aria-label="Apply local instance scope for padding-top"]')
+          .first(),
+      ).toHaveAttribute("aria-pressed", "true");
       await expect
-        .poll(() => topbar.evaluate((node) => getComputedStyle(node).paddingTop))
+        .poll(() =>
+          topbar.evaluate((node) => getComputedStyle(node).paddingTop),
+        )
         .toBe("24px");
       await expect.poll(history).toBeGreaterThan(sharedHistory - 1);
       await expectNoPendingSourceEdits(page);
@@ -1107,17 +1403,25 @@ test.describe("metacraft-web IsoNim editor consumer", () => {
     await expect(padTop).toBeVisible();
     // The per-row scope picker shows the first choices inline and the rest
     // behind its "More" disclosure.
-    const sharedScope = row.locator(
-      '[aria-label="Apply shared class scope for padding-top"]').first();
+    const sharedScope = row
+      .locator('[aria-label="Apply shared class scope for padding-top"]')
+      .first();
     await expect(sharedScope).toHaveAttribute("aria-disabled", "false");
     if (!(await sharedScope.isVisible())) {
-      await row.locator('[aria-label^="More Choose source scope for "]').first().click();
+      await row
+        .locator('[aria-label^="More Choose source scope for "]')
+        .first()
+        .click();
     }
     await sharedScope.click();
     await expect(sharedScope).toHaveAttribute("aria-pressed", "true");
-    await expect(page.getByText(
-      "Changes the shared source definition; other mapped uses may change.",
-    ).first()).toBeVisible();
+    await expect(
+      page
+        .getByText(
+          "Changes the shared source definition; other mapped uses may change.",
+        )
+        .first(),
+    ).toBeVisible();
 
     let afterText = beforeText;
     try {
@@ -1132,7 +1436,9 @@ test.describe("metacraft-web IsoNim editor consumer", () => {
       expect(afterText).not.toBe(beforeText);
 
       await page.reload();
-      await page.getByRole("button", { name: "Open Components section" }).click();
+      await page
+        .getByRole("button", { name: "Open Components section" })
+        .click();
       await page
         .getByRole("button", {
           name: "Select story Operational components / Topbar",
@@ -1153,8 +1459,12 @@ test.describe("metacraft-web IsoNim editor consumer", () => {
         .poll(() => readFileSync(devBridgeSourceFile, "utf8"))
         .toBe(afterText);
     } finally {
-      await restoreDevBridgeFile(page, "apps/back-office/src/backoffice_ui/components.nim",
-        devBridgeSourceFile, beforeText);
+      await restoreDevBridgeFile(
+        page,
+        "apps/back-office/src/backoffice_ui/components.nim",
+        devBridgeSourceFile,
+        beforeText,
+      );
     }
     await expect
       .poll(() => readFileSync(devBridgeSourceFile, "utf8"))
@@ -1211,7 +1521,9 @@ test.describe("metacraft-web IsoNim editor consumer", () => {
       await padTop.fill("20");
       await padTop.press("Enter");
       await expect
-        .poll(() => topbar.evaluate((node) => getComputedStyle(node).paddingTop))
+        .poll(() =>
+          topbar.evaluate((node) => getComputedStyle(node).paddingTop),
+        )
         .toBe("20px");
       await padTop.focus();
       await expect(padTop).toBeFocused();
@@ -1227,7 +1539,9 @@ test.describe("metacraft-web IsoNim editor consumer", () => {
       // rebuild that selection and focus must survive.
       expect(await iframeReloadGeneration(editFrameElement)).toBe(0);
       await expect
-        .poll(() => topbar.evaluate((node) => getComputedStyle(node).paddingTop))
+        .poll(() =>
+          topbar.evaluate((node) => getComputedStyle(node).paddingTop),
+        )
         .toBe("20px");
       const afterText = readFileSync(devBridgeSourceFile, "utf8");
       expect(afterText).toContain("padding-top=20px");
@@ -1254,8 +1568,12 @@ test.describe("metacraft-web IsoNim editor consumer", () => {
       await expect(topbar).toHaveAttribute("data-isonim-selected", "true");
       await expect(padTop).toBeFocused();
     } finally {
-      await restoreDevBridgeFile(page, "apps/back-office/src/backoffice_ui/components.nim",
-        devBridgeSourceFile, beforeText);
+      await restoreDevBridgeFile(
+        page,
+        "apps/back-office/src/backoffice_ui/components.nim",
+        devBridgeSourceFile,
+        beforeText,
+      );
     }
     await expect
       .poll(() => readFileSync(devBridgeSourceFile, "utf8"))
@@ -1274,7 +1592,7 @@ test.describe("metacraft-web IsoNim editor consumer", () => {
     page,
   }) => {
     const applies: any[] = [];
-    page.on("request", request => {
+    page.on("request", (request) => {
       if (request.url().endsWith("/__isonim-dev-bridge/transaction")) {
         const body = request.postDataJSON();
         if (body.mode === "apply") applies.push(body);
@@ -1345,11 +1663,14 @@ test.describe("metacraft-web IsoNim editor consumer", () => {
     // walks both. Counting both keeps the oracle "exactly one history entry
     // per commit" (corrected 2026-10-14: this probe read only the inspector
     // stack, which a component-property commit never touches).
-    const historyLength = () => page.evaluate(() => {
-      const vm = (window as any).__isonimEditorVm;
-      return vm.inspector.undoStack.value.length +
-        vm.variants.undoStack.value.length;
-    });
+    const historyLength = () =>
+      page.evaluate(() => {
+        const vm = (window as any).__isonimEditorVm;
+        return (
+          vm.inspector.undoStack.value.length +
+          vm.variants.undoStack.value.length
+        );
+      });
     const beforeHistory = await historyLength();
 
     const success = propertyPanel.getByRole("button", {
@@ -1410,8 +1731,12 @@ test.describe("metacraft-web IsoNim editor consumer", () => {
         .toBe(afterComponentSchema);
       await expect(schemaBadge).toHaveClass(/bo-status-success/);
     } finally {
-      await restoreDevBridgeFile(page, componentSchemaBridgeFile,
-        devBridgeComponentSchemaFile, beforeComponentSchema);
+      await restoreDevBridgeFile(
+        page,
+        componentSchemaBridgeFile,
+        devBridgeComponentSchemaFile,
+        beforeComponentSchema,
+      );
     }
     await expect
       .poll(() => readFileSync(devBridgeComponentSchemaFile, "utf8"))
@@ -1452,7 +1777,7 @@ test.describe("metacraft-web IsoNim editor consumer", () => {
     page,
   }) => {
     const applies: any[] = [];
-    page.on("request", request => {
+    page.on("request", (request) => {
       if (request.url().endsWith("/__isonim-dev-bridge/transaction")) {
         const body = request.postDataJSON();
         if (body.mode === "apply") applies.push(body);
@@ -1518,17 +1843,24 @@ test.describe("metacraft-web IsoNim editor consumer", () => {
       await expect(panelHeaderTitle).toHaveText("Accounts");
 
       // Undo restores the exact source bytes and the rendered text.
-      await propertyPanel.getByRole("button", {
-        name: "Cycle component property label",
-      }).first().focus();
+      await propertyPanel
+        .getByRole("button", {
+          name: "Cycle component property label",
+        })
+        .first()
+        .focus();
       await page.keyboard.press("ControlOrMeta+Z");
       await expect
         .poll(() => readFileSync(devBridgeComponentSchemaFile, "utf8"))
         .toBe(beforeComponentSchema);
       await expect(panelHeaderTitle).toHaveText("Customers");
     } finally {
-      await restoreDevBridgeFile(page, componentSchemaBridgeFile,
-        devBridgeComponentSchemaFile, beforeComponentSchema);
+      await restoreDevBridgeFile(
+        page,
+        componentSchemaBridgeFile,
+        devBridgeComponentSchemaFile,
+        beforeComponentSchema,
+      );
     }
     await expect
       .poll(() => readFileSync(devBridgeComponentSchemaFile, "utf8"))
@@ -1558,9 +1890,16 @@ test.describe("metacraft-web IsoNim editor consumer", () => {
     await openTopbarInEditMode(page);
 
     await switchMode(page, "Comment");
-    await expect(modeChip(page, "Edit")).toHaveAttribute("aria-pressed", "false");
-    await expect(page.locator('[data-sidebar-content="ai-assistant"]')).toBeVisible();
-    await expect(page.locator('[data-sidebar-content="inspector"]')).toHaveCount(0);
+    await expect(modeChip(page, "Edit")).toHaveAttribute(
+      "aria-pressed",
+      "false",
+    );
+    await expect(
+      page.locator('[data-sidebar-content="ai-assistant"]'),
+    ).toBeVisible();
+    await expect(
+      page.locator('[data-sidebar-content="inspector"]'),
+    ).toHaveCount(0);
     // The card summary is "<id> - <state> - <inclusion>" (chat_panel.nim,
     // 04930a8); it carries the same three fields as the former
     // "<id>=<state>:<inclusion>" text.
@@ -1619,7 +1958,8 @@ test.describe("metacraft-web IsoNim editor consumer", () => {
   }) => {
     await page.goto("/");
 
-    const visibleRightPanel = () => page.locator("[data-sidebar-content]:visible");
+    const visibleRightPanel = () =>
+      page.locator("[data-sidebar-content]:visible");
     const width = async () => {
       await expect(visibleRightPanel()).toHaveCount(1);
       const box = await visibleRightPanel().boundingBox();
@@ -1627,7 +1967,9 @@ test.describe("metacraft-web IsoNim editor consumer", () => {
       return Math.round(box.width);
     };
     const widenBy = async (dx: number) => {
-      const handle = visibleRightPanel().locator('[data-resize-handle="right-panel"]');
+      const handle = visibleRightPanel().locator(
+        '[data-resize-handle="right-panel"]',
+      );
       const box = await handle.boundingBox();
       if (!box) throw new Error("right panel resize handle is not visible");
       const x = box.x + box.width / 2;
@@ -1638,14 +1980,18 @@ test.describe("metacraft-web IsoNim editor consumer", () => {
       await page.mouse.up();
     };
 
-    await expect(page.locator('[data-sidebar-content="ai-assistant"]')).toBeVisible();
+    await expect(
+      page.locator('[data-sidebar-content="ai-assistant"]'),
+    ).toBeVisible();
     const initial = await width();
     await widenBy(80);
     await expect.poll(width).toBeGreaterThan(initial);
     const widened = await width();
 
     await switchMode(page, "Edit");
-    await expect(page.locator('[data-sidebar-content="inspector"]')).toBeVisible();
+    await expect(
+      page.locator('[data-sidebar-content="inspector"]'),
+    ).toBeVisible();
     expect(await width()).toBe(widened);
 
     await widenBy(40);
@@ -1653,11 +1999,15 @@ test.describe("metacraft-web IsoNim editor consumer", () => {
     const editWidth = await width();
 
     await switchMode(page, "Comment");
-    await expect(page.locator('[data-sidebar-content="ai-assistant"]')).toBeVisible();
+    await expect(
+      page.locator('[data-sidebar-content="ai-assistant"]'),
+    ).toBeVisible();
     expect(await width()).toBe(editWidth);
 
     await switchMode(page, "Edit");
-    await expect(page.locator('[data-sidebar-content="inspector"]')).toBeVisible();
+    await expect(
+      page.locator('[data-sidebar-content="inspector"]'),
+    ).toBeVisible();
     expect(await width()).toBe(editWidth);
   });
 
@@ -1723,24 +2073,29 @@ test.describe("metacraft-web IsoNim editor consumer", () => {
     await expect(page.getByLabel("Show box model controls")).toBeVisible();
     await expect(page.getByLabel("Show raw CSS controls")).toBeVisible();
 
-    const noOverflow = () => inspector.evaluate(
-      (node) => node.scrollWidth <= node.clientWidth + 1);
+    const noOverflow = () =>
+      inspector.evaluate((node) => node.scrollWidth <= node.clientWidth + 1);
     expect(await noOverflow()).toBe(true);
     await page.setViewportSize({ width: 900, height: 800 });
     await expect(inspector).toBeVisible();
     expect(await noOverflow()).toBe(true);
   });
 
-  test("e2e_canvas_selection_matches_layer_tree_and_breadcrumbs", async ({ page }) => {
+  test("e2e_canvas_selection_matches_layer_tree_and_breadcrumbs", async ({
+    page,
+  }) => {
     await page.goto("/");
     const layers = page.locator('[data-scene-graph="true"]');
-    const layerSearch = layers.getByRole("textbox", { name: "Search layers", exact: true });
+    const layerSearch = layers.getByRole("textbox", {
+      name: "Search layers",
+      exact: true,
+    });
     const stories = page.locator('[data-sidebar-story-tree="true"]');
     const layerRows = page.locator('[data-scene-graph-rows="true"]');
     await expect(layerSearch).toHaveAttribute("placeholder", "Search layers");
-    await expect(page.locator('[data-scene-graph-row]').first()).toBeVisible();
+    await expect(page.locator("[data-scene-graph-row]").first()).toBeVisible();
     // Actual long consumer DOM, with separately bounded sibling scroll areas.
-    const geometry = await layers.evaluate(node => {
+    const geometry = await layers.evaluate((node) => {
       const story = document.querySelector('[data-sidebar-story-tree="true"]')!;
       const sidebar = node.parentElement!;
       const rows = node.querySelector('[data-scene-graph-rows="true"]')!;
@@ -1749,8 +2104,10 @@ test.describe("metacraft-web IsoNim editor consumer", () => {
         outerOverflow: getComputedStyle(sidebar).overflowY,
         rowsOverflow: getComputedStyle(rows).overflowY,
         storiesOverflow: getComputedStyle(story).overflowY,
-        outerScrollHeight: sidebar.scrollHeight, outerHeight: sidebar.clientHeight,
-        layerHeight: rows.clientHeight, storyHeight: story.clientHeight,
+        outerScrollHeight: sidebar.scrollHeight,
+        outerHeight: sidebar.clientHeight,
+        layerHeight: rows.clientHeight,
+        storyHeight: story.clientHeight,
         layerScrollHeight: rows.scrollHeight,
       };
     });
@@ -1758,36 +2115,55 @@ test.describe("metacraft-web IsoNim editor consumer", () => {
     expect(geometry.outerOverflow).toBe("hidden");
     expect(geometry.rowsOverflow).toBe("auto");
     expect(geometry.storiesOverflow).toBe("auto");
-    expect(geometry.outerScrollHeight).toBeLessThanOrEqual(geometry.outerHeight + 1);
+    expect(geometry.outerScrollHeight).toBeLessThanOrEqual(
+      geometry.outerHeight + 1,
+    );
     expect(geometry.layerHeight).toBeGreaterThan(80);
     expect(geometry.storyHeight).toBeGreaterThan(80);
     expect(geometry.layerScrollHeight).toBeGreaterThan(geometry.layerHeight);
-    const storyScrollBefore = await stories.evaluate(node => node.scrollTop);
+    const storyScrollBefore = await stories.evaluate((node) => node.scrollTop);
     await layerRows.focus();
     await page.keyboard.press("PageDown");
-    await expect.poll(() => layerRows.evaluate(node => node.scrollTop)).toBeGreaterThan(0);
-    expect(await stories.evaluate(node => node.scrollTop)).toBe(storyScrollBefore);
+    await expect
+      .poll(() => layerRows.evaluate((node) => node.scrollTop))
+      .toBeGreaterThan(0);
+    expect(await stories.evaluate((node) => node.scrollTop)).toBe(
+      storyScrollBefore,
+    );
     await expect(layerSearch).toBeVisible();
-    await expect(page.getByRole("textbox", { name: "Search stories" })).toBeVisible();
+    await expect(
+      page.getByRole("textbox", { name: "Search stories" }),
+    ).toBeVisible();
 
-    await page.getByRole("button", { name: "Open Components section", exact: true }).click();
-    await page.getByRole("button", {
-      name: "Select story Operational components / Topbar", exact: true,
-    }).click();
+    await page
+      .getByRole("button", { name: "Open Components section", exact: true })
+      .click();
+    await page
+      .getByRole("button", {
+        name: "Select story Operational components / Topbar",
+        exact: true,
+      })
+      .click();
     const mode = page.locator('[data-toolbar-cluster="mode"]');
     await mode.getByRole("button", { name: "View", exact: true }).click();
     await mode.getByRole("button", { name: "Edit", exact: true }).click();
-    const editFrame = page.frameLocator('iframe[title="Editable component preview"]');
+    const editFrame = page.frameLocator(
+      'iframe[title="Editable component preview"]',
+    );
     const topbar = editFrame.getByTestId("component-topbar");
     const title = topbar.locator("h1.bo-title");
     await title.click();
     await expect(title).toHaveAttribute("data-isonim-selected", "true");
     const titleId = await title.getAttribute("data-isonim-element-id");
     const headerId = await topbar.getAttribute("data-isonim-element-id");
-    if (!titleId || !headerId) throw new Error("Selected title/ancestor require stable element ids");
+    if (!titleId || !headerId)
+      throw new Error("Selected title/ancestor require stable element ids");
     const headerStamp = await topbar.getAttribute("data-isonim-src");
     const titleStamp = await title.getAttribute("data-isonim-src");
-    if (!headerStamp || !titleStamp) throw new Error("Consumer editor build requires genuine compiler source stamps");
+    if (!headerStamp || !titleStamp)
+      throw new Error(
+        "Consumer editor build requires genuine compiler source stamps",
+      );
     const sourceLocation = (stamp: string) => {
       const match = stamp.match(/^(.*):(\d+):\d+$/);
       if (!match) throw new Error(`Malformed compiler stamp: ${stamp}`);
@@ -1797,15 +2173,22 @@ test.describe("metacraft-web IsoNim editor consumer", () => {
     const titleLayerRow = page.locator(`[data-scene-graph-row="${titleId}"]`);
     await expect(headerLayerRow).toContainText(/components\.nim:\d+/);
     await expect(titleLayerRow).toContainText(/components\.nim:\d+/);
-    await expect(headerLayerRow.locator('[data-scene-graph-source]')).toHaveAttribute("title", sourceLocation(headerStamp));
-    await expect(titleLayerRow.locator('[data-scene-graph-source]')).toHaveAttribute("title", sourceLocation(titleStamp));
+    await expect(
+      headerLayerRow.locator("[data-scene-graph-source]"),
+    ).toHaveAttribute("title", sourceLocation(headerStamp));
+    await expect(
+      titleLayerRow.locator("[data-scene-graph-source]"),
+    ).toHaveAttribute("title", sourceLocation(titleStamp));
     await expect(titleLayerRow).toBeVisible();
     await expect(titleLayerRow).toHaveAttribute("data-selected", "true");
     const titleCrumb = page.locator(`[data-breadcrumb-id="${titleId}"]`);
     const headerCrumb = page.locator(`[data-breadcrumb-id="${headerId}"]`);
     await expect(titleCrumb).toBeVisible();
-    await expect(titleCrumb).toHaveAttribute("data-breadcrumb-state", "selected");
-    const headerToggle = headerLayerRow.locator('[data-scene-graph-twisty]');
+    await expect(titleCrumb).toHaveAttribute(
+      "data-breadcrumb-state",
+      "selected",
+    );
+    const headerToggle = headerLayerRow.locator("[data-scene-graph-twisty]");
     await headerToggle.click();
     await expect(titleLayerRow).toHaveCount(0);
     await headerToggle.click();
@@ -1820,27 +2203,40 @@ test.describe("metacraft-web IsoNim editor consumer", () => {
     await headerToggle.click();
     await expect(headerLayerRow).toHaveAttribute("aria-expanded", "false");
     await expect(titleLayerRow).toHaveCount(0);
-    const savedExpansion = await page.evaluate(() =>
-      [...(window as any).__isonimEditorVm.inspector.expandedLayerIds.value]);
+    const savedExpansion = await page.evaluate(() => [
+      ...(window as any).__isonimEditorVm.inspector.expandedLayerIds.value,
+    ]);
     await page.getByRole("textbox", { name: "Search stories" }).fill("Topbar");
     await layerSearch.fill("  H1.BO-TITLE  ");
     await expect(headerLayerRow).toBeVisible();
     await expect(titleLayerRow).toBeVisible();
-    await expect(layers.getByRole("button", { name: /^p\.bo-subtitle/ })).toHaveCount(0);
+    await expect(
+      layers.getByRole("button", { name: /^p\.bo-subtitle/ }),
+    ).toHaveCount(0);
     await expect(headerLayerRow).toHaveAttribute("data-selected", "true");
     await expect(topbar).toHaveAttribute("data-isonim-selected", "true");
-    expect(await page.evaluate(() =>
-      [...(window as any).__isonimEditorVm.inspector.expandedLayerIds.value])).toEqual(savedExpansion);
-    await expect(page.getByRole("textbox", { name: "Search stories" })).toHaveValue("Topbar");
+    expect(
+      await page.evaluate(() => [
+        ...(window as any).__isonimEditorVm.inspector.expandedLayerIds.value,
+      ]),
+    ).toEqual(savedExpansion);
+    await expect(
+      page.getByRole("textbox", { name: "Search stories" }),
+    ).toHaveValue("Topbar");
     await titleLayerRow.click();
     await expect(title).toHaveAttribute("data-isonim-selected", "true");
     await expect(title).toHaveAttribute("data-isonim-element-id", titleId);
     await expect(titleLayerRow).toHaveAttribute("data-selected", "true");
     await layerSearch.fill("no-consumer-layer-matches-this");
-    await expect(layers.getByText("No matching layers", { exact: true })).toBeVisible();
+    await expect(
+      layers.getByText("No matching layers", { exact: true }),
+    ).toBeVisible();
     await expect(title).toHaveAttribute("data-isonim-selected", "true");
-    expect(await page.evaluate(() =>
-      [...(window as any).__isonimEditorVm.inspector.expandedLayerIds.value])).toEqual(savedExpansion);
+    expect(
+      await page.evaluate(() => [
+        ...(window as any).__isonimEditorVm.inspector.expandedLayerIds.value,
+      ]),
+    ).toEqual(savedExpansion);
     await layerSearch.fill("");
     await expect(headerLayerRow).toHaveAttribute("aria-expanded", "false");
     await expect(titleLayerRow).toHaveCount(0);
@@ -1860,23 +2256,37 @@ test.describe("metacraft-web IsoNim editor consumer", () => {
     await titleCrumb.click();
     await expect(title).toHaveAttribute("data-isonim-selected", "true");
     await expect(titleLayerRow).toHaveAttribute("data-selected", "true");
-    await expect(titleCrumb).toHaveAttribute("data-breadcrumb-state", "selected");
+    await expect(titleCrumb).toHaveAttribute(
+      "data-breadcrumb-state",
+      "selected",
+    );
     await headerCrumb.click();
     await headerLayerRow.click();
     await expect(titleCrumb).toHaveCount(0);
-    await expect(headerCrumb).toHaveAttribute("data-breadcrumb-state", "selected");
+    await expect(headerCrumb).toHaveAttribute(
+      "data-breadcrumb-state",
+      "selected",
+    );
     await titleLayerRow.click();
-    await expect(titleCrumb).toHaveAttribute("data-breadcrumb-state", "selected");
+    await expect(titleCrumb).toHaveAttribute(
+      "data-breadcrumb-state",
+      "selected",
+    );
     await headerCrumb.click();
     await expect(titleCrumb).toHaveAttribute("data-breadcrumb-state", "trail");
     await headerLayerRow.focus();
     await page.keyboard.press("Enter");
     await expect(titleCrumb).toHaveCount(0);
-    await expect(headerCrumb).toHaveAttribute("data-breadcrumb-state", "selected");
+    await expect(headerCrumb).toHaveAttribute(
+      "data-breadcrumb-state",
+      "selected",
+    );
     // Layers and its query remain available in all four actual mode choices.
     for (const choice of ["View", "Comment", "Spec", "Edit"]) {
       await mode.getByRole("button", { name: choice, exact: true }).click();
-      await expect(mode.getByRole("button", { name: choice, exact: true })).toHaveAttribute("aria-pressed", "true");
+      await expect(
+        mode.getByRole("button", { name: choice, exact: true }),
+      ).toHaveAttribute("aria-pressed", "true");
       await expect(layerSearch).toBeVisible();
       await layerSearch.fill("component-topbar");
       await expect(headerLayerRow).toBeVisible();
@@ -1885,7 +2295,11 @@ test.describe("metacraft-web IsoNim editor consumer", () => {
     }
     await expect(topbar).toHaveAttribute("data-isonim-element-id", headerId);
     await expect(topbar).toHaveAttribute("data-isonim-selected", "true");
-    expect(await layerRows.evaluate(node => node.scrollWidth <= node.clientWidth + 1)).toBe(true);
+    expect(
+      await layerRows.evaluate(
+        (node) => node.scrollWidth <= node.clientWidth + 1,
+      ),
+    ).toBe(true);
   });
   // Reconciled 2026-10-14: mode changes use the chrome-bar mode cluster;
   // the tabbed inspector became sections (Fill's first entry edits `color`
@@ -1900,7 +2314,6 @@ test.describe("metacraft-web IsoNim editor consumer", () => {
     await page.goto("/");
     const workspaceBefore = snapshotDevWorkspace();
     try {
-
       const { topbar, title } = await openTopbarInEditMode(page);
       await title.click({ force: true });
       await expect(title).toHaveAttribute("data-isonim-selected", "true");
@@ -1917,15 +2330,22 @@ test.describe("metacraft-web IsoNim editor consumer", () => {
       await page.setViewportSize({ width: 1280, height: 900 });
       await expect(title).toHaveAttribute("data-isonim-selected", "true");
 
-      const history = () => page.evaluate(() =>
-        (window as any).__isonimEditorVm.inspector.undoStack.value.length);
+      const history = () =>
+        page.evaluate(
+          () =>
+            (window as any).__isonimEditorVm.inspector.undoStack.value.length,
+        );
       const startHistory = await history();
-      const originalColor = await title.evaluate(node => getComputedStyle(node).color);
-      const colorInput = page.getByRole("textbox", { name: "Edit fill hex" }).first();
+      const originalColor = await title.evaluate(
+        (node) => getComputedStyle(node).color,
+      );
+      const colorInput = page
+        .getByRole("textbox", { name: "Edit fill hex" })
+        .first();
       await colorInput.fill("#F8FAFC");
       await colorInput.press("Enter");
       await expect
-        .poll(() => title.evaluate(node => getComputedStyle(node).color))
+        .poll(() => title.evaluate((node) => getComputedStyle(node).color))
         .toBe("rgb(248, 250, 252)");
       await expect.poll(history).toBe(startHistory + 1);
       await expectNoPendingSourceEdits(page);
@@ -1933,7 +2353,7 @@ test.describe("metacraft-web IsoNim editor consumer", () => {
 
       await pressHistoryShortcut(page);
       await expect
-        .poll(() => title.evaluate(node => getComputedStyle(node).color))
+        .poll(() => title.evaluate((node) => getComputedStyle(node).color))
         .toBe(originalColor);
       await expect.poll(history).toBe(startHistory);
       await expectNoPendingSourceEdits(page);
@@ -1942,11 +2362,18 @@ test.describe("metacraft-web IsoNim editor consumer", () => {
       // The title's `display` owner defaults to its shared class, which this
       // host refuses with an explanation; the owned local instance scope is
       // the writable choice (same flow as the accepted case 1).
-      await page.locator('[data-layout-source-scope-property="display"]')
-        .getByRole("button", { name: "Apply local instance scope for display", exact: true }).click();
-      await page.getByRole("button", { name: "Set layout to horizontal", exact: true }).click();
+      await page
+        .locator('[data-layout-source-scope-property="display"]')
+        .getByRole("button", {
+          name: "Apply local instance scope for display",
+          exact: true,
+        })
+        .click();
+      await page
+        .getByRole("button", { name: "Set layout to horizontal", exact: true })
+        .click();
       await expect
-        .poll(() => title.evaluate(node => getComputedStyle(node).display))
+        .poll(() => title.evaluate((node) => getComputedStyle(node).display))
         .toBe("flex");
       await expect.poll(history).toBe(startHistory + 1);
       await expectNoPendingSourceEdits(page);
@@ -1973,7 +2400,6 @@ test.describe("metacraft-web IsoNim editor consumer", () => {
     await page.goto("/");
     const workspaceBefore = snapshotDevWorkspace();
     try {
-
       const { editFrame, topbar } = await openTopbarInEditMode(page);
       await selectTopbarElement(page, topbar);
       await expect(
@@ -1981,7 +2407,9 @@ test.describe("metacraft-web IsoNim editor consumer", () => {
       ).toBeVisible();
       await expect(editFrame.getByLabel("Canvas gap overlay")).toBeVisible();
       await expect(editFrame.getByLabel("Canvas snap lines")).toBeVisible();
-      await expect(editFrame.getByLabel("Resize selected element")).toBeVisible();
+      await expect(
+        editFrame.getByLabel("Resize selected element"),
+      ).toBeVisible();
 
       const layout = page.locator('[data-inspector-section-header="layout"]');
       await expect(layout).toHaveAttribute("aria-expanded", "true");
@@ -2000,8 +2428,11 @@ test.describe("metacraft-web IsoNim editor consumer", () => {
         }),
       ).toBeVisible();
 
-      const history = () => page.evaluate(() =>
-        (window as any).__isonimEditorVm.inspector.undoStack.value.length);
+      const history = () =>
+        page.evaluate(
+          () =>
+            (window as any).__isonimEditorVm.inspector.undoStack.value.length,
+        );
       const startHistory = await history();
       const gap = propertyRowInput(page, "gap");
       await gap.click();
@@ -2035,7 +2466,9 @@ test.describe("metacraft-web IsoNim editor consumer", () => {
         (node) => getComputedStyle(node).gap,
       );
       await page
-        .getByRole("button", { name: "Set responsive override for Mobile mode" })
+        .getByRole("button", {
+          name: "Set responsive override for Mobile mode",
+        })
         .click();
       await expect
         .poll(() => topbar.evaluate((node) => getComputedStyle(node).gap))
@@ -2046,7 +2479,8 @@ test.describe("metacraft-web IsoNim editor consumer", () => {
       await undoInspectorHistoryTo(page, startHistory);
 
       await page.goto("/");
-      const phone = page.locator('[data-toolbar-cluster="viewport"]')
+      const phone = page
+        .locator('[data-toolbar-cluster="viewport"]')
         .getByRole("button", { name: "Phone", exact: true });
       await phone.click();
       await expect(phone).toHaveAttribute("aria-pressed", "true");
@@ -2054,20 +2488,28 @@ test.describe("metacraft-web IsoNim editor consumer", () => {
       await selectTopbarElement(page, mobile.topbar);
       await expect(page.getByText("mobile").first()).toBeVisible();
       await page
-        .getByRole("button", { name: "Set responsive override for Mobile mode" })
+        .getByRole("button", {
+          name: "Set responsive override for Mobile mode",
+        })
         .click();
       await expect
-        .poll(() => mobile.topbar.evaluate((node) => getComputedStyle(node).gap))
+        .poll(() =>
+          mobile.topbar.evaluate((node) => getComputedStyle(node).gap),
+        )
         .toBe("28px");
 
       const mobileGap = await mobile.topbar.evaluate(
         (node) => getComputedStyle(node).gap,
       );
       await page
-        .getByRole("button", { name: "Set responsive override for Tablet mode" })
+        .getByRole("button", {
+          name: "Set responsive override for Tablet mode",
+        })
         .click();
       await expect
-        .poll(() => mobile.topbar.evaluate((node) => getComputedStyle(node).gap))
+        .poll(() =>
+          mobile.topbar.evaluate((node) => getComputedStyle(node).gap),
+        )
         .toBe(mobileGap);
     } finally {
       await restoreDevWorkspace(page, workspaceBefore);
@@ -2087,11 +2529,13 @@ test.describe("metacraft-web IsoNim editor consumer", () => {
     await page.goto("/");
     const workspaceBefore = snapshotDevWorkspace();
     try {
-
       const { editFrame, topbar, title } = await openTopbarInEditMode(page);
       await selectTopbarElement(page, topbar);
-      const history = () => page.evaluate(() =>
-        (window as any).__isonimEditorVm.inspector.undoStack.value.length);
+      const history = () =>
+        page.evaluate(
+          () =>
+            (window as any).__isonimEditorVm.inspector.undoStack.value.length,
+        );
       const startHistory = await history();
 
       const beforeWidth = await topbar.evaluate((node) =>
@@ -2172,19 +2616,23 @@ test.describe("metacraft-web IsoNim editor consumer", () => {
     await page.goto("/");
     const workspaceBefore = snapshotDevWorkspace();
     try {
-
       const { editFrame } = await openTopbarInEditMode(page);
       const title = editFrame.locator("h1.bo-title").first();
       await title.click({ force: true });
       await expect(title).toHaveAttribute("data-isonim-selected", "true");
-      const history = () => page.evaluate(() =>
-        (window as any).__isonimEditorVm.inspector.undoStack.value.length);
+      const history = () =>
+        page.evaluate(
+          () =>
+            (window as any).__isonimEditorVm.inspector.undoStack.value.length,
+        );
       const startHistory = await history();
 
       const choose = async (name: string) => {
         await title.click({ button: "right", force: true });
         await expect(
-          editFrame.getByRole("menu", { name: "Canvas selection context menu" }),
+          editFrame.getByRole("menu", {
+            name: "Canvas selection context menu",
+          }),
         ).toBeVisible();
         await editFrame.getByRole("menuitem", { name }).click();
         await expect(title).toHaveAttribute("data-isonim-selected", "true");
@@ -2240,12 +2688,14 @@ test.describe("metacraft-web IsoNim editor consumer", () => {
     await page.goto("/");
     const workspaceBefore = snapshotDevWorkspace();
     try {
-
       const { topbar } = await openTopbarInEditMode(page);
       const title = topbar.locator("h1.bo-title");
       await selectTopbarElement(page, topbar);
-      const history = () => page.evaluate(() =>
-        (window as any).__isonimEditorVm.inspector.undoStack.value.length);
+      const history = () =>
+        page.evaluate(
+          () =>
+            (window as any).__isonimEditorVm.inspector.undoStack.value.length,
+        );
       const startHistory = await history();
 
       const padRow = page.locator('[data-property-row="pad-top"]');
@@ -2257,7 +2707,9 @@ test.describe("metacraft-web IsoNim editor consumer", () => {
       );
       await paddingInput.press("ArrowUp");
       await expect
-        .poll(() => topbar.evaluate((node) => getComputedStyle(node).paddingTop))
+        .poll(() =>
+          topbar.evaluate((node) => getComputedStyle(node).paddingTop),
+        )
         .toBe("1px");
       const unit = padRow.getByRole("button", { name: "Cycle Pad top unit" });
       await unit.click();
@@ -2266,33 +2718,46 @@ test.describe("metacraft-web IsoNim editor consumer", () => {
       await paddingInput.fill("6*4px");
       await paddingInput.press("Enter");
       await expect
-        .poll(() => topbar.evaluate((node) => getComputedStyle(node).paddingTop))
+        .poll(() =>
+          topbar.evaluate((node) => getComputedStyle(node).paddingTop),
+        )
         .toBe("24px");
       await expect.poll(history).toBeGreaterThan(startHistory);
       await expectNoPendingSourceEdits(page);
       await undoInspectorHistoryTo(page, startHistory);
       await expect
-        .poll(() => topbar.evaluate((node) => getComputedStyle(node).paddingTop))
+        .poll(() =>
+          topbar.evaluate((node) => getComputedStyle(node).paddingTop),
+        )
         .toBe(originalPadding);
       await expectNoPendingSourceEdits(page);
 
       await selectTopbarElement(page, topbar);
       await page.locator('[data-fill-row-swatch="0"]').click();
-      const picker = page.getByLabel("Edit color", { exact: true }).filter({ visible: true });
+      const picker = page
+        .getByLabel("Edit color", { exact: true })
+        .filter({ visible: true });
       await expect(picker).toBeVisible();
       for (const channel of ["Red", "Green", "Blue"]) {
         await expect(picker.getByLabel(channel, { exact: true })).toBeVisible();
       }
       await expect(picker.getByLabel(/HSL/).first()).toBeVisible();
-      await expect(page.getByRole("button", { name: "Bind fill to variable" }).first())
-        .toBeVisible();
-      for (const [channel, value] of [["Red", "59"], ["Green", "130"], ["Blue", "246"]]) {
+      await expect(
+        page.getByRole("button", { name: "Bind fill to variable" }).first(),
+      ).toBeVisible();
+      for (const [channel, value] of [
+        ["Red", "59"],
+        ["Green", "130"],
+        ["Blue", "246"],
+      ]) {
         const field = picker.getByLabel(channel, { exact: true });
         await field.fill(value);
         await field.press("Enter");
       }
       await expect
-        .poll(() => topbar.evaluate((node) => getComputedStyle(node).backgroundColor))
+        .poll(() =>
+          topbar.evaluate((node) => getComputedStyle(node).backgroundColor),
+        )
         .toBe("rgb(59, 130, 246)");
       await page.keyboard.press("Escape");
       await expectNoPendingSourceEdits(page);
@@ -2308,7 +2773,9 @@ test.describe("metacraft-web IsoNim editor consumer", () => {
       await page.getByLabel("Scrub background-image gradient angle").click();
       await expect
         .poll(() =>
-          topbar.evaluate((node) => (node as HTMLElement).style.backgroundImage),
+          topbar.evaluate(
+            (node) => (node as HTMLElement).style.backgroundImage,
+          ),
         )
         .toContain("135deg");
 
@@ -2317,38 +2784,53 @@ test.describe("metacraft-web IsoNim editor consumer", () => {
       // metacraft_unwritable_corner_radius_scope_is_refused_when_chosen_not_at_save).
       // The owned local instance scope is the writable route.
       const radiusRow = page.locator('[data-property-row="corner-radius"]');
-      const localRadius = radiusRow.locator(
-        '[aria-label="Apply local instance scope for border-radius"]').first();
+      const localRadius = radiusRow
+        .locator('[aria-label="Apply local instance scope for border-radius"]')
+        .first();
       if (!(await localRadius.isVisible())) {
-        await radiusRow.locator('[aria-label^="More Choose source scope for "]').first().click();
+        await radiusRow
+          .locator('[aria-label^="More Choose source scope for "]')
+          .first()
+          .click();
       }
       await localRadius.click();
       const radius = propertyRowInput(page, "corner-radius");
       await radius.click();
       await radius.fill("12");
       await radius.press("Enter");
-      const corners = () => topbar.evaluate((node) => {
-        const style = getComputedStyle(node);
-        return [style.borderTopLeftRadius, style.borderTopRightRadius,
-          style.borderBottomRightRadius, style.borderBottomLeftRadius];
-      });
+      const corners = () =>
+        topbar.evaluate((node) => {
+          const style = getComputedStyle(node);
+          return [
+            style.borderTopLeftRadius,
+            style.borderTopRightRadius,
+            style.borderBottomRightRadius,
+            style.borderBottomLeftRadius,
+          ];
+        });
       await expect.poll(corners).toEqual(["12px", "12px", "12px", "12px"]);
       await expectNoPendingSourceEdits(page);
       // Linked/independent corners (spec "Specialized Editors — Border
       // radius", Appearance "individual-corner radii toggle"): the
       // Per-corner toggle reveals the four corner rows.
-      const perCorner = page.getByRole("checkbox", { name: "Toggle Per-corner" });
+      const perCorner = page.getByRole("checkbox", {
+        name: "Toggle Per-corner",
+      });
       await perCorner.click();
       await expect(perCorner).toBeChecked();
       for (const corner of ["tl", "tr", "br", "bl"]) {
-        await expect(page.locator(`[data-property-row="${corner}"]`)).toBeVisible();
+        await expect(
+          page.locator(`[data-property-row="${corner}"]`),
+        ).toBeVisible();
         await expect(propertyRowInput(page, corner)).toHaveValue("12");
       }
 
       await page
         .getByLabel("Show advanced transition-timing-function controls")
         .click();
-      await expect(page.getByLabel("Edit transition timing curve")).toBeVisible();
+      await expect(
+        page.getByLabel("Edit transition timing curve"),
+      ).toBeVisible();
       await expect(
         page.getByLabel("Run reduced-motion diagnostics"),
       ).toBeVisible();
@@ -2375,11 +2857,15 @@ test.describe("metacraft-web IsoNim editor consumer", () => {
       await title.click({ force: true });
       await expect(title).toHaveAttribute("data-isonim-selected", "true");
       const weight = page.locator('[data-property-row="font-weight"]');
-      await expect(weight.getByRole("button", { name: "Bind Font weight to variable" }))
-        .toBeVisible();
+      await expect(
+        weight.getByRole("button", { name: "Bind Font weight to variable" }),
+      ).toBeVisible();
       await weight.locator("[data-choice-group-trigger]").click();
-      await page.locator("[data-choice-group-option]").filter({ hasText: /^Bold$/ })
-        .first().click();
+      await page
+        .locator("[data-choice-group-option]")
+        .filter({ hasText: /^Bold$/ })
+        .first()
+        .click();
       await expect
         .poll(() => title.evaluate((node) => getComputedStyle(node).fontWeight))
         .toBe("700");
@@ -2414,30 +2900,51 @@ test.describe("metacraft-web IsoNim editor consumer", () => {
       await expectWritableBridge(page);
       const { topbar } = await openTopbarInEditMode(page);
       await selectTopbarElement(page, topbar);
-      const history = () => page.evaluate(() =>
-        (window as any).__isonimEditorVm.inspector.undoStack.value.length);
-      const pending = () => page.evaluate(() =>
-        (window as any).__isonimEditorVm.inspector.pendingSourceEdits.value.length);
+      const history = () =>
+        page.evaluate(
+          () =>
+            (window as any).__isonimEditorVm.inspector.undoStack.value.length,
+        );
+      const pending = () =>
+        page.evaluate(
+          () =>
+            (window as any).__isonimEditorVm.inspector.pendingSourceEdits.value
+              .length,
+        );
       const startHistory = await history();
-      const corners = () => topbar.evaluate((node) => {
-        const style = getComputedStyle(node);
-        return [style.borderTopLeftRadius, style.borderTopRightRadius,
-          style.borderBottomRightRadius, style.borderBottomLeftRadius];
-      });
+      const corners = () =>
+        topbar.evaluate((node) => {
+          const style = getComputedStyle(node);
+          return [
+            style.borderTopLeftRadius,
+            style.borderTopRightRadius,
+            style.borderBottomRightRadius,
+            style.borderBottomLeftRadius,
+          ];
+        });
       const before = await corners();
 
       const radiusRow = page.locator('[data-property-row="corner-radius"]');
       await radiusRow.scrollIntoViewIfNeeded();
-      const tokenChip = radiusRow.locator(
-        '[aria-label="Apply component token scope for border-radius"]').first();
+      const tokenChip = radiusRow
+        .locator('[aria-label="Apply component token scope for border-radius"]')
+        .first();
       if (!(await tokenChip.isVisible())) {
-        await radiusRow.locator('[aria-label^="More Choose source scope for "]').first().click();
+        await radiusRow
+          .locator('[aria-label^="More Choose source scope for "]')
+          .first()
+          .click();
       }
       await expect(tokenChip).toBeVisible();
       await expect(tokenChip).toHaveAttribute("aria-disabled", "true");
-      await expect(tokenChip).toHaveAttribute("data-source-scope-editable", "false");
-      await expect(tokenChip).toHaveAttribute("title",
-        /No project schema or source map entry can safely represent this edit/);
+      await expect(tokenChip).toHaveAttribute(
+        "data-source-scope-editable",
+        "false",
+      );
+      await expect(tokenChip).toHaveAttribute(
+        "title",
+        /No project schema or source map entry can safely represent this edit/,
+      );
       // Choosing it changes nothing: not the scope, the history or the journal.
       await tokenChip.click({ force: true });
       await expect(tokenChip).toHaveAttribute("aria-pressed", "false");
@@ -2446,10 +2953,17 @@ test.describe("metacraft-web IsoNim editor consumer", () => {
       await page.keyboard.press("Escape");
 
       // The scope the row will commit at is one this host can write.
-      const pressed = radiusRow.locator(
-        '[data-source-scope-kind][aria-pressed="true"]').first();
-      await expect(pressed).toHaveAttribute("data-source-scope-editable", "true");
-      await expect(pressed).not.toHaveAttribute("data-source-scope-kind", "sskComponentToken");
+      const pressed = radiusRow
+        .locator('[data-source-scope-kind][aria-pressed="true"]')
+        .first();
+      await expect(pressed).toHaveAttribute(
+        "data-source-scope-editable",
+        "true",
+      );
+      await expect(pressed).not.toHaveAttribute(
+        "data-source-scope-kind",
+        "sskComponentToken",
+      );
 
       const radius = propertyRowInput(page, "corner-radius");
       await radius.click();
@@ -2459,7 +2973,9 @@ test.describe("metacraft-web IsoNim editor consumer", () => {
       await expect.poll(history).toBe(startHistory + 1);
       await expectNoPendingSourceEdits(page);
       await expect(radius).toHaveValue("12");
-      const perCorner = page.getByRole("checkbox", { name: "Toggle Per-corner" });
+      const perCorner = page.getByRole("checkbox", {
+        name: "Toggle Per-corner",
+      });
       await perCorner.click();
       await expect(perCorner).toBeChecked();
       for (const corner of ["tl", "tr", "br", "bl"]) {
@@ -2498,8 +3014,10 @@ test.describe("metacraft-web IsoNim editor consumer", () => {
       await page.setViewportSize(viewport);
       const inspector = page.locator('[data-sidebar-content="inspector"]');
       const inspectorVisible = await inspector.isVisible();
-      test.info().annotations.push({ type: "viewport",
-        description: `${viewport.width}: inspector ${inspectorVisible ? "visible" : "hidden"}` });
+      test.info().annotations.push({
+        type: "viewport",
+        description: `${viewport.width}: inspector ${inspectorVisible ? "visible" : "hidden"}`,
+      });
       if (!inspectorVisible) {
         await expect
           .poll(() =>
@@ -2508,10 +3026,14 @@ test.describe("metacraft-web IsoNim editor consumer", () => {
             ),
           )
           .toBe(true);
-        await expect(page.locator("[data-property-row]:visible")).toHaveCount(0);
+        await expect(page.locator("[data-property-row]:visible")).toHaveCount(
+          0,
+        );
         continue;
       }
-      const typography = page.locator('[data-inspector-section-header="typography"]');
+      const typography = page.locator(
+        '[data-inspector-section-header="typography"]',
+      );
       if ((await typography.getAttribute("aria-expanded")) !== "true") {
         await typography.click();
       }
@@ -2523,61 +3045,70 @@ test.describe("metacraft-web IsoNim editor consumer", () => {
       const rows = await inspector
         .locator("[data-property-row]")
         .evaluateAll((nodes) =>
-          nodes.filter((node) => (node as HTMLElement).offsetParent !== null)
+          nodes
+            .filter((node) => (node as HTMLElement).offsetParent !== null)
             .map((node) => {
-            const rect = node.getBoundingClientRect();
-            // The row's controls are the slots of its line (label, value,
-            // bind, more); the scope strip and message stack below it.
-            const slots = Array.from(node.querySelectorAll(
-              ":scope > [data-property-row-line] > *, :scope > :not([data-property-row-line])"));
-            const escapes = slots.filter((child) => {
-              const r = child.getBoundingClientRect();
-              return r.width > 0 && (r.left < rect.left - 0.5 || r.right > rect.right + 0.5);
-            }).length;
-            const children = slots.map((child) => {
-              const childRect = child.getBoundingClientRect();
-              return {
-                left: childRect.left,
-                top: childRect.top,
-                right: childRect.right,
-                bottom: childRect.bottom,
-                width: childRect.width,
-                height: childRect.height,
-              };
-            });
-            let overlaps = 0;
-            for (let i = 0; i < children.length; i += 1) {
-              for (let j = i + 1; j < children.length; j += 1) {
-                const a = children[i];
-                const b = children[j];
-                if (
-                  a.width > 0 &&
-                  b.width > 0 &&
-                  a.left < b.right &&
-                  a.right > b.left &&
-                  a.top < b.bottom &&
-                  a.bottom > b.top
-                ) {
-                  overlaps += 1;
+              const rect = node.getBoundingClientRect();
+              // The row's controls are the slots of its line (label, value,
+              // bind, more); the scope strip and message stack below it.
+              const slots = Array.from(
+                node.querySelectorAll(
+                  ":scope > [data-property-row-line] > *, :scope > :not([data-property-row-line])",
+                ),
+              );
+              const escapes = slots.filter((child) => {
+                const r = child.getBoundingClientRect();
+                return (
+                  r.width > 0 &&
+                  (r.left < rect.left - 0.5 || r.right > rect.right + 0.5)
+                );
+              }).length;
+              const children = slots.map((child) => {
+                const childRect = child.getBoundingClientRect();
+                return {
+                  left: childRect.left,
+                  top: childRect.top,
+                  right: childRect.right,
+                  bottom: childRect.bottom,
+                  width: childRect.width,
+                  height: childRect.height,
+                };
+              });
+              let overlaps = 0;
+              for (let i = 0; i < children.length; i += 1) {
+                for (let j = i + 1; j < children.length; j += 1) {
+                  const a = children[i];
+                  const b = children[j];
+                  if (
+                    a.width > 0 &&
+                    b.width > 0 &&
+                    a.left < b.right &&
+                    a.right > b.left &&
+                    a.top < b.bottom &&
+                    a.bottom > b.top
+                  ) {
+                    overlaps += 1;
+                  }
                 }
               }
-            }
-            return {
-              row: node.getAttribute("data-property-row"),
-              left: rect.left,
-              right: rect.right,
-              top: Math.round(rect.top),
-              bottom: rect.bottom,
-              width: rect.width,
-              overlaps,
-              escapes,
-            };
-          }),
+              return {
+                row: node.getAttribute("data-property-row"),
+                left: rect.left,
+                right: rect.right,
+                top: Math.round(rect.top),
+                bottom: rect.bottom,
+                width: rect.width,
+                overlaps,
+                escapes,
+              };
+            }),
         );
       expect(rows.length).toBeGreaterThan(0);
       for (const row of rows) {
         expect(row.left, row.row ?? "").toBeGreaterThanOrEqual(0);
-        expect(row.right, row.row ?? "").toBeLessThanOrEqual(viewport.width + 1);
+        expect(row.right, row.row ?? "").toBeLessThanOrEqual(
+          viewport.width + 1,
+        );
         expect(row.overlaps, row.row ?? "").toBe(0);
         expect(row.escapes, row.row ?? "").toBe(0);
       }
@@ -2585,14 +3116,22 @@ test.describe("metacraft-web IsoNim editor consumer", () => {
       // full-width dense-row floor now applies to each line, and rows on a
       // line must not overlap one another.
       const lines = new Map<number, typeof rows>();
-      for (const row of rows) lines.set(row.top, [...(lines.get(row.top) ?? []), row]);
+      for (const row of rows)
+        lines.set(row.top, [...(lines.get(row.top) ?? []), row]);
       for (const [top, line] of lines) {
-        const span = Math.max(...line.map(r => r.right)) - Math.min(...line.map(r => r.left));
-        expect(span, `line at ${top}: ${line.map(r => r.row).join(",")}`).toBeGreaterThan(180);
+        const span =
+          Math.max(...line.map((r) => r.right)) -
+          Math.min(...line.map((r) => r.left));
+        expect(
+          span,
+          `line at ${top}: ${line.map((r) => r.row).join(",")}`,
+        ).toBeGreaterThan(180);
         const ordered = [...line].sort((x, y) => x.left - y.left);
         for (let i = 1; i < ordered.length; i += 1) {
-          expect(ordered[i].left, `${ordered[i - 1].row}|${ordered[i].row}`)
-            .toBeGreaterThanOrEqual(ordered[i - 1].right - 0.5);
+          expect(
+            ordered[i].left,
+            `${ordered[i - 1].row}|${ordered[i].row}`,
+          ).toBeGreaterThanOrEqual(ordered[i - 1].right - 0.5);
         }
       }
 
@@ -2632,7 +3171,10 @@ test.describe("metacraft-web IsoNim editor consumer", () => {
         .getByTestId("back-office-app"),
     ).toBeVisible();
 
-    await page.locator('[data-toolbar-cluster="viewport"]').getByRole("button", { name: "Phone", exact: true }).click();
+    await page
+      .locator('[data-toolbar-cluster="viewport"]')
+      .getByRole("button", { name: "Phone", exact: true })
+      .click();
     await expect(page).toHaveURL(/viewport=phone/);
     await expect(page.getByLabel("Preview device frame")).toHaveCSS(
       "width",
@@ -2736,16 +3278,18 @@ test.describe("metacraft-web IsoNim editor consumer", () => {
 // through the real CAS bridge, not simulated inspector or compiler results.
 // A temporary sibling DOM reference uses independent browser font-unit CSS;
 // it measures expected em/ex pixels without changing editor models.
-test("metacraft_topbar_padding_edges_survive_actual_save_and_reload", async ({ page }) => {
+test("metacraft_topbar_padding_edges_survive_actual_save_and_reload", async ({
+  page,
+}) => {
   // Three full reloads and six real bridge writes: 17-20 s on an idle host,
   // 26 s and a 30 s timeout under a loaded full run (UX-M3 act-time refusals
   // review). The default 30 s budget measured the host, not the editor; the
   // sibling-padding case below already carries its own budget.
   test.setTimeout(90_000);
   const errors: string[] = [];
-  page.on("pageerror", error => errors.push(error.message));
+  page.on("pageerror", (error) => errors.push(error.message));
   const writes: any[] = [];
-  page.on("request", request => {
+  page.on("request", (request) => {
     if (request.url().endsWith("/__isonim-dev-bridge/transaction")) {
       writes.push(request.postDataJSON());
     }
@@ -2754,121 +3298,226 @@ test("metacraft_topbar_padding_edges_survive_actual_save_and_reload", async ({ p
   const original = readFileSync(devBridgeSourceFile, "utf8");
   let saved = original;
   const selectTopbar = async () => {
-    await page.getByRole("button", {
-      name: "Select story Operational components / Topbar", exact: true,
-    }).click();
-    await page.locator('[data-toolbar-cluster="mode"] [data-choice-group-label="View"]').click();
-    await page.locator('[data-toolbar-cluster="mode"] [data-choice-group-label="Edit"]').click();
-    const topbar = page.frameLocator('iframe[title="Editable component preview"]')
+    await page
+      .getByRole("button", {
+        name: "Select story Operational components / Topbar",
+        exact: true,
+      })
+      .click();
+    await page
+      .locator('[data-toolbar-cluster="mode"] [data-choice-group-label="View"]')
+      .click();
+    await page
+      .locator('[data-toolbar-cluster="mode"] [data-choice-group-label="Edit"]')
+      .click();
+    const topbar = page
+      .frameLocator('iframe[title="Editable component preview"]')
       .getByTestId("component-topbar");
     await expect(topbar).toBeVisible();
-    await expect.poll(() => topbar.evaluate(node => node.ownerDocument.readyState)).toBe("complete");
+    await expect
+      .poll(() => topbar.evaluate((node) => node.ownerDocument.readyState))
+      .toBe("complete");
     // A restored same-ID selection is already selected in the VM. Choose the
     // real child first so the physical header selection reaches the new frame.
-    await page.getByRole("button", { name: /h1\.bo-title.*Operations dashboard/ }).click();
-    await page.getByRole("button", {
-      name: "header[data-testid=component-topbar]", exact: true,
-    }).click();
+    await page
+      .getByRole("button", { name: /h1\.bo-title.*Operations dashboard/ })
+      .click();
+    await page
+      .getByRole("button", {
+        name: "header[data-testid=component-topbar]",
+        exact: true,
+      })
+      .click();
     await expect(topbar).toHaveAttribute("data-isonim-selected", "true");
     return topbar;
   };
-  const history = async () => page.evaluate(() => {
-    const inspector = (window as any).__isonimEditorVm.inspector;
-    if (!Array.isArray(inspector.undoStack.value) || !Array.isArray(inspector.redoStack.value)) {
-      throw new Error("Missing actual inspector history");
-    }
-    return { undo: inspector.undoStack.value.length, redo: inspector.redoStack.value.length };
-  });
-  const paddings = async (topbar) => topbar.evaluate(node => {
-    const style = getComputedStyle(node);
-    return [style.paddingTop, style.paddingRight, style.paddingBottom, style.paddingLeft];
-  });
+  const history = async () =>
+    page.evaluate(() => {
+      const inspector = (window as any).__isonimEditorVm.inspector;
+      if (
+        !Array.isArray(inspector.undoStack.value) ||
+        !Array.isArray(inspector.redoStack.value)
+      ) {
+        throw new Error("Missing actual inspector history");
+      }
+      return {
+        undo: inspector.undoStack.value.length,
+        redo: inspector.redoStack.value.length,
+      };
+    });
+  const paddings = async (topbar) =>
+    topbar.evaluate((node) => {
+      const style = getComputedStyle(node);
+      return [
+        style.paddingTop,
+        style.paddingRight,
+        style.paddingBottom,
+        style.paddingLeft,
+      ];
+    });
   try {
     let topbar = await selectTopbar();
-    await expect.poll(() => paddings(topbar)).toEqual(["0px", "0px", "0px", "0px"]);
+    await expect
+      .poll(() => paddings(topbar))
+      .toEqual(["0px", "0px", "0px", "0px"]);
     const beforeHistory = await history();
     let commits = 0;
-    for (const [edge, value] of [["top", "17"], ["right", "19"], ["bottom", "23"], ["left", "29"]]) {
-      const input = page.locator(`[data-property-row="pad-${edge}"] input[data-property-row-input]`);
+    for (const [edge, value] of [
+      ["top", "17"],
+      ["right", "19"],
+      ["bottom", "23"],
+      ["left", "29"],
+    ]) {
+      const input = page.locator(
+        `[data-property-row="pad-${edge}"] input[data-property-row-input]`,
+      );
       await expect(input).toBeEditable();
       await input.click();
       await input.fill(value);
       await input.press("Enter");
-      await expect.poll(() => readFileSync(devBridgeSourceFile, "utf8"))
-        .toContain(`# isonim-editor dom.component-topbar.padding-${edge} padding-${edge}=${value}px`);
+      await expect
+        .poll(() => readFileSync(devBridgeSourceFile, "utf8"))
+        .toContain(
+          `# isonim-editor dom.component-topbar.padding-${edge} padding-${edge}=${value}px`,
+        );
       commits++;
-      await expect.poll(history).toEqual({ undo: beforeHistory.undo + commits, redo: 0 });
+      await expect
+        .poll(history)
+        .toEqual({ undo: beforeHistory.undo + commits, redo: 0 });
     }
     saved = readFileSync(devBridgeSourceFile, "utf8");
     expect(saved).not.toBe(original);
-    expect(writes.filter(write => write.mode === "apply")).toHaveLength(4);
-    await expect.poll(() => paddings(topbar)).toEqual(["17px", "19px", "23px", "29px"]);
+    expect(writes.filter((write) => write.mode === "apply")).toHaveLength(4);
+    await expect
+      .poll(() => paddings(topbar))
+      .toEqual(["17px", "19px", "23px", "29px"]);
     await page.reload();
     topbar = await selectTopbar();
-    await expect.poll(() => paddings(topbar)).toEqual(["17px", "19px", "23px", "29px"]);
+    await expect
+      .poll(() => paddings(topbar))
+      .toEqual(["17px", "19px", "23px", "29px"]);
     expect(readFileSync(devBridgeSourceFile, "utf8")).toBe(saved);
     // Untouched focus/Tab must not append another marker or source operation.
-    const input = page.locator('[data-property-row="pad-top"] input[data-property-row-input]');
+    const input = page.locator(
+      '[data-property-row="pad-top"] input[data-property-row-input]',
+    );
     await expect(input).toHaveValue("17");
     const untouchedHistory = await history();
     await input.click();
     await input.press("Tab");
     expect(await history()).toEqual(untouchedHistory);
     expect(readFileSync(devBridgeSourceFile, "utf8")).toBe(saved);
-    expect(writes.filter(write => write.mode === "apply")).toHaveLength(4);
+    expect(writes.filter((write) => write.mode === "apply")).toHaveLength(4);
     expect(errors).toEqual([]);
-    const cascade = saved +
+    const cascade =
+      saved +
       "# isonim-editor dom.component-panel-header.padding padding=90px\n" +
       "# isonim-editor dom.component-topbar.padding padding=3px 4px\n" +
       "# isonim-editor dom.component-topbar.padding-left padding-left=31px\n" +
       "# isonim-editor dom.component-topbar.padding-top padding-top=NaNpx\n" +
       "# isonim-editor dom.component-topbar.padding padding=9px; color:red\n";
-    const applied = await page.evaluate(async ({ beforeText, afterText }) => {
-      const response = await fetch("/__isonim-dev-bridge/transaction", {
-        method: "POST", headers: { "content-type": "application/json" },
-        body: JSON.stringify({ mode: "apply", files: [{
-          file: "apps/back-office/src/backoffice_ui/components.nim", beforeText, afterText,
-        }] }),
-      });
-      return response.json();
-    }, { beforeText: saved, afterText: cascade });
+    const applied = await page.evaluate(
+      async ({ beforeText, afterText }) => {
+        const response = await fetch("/__isonim-dev-bridge/transaction", {
+          method: "POST",
+          headers: { "content-type": "application/json" },
+          body: JSON.stringify({
+            mode: "apply",
+            files: [
+              {
+                file: "apps/back-office/src/backoffice_ui/components.nim",
+                beforeText,
+                afterText,
+              },
+            ],
+          }),
+        });
+        return response.json();
+      },
+      { beforeText: saved, afterText: cascade },
+    );
     expect(applied.ok).toBe(true);
     expect(readFileSync(devBridgeSourceFile, "utf8")).toBe(cascade);
     await page.reload();
     topbar = await selectTopbar();
-    await expect.poll(() => paddings(topbar)).toEqual(["3px", "4px", "3px", "31px"]);
+    await expect
+      .poll(() => paddings(topbar))
+      .toEqual(["3px", "4px", "3px", "31px"]);
     expect(readFileSync(devBridgeSourceFile, "utf8")).toBe(cascade);
     expect(errors).toEqual([]);
     // Exercise the actual compiled pure reader, including exponent/unit
     // boundaries, against fixed literal CSS expectations (no parser mirror).
-    for (const unit of ["px", "em", "rem", "%", "vw", "vh", "vmin", "vmax", "ch", "ex"]) {
+    for (const unit of [
+      "px",
+      "em",
+      "rem",
+      "%",
+      "vw",
+      "vh",
+      "vmin",
+      "vmax",
+      "ch",
+      "ex",
+    ]) {
       for (const magnitude of ["1.25", "1e2", "1.25e-2", "0"]) {
         const value = magnitude + unit;
-        const declarations = await page.evaluate(value =>
-          (window as any).__metacraftTopbarPaddingDeclarations(
-            "# isonim-editor dom.component-topbar.padding-top padding-top=" + value), value);
+        const declarations = await page.evaluate(
+          (value) =>
+            (window as any).__metacraftTopbarPaddingDeclarations(
+              "# isonim-editor dom.component-topbar.padding-top padding-top=" +
+                value,
+            ),
+          value,
+        );
         expect(declarations).toBe("padding-top:" + value + " !important;");
       }
     }
-    for (const value of ["1epx", "1e+em", "1e-ex", "1e2remjunk", "1.25.3em", "1e309em"]) {
-      expect(await page.evaluate(value =>
-        (window as any).__metacraftTopbarPaddingDeclarations(
-          "# isonim-editor dom.component-topbar.padding-top padding-top=" + value), value)).toBe("");
+    for (const value of [
+      "1epx",
+      "1e+em",
+      "1e-ex",
+      "1e2remjunk",
+      "1.25.3em",
+      "1e309em",
+    ]) {
+      expect(
+        await page.evaluate(
+          (value) =>
+            (window as any).__metacraftTopbarPaddingDeclarations(
+              "# isonim-editor dom.component-topbar.padding-top padding-top=" +
+                value,
+            ),
+          value,
+        ),
+      ).toBe("");
     }
-    const fontUnits = cascade + "# isonim-editor dom.component-topbar.padding padding=1.25em 1.25ex\n";
-    const unitApplied = await page.evaluate(async ({ beforeText, afterText }) => {
-      const response = await fetch("/__isonim-dev-bridge/transaction", {
-        method: "POST", headers: { "content-type": "application/json" },
-        body: JSON.stringify({ mode: "apply", files: [{
-          file: "apps/back-office/src/backoffice_ui/components.nim", beforeText, afterText,
-        }] }),
-      });
-      return response.json();
-    }, { beforeText: cascade, afterText: fontUnits });
+    const fontUnits =
+      cascade +
+      "# isonim-editor dom.component-topbar.padding padding=1.25em 1.25ex\n";
+    const unitApplied = await page.evaluate(
+      async ({ beforeText, afterText }) => {
+        const response = await fetch("/__isonim-dev-bridge/transaction", {
+          method: "POST",
+          headers: { "content-type": "application/json" },
+          body: JSON.stringify({
+            mode: "apply",
+            files: [
+              {
+                file: "apps/back-office/src/backoffice_ui/components.nim",
+                beforeText,
+                afterText,
+              },
+            ],
+          }),
+        });
+        return response.json();
+      },
+      { beforeText: cascade, afterText: fontUnits },
+    );
     expect(unitApplied.ok).toBe(true);
     await page.reload();
     topbar = await selectTopbar();
-    const unitStyles = await topbar.evaluate(node => {
+    const unitStyles = await topbar.evaluate((node) => {
       const style = getComputedStyle(node);
       const reference = node.ownerDocument.createElement("div");
       reference.style.font = style.font;
@@ -2877,11 +3526,25 @@ test("metacraft_topbar_padding_edges_survive_actual_save_and_reload", async ({ p
       try {
         const expected = getComputedStyle(reference);
         return {
-          actual: [style.paddingTop, style.paddingRight, style.paddingBottom, style.paddingLeft],
-          expected: [expected.paddingTop, expected.paddingRight, expected.paddingBottom, expected.paddingLeft],
-          rule: node.ownerDocument.getElementById("metacraft-editor-topbar-padding")!.textContent,
+          actual: [
+            style.paddingTop,
+            style.paddingRight,
+            style.paddingBottom,
+            style.paddingLeft,
+          ],
+          expected: [
+            expected.paddingTop,
+            expected.paddingRight,
+            expected.paddingBottom,
+            expected.paddingLeft,
+          ],
+          rule: node.ownerDocument.getElementById(
+            "metacraft-editor-topbar-padding",
+          )!.textContent,
         };
-      } finally { reference.remove(); }
+      } finally {
+        reference.remove();
+      }
     });
     expect(unitStyles.actual).toEqual(unitStyles.expected);
     expect(unitStyles.actual[0]).not.toBe("0px");
@@ -2893,14 +3556,19 @@ test("metacraft_topbar_padding_edges_survive_actual_save_and_reload", async ({ p
     // Through the bridge while the page is alive, else written directly: a
     // timeout closes the page, and a revert that needed it left the markers
     // in the dev workspace for the next case to start from.
-    await restoreDevBridgeFile(page,
+    await restoreDevBridgeFile(
+      page,
       "apps/back-office/src/backoffice_ui/components.nim",
-      devBridgeSourceFile, original);
+      devBridgeSourceFile,
+      original,
+    );
     expect(readFileSync(devBridgeSourceFile, "utf8")).toBe(original);
   }
   await page.reload();
   const restoredTopbar = await selectTopbar();
-  await expect.poll(() => paddings(restoredTopbar)).toEqual(["0px", "0px", "0px", "0px"]);
+  await expect
+    .poll(() => paddings(restoredTopbar))
+    .toEqual(["0px", "0px", "0px", "0px"]);
   expect(errors).toEqual([]);
 });
 
@@ -2913,15 +3581,17 @@ test("metacraft_topbar_padding_edges_survive_actual_save_and_reload", async ({ p
 // Ctrl/Cmd+Shift+Z and by pointer clicks on the command palette's Undo/Redo
 // options. The VM is only read (history counts). Expected file contents are
 // literal marker lines, not values recomputed by an editor model.
-test("metacraft_topbar_sibling_padding_undo_restores_only_its_own_marker", async ({ page }) => {
+test("metacraft_topbar_sibling_padding_undo_restores_only_its_own_marker", async ({
+  page,
+}) => {
   // Twelve auto-saved writes (each after the editor's 900 ms debounce),
   // three reloads and a refusal hold; the shared 30 s default is too small
   // for the sequence, so this case declares its own explicit budget.
   test.setTimeout(150_000);
   const errors: string[] = [];
-  page.on("pageerror", error => errors.push(error.message));
+  page.on("pageerror", (error) => errors.push(error.message));
   const writes: any[] = [];
-  page.on("request", request => {
+  page.on("request", (request) => {
     if (request.url().endsWith("/__isonim-dev-bridge/transaction")) {
       writes.push(request.postDataJSON());
     }
@@ -2931,42 +3601,73 @@ test("metacraft_topbar_sibling_padding_undo_restores_only_its_own_marker", async
   const marker = (edge: string, value: string) =>
     `# isonim-editor dom.component-topbar.padding-${edge} padding-${edge}=${value}\n`;
   // The writer appends after the trimmed file and one newline.
-  const append = (text: string, line: string) => text.replace(/\s+$/, "") + "\n" + line;
+  const append = (text: string, line: string) =>
+    text.replace(/\s+$/, "") + "\n" + line;
   await page.goto("/?writeBridge=1");
   const original = read();
   const afterTop = append(original, marker("top", "6px"));
   const afterBoth = append(afterTop, marker("left", "6px"));
-  const applies = () => writes.filter(write => write.mode === "apply").length;
+  const applies = () => writes.filter((write) => write.mode === "apply").length;
   const selectTopbar = async () => {
-    await page.getByRole("button", {
-      name: "Select story Operational components / Topbar", exact: true,
-    }).click();
-    await page.locator('[data-toolbar-cluster="mode"] [data-choice-group-label="View"]').click();
-    await page.locator('[data-toolbar-cluster="mode"] [data-choice-group-label="Edit"]').click();
-    const topbar = page.frameLocator('iframe[title="Editable component preview"]')
+    await page
+      .getByRole("button", {
+        name: "Select story Operational components / Topbar",
+        exact: true,
+      })
+      .click();
+    await page
+      .locator('[data-toolbar-cluster="mode"] [data-choice-group-label="View"]')
+      .click();
+    await page
+      .locator('[data-toolbar-cluster="mode"] [data-choice-group-label="Edit"]')
+      .click();
+    const topbar = page
+      .frameLocator('iframe[title="Editable component preview"]')
       .getByTestId("component-topbar");
     await expect(topbar).toBeVisible();
-    await expect.poll(() => topbar.evaluate(node => node.ownerDocument.readyState)).toBe("complete");
-    await page.getByRole("button", { name: /h1\.bo-title.*Operations dashboard/ }).click();
-    await page.getByRole("button", {
-      name: "header[data-testid=component-topbar]", exact: true,
-    }).click();
+    await expect
+      .poll(() => topbar.evaluate((node) => node.ownerDocument.readyState))
+      .toBe("complete");
+    await page
+      .getByRole("button", { name: /h1\.bo-title.*Operations dashboard/ })
+      .click();
+    await page
+      .getByRole("button", {
+        name: "header[data-testid=component-topbar]",
+        exact: true,
+      })
+      .click();
     await expect(topbar).toHaveAttribute("data-isonim-selected", "true");
     return topbar;
   };
-  const history = async () => page.evaluate(() => {
-    const inspector = (window as any).__isonimEditorVm.inspector;
-    if (!Array.isArray(inspector.undoStack.value) || !Array.isArray(inspector.redoStack.value)) {
-      throw new Error("Missing actual inspector history");
-    }
-    return { undo: inspector.undoStack.value.length, redo: inspector.redoStack.value.length };
-  });
-  const paddings = async (topbar) => topbar.evaluate(node => {
-    const style = getComputedStyle(node);
-    return [style.paddingTop, style.paddingRight, style.paddingBottom, style.paddingLeft];
-  });
+  const history = async () =>
+    page.evaluate(() => {
+      const inspector = (window as any).__isonimEditorVm.inspector;
+      if (
+        !Array.isArray(inspector.undoStack.value) ||
+        !Array.isArray(inspector.redoStack.value)
+      ) {
+        throw new Error("Missing actual inspector history");
+      }
+      return {
+        undo: inspector.undoStack.value.length,
+        redo: inspector.redoStack.value.length,
+      };
+    });
+  const paddings = async (topbar) =>
+    topbar.evaluate((node) => {
+      const style = getComputedStyle(node);
+      return [
+        style.paddingTop,
+        style.paddingRight,
+        style.paddingBottom,
+        style.paddingLeft,
+      ];
+    });
   const commit = async (edge: string, value: string) => {
-    const input = page.locator(`[data-property-row="pad-${edge}"] input[data-property-row-input]`);
+    const input = page.locator(
+      `[data-property-row="pad-${edge}"] input[data-property-row-input]`,
+    );
     await expect(input).toBeEditable();
     await input.click();
     await input.fill(value);
@@ -2975,40 +3676,58 @@ test("metacraft_topbar_sibling_padding_undo_restores_only_its_own_marker", async
   // Keyboard history needs a non-editable focus target; the shortcut is
   // deliberately ignored while a text field owns the keys.
   // The selected Layers row is a real, non-editable control.
-  const layersRow = () => page.getByRole("button", {
-    name: "header[data-testid=component-topbar]", exact: true,
-  });
+  const layersRow = () =>
+    page.getByRole("button", {
+      name: "header[data-testid=component-topbar]",
+      exact: true,
+    });
   const keyboardHistory = async (redo: boolean) => {
     const target = layersRow();
     await target.focus();
     await expect(target).toBeFocused();
-    await page.keyboard.press(redo ? "ControlOrMeta+Shift+Z" : "ControlOrMeta+Z");
+    await page.keyboard.press(
+      redo ? "ControlOrMeta+Shift+Z" : "ControlOrMeta+Z",
+    );
   };
   const pointerHistory = async (redo: boolean) => {
     const target = layersRow();
     await target.focus();
     await page.keyboard.press("ControlOrMeta+K");
     const option = page.locator(
-      `[data-editor-command-option="true"][data-command-kind="${redo ? "eckRedo" : "eckUndo"}"]`);
+      `[data-editor-command-option="true"][data-command-kind="${redo ? "eckRedo" : "eckUndo"}"]`,
+    );
     await expect(option).toBeVisible();
     await option.click();
-    await expect(page.locator('[data-editor-command-palette="true"]'))
-      .toHaveAttribute("aria-hidden", "true");
+    await expect(
+      page.locator('[data-editor-command-palette="true"]'),
+    ).toHaveAttribute("aria-hidden", "true");
   };
   const settled = async (text: string, hist, pads, topbar) => {
     await expect.poll(read).toBe(text);
     await expect.poll(history).toEqual(hist);
     await expect.poll(() => paddings(topbar)).toEqual(pads);
     // The auto-save debounce has nothing left to write.
-    await expect.poll(() => page.evaluate(() =>
-      (window as any).__isonimEditorVm.inspector.pendingSourceEdits.value.length)).toBe(0);
+    await expect
+      .poll(() =>
+        page.evaluate(
+          () =>
+            (window as any).__isonimEditorVm.inspector.pendingSourceEdits.value
+              .length,
+        ),
+      )
+      .toBe(0);
     expect(read()).toBe(text);
   };
   try {
     let topbar = await selectTopbar();
-    await expect.poll(() => paddings(topbar)).toEqual(["0px", "0px", "0px", "0px"]);
+    await expect
+      .poll(() => paddings(topbar))
+      .toEqual(["0px", "0px", "0px", "0px"]);
     const h0 = await history();
-    const at = (undo: number, redo: number) => ({ undo: h0.undo + undo, redo: h0.redo + redo });
+    const at = (undo: number, redo: number) => ({
+      undo: h0.undo + undo,
+      redo: h0.redo + redo,
+    });
     const zero = ["0px", "0px", "0px", "0px"];
     const top = ["6px", "0px", "0px", "0px"];
     const both = ["6px", "0px", "0px", "6px"];
@@ -3038,15 +3757,25 @@ test("metacraft_topbar_sibling_padding_undo_restores_only_its_own_marker", async
 
     // Unsafe restoration: someone else rewrites padding-left's written line.
     // Undo must refuse, say why, and change nothing.
-    const external = afterBoth.replace(marker("left", "6px"), marker("left", "7px"));
-    const rewrite = async (beforeText: string, afterText: string) => page.evaluate(
-      async ({ file, beforeText, afterText }) => {
-        const response = await fetch("/__isonim-dev-bridge/transaction", {
-          method: "POST", headers: { "content-type": "application/json" },
-          body: JSON.stringify({ mode: "apply", files: [{ file, beforeText, afterText }] }),
-        });
-        return response.json();
-      }, { file: sourceFile, beforeText, afterText });
+    const external = afterBoth.replace(
+      marker("left", "6px"),
+      marker("left", "7px"),
+    );
+    const rewrite = async (beforeText: string, afterText: string) =>
+      page.evaluate(
+        async ({ file, beforeText, afterText }) => {
+          const response = await fetch("/__isonim-dev-bridge/transaction", {
+            method: "POST",
+            headers: { "content-type": "application/json" },
+            body: JSON.stringify({
+              mode: "apply",
+              files: [{ file, beforeText, afterText }],
+            }),
+          });
+          return response.json();
+        },
+        { file: sourceFile, beforeText, afterText },
+      );
     expect((await rewrite(afterBoth, external)).ok).toBe(true);
     const appliesBeforeRefusal = applies();
     await keyboardHistory(false);
@@ -3075,17 +3804,29 @@ test("metacraft_topbar_sibling_padding_undo_restores_only_its_own_marker", async
     const afterBottom = append(afterTop, marker("bottom", "6px"));
     const topBottom = ["6px", "0px", "6px", "0px"];
     await commit("bottom", "6");
-    await settled(afterBottom, { undo: r0.undo + 1, redo: r0.redo }, topBottom, topbar);
+    await settled(
+      afterBottom,
+      { undo: r0.undo + 1, redo: r0.redo },
+      topBottom,
+      topbar,
+    );
     await keyboardHistory(false);
     await settled(afterTop, { undo: r0.undo, redo: r0.redo + 1 }, top, topbar);
     await keyboardHistory(true);
-    await settled(afterBottom, { undo: r0.undo + 1, redo: r0.redo }, topBottom, topbar);
+    await settled(
+      afterBottom,
+      { undo: r0.undo + 1, redo: r0.redo },
+      topBottom,
+      topbar,
+    );
     expect(errors).toEqual([]);
   } finally {
     const afterText = read();
     if (afterText !== original) {
       try {
-        await revertDevBridgeFiles(page, [{ file: sourceFile, beforeText: original, afterText }]);
+        await revertDevBridgeFiles(page, [
+          { file: sourceFile, beforeText: original, afterText },
+        ]);
       } catch (error) {
         // The page is gone (e.g. a timeout): restore the generated copy
         // directly so a failure here cannot leak into later cases.
@@ -3097,6 +3838,8 @@ test("metacraft_topbar_sibling_padding_undo_restores_only_its_own_marker", async
   }
   await page.reload();
   const restoredTopbar = await selectTopbar();
-  await expect.poll(() => paddings(restoredTopbar)).toEqual(["0px", "0px", "0px", "0px"]);
+  await expect
+    .poll(() => paddings(restoredTopbar))
+    .toEqual(["0px", "0px", "0px", "0px"]);
   expect(errors).toEqual([]);
 });

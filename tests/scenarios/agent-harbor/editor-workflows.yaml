@@ -16,7 +16,7 @@ timeline:
   - agentToolUse:
       toolName: runCmd
       args:
-        cwd: '@PROJECT@'
+        cwd: "@PROJECT@"
         cmd: |
           set -eu
           phase=$(cat '@ARTIFACTS@/phase')
@@ -91,8 +91,8 @@ timeline:
   - llmResponse:
       - assistant:
           - relativeTime: 0
-            content: 'ISONIM_M5_STREAM_BEGIN. '
+            content: "ISONIM_M5_STREAM_BEGIN. "
           - relativeTime: 10
-            content: 'Inspect the actual tool results for this requested phase.'
+            content: "Inspect the actual tool results for this requested phase."
 expect:
   stopReason: end_turn

@@ -42,8 +42,8 @@ from helpers.editor_process_observer import (
 
 ROOT = Path(__file__).resolve().parents[1]
 HARBOR = source_role(ROOT, 'agent-harbor',
-                     override=os.environ.get('ISONIM_AGENT_HARBOR_SIBLING'),
-                     required=False)
+                      override=os.environ.get('ISONIM_AGENT_HARBOR_SIBLING'),
+                      required=False)
 SCENARIO = ROOT / 'tests/scenarios/agent-harbor/editor-session-continuity.yaml'
 FIRST = 'Remember the token ISONIM_CONTEXT_7309 for this conversation. Reply only with that token.'
 SECOND = ('What token did I ask you to remember? Reply with that token and the instruction sentinel '
@@ -119,7 +119,7 @@ class EditorHarborScenario(unittest.TestCase):
         provider.chmod(0o755)
         provider_sha = hashlib.sha256(provider_source.read_bytes()).hexdigest()
         self.assertEqual(hashlib.sha256(provider.read_bytes()).hexdigest(), provider_sha,
-                         'The sandbox-visible provider must be the exact official build')
+                          'The sandbox-visible provider must be the exact official build')
         (workspace / 'isonim.nimble').write_text('# actual isolated project boundary\n')
         (workspace / 'AGENTS.md').write_text('Current project guidance: first turn.\n')
         self.submitted_contexts = {}
@@ -170,7 +170,7 @@ os.execv(provider, [provider, '--scenario', scenarios[index], '--disable-followe
         env['AH_DAEMON_DB_PATH'] = str(inherited)
         identities = {}
         for repo in (ROOT, HARBOR, source_role(ROOT, 'nim-agents'),
-                     source_role(ROOT, 'nim-agent-harbor')):
+                      source_role(ROOT, 'nim-agent-harbor')):
             identities[repo.name] = {'head': subprocess.check_output(['git', 'rev-parse', 'HEAD'], cwd=repo, text=True).strip(),
                                     'diff_sha256': hashlib.sha256(subprocess.check_output(['git', 'diff', 'HEAD'], cwd=repo)).hexdigest()}
         identities['daemon_sha256'] = hashlib.sha256(daemon.read_bytes()).hexdigest()
@@ -191,8 +191,8 @@ os.execv(provider, [provider, '--scenario', scenarios[index], '--disable-followe
         child = subprocess.Popen([str(daemon), 'serve', '--agent-routes-only', '--config', str(config),
                                   '--bind', '127.0.0.1', '--port', '0', '--workspace', str(workspace),
                                   '--default-assistant-prompt', str(ROOT / 'prompts/ai-assistant.md')],
-                                 cwd=workspace, env=env, stdout=log, stderr=subprocess.PIPE, text=True,
-                                 start_new_session=True)
+                                  cwd=workspace, env=env, stdout=log, stderr=subprocess.PIPE, text=True,
+                                  start_new_session=True)
         reader = OwnedStderrReader(child.stderr, log, lines)
         reader.start()
         workers = {}
@@ -265,7 +265,7 @@ os.execv(provider, [provider, '--scenario', scenarios[index], '--disable-followe
                         and '--rest-port' in owned[pid][2] and '--pid-file' in owned[pid][2]]
             self.assertEqual(len(services), 1, 'exactly one owned Harbor service')
             helpers=[pid for pid in descendants(owned,child.pid) if pid in owned
-                     and owned[pid][2] and '--internal-harbor-runtime' in owned[pid][2]]
+                      and owned[pid][2] and '--internal-harbor-runtime' in owned[pid][2]]
             self.assertEqual(len(helpers),1,'automatic selection owns one isolated preparation helper')
             helper_pid=helpers[0]
             helper_args=owned[helper_pid][2]
@@ -336,7 +336,7 @@ os.execv(provider, [provider, '--scenario', scenarios[index], '--disable-followe
                 # its exec-before-playback PID in our proc mount's kernel mapping.
                 if sys.platform == 'linux':
                     namespace_lines = [line for line in Path(f'/proc/{chat_workers[index]}/status').read_text().splitlines()
-                                       if line.startswith('NSpid:')]
+                                        if line.startswith('NSpid:')]
                     self.assertEqual(len(namespace_lines), 1)
                     namespace_pids = [int(value) for value in namespace_lines[0].split()[1:]]
                     self.assertEqual(namespace_pids[0], chat_workers[index])
@@ -347,22 +347,22 @@ os.execv(provider, [provider, '--scenario', scenarios[index], '--disable-followe
                 self.assertEqual(launched, {'pid': provider_pid, 'scenario': scenario_paths[index]})
                 self.assertEqual(Path(candidates[chat_workers[index]][3]).resolve(), provider)
                 actual_executable = (Path(f'/proc/{chat_workers[index]}/exe')
-                                     if sys.platform == 'linux'
-                                     else Path(candidates[chat_workers[index]][3]))
+                                      if sys.platform == 'linux'
+                                      else Path(candidates[chat_workers[index]][3]))
                 loaded_sha = hashlib.sha256(actual_executable.read_bytes()).hexdigest()
                 self.assertEqual(loaded_sha, provider_sha,
-                                 'Actual running provider must load the exact official bytes')
+                                  'Actual running provider must load the exact official bytes')
                 (artifacts / f'provider-identity-{index}.json').write_text(json.dumps(
                     {'backend_id': backend_ids[index], 'observer_pid': chat_workers[index],
-                     'starttime': candidates[chat_workers[index]][1], 'starttime_kind': OBSERVER.starttime_kind,
-                     'executable': candidates[chat_workers[index]][3], 'executable_sha256': loaded_sha,
-                     'provider_source_sha256': provider_sha, 'namespace_pids': namespace_pids,
-                     'scenario': scenario_paths[index]}, indent=2))
+                      'starttime': candidates[chat_workers[index]][1], 'starttime_kind': OBSERVER.starttime_kind,
+                      'executable': candidates[chat_workers[index]][3], 'executable_sha256': loaded_sha,
+                      'provider_source_sha256': provider_sha, 'namespace_pids': namespace_pids,
+                      'scenario': scenario_paths[index]}, indent=2))
                 self.assertIn(scenario_paths[index], candidates[chat_workers[index]][2])
                 workers.update(candidates)
                 self.observe_idle_workers(workers)
                 self.assertEqual(self.post('/api/agent/cancel', {'sessionId': draft['sessionId']}, 409)['error'],
-                                 'unsupported_capability')
+                                  'unsupported_capability')
                 self.assert_workers(workers)
             (artifacts / 'workers.json').write_text(json.dumps(workers, indent=2))
             if shutdown_only:
@@ -425,7 +425,7 @@ os.execv(provider, [provider, '--scenario', scenarios[index], '--disable-followe
                                                           'history': history}) + '\n')
                     self.assert_workers(workers)
                     self.assertFalse(any(event['type'] == 'log' and event.get('message') == 'user: ' + SECOND
-                                         for event in history['events']), 'followup cannot remain an ambiguous assistant log')
+                                          for event in history['events']), 'followup cannot remain an ambiguous assistant log')
                     inputs = [event['content'] for event in reversed(history['events']) if event['type'] == 'user_input']
                     if len(inputs) >= len(trace) or time.monotonic() >= deadline:
                         break
@@ -503,7 +503,7 @@ os.execv(provider, [provider, '--scenario', scenarios[index], '--disable-followe
                 stopping = {sid: min(event['timestamp'] for session, event in status_events
                                     if session == sid and event['status'] == 'stopping') for sid in backend_ids}
                 stopped = {sid: min(event['timestamp'] for session, event in status_events
-                                   if session == sid and event['status'] == 'stopped') for sid in backend_ids}
+                                    if session == sid and event['status'] == 'stopped') for sid in backend_ids}
                 self.assertLess(max(stopping.values()), min(stopped.values()),
                                 'both real REST stops must begin before either completes')
                 (artifacts / 'parallel-stop-proof.json').write_text(json.dumps({
@@ -520,7 +520,7 @@ os.execv(provider, [provider, '--scenario', scenarios[index], '--disable-followe
 
     def post(self, path, payload, expected=200, timeout=60):
         request = urllib.request.Request(self.base + path, json.dumps(payload).encode(),
-                                         {'Content-Type': 'application/json'})
+                                          {'Content-Type': 'application/json'})
         try:
             response = urllib.request.urlopen(request, timeout=timeout)
         except urllib.error.HTTPError as error:
@@ -542,12 +542,12 @@ os.execv(provider, [provider, '--scenario', scenarios[index], '--disable-followe
         client = http.client.HTTPConnection(host, int(port), timeout=60)
         try:
             context = {'backend': 'absAgentHarbor', 'selectedStoryName': name,
-                       'themeTokens': [{'id': 'project.accent', 'value': '#123456' if name.endswith('first') else '#abcdef'}],
-                       'renderedComponentTree': [{'id': name, 'parentId': '', 'depth': 0}],
-                       'availableTailwindClasses': ['p-4'], 'tailwindClassTotal': 1}
+                        'themeTokens': [{'id': 'project.accent', 'value': '#123456' if name.endswith('first') else '#abcdef'}],
+                        'renderedComponentTree': [{'id': name, 'parentId': '', 'depth': 0}],
+                        'availableTailwindClasses': ['p-4'], 'tailwindClassTotal': 1}
             self.submitted_contexts[name] = context
             client.request('POST', '/api/agent/prompts', json.dumps({'sessionId': draft, 'text': text, 'context': context}),
-                           {'Content-Type': 'application/json'})
+                            {'Content-Type': 'application/json'})
             response = client.getresponse()
             self.assertEqual(response.status, 200)
             self.assertEqual(response.getheader('Content-Type'), 'text/event-stream; charset=utf-8')
@@ -571,7 +571,7 @@ os.execv(provider, [provider, '--scenario', scenarios[index], '--disable-followe
         updates = [value for kind, value in events if kind == 'session/update']
         self.assertTrue(updates, 'must deliver actual common events')
         self.assertEqual(expected, ''.join(value['text'] for value in updates if value['kind'] == 'message_chunk'),
-                         'assistant reply must be exact, without duplicate or cross-chat chunks')
+                          'assistant reply must be exact, without duplicate or cross-chat chunks')
         return {value['sessionId'] for value in updates}
 
     def assert_workers(self, workers):
@@ -593,7 +593,7 @@ os.execv(provider, [provider, '--scenario', scenarios[index], '--disable-followe
         while time.monotonic() < deadline:
             table = processes()
             remaining = {pid: original for pid, original in workers.items()
-                         if pid in table and table[pid][1] == original[1]}
+                          if pid in table and table[pid][1] == original[1]}
             if len(remaining) == expected:
                 return remaining
             time.sleep(.05)

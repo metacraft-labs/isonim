@@ -34,8 +34,8 @@ def png(path):
     return width,height
 RECOVERY_TYPES=['proxy_credential_rotated','proxy_rate_limit_absorbed','dispatcher_restarted','anti_halting_resume_confirmed','session_leadership_migrated']
 RECOVERY_VISIBLE={
- 'recovery-top':[('proxy_credential_rotated','Provider access recovered'),('proxy_credential_rotated','anthropic'),('proxy_credential_rotated','401'),('proxy_rate_limit_absorbed','Provider throttling recovered'),('proxy_rate_limit_absorbed','2'),('proxy_rate_limit_absorbed','1200')],
- 'recovery':[('dispatcher_restarted','Agent restarted'),('dispatcher_restarted','2'),('anti_halting_resume_confirmed','Agent progress resumed'),('anti_halting_resume_confirmed','idle'),('session_leadership_migrated','Session moved to another executor'),('session_leadership_migrated','authoring-host'),('session_leadership_migrated','preview-host'),('session_leadership_migrated','linux'),('session_leadership_migrated','40')]
+  'recovery-top':[('proxy_credential_rotated','Provider access recovered'),('proxy_credential_rotated','anthropic'),('proxy_credential_rotated','401'),('proxy_rate_limit_absorbed','Provider throttling recovered'),('proxy_rate_limit_absorbed','2'),('proxy_rate_limit_absorbed','1200')],
+  'recovery':[('dispatcher_restarted','Agent restarted'),('dispatcher_restarted','2'),('anti_halting_resume_confirmed','Agent progress resumed'),('anti_halting_resume_confirmed','idle'),('session_leadership_migrated','Session moved to another executor'),('session_leadership_migrated','authoring-host'),('session_leadership_migrated','preview-host'),('session_leadership_migrated','linux'),('session_leadership_migrated','40')]
 }
 def companion_geometry(box,viewport,name):
     require(all(type(box.get(k)) in (int,float) for k in ['top','bottom','left','right','width','height']) and all(type(viewport.get(k)) in (int,float) for k in ['top','bottom','left','right']),f'missing {name} visible geometry')

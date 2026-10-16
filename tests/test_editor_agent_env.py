@@ -43,14 +43,14 @@ class ControlEnvironmentTests(unittest.TestCase):
                 'https://10.0.2.2:4321/callback/path?preserve=yes#fragment')
         literal='http://127.0.0.1:4321/path'
         for routes in ('', 'malformed', SLIRP_ROUTES.replace('Iface','invalid'),
-                       SLIRP_ROUTES.replace('0202000A','0102000A'),
-                       SLIRP_ROUTES.replace('tap0','eth0'), SLIRP_ROUTES.replace('0003','0001'),
-                       SLIRP_ROUTES.replace('00FFFFFF','0000FFFF'),
-                       SLIRP_ROUTES+SLIRP_ROUTES.splitlines()[1]+'\n'):
+                        SLIRP_ROUTES.replace('0202000A','0102000A'),
+                        SLIRP_ROUTES.replace('tap0','eth0'), SLIRP_ROUTES.replace('0003','0001'),
+                        SLIRP_ROUTES.replace('00FFFFFF','0000FFFF'),
+                        SLIRP_ROUTES+SLIRP_ROUTES.splitlines()[1]+'\n'):
             self.assertEqual(wrapper_module.endpoint_for_routes(literal,routes,'linux'),literal)
         for endpoint in ('http://editor.example:4321/path', 'http://192.168.1.2:4321',
-                         'http://10.0.2.2:4321', 'http://localhost:invalid',
-                         'http://localhost', 'http://user@localhost:4321', 'broken['):
+                          'http://10.0.2.2:4321', 'http://localhost:invalid',
+                          'http://localhost', 'http://user@localhost:4321', 'broken['):
             self.assertEqual(wrapper_module.endpoint_for_routes(endpoint,SLIRP_ROUTES,'linux'),endpoint)
         self.assertEqual(wrapper_module.endpoint_for_routes(literal,SLIRP_ROUTES,'darwin'),literal)
 
@@ -140,7 +140,7 @@ class ControlEnvironmentTests(unittest.TestCase):
             config = Path(temp) / 'editor.toml'
             config.write_text('[agent]\nbackend="custom"\ncommand="/definitely-missing-isonim-test-provider"\nprimer_enabled=false\n')
             env = {**os.environ, 'TMPDIR': temp, 'HOME': temp, 'ISONIM_REVIEW_PORT': '0',
-                   'ISONIM_EDITOR_BROWSER_BOOTSTRAP': 'test-browser-bootstrap'}
+                    'ISONIM_EDITOR_BROWSER_BOOTSTRAP': 'test-browser-bootstrap'}
             env.pop('ISONIM_ACP_AGENT_CMD', None)
             daemon = subprocess.Popen([str(REPO / 'build/bin/isonim-review'), 'serve',
                 '--agent-routes-only', '--config', str(config)], env=env,
@@ -202,7 +202,7 @@ class ControlEnvironmentTests(unittest.TestCase):
             code = "import json,os,sys; print(json.dumps({'args':sys.argv[1:], 'env':dict(os.environ)}))"
             args = ["", "spaces and punctuation: ' \" $()", "unicode α", "line\nbreak"]
             env = {**os.environ, "ISONIM_EDITOR_BROWSER_BOOTSTRAP": "browser-only-marker",
-                   "AH_HOME": str(Path(temp) / "real-ah-home"), "UNRELATED_PROVIDER_SETTING": "kept"}
+                    "AH_HOME": str(Path(temp) / "real-ah-home"), "UNRELATED_PROVIDER_SETTING": "kept"}
             result = subprocess.run([sys.executable, str(WRAPPER), "--environment", str(path), "--",
                 sys.executable, "-c", code, *args], env=env, capture_output=True, text=True, timeout=5)
             self.assertEqual(result.returncode, 0, result.stderr)

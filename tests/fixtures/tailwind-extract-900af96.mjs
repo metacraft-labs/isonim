@@ -19,25 +19,25 @@
 // have their source files scanned. Each pattern is emitted verbatim as
 // a `@source "<pattern>";` line in a generated input CSS.
 
-import { execSync } from 'child_process';
-import { readFileSync, writeFileSync, mkdirSync, existsSync } from 'fs';
-import { join, dirname, resolve } from 'path';
-import { fileURLToPath } from 'url';
+import { execSync } from "child_process";
+import { readFileSync, writeFileSync, mkdirSync, existsSync } from "fs";
+import { join, dirname, resolve } from "path";
+import { fileURLToPath } from "url";
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
-const projectRoot = join(__dirname, '..');
+const projectRoot = join(__dirname, "..");
 
 // Parse args
 let inputCss = null;
-let outDir = join(projectRoot, 'build');
+let outDir = join(projectRoot, "build");
 let contentPatterns = [];
 
 for (let i = 2; i < process.argv.length; i++) {
-  if (process.argv[i] === '--input' && process.argv[i + 1]) {
+  if (process.argv[i] === "--input" && process.argv[i + 1]) {
     inputCss = process.argv[++i];
-  } else if (process.argv[i] === '--out-dir' && process.argv[i + 1]) {
+  } else if (process.argv[i] === "--out-dir" && process.argv[i + 1]) {
     outDir = process.argv[++i];
-  } else if (process.argv[i] === '--content' && process.argv[i + 1]) {
+  } else if (process.argv[i] === "--content" && process.argv[i + 1]) {
     contentPatterns.push(process.argv[++i]);
   }
 }
@@ -53,15 +53,15 @@ mkdirSync(outDir, { recursive: true });
 // local node_modules.  Each pattern is resolved to an absolute path
 // against the caller's cwd so repo-relative globs work.
 if (contentPatterns.length > 0 && !inputCss) {
-  const isonimBuild = join(projectRoot, 'build');
+  const isonimBuild = join(projectRoot, "build");
   mkdirSync(isonimBuild, { recursive: true });
-  const generatedInput = join(isonimBuild, '_input.generated.css');
+  const generatedInput = join(isonimBuild, "_input.generated.css");
   const lines = ['@import "tailwindcss";'];
   for (const pat of contentPatterns) {
-    const absPat = pat.startsWith('/') ? pat : resolve(process.cwd(), pat);
+    const absPat = pat.startsWith("/") ? pat : resolve(process.cwd(), pat);
     lines.push(`@source "${absPat}";`);
   }
-  writeFileSync(generatedInput, lines.join('\n') + '\n');
+  writeFileSync(generatedInput, lines.join("\n") + "\n");
   inputCss = generatedInput;
 }
 
@@ -69,7 +69,7 @@ if (contentPatterns.length > 0 && !inputCss) {
 // Step 1: Run Tailwind CSS CLI
 // ---------------------------------------------------------------------------
 
-const cssOutPath = join(outDir, 'tailwind.css');
+const cssOutPath = join(outDir, "tailwind.css");
 
 // Tailwind v4 auto-detects content from the project. We can also pass
 // explicit content via a temporary input CSS file.
@@ -81,14 +81,14 @@ if (inputCss) {
   tailwindCmd = `npx tailwindcss -o "${cssOutPath}" 2>&1`;
 }
 
-console.log('==> Running Tailwind CSS...');
+console.log("==> Running Tailwind CSS...");
 try {
-  const output = execSync(tailwindCmd, { cwd: projectRoot, encoding: 'utf8' });
-  if (output.includes('Done in')) {
-    console.log('    ' + output.trim().split('\n').pop());
+  const output = execSync(tailwindCmd, { cwd: projectRoot, encoding: "utf8" });
+  if (output.includes("Done in")) {
+    console.log("    " + output.trim().split("\n").pop());
   }
 } catch (e) {
-  console.error('Tailwind CSS failed:', e.message);
+  console.error("Tailwind CSS failed:", e.message);
   process.exit(1);
 }
 
@@ -96,9 +96,9 @@ try {
 // Step 2: Parse the CSS output into a class→styles map
 // ---------------------------------------------------------------------------
 
-console.log('==> Parsing CSS into style map...');
+console.log("==> Parsing CSS into style map...");
 
-const css = readFileSync(cssOutPath, 'utf8');
+const css = readFileSync(cssOutPath, "utf8");
 
 // Extract CSS custom properties (variables) from :root / :host
 const cssVars = {};
@@ -118,15 +118,18 @@ while ((rootMatch = rootBlockRe.exec(css)) !== null) {
 // Resolve var() references recursively
 function resolveVar(value, depth = 0) {
   if (depth > 10) return value; // prevent infinite loops
-  return value.replace(/var\((--[\w-]+)(?:\s*,\s*([^)]+))?\)/g, (_, varName, fallback) => {
-    if (cssVars[varName] !== undefined) {
-      return resolveVar(cssVars[varName], depth + 1);
-    }
-    if (fallback) {
-      return resolveVar(fallback.trim(), depth + 1);
-    }
-    return `var(${varName})`;
-  });
+  return value.replace(
+    /var\((--[\w-]+)(?:\s*,\s*([^)]+))?\)/g,
+    (_, varName, fallback) => {
+      if (cssVars[varName] !== undefined) {
+        return resolveVar(cssVars[varName], depth + 1);
+      }
+      if (fallback) {
+        return resolveVar(fallback.trim(), depth + 1);
+      }
+      return `var(${varName})`;
+    },
+  );
 }
 
 // Resolve calc() with simple multiplications: calc(X * N) where X is a known value
@@ -136,7 +139,7 @@ function resolveCalc(value) {
     const mulMatch = expr.match(/^([\d.]+)(rem|px|em)?\s*\*\s*([\d.]+)$/);
     if (mulMatch) {
       const a = parseFloat(mulMatch[1]);
-      const unit = mulMatch[2] || '';
+      const unit = mulMatch[2] || "";
       const b = parseFloat(mulMatch[3]);
       return `${a * b}${unit}`;
     }
@@ -145,12 +148,12 @@ function resolveCalc(value) {
     if (mulMatch2) {
       const a = parseFloat(mulMatch2[1]);
       const b = parseFloat(mulMatch2[2]);
-      const unit = mulMatch2[3] || '';
+      const unit = mulMatch2[3] || "";
       return `${a * b}${unit}`;
     }
     // Handle: infinity * 1px
-    if (expr.includes('infinity')) {
-      return '9999px';
+    if (expr.includes("infinity")) {
+      return "9999px";
     }
     return `calc(${expr})`;
   });
@@ -168,18 +171,18 @@ function oklchToHex(value) {
   return value.replace(/oklch\(([^)]+)\)/g, (match, args) => {
     try {
       const parts = args.trim().split(/\s+/);
-      const L = parseFloat(parts[0].replace('%', '')) / 100;
+      const L = parseFloat(parts[0].replace("%", "")) / 100;
       const C = parseFloat(parts[1]);
       const H = parseFloat(parts[2]) || 0;
 
       // OKLCH → OKLab
-      const a = C * Math.cos(H * Math.PI / 180);
-      const b = C * Math.sin(H * Math.PI / 180);
+      const a = C * Math.cos((H * Math.PI) / 180);
+      const b = C * Math.sin((H * Math.PI) / 180);
 
       // OKLab → linear sRGB (approximate)
       const l_ = L + 0.3963377774 * a + 0.2158037573 * b;
       const m_ = L - 0.1055613458 * a - 0.0638541728 * b;
-      const s_ = L - 0.0894841775 * a - 1.2914855480 * b;
+      const s_ = L - 0.0894841775 * a - 1.291485548 * b;
 
       const l3 = l_ * l_ * l_;
       const m3 = m_ * m_ * m_;
@@ -187,15 +190,22 @@ function oklchToHex(value) {
 
       let r = +4.0767416621 * l3 - 3.3077115913 * m3 + 0.2309699292 * s3;
       let g = -1.2684380046 * l3 + 2.6097574011 * m3 - 0.3413193965 * s3;
-      let bl = -0.0041960863 * l3 - 0.7034186147 * m3 + 1.7076147010 * s3;
+      let bl = -0.0041960863 * l3 - 0.7034186147 * m3 + 1.707614701 * s3;
 
       // Gamma correction
-      const gamma = (x) => x <= 0.0031308 ? 12.92 * x : 1.055 * Math.pow(x, 1/2.4) - 0.055;
+      const gamma = (x) =>
+        x <= 0.0031308 ? 12.92 * x : 1.055 * Math.pow(x, 1 / 2.4) - 0.055;
       r = Math.round(Math.max(0, Math.min(1, gamma(r))) * 255);
       g = Math.round(Math.max(0, Math.min(1, gamma(g))) * 255);
       bl = Math.round(Math.max(0, Math.min(1, gamma(bl))) * 255);
 
-      return '#' + [r, g, bl].map(c => c.toString(16).padStart(2, '0')).join('').toUpperCase();
+      return (
+        "#" +
+        [r, g, bl]
+          .map((c) => c.toString(16).padStart(2, "0"))
+          .join("")
+          .toUpperCase()
+      );
     } catch {
       return match; // return original if conversion fails
     }
@@ -209,7 +219,7 @@ function resolveValue(value) {
   v = oklchToHex(v);
   v = remToPx(v);
   // Strip px suffix for numeric values (native platforms use raw numbers)
-  v = v.replace(/^([\d.]+)px$/, '$1');
+  v = v.replace(/^([\d.]+)px$/, "$1");
   return v;
 }
 
@@ -221,7 +231,7 @@ const ruleRe = /\.([\w-]+(?:\\:[\w-]+)*)\s*\{([^}]+)\}/g;
 let ruleMatch;
 
 while ((ruleMatch = ruleRe.exec(css)) !== null) {
-  const className = ruleMatch[1].replace(/\\/g, ''); // unescape
+  const className = ruleMatch[1].replace(/\\/g, ""); // unescape
   const declarations = ruleMatch[2];
 
   const props = {};
@@ -232,10 +242,10 @@ while ((ruleMatch = ruleRe.exec(css)) !== null) {
     let val = declMatch[2].trim();
 
     // Skip CSS custom property declarations (--tw-*)
-    if (prop.startsWith('--tw-')) continue;
+    if (prop.startsWith("--tw-")) continue;
     // Resolve and skip properties with unresolvable vars
     val = resolveValue(val);
-    if (val.includes('var(')) continue;
+    if (val.includes("var(")) continue;
 
     props[prop] = val;
   }
@@ -247,25 +257,25 @@ while ((ruleMatch = ruleRe.exec(css)) !== null) {
 
 // Also handle Tailwind v4 padding-inline/padding-block → padding-left/right/top/bottom
 for (const [cls, props] of Object.entries(styleMap)) {
-  if (props['padding-inline']) {
-    props['padding-left'] = props['padding-inline'];
-    props['padding-right'] = props['padding-inline'];
-    delete props['padding-inline'];
+  if (props["padding-inline"]) {
+    props["padding-left"] = props["padding-inline"];
+    props["padding-right"] = props["padding-inline"];
+    delete props["padding-inline"];
   }
-  if (props['padding-block']) {
-    props['padding-top'] = props['padding-block'];
-    props['padding-bottom'] = props['padding-block'];
-    delete props['padding-block'];
+  if (props["padding-block"]) {
+    props["padding-top"] = props["padding-block"];
+    props["padding-bottom"] = props["padding-block"];
+    delete props["padding-block"];
   }
-  if (props['margin-inline']) {
-    props['margin-left'] = props['margin-inline'];
-    props['margin-right'] = props['margin-inline'];
-    delete props['margin-inline'];
+  if (props["margin-inline"]) {
+    props["margin-left"] = props["margin-inline"];
+    props["margin-right"] = props["margin-inline"];
+    delete props["margin-inline"];
   }
-  if (props['margin-block']) {
-    props['margin-top'] = props['margin-block'];
-    props['margin-bottom'] = props['margin-block'];
-    delete props['margin-block'];
+  if (props["margin-block"]) {
+    props["margin-top"] = props["margin-block"];
+    props["margin-bottom"] = props["margin-block"];
+    delete props["margin-block"];
   }
 }
 
@@ -273,11 +283,15 @@ for (const [cls, props] of Object.entries(styleMap)) {
 // Step 3: Write outputs
 // ---------------------------------------------------------------------------
 
-const jsonPath = join(outDir, 'tailwind-styles.json');
+const jsonPath = join(outDir, "tailwind-styles.json");
 writeFileSync(jsonPath, JSON.stringify(styleMap, null, 2));
 
-console.log(`==> Generated: ${cssOutPath} (${(readFileSync(cssOutPath).length / 1024).toFixed(1)}KB CSS)`);
-console.log(`==> Generated: ${jsonPath} (${Object.keys(styleMap).length} classes)`);
+console.log(
+  `==> Generated: ${cssOutPath} (${(readFileSync(cssOutPath).length / 1024).toFixed(1)}KB CSS)`,
+);
+console.log(
+  `==> Generated: ${jsonPath} (${Object.keys(styleMap).length} classes)`,
+);
 
 // Print sample
 const sample = Object.keys(styleMap).slice(0, 5);

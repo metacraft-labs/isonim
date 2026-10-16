@@ -14,12 +14,19 @@
 # file or directory appears, no hook is
 # installed and `core.hooksPath` is untouched. As the positive control, entered
 # from inside this repository the hook still installs the pre-commit hook
-# (running the committed `.pre-commit-config.yaml`, which it leaves
-# byte-identical).
+# (running the complete selected native config while leaving the tracked
+# portable `.pre-commit-config.yaml` byte-identical).
 #
 #   bash tests/test_dev_shell_writes_nothing_elsewhere.sh
 set -euo pipefail
 REPO="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+# Resolve the same declared develop-set arguments as the owning environment.
+# Full Nix shell activation remains the subject, including every shellHook effect.
+: "${REPROBUILD_REPRO:?the owning shell must supply its managed constructor}"
+flake_args_quoted="$(cd "$REPO" && "$REPROBUILD_REPRO" flake override-args --all)"
+eval "flake_args=( ${flake_args_quoted} )"
+expected_native="${ISONIM_EXPECTED_NATIVE_HOOKS:?the owning shell must supply its native factory}"
+expected_config="${ISONIM_FULL_HOOK_CONFIG:?the owning shell must supply its full configuration}"
 SCRATCH="$(mktemp -d)"
 trap 'rm -rf "$SCRATCH"' EXIT
 fail() { echo "FAIL: $*" >&2; exit 1; }
@@ -30,7 +37,7 @@ mkdir -p "$SCRATCH/sub"
 hooks_before="$(ls "$SCRATCH/.git/hooks")"
 
 for dir in "$SCRATCH" "$SCRATCH/sub"; do
-  ( cd "$dir" && nix develop "$REPO" --no-write-lock-file -c true ) >/dev/null 2>&1 \
+  ( cd "$dir" && nix develop "$REPO" "${flake_args[@]}" --no-write-lock-file --option fallback false -c true ) >/dev/null 2>&1 \
     || fail "the dev shell did not start from $dir"
   [ -z "$(git -C "$SCRATCH" status --porcelain --ignored)" ] \
     || fail "entered from $dir: files were written into the other repository: $(git -C "$SCRATCH" status --porcelain --ignored | tr '\n' ' ')"
@@ -46,12 +53,19 @@ done
 # Positive control: the guard must not stop the hook in this repository.
 config_before="$(git -C "$REPO" hash-object .pre-commit-config.yaml)"
 hooks_dir="$(git -C "$REPO" rev-parse --path-format=absolute --git-path hooks)"
-( cd "$REPO" && nix develop "$REPO" --no-write-lock-file -c true ) >/dev/null 2>&1 \
+( cd "$REPO" && nix develop "$REPO" "${flake_args[@]}" --no-write-lock-file --option fallback false -c true ) >/dev/null 2>&1 \
   || fail "the dev shell did not start from this repository"
 [ -f "$REPO/.pre-commit-config.yaml" ] && [ ! -L "$REPO/.pre-commit-config.yaml" ] \
   && [ "$(git -C "$REPO" hash-object .pre-commit-config.yaml)" = "$config_before" ] \
   || fail "control: the committed .pre-commit-config.yaml was replaced or changed"
-grep -qs -- '--config .pre-commit-config.yaml' "$hooks_dir/pre-commit" "$hooks_dir/pre-commit.repro-local" \
-  || fail "control: entered from this repository, no pre-commit hook runs the committed config"
+[ -L "$REPO/.pre-commit-config.nix.yaml" ] \
+  && [ "$(readlink "$REPO/.pre-commit-config.nix.yaml")" = "$expected_config" ] \
+  || fail "control: the complete native configuration is not the selected immutable producer"
+for hook in pre-commit pre-push; do
+  if ! cmp -s "$expected_native/$hook" "$hooks_dir/$hook" \
+    && ! cmp -s "$expected_native/$hook" "$hooks_dir/$hook.repro-local"; then
+    fail "control: full shell activation did not install the exact selected native $hook body"
+  fi
+done
 
 echo "PASS: entered from another repository the dev shell writes nothing there; from this one it installs its hooks"

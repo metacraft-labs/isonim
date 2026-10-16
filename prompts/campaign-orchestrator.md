@@ -912,21 +912,21 @@ rather than `inject` during a running campaign.
 
 ## M. Pointers
 
-| Need to know                                  | Read this                                                                                 |
-| --------------------------------------------- | ----------------------------------------------------------------------------------------- |
-| User-facing assistant's prompt                | `isonim/prompts/ai-assistant.md`                                                          |
-| Campaign doc format                           | `isonim/prompts/campaign-document.template.md`                                            |
-| Reviewer prompt template                      | `isonim/prompts/design_review/reviewer_prompt.template`                                   |
+| Need to know                                  | Read this                                                           |
+| --------------------------------------------- | ------------------------------------------------------------------- |
+| User-facing assistant's prompt                | `isonim/prompts/ai-assistant.md`                                    |
+| Campaign doc format                           | `isonim/prompts/campaign-document.template.md`                      |
+| Reviewer prompt template                      | `isonim/prompts/design_review/reviewer_prompt.template`             |
 | Brief format + DB schema                      | `isonim-specs/isonim-editor.md` § _Design Briefs & Review Database_ |
 | Campaign architecture spec                    | `isonim-specs/isonim-editor.md` § _AI Assistant & Design Campaigns_ |
-| Methodology — visual design iteration         | `codetracer-specs/Methodologies/visual-design-iteration.md`                               |
+| Methodology — visual design iteration         | `codetracer-specs/Methodologies/visual-design-iteration.md`         |
 | Cross-platform architecture                   | `isonim-specs/isonim-cross-platform-architecture.md`                |
 | ViewModel/View testing                        | `isonim-specs/isonim-viewmodel-testing.md`                          |
 | Bridge protocol (capture pipeline lives here) | `isonim-specs/isonim-render-stream.status.org`                      |
-| Code quality guidelines                       | `metacraft-specs/policies/code-quality-guidelines.md`                                     |
-| Continuous benchmarking                       | `metacraft-specs/policies/continuous-benchmarking.md`                                     |
-| Canonical example brief                       | `isonim-examples/briefs/render/task-app.md`                                               |
-| `isonim-review` CLI source                    | `isonim/tools/isonim_review/`                                                             |
+| Code quality guidelines                       | `metacraft-specs/policies/code-quality-guidelines.md`               |
+| Continuous benchmarking                       | `metacraft-specs/policies/continuous-benchmarking.md`               |
+| Canonical example brief                       | `isonim-examples/briefs/render/task-app.md`                         |
+| `isonim-review` CLI source                    | `isonim/tools/isonim_review/`                                       |
 
 Re-read these whenever you doubt your operating contract. The cost
 of reading is small; the cost of acting on a wrong assumption is

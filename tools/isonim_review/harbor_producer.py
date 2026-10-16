@@ -124,7 +124,7 @@ def snapshot(root, previous=None):
         # src/crates. Only identified producer/tool outputs are excluded here.
         ignored = git(repo, 'ls-files', '--others', '--ignored', '--exclude-standard', '-z')
         names.update(os.fsdecode(n) for n in ignored.split(b'\0')
-                     if n and not generated_input(repo, os.fsdecode(n)))
+                      if n and not generated_input(repo, os.fsdecode(n)))
         for name in sorted(names):
             key = prefix + name
             if Path(key).is_relative_to(STAGE) and name not in tracked_names:
@@ -280,7 +280,7 @@ def build(root, publication, owned_transient=None):
     # Repro owns activation; the upstream launcher owns all actual build flags.
     subprocess.run(['repro', 'exec', '--', *producer], cwd=root, check=True)
     query = subprocess.run(['repro', 'exec', '--', './dev-bin/just', '--evaluate', 'target_dir'],
-                           cwd=root, check=True, stdout=subprocess.PIPE, text=True)
+                            cwd=root, check=True, stdout=subprocess.PIPE, text=True)
     reported = query.stdout.strip()
     if not reported or '\n' in reported:
         raise RuntimeError('Producer did not report exactly one target directory')
@@ -327,8 +327,8 @@ def build(root, publication, owned_transient=None):
         if final_source['sha256'] != after['sha256']:
             raise RuntimeError('Selected Harbor source changed while staging')
         receipt = {'schema': SCHEMA, 'repository': str(root), 'producer': producer,
-                   'source': final_source, 'producerArtifact': str(output),
-                   'artifactSha256': output_hash, 'artifactMetadata': metadata(binary)}
+                    'source': final_source, 'producerArtifact': str(output),
+                    'artifactSha256': output_hash, 'artifactMetadata': metadata(binary)}
         receipt_path = transient / 'receipt.json'
         receipt_path.write_text(json.dumps(receipt, sort_keys=True)); receipt_path.chmod(0o600)
         destination = generation / digest(receipt_path)

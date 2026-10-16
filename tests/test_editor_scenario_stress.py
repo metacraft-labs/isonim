@@ -84,10 +84,10 @@ class EditorStreamOwnership(unittest.TestCase):
                 previous_messages = len(runtime.active()['messages'])
                 runtime.action(action='send',text='Execute the real readonly editor tool for ownership turn '+str(number))
                 wait(lambda:(runtime.artifacts/('ownership-entered-'+str(number))).exists(),
-                     'actual terminal entered ownership barrier')
+                      'actual terminal entered ownership barrier')
                 runtime.assertResourceVisibility()
                 wait(lambda:any('ISONIM_M5_STREAM_BEGIN' in message['text'] for message in runtime.active()['messages'][previous_messages:]),
-                     'real streaming callback reaches production VM')
+                      'real streaming callback reaches production VM')
                 active_chat = runtime.active()
                 self.assertTrue(active_chat['busy'])
                 active_identity = runtime.activeStatus()
@@ -103,7 +103,7 @@ class EditorStreamOwnership(unittest.TestCase):
                     self.assertEqual(status['backend'],active_identity['backend'])
                     self.assertTrue(status['busy'], 'Read must overlap real active provider turn')
                     observations.append({'turn':number,'request':request,'providerTurnActive':True,
-                                         'streamedMessageAfterIndex':previous_messages})
+                                          'streamedMessageAfterIndex':previous_messages})
                 (runtime.artifacts/('ownership-release-'+str(number))).touch()
                 def terminal_completed():
                     # The host exposes the same active VM flag without copying
@@ -131,7 +131,7 @@ class EditorStreamOwnership(unittest.TestCase):
             self.assertEqual(len(observations), 24*64)
             self.assertEqual(post(runtime.origin+'/api/agent/close', {'sessionId':session})['closed'], True)
             wait(lambda: not any(str(pid) in identity for pid in runtime.observer.snapshot()),
-                 'actual ownership-regression provider reaped')
+                  'actual ownership-regression provider reaped')
             result = {'turns':24, 'httpStateReads':len(observations), 'providerIdentity':identity,
                       'backendSession':session, 'seconds':runtime.preparationClock.elapsed(begin),
                       'wallSeconds':(time.monotonic_ns()-begin)/1_000_000_000,

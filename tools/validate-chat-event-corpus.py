@@ -8,8 +8,8 @@ import os,pathlib,subprocess,sys
 from isonim_review.workspace_roles import source_role
 repo=pathlib.Path(__file__).resolve().parents[1]
 harbor=source_role(repo, 'agent-harbor',
-                   override=os.environ.get('ISONIM_AGENT_HARBOR_SIBLING'),
-                   required=False)
+                    override=os.environ.get('ISONIM_AGENT_HARBOR_SIBLING'),
+                    required=False)
 if not os.path.lexists(harbor):
     print('Optional private Harbor absent: production Rust DTO validation unavailable. Checked-in corpus provenance remains explicit.')
     raise SystemExit(0)

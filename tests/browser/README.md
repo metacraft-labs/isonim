@@ -54,7 +54,7 @@ months without anyone noticing.
 
 ### Running Playwright outside `repro exec`
 
-Playwright runs fine *inside* the dev shell — `repro exec -- just
+Playwright runs fine _inside_ the dev shell — `repro exec -- just
 test-browser-smoke` launches chromium and passes. (The `spawn /bin/sh ENOENT`
 that this was once blamed on was a webServer with a non-existent `cwd`, not
 the sandbox; see the comment at the top of `playwright.config.ts`.)
@@ -82,17 +82,17 @@ ISONIM_BROWSER_REUSE_SERVER=1   npx playwright test --project=hmr   # opt back i
 
 ## What each project needs on disk
 
-| project | serves | built by |
-| --- | --- | --- |
-| `demo-app` | `demos/isonim-replica/dist` | `just demo-build` |
-| `ssr-hydration` | nginx + the ngx-isonim module with the hydration app, and `build/nginx-fixture/www/hydrate.js` (see `tests/nginx/README.md`) | `just build-nginx-fixture` |
-| `hmr` | `tests/browser/hmr_fixture` | `just build-hmr-fixture` |
-| `hmr-transport` | `build/isonim_test_server` (a Nim dev server) | `just build-hmr-transport-fixture` |
-| `hmr-parametric` | `tests/browser/hmr_parametric_fixture` | `just build-hmr-parametric-fixture` |
-| `web-worker` | `build/web-worker-fixture` (a worker chunk, its page script, the in-thread control, `bundle-manifest.json`) | `just build-web-worker-fixture` |
-| `nginx-rpc` | nginx + the ngx-isonim module (`build/nginx-fixture`, see `tests/nginx/README.md`) | `just build-nginx-fixture` |
-| `editor-example` | `build/editor` | `just editor-build` |
-| `metacraft-web-editor` | `../metacraft-web/dist/back-office-editor` | `(cd ../metacraft-web && just build-back-office-editor)` |
+| project                | serves                                                                                                                       | built by                                                 |
+| ---------------------- | ---------------------------------------------------------------------------------------------------------------------------- | -------------------------------------------------------- |
+| `demo-app`             | `demos/isonim-replica/dist`                                                                                                  | `just demo-build`                                        |
+| `ssr-hydration`        | nginx + the ngx-isonim module with the hydration app, and `build/nginx-fixture/www/hydrate.js` (see `tests/nginx/README.md`) | `just build-nginx-fixture`                               |
+| `hmr`                  | `tests/browser/hmr_fixture`                                                                                                  | `just build-hmr-fixture`                                 |
+| `hmr-transport`        | `build/isonim_test_server` (a Nim dev server)                                                                                | `just build-hmr-transport-fixture`                       |
+| `hmr-parametric`       | `tests/browser/hmr_parametric_fixture`                                                                                       | `just build-hmr-parametric-fixture`                      |
+| `web-worker`           | `build/web-worker-fixture` (a worker chunk, its page script, the in-thread control, `bundle-manifest.json`)                  | `just build-web-worker-fixture`                          |
+| `nginx-rpc`            | nginx + the ngx-isonim module (`build/nginx-fixture`, see `tests/nginx/README.md`)                                           | `just build-nginx-fixture`                               |
+| `editor-example`       | `build/editor`                                                                                                               | `just editor-build`                                      |
+| `metacraft-web-editor` | `../metacraft-web/dist/back-office-editor`                                                                                   | `(cd ../metacraft-web && just build-back-office-editor)` |
 
 `just browser-test-deps` builds the static ones (`demo-app`, the three HMR
 projects, `web-worker`, `editor-example`). `nginx-rpc` and `ssr-hydration` share the nginx
@@ -127,11 +127,10 @@ standing ones as of the last sweep.
   `apps/back-office/src/backoffice_editor/workspace.nim:1174` is a `case`
   that does not handle isonim's `skVectorSymbol`. With both worked around,
   all 22 still fail, in two groups:
-
-  * 9 never get a writable bridge — `.editor-statusbar` reads
+  - 9 never get a writable bridge — `.editor-statusbar` reads
     `…/mainViewmainIsoNim Editor v0.1.0` where the spec wants
     `write writable`, so `?writeBridge=1` is not engaging.
-  * the remaining 13 die on `net::ERR_CONNECTION_REFUSED`: the dev bridge
+  - the remaining 13 die on `net::ERR_CONNECTION_REFUSED`: the dev bridge
     (`metacraft-web/tools/serve_editor_dev_bridge.mjs`) logs
     `Editor dev bridge listening`, serves the first few specs, and then exits
     mid-run without a message. Everything after it is collateral.

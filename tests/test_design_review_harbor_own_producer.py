@@ -67,25 +67,26 @@ build-rust-unit-test-binaries:
 ''')
         (self.repo / 'build.py').write_text('''import os,pathlib,shutil,time
 assert os.environ['ISONIM_OWN_PRODUCER_FIXTURE']=='activated'
-root=pathlib.Path.cwd(); target=pathlib.Path('''+repr(str(self.output))+''')
-target.parent.mkdir(exist_ok=True)
-if (root/'block-build').exists():
- target.with_name('blocked-pid').write_text(str(os.getpid()))
- root.joinpath('build-started').touch();time.sleep(60)
-if (root/'fail').exists():raise SystemExit(42)
-if (root/'change-during-build').exists():root.joinpath('main.sh').write_text('#!/bin/sh\\nprintf CHANGED\\n')
-if (root/'escape-output').exists():
- target.unlink(missing_ok=True);target.symlink_to(root/'build/bin/ah')
-else:
- target.unlink(missing_ok=True);shutil.copyfile(root/'main.sh',target);target.chmod(0o700)
- if (root/'src/ignored.inc').exists():
-  with target.open('ab') as output:output.write(b'\\n# ignored input: '+(root/'src/ignored.inc').read_bytes()+b'\\n')
- if (root/'assets/input.inc').exists():
-  with target.open('ab') as output:output.write(b'\\n# authored asset: '+(root/'assets/input.inc').read_bytes()+b'\\n')
-  if (root/'change-asset-during-build').exists():root.joinpath('assets/input.inc').write_text('mutated during build')
- if (root/'assets/node_modules/input.inc').exists():
-  with target.open('ab') as output:output.write(b'\\n# authored directory: '+(root/'assets/node_modules/input.inc').read_bytes()+b'\\n')
-''')
+root=pathlib.Path.cwd(); target=pathlib.Path('''+repr(str(self.output))+(
+  ')\n'
+  'target.parent.mkdir(exist_ok=True)\n'
+  "if (root/'block-build').exists():\n"
+  " target.with_name('blocked-pid').write_text(str(os.getpid()))\n"
+  " root.joinpath('build-started').touch();time.sleep(60)\n"
+  "if (root/'fail').exists():raise SystemExit(42)\n"
+  "if (root/'change-during-build').exists():root.joinpath('main.sh').write_text('#!/bin/sh\\nprintf CHANGED\\n')\n"
+  "if (root/'escape-output').exists():\n"
+  " target.unlink(missing_ok=True);target.symlink_to(root/'build/bin/ah')\n"
+  'else:\n'
+  " target.unlink(missing_ok=True);shutil.copyfile(root/'main.sh',target);target.chmod(0o700)\n"
+  " if (root/'src/ignored.inc').exists():\n"
+  "  with target.open('ab') as output:output.write(b'\\n# ignored input: '+(root/'src/ignored.inc').read_bytes()+b'\\n')\n"
+  " if (root/'assets/input.inc').exists():\n"
+  "  with target.open('ab') as output:output.write(b'\\n# authored asset: '+(root/'assets/input.inc').read_bytes()+b'\\n')\n"
+  "  if (root/'change-asset-during-build').exists():root.joinpath('assets/input.inc').write_text('mutated during build')\n"
+  " if (root/'assets/node_modules/input.inc').exists():\n"
+  "  with target.open('ab') as output:output.write(b'\\n# authored directory: '+(root/'assets/node_modules/input.inc').read_bytes()+b'\\n')\n"
+))
         (self.repo / 'main.sh').write_text('#!/bin/sh\nprintf CURRENT_SOURCE\n')
         (self.repo / 'build/bin').mkdir(parents=True)
         (self.repo / 'build/bin/ah').write_text('#!/bin/sh\nprintf STALE_LEGACY\n')
@@ -106,7 +107,7 @@ else:
         driver=os.environ.get('ISONIM_HARBOR_BUILD_DRIVER',
                               str(ROOT/'build/test-bin/test_design_review_harbor_build'))
         return subprocess.run([driver,'--own-producer-build',str(self.repo),
-                               str(self.publication.parent)],check=check,
+                                str(self.publication.parent)],check=check,
                               stdout=subprocess.PIPE,stderr=subprocess.PIPE,text=True)
 
     def test_generated_policy_matches_normalized_posix_and_windows_paths(self):
@@ -121,7 +122,7 @@ else:
             for name in candidates:
                 path=path_type(name)
                 expected=any(path.is_relative_to(path_type(root.as_posix()))
-                             for root in producer.GENERATED_ROOTS)
+                              for root in producer.GENERATED_ROOTS)
                 self.assertEqual(producer.generated_location(path),expected,(path_type,name))
         # The regression is repeated construction of every lexical ancestor,
         # not wall-clock noise. Profile the real classifier over actual ignored
@@ -163,8 +164,8 @@ else:
         ignored.write_text('gitlink ignored authored asset without package owner')
         first=producer.snapshot(self.repo)
         for name in ['target/tracked.inc','assets/target-prefix/input.inc',
-                     'docs/.repro/build/input.inc','nested/input.inc',
-                     'nested/assets/node_modules/input.inc']:
+                      'docs/.repro/build/input.inc','nested/input.inc',
+                      'nested/assets/node_modules/input.inc']:
             self.assertIn(name,first['files'])
         self.assertNotIn('target/generated.inc',first['files'])
         self.assertIn('nested/',first['revisions'])
@@ -217,7 +218,7 @@ else:
         driver=os.environ.get('ISONIM_HARBOR_BUILD_DRIVER',
                               str(ROOT/'build/test-bin/test_design_review_harbor_build'))
         result=subprocess.run([driver,'--own-producer-build-cancel',str(self.repo),
-                               str(self.publication.parent),str(self.repo/'build-started')],
+                                str(self.publication.parent),str(self.repo/'build-started')],
                               stdout=subprocess.PIPE,stderr=subprocess.PIPE,text=True,timeout=90)
         self.assertNotEqual(result.returncode,0,result.stdout)
         self.assertIn('build interrupted',result.stderr)

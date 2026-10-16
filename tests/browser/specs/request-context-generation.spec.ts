@@ -44,7 +44,11 @@
 // real module's fixture) proxies it, and the client is the real one.
 // Nothing else is mocked.
 
-import { createServer, type IncomingMessage, type ServerResponse } from "node:http";
+import {
+  createServer,
+  type IncomingMessage,
+  type ServerResponse,
+} from "node:http";
 import { test, expect, type Page } from "@playwright/test";
 
 declare global {
@@ -92,14 +96,20 @@ const delayed = (path: string) => (r: { url(): string }) =>
   new URL(r.url()).pathname === path;
 
 for (const c of [
-  { name: "account switch", change: () => window.fx.switchAccount(), reason: "account" },
+  {
+    name: "account switch",
+    change: () => window.fx.switchAccount(),
+    reason: "account",
+  },
   {
     name: "incarnation change",
     change: () => window.fx.changeIncarnation("inc-2"),
     reason: "incarnation",
   },
 ]) {
-  test(`${c.name}: the delayed response reaches the client and is dropped`, async ({ page }) => {
+  test(`${c.name}: the delayed response reaches the client and is dropped`, async ({
+    page,
+  }) => {
     const before = await state(page);
     const sent = page.waitForRequest(delayed("/api/v1/delayed"));
     const arrived = page.waitForResponse(delayed("/api/v1/delayed"));
@@ -111,7 +121,10 @@ for (const c of [
     const resp = await arrived;
     expect(resp.status()).toBe(200);
     expect(await resp.json()).toEqual({ value: "stale" });
-    await page.waitForFunction((n) => window.fx.state().dropped > n, before.dropped);
+    await page.waitForFunction(
+      (n) => window.fx.state().dropped > n,
+      before.dropped,
+    );
     const after = await expectUnchanged(page, before);
     expect(after.dropped).toBe(before.dropped + 1);
     expect(after.dropReason).toBe(c.reason);
@@ -119,23 +132,33 @@ for (const c of [
   });
 }
 
-test("navigation: the navigation-scoped request is aborted and dropped", async ({ page }) => {
+test("navigation: the navigation-scoped request is aborted and dropped", async ({
+  page,
+}) => {
   const before = await state(page);
   const sent = page.waitForRequest(delayed("/api/v1/delayed-nav"));
-  const failed = page.waitForEvent("requestfailed", delayed("/api/v1/delayed-nav"));
+  const failed = page.waitForEvent(
+    "requestfailed",
+    delayed("/api/v1/delayed-nav"),
+  );
   await page.evaluate(() => {
     window.fx.load(800, "stale-nav", "navigation");
   });
   await sent;
   await page.evaluate(() => window.fx.navigate("/other"));
   expect((await failed).failure()?.errorText).toContain("ERR_ABORTED");
-  await page.waitForFunction((n) => window.fx.state().dropped > n, before.dropped);
+  await page.waitForFunction(
+    (n) => window.fx.state().dropped > n,
+    before.dropped,
+  );
   const after = await expectUnchanged(page, before);
   expect(after.dropReason).toBe("navigation");
   expect(after.dropStatus).toBe(-1);
 });
 
-test("negative control: without a context change the response is applied", async ({ page }) => {
+test("negative control: without a context change the response is applied", async ({
+  page,
+}) => {
   const before = await state(page);
   const arrived = page.waitForResponse(delayed("/api/v1/delayed"));
   await page.evaluate(() => {
@@ -151,7 +174,9 @@ test("negative control: without a context change the response is applied", async
   await expect(page.locator("#value")).toHaveText("fresh");
 });
 
-test("negative control: an account-scoped response survives a navigation", async ({ page }) => {
+test("negative control: an account-scoped response survives a navigation", async ({
+  page,
+}) => {
   const before = await state(page);
   const sent = page.waitForRequest(delayed("/api/v1/delayed"));
   await page.evaluate(() => {
@@ -165,7 +190,9 @@ test("negative control: an account-scoped response survives a navigation", async
   expect(after.storage).toBe("kept");
 });
 
-test("navigation after the body is read: only the generation check drops it", async ({ page }) => {
+test("navigation after the body is read: only the generation check drops it", async ({
+  page,
+}) => {
   // The harness navigates the moment the body of /api/v1/delayed-nav has
   // been read: the request completed, so its abort is a no-op, and the
   // response reaches the client (HTTP 200, the value) under a new
@@ -186,7 +213,9 @@ test("navigation after the body is read: only the generation check drops it", as
   await page.goto("/");
   await page.waitForFunction(() => window.fxReady === true);
   const before = await state(page);
-  const navBefore = await page.evaluate(() => window.fx.state().navigationGeneration);
+  const navBefore = await page.evaluate(
+    () => window.fx.state().navigationGeneration,
+  );
   const arrived = page.waitForResponse(delayed("/api/v1/delayed-nav"));
   let failed = false;
   page.on("requestfailed", (r) => {
@@ -200,10 +229,15 @@ test("navigation after the body is read: only the generation check drops it", as
   expect(resp.status()).toBe(200);
   expect(await resp.json()).toEqual({ value: "late-nav" });
   expect(await resp.finished()).toBeNull(); // completed, not aborted
-  await page.waitForFunction((n) => window.fx.state().dropped > n, before.dropped);
+  await page.waitForFunction(
+    (n) => window.fx.state().dropped > n,
+    before.dropped,
+  );
   expect(failed).toBe(false);
   expect(await page.evaluate(() => window.__navigateAfterBody)).toBeNull(); // it ran
-  expect(await page.evaluate(() => window.fx.state().navigationGeneration)).toBe(navBefore + 1);
+  expect(
+    await page.evaluate(() => window.fx.state().navigationGeneration),
+  ).toBe(navBefore + 1);
   const after = await expectUnchanged(page, before);
   expect(after.dropped).toBe(before.dropped + 1);
   expect(after.dropReason).toBe("navigation");
@@ -233,7 +267,9 @@ test.describe("slow body", () => {
       pending.push(res);
       onHeaders();
     });
-    await new Promise<void>((resolve) => server.listen(port, "127.0.0.1", resolve));
+    await new Promise<void>((resolve) =>
+      server.listen(port, "127.0.0.1", resolve),
+    );
   });
 
   test.beforeEach(() => {
@@ -257,14 +293,18 @@ test.describe("slow body", () => {
     await new Promise<void>((resolve) => server.close(() => resolve()));
   });
 
-  test("navigation while the body is read: dropped, no exception", async ({ page }) => {
+  test("navigation while the body is read: dropped, no exception", async ({
+    page,
+  }) => {
     const errors: string[] = [];
     page.on("pageerror", (e) => errors.push(String(e)));
     const before = await state(page);
     const headers = page.waitForResponse(delayed("/api/v1/slow-body"));
     await page.evaluate(() => {
       window.__fxErrors = [];
-      window.fx.loadSlowBody("slow-body").catch((e: unknown) => window.__fxErrors.push(String(e)));
+      window.fx
+        .loadSlowBody("slow-body")
+        .catch((e: unknown) => window.__fxErrors.push(String(e)));
     });
     await headersSent;
     const resp = await headers; // the browser has the headers; the body is held back
@@ -285,11 +325,15 @@ test.describe("slow body", () => {
     expect(after.dropStatus).toBe(-1);
   });
 
-  test("negative control: without a navigation the slow body is applied", async ({ page }) => {
+  test("negative control: without a navigation the slow body is applied", async ({
+    page,
+  }) => {
     const before = await state(page);
     await page.evaluate(() => {
       window.__fxErrors = [];
-      window.fx.loadSlowBody("slow-body").catch((e: unknown) => window.__fxErrors.push(String(e)));
+      window.fx
+        .loadSlowBody("slow-body")
+        .catch((e: unknown) => window.__fxErrors.push(String(e)));
     });
     await headersSent;
     release();

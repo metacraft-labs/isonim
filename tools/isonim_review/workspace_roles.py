@@ -10,8 +10,8 @@ def workspace_root(project):
     for candidate in (project, *project.parents):
         if ((candidate / '.repro-workspace.toml').is_file() or
                 ((candidate / '.repro/workspace.toml').is_file()
-                 and (candidate / 'projects').is_dir()
-                 and (candidate / 'repos').is_dir())):
+                  and (candidate / 'projects').is_dir()
+                  and (candidate / 'repos').is_dir())):
             return candidate
     return None
 
@@ -49,7 +49,7 @@ def declared_role(report, workspace, name, *, required=True):
     # editor_scenario_checkout snapshot intentionally records. Bind the
     # selected principal and reject duplicate physical roles below.
     aliases = [row for row in rows if isinstance(row.get('path'), str)
-               and (workspace / row['path']).resolve() == path]
+                and (workspace / row['path']).resolve() == path]
     if len(aliases) != 1:
         raise RuntimeError('Ambiguous workspace role path: ' + name)
     if not (path / '.git').exists():
@@ -63,7 +63,7 @@ def workspace_report(project, workspace):
         raise RuntimeError('Repro is required to resolve declared source roles')
     result = subprocess.run(
         [repro, 'workspace', 'repos', 'list', '--all', '--json',
-         '--workspace-root=' + str(workspace)], cwd=project,
+          '--workspace-root=' + str(workspace)], cwd=project,
         check=True, capture_output=True, text=True, timeout=20)
     return json.loads(result.stdout)
 
@@ -73,7 +73,7 @@ def source_role(project, name, *, override=None, required=True):
     workspace = workspace_root(project)
     if workspace is not None:
         path = declared_role(workspace_report(project, workspace), workspace, name,
-                             required=required)
+                              required=required)
         if override and Path(override).resolve() != path:
             raise RuntimeError('Explicit source role differs from its declaration: ' + name)
     else:

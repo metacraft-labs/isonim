@@ -28,10 +28,10 @@ class ClockTrace:
     def record(self, operation, info=None, generation=None, **values):
         self.sequence += 1
         row = {'sequence': self.sequence, 'operation': operation,
-               'timeNs': str(time.monotonic_ns()), **values}
+                'timeNs': str(time.monotonic_ns()), **values}
         if info is not None:
             row['stat'] = {key: getattr(info, 'st_' + key)
-                           for key in ['dev', 'ino', 'nlink', 'mode', 'uid', 'size', 'mtime_ns']}
+                            for key in ['dev', 'ino', 'nlink', 'mode', 'uid', 'size', 'mtime_ns']}
         if generation is not None:
             row['generation'] = {key: generation[key] for key in ['pid', 'starttime']}
             row['generation']['directorySha256'] = hashlib.sha256(
@@ -45,7 +45,7 @@ class ClockTrace:
         try:
             with os.fdopen(fd, 'w') as stream:
                 json.dump({'schema': 'isonim-clock-syscalls-v1', 'totalEvents': self.sequence,
-                           'events': list(self.events)}, stream)
+                            'events': list(self.events)}, stream)
             os.replace(name, self.filename)
         finally:
             if os.path.exists(name): os.unlink(name)

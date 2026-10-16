@@ -38,31 +38,32 @@ import unittest
 ROOT = Path(__file__).resolve().parents[1]
 CLI = Path(os.environ.get('ISONIM_TEST_CLI', str(ROOT / 'build/bin/isonim')))
 
-LAUNCHER_SCRIPT = '''
-import hashlib,json,os,pathlib,signal,sys
-sys.path.insert(0,HELPERS)
-from helpers.editor_process_observer import process_observer
-arguments=sys.argv[1:]
-if len(arguments)==5 and arguments[0]=='-c' and arguments[2]=='verify':
- table=process_observer().snapshot()
- ancestor=os.getppid();outer=None
- while ancestor in table:
-  row=table[ancestor]
-  if row[2] and '--internal-harbor-runtime' in row[2]:break
-  if row[2] and '--internal-harbor-verify' in row[2]:
-   outer=ancestor;break
-  ancestor=row[0]
- if outer is not None:
-  record={'outerPid':outer,'outerStart':table[outer][1],
-          'launcherPid':os.getpid(),'launcherStart':table[os.getpid()][1],
-          'argv':arguments,'scriptSHA256':hashlib.sha256(arguments[1].encode()).hexdigest(),
-          'interpreter':REAL_PYTHON,'interpreterSHA256':hashlib.sha256(pathlib.Path(REAL_PYTHON).read_bytes()).hexdigest()}
-  destination=pathlib.Path(STATE)/('verify-entry-%s.json'%os.getpid())
-  descriptor=os.open(destination,os.O_WRONLY|os.O_CREAT|os.O_EXCL,0o600)
-  with os.fdopen(descriptor,'w') as stream:json.dump(record,stream)
-  os.kill(os.getpid(),signal.SIGSTOP)
-os.execv(REAL_PYTHON,[REAL_PYTHON]+arguments)
-'''
+LAUNCHER_SCRIPT = (
+  '\n'
+  'import hashlib,json,os,pathlib,signal,sys\n'
+  'sys.path.insert(0,HELPERS)\n'
+  'from helpers.editor_process_observer import process_observer\n'
+  'arguments=sys.argv[1:]\n'
+  "if len(arguments)==5 and arguments[0]=='-c' and arguments[2]=='verify':\n"
+  ' table=process_observer().snapshot()\n'
+  ' ancestor=os.getppid();outer=None\n'
+  ' while ancestor in table:\n'
+  '  row=table[ancestor]\n'
+  "  if row[2] and '--internal-harbor-runtime' in row[2]:break\n"
+  "  if row[2] and '--internal-harbor-verify' in row[2]:\n"
+  '   outer=ancestor;break\n'
+  '  ancestor=row[0]\n'
+  ' if outer is not None:\n'
+  "  record={'outerPid':outer,'outerStart':table[outer][1],\n"
+  "          'launcherPid':os.getpid(),'launcherStart':table[os.getpid()][1],\n"
+  "          'argv':arguments,'scriptSHA256':hashlib.sha256(arguments[1].encode()).hexdigest(),\n"
+  "          'interpreter':REAL_PYTHON,'interpreterSHA256':hashlib.sha256(pathlib.Path(REAL_PYTHON).read_bytes()).hexdigest()}\n"
+  "  destination=pathlib.Path(STATE)/('verify-entry-%s.json'%os.getpid())\n"
+  '  descriptor=os.open(destination,os.O_WRONLY|os.O_CREAT|os.O_EXCL,0o600)\n'
+  "  with os.fdopen(descriptor,'w') as stream:json.dump(record,stream)\n"
+  '  os.kill(os.getpid(),signal.SIGSTOP)\n'
+  'os.execv(REAL_PYTHON,[REAL_PYTHON]+arguments)\n'
+)
 
 
 def request(port, path, data=None, token='', timeout=2):
@@ -70,7 +71,7 @@ def request(port, path, data=None, token='', timeout=2):
     try:
         headers = {'Content-Type': 'application/json', 'X-IsoNim-Control': token}
         conn.request('GET' if data is None else 'POST', path,
-                     None if data is None else json.dumps(data), headers)
+                      None if data is None else json.dumps(data), headers)
         response = conn.getresponse()
         return response.status, json.loads(response.read())
     finally:
@@ -144,22 +145,23 @@ if (root/'fail').exists():raise SystemExit(19)
 (root/'build/bin').mkdir(parents=True,exist_ok=True)
 shutil.copyfile(root/'peer.py',root/'build/bin/ah');(root/'build/bin/ah').chmod(0o700)
 ''')
-        (self.repo / 'peer.py').write_text('''#!/usr/bin/env python3
-import http.server,json,os,pathlib,sys
-if sys.argv[1:]==['--version']:
- print('ah readiness fixture 1.0.0');raise SystemExit(0)
-class Handler(http.server.BaseHTTPRequestHandler):
- def do_GET(self):
-  self.send_response(200);self.end_headers();self.wfile.write(b'{"ok":true}')
- def log_message(self,*args):pass
-port=int(sys.argv[sys.argv.index('--rest-port')+1])
-server=http.server.HTTPServer(('127.0.0.1',port),Handler)
-root=pathlib.Path(__file__).resolve().parents[2]
-root.joinpath('runtime-port').write_text(str(port))
-root.joinpath('runtime-pid').write_text(str(os.getpid()))
-root.joinpath('runtime-state').write_text(str(pathlib.Path(os.environ['AH_DAEMON_DB_PATH']).parent))
-server.serve_forever()
-''')
+        (self.repo / 'peer.py').write_text((
+          '#!/usr/bin/env python3\n'
+          'import http.server,json,os,pathlib,sys\n'
+          "if sys.argv[1:]==['--version']:\n"
+          " print('ah readiness fixture 1.0.0');raise SystemExit(0)\n"
+          'class Handler(http.server.BaseHTTPRequestHandler):\n'
+          ' def do_GET(self):\n'
+          '  self.send_response(200);self.end_headers();self.wfile.write(b\'{"ok":true}\')\n'
+          ' def log_message(self,*args):pass\n'
+          "port=int(sys.argv[sys.argv.index('--rest-port')+1])\n"
+          "server=http.server.HTTPServer(('127.0.0.1',port),Handler)\n"
+          'root=pathlib.Path(__file__).resolve().parents[2]\n'
+          "root.joinpath('runtime-port').write_text(str(port))\n"
+          "root.joinpath('runtime-pid').write_text(str(os.getpid()))\n"
+          "root.joinpath('runtime-state').write_text(str(pathlib.Path(os.environ['AH_DAEMON_DB_PATH']).parent))\n"
+          'server.serve_forever()\n'
+        ))
         self.environ = dict(os.environ)
         for key in ['ISONIM_ACP_AGENT_CMD', 'ISONIM_HARBOR_URL', 'ISONIM_LOCAL_HARBOR',
                     'ISONIM_AGENT_BACKEND', 'ISONIM_AGENT_COMMAND']:
@@ -417,8 +419,8 @@ server.serve_forever()
 
     def start(self, environ=None):
         process = subprocess.Popen([str(CLI), 'serve', '--agent-routes-only', '--config', str(self.config)],
-                                   env=environ or self.environ, stdout=subprocess.DEVNULL,
-                                   stderr=subprocess.PIPE, text=True)
+                                    env=environ or self.environ, stdout=subprocess.DEVNULL,
+                                    stderr=subprocess.PIPE, text=True)
         self.daemons.append(process)
         lines = queue.Queue()
         process._diagnostics = []
@@ -457,7 +459,7 @@ server.serve_forever()
 
     def rpc(self, port, method, params, token):
         status, reply = request(port, '/api/editor/rpc', {'jsonrpc':'2.0', 'id':1,
-                               'method':method, 'params':params}, token)
+                                'method':method, 'params':params}, token)
         self.assertEqual(status, 200)
         return reply
 
@@ -554,7 +556,7 @@ server.serve_forever()
                 self.assert_responsive(port, scope)
             self.assertEqual(len((self.repo / 'starts').read_text().splitlines()), 1)
             self.assertEqual(json.loads((self.repo / 'authority.json').read_text()),
-                             {'ISONIM_EDITOR_BROWSER_BOOTSTRAP':False,'ISONIM_INTERNAL_HARBOR_EPOCH':False})
+                              {'ISONIM_EDITOR_BROWSER_BOOTSTRAP':False,'ISONIM_INTERNAL_HARBOR_EPOCH':False})
             aborted = socket.create_connection(('127.0.0.1',port),timeout=1)
             aborted.sendall(b'POST /api/agent/sessions HTTP/1.1\r\nHost: localhost\r\nContent-Type: application/json\r\nContent-Length: 2\r\n\r\n{}')
             # The production handler emits this safe lifecycle diagnostic only

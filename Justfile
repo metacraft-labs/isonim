@@ -1344,13 +1344,14 @@ bench-all: bench-build demo-build build-web-components
     @echo "=== Test Count Metrics ==="
     ./scripts/collect-metrics.sh --tests
 
-# Lint hook expected by the workspace pre-commit framework. The IsoNim
-# Nim style is enforced by --styleCheck:usages --styleCheck:error inside
-# the test recipes; this recipe is a placeholder so pre-commit's
-# `just lint` hook resolves. Extend it with nimpretty / nim check when
-# the linting story is ready.
-lint:
-    @echo "isonim: lint placeholder (Nim style enforced inside test recipes)"
+# Check the actual native renderer, browser editor and review CLI entry graphs.
+# No test executable is built or run here. Browser checking needs the same real
+# generated Tailwind source input as the shipping browser build.
+lint: build-tailwind
+    nim check --styleCheck:usages --styleCheck:error --path:src --path:../nim-everywhere/src src/isonim/renderers/native.nim
+    nim check --backend:js --styleCheck:usages --styleCheck:error --path:src --path:. --path:../nim-everywhere/src --path:../isonim-render-serve/src --path:../nim-acp/src --path:../nim-agent-harbor/src --path:../nim-agents/src src/isonim/editor/browser.nim
+    nim check --styleCheck:usages --styleCheck:error --path:src --path:vendor/db_connector/src --path:vendor/chronicles --path:vendor/serialization --path:vendor/json_serialization --path:../isonim-render-serve/src --path:../nim-everywhere/src --path:../nim-faststreams --path:../nim-stew --path:../nim-acp/src --path:../nim-agent-harbor/src --path:../nim-agents/src -d:nimOldCaseObjects -d:chronicles_sinks=textlines[stderr] -d:chronicles_runtime_filtering=on -d:chronicles_log_level=TRACE tools/isonim_review/main.nim
+    python3 tools/lint_source_syntax.py
 
 # Shared typed command host, native scoped RPC and real mounted browser/CLI gate.
 test-editor-control: isonim-review-build editor-control-build

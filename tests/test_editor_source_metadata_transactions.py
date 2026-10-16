@@ -38,7 +38,7 @@ class MetadataTransactionTests(unittest.TestCase):
         self.binary = REPO / "build/bin/isonim-review"
         self.env = {**os.environ, "ISONIM_SOURCE_FRAMEWORK": str(REPO)}
         built = subprocess.run(["python3", str(REPO / "tools/build_source_catalog.py"), str(self.project)], env=self.env,
-                               capture_output=True, text=True, timeout=70)
+                                capture_output=True, text=True, timeout=70)
         (self.directory / "initial-build.log").write_text(built.stdout + built.stderr)
         self.assertEqual(built.returncode, 0, built.stdout + built.stderr)
         self.source = self.project / "stories.nim"

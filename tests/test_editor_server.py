@@ -43,7 +43,7 @@ def free_port():
 def request(port, path='/', method='GET', body=None):
     connection = http.client.HTTPConnection('127.0.0.1', port, timeout=5)
     connection.request(method, path, json.dumps(body) if body is not None else None,
-                       {'Content-Type': 'application/json'})
+                        {'Content-Type': 'application/json'})
     response = connection.getresponse()
     data = response.read()
     connection.close()
@@ -233,23 +233,24 @@ class LauncherTests(unittest.TestCase):
 
     def test_native_frontend_proxy_preserves_write_and_upgrade_routes(self):
         script = self.directory / 'frontend.py'
-        script.write_text("""import http.server,json,os
-from pathlib import Path
-class Handler(http.server.BaseHTTPRequestHandler):
- def do_GET(self):
-  if self.headers.get('Upgrade') == 'websocket':
-   self.send_response(101); self.send_header('Upgrade','websocket'); self.send_header('Connection','Upgrade'); self.end_headers()
-   self.wfile.write(self.rfile.read(4)); self.wfile.flush(); return
-  page=b'<html><head><meta name="isonim-review-api" content="http://127.0.0.1:7777"></head><body>Native</body></html>'
-  self.send_response(200); self.send_header('Content-Type','text/html'); self.send_header('Content-Length',str(len(page))); self.end_headers(); self.wfile.write(page)
- def do_POST(self):
-  value=self.rfile.read(int(self.headers['Content-Length']))
-  Path('saved.json').write_bytes(value)
-  self.send_response(201); self.send_header('Content-Type','application/json'); self.send_header('Content-Length',str(len(value))); self.end_headers(); self.wfile.write(value)
-server=http.server.ThreadingHTTPServer((os.environ['ISONIM_EDITOR_BIND'],int(os.environ['PORT'])),Handler)
-Path('frontend-port').write_text(str(server.server_port))
-server.serve_forever()
-""")
+        script.write_text((
+          'import http.server,json,os\n'
+          'from pathlib import Path\n'
+          'class Handler(http.server.BaseHTTPRequestHandler):\n'
+          ' def do_GET(self):\n'
+          "  if self.headers.get('Upgrade') == 'websocket':\n"
+          "   self.send_response(101); self.send_header('Upgrade','websocket'); self.send_header('Connection','Upgrade'); self.end_headers()\n"
+          '   self.wfile.write(self.rfile.read(4)); self.wfile.flush(); return\n'
+          '  page=b\'<html><head><meta name="isonim-review-api" content="http://127.0.0.1:7777"></head><body>Native</body></html>\'\n'
+          "  self.send_response(200); self.send_header('Content-Type','text/html'); self.send_header('Content-Length',str(len(page))); self.end_headers(); self.wfile.write(page)\n"
+          ' def do_POST(self):\n'
+          "  value=self.rfile.read(int(self.headers['Content-Length']))\n"
+          "  Path('saved.json').write_bytes(value)\n"
+          "  self.send_response(201); self.send_header('Content-Type','application/json'); self.send_header('Content-Length',str(len(value))); self.end_headers(); self.wfile.write(value)\n"
+          "server=http.server.ThreadingHTTPServer((os.environ['ISONIM_EDITOR_BIND'],int(os.environ['PORT'])),Handler)\n"
+          "Path('frontend-port').write_text(str(server.server_port))\n"
+          'server.serve_forever()\n'
+        ))
         child, port, output = self.external(('--frontend-command', sys.executable, str(script)))
         status, html = request(port)
         self.assertEqual(status, 200)

@@ -194,8 +194,8 @@ def inject_origin_meta(html, browser_bootstrap=""):
             'document.head.appendChild(apiMeta);</script>')
     if browser_bootstrap:
         meta += ('<script>const controlMeta=document.createElement("meta");'
-                 'controlMeta.name="isonim-editor-bootstrap";controlMeta.content='
-                 + json.dumps(browser_bootstrap) + ';document.head.appendChild(controlMeta);</script>')
+                  'controlMeta.name="isonim-editor-bootstrap";controlMeta.content='
+                  + json.dumps(browser_bootstrap) + ';document.head.appendChild(controlMeta);</script>')
     html = re.sub(r'<meta\b[^>]*\bname=["\']isonim-review-api["\'][^>]*>',
                   '', html, flags=re.IGNORECASE)
     return re.sub(r'</head>', meta + '</head>', html, count=1, flags=re.IGNORECASE).encode()
@@ -486,7 +486,7 @@ def serve(directory: Path, project_root: Path, port: int, bind: str = "0.0.0.0",
         if not daemon_url:
             if daemon_binary is None:
                 with owned_process(["repro", "exec", "--", "just", "isonim-review-build"],
-                                   cwd=REPO) as build:
+                                    cwd=REPO) as build:
                     code = build.wait()
                     if code:
                         raise RuntimeError(f"Editor daemon build failed with {code}")
@@ -500,7 +500,7 @@ def serve(directory: Path, project_root: Path, port: int, bind: str = "0.0.0.0",
             browser_bootstrap = secrets.token_hex(32)
             env["ISONIM_EDITOR_BROWSER_BOOTSTRAP"] = browser_bootstrap
             with owned_process(args, require_clean_exit=True, cwd=project_root, env=env, stderr=subprocess.PIPE,
-                               text=True, bufsize=1) as daemon:
+                                text=True, bufsize=1) as daemon:
                 lines = queue.Queue()
                 def relay():
                     for line in daemon.stderr:
@@ -539,8 +539,8 @@ def serve_frontend(directory, project_root, port, bind, daemon_url, command, dae
     if command:
         endpoint = urllib.parse.urlsplit(daemon_url)
         env = {**os.environ, "ISONIM_DAEMON_HOST": endpoint.hostname,
-               "ISONIM_DAEMON_PORT": str(endpoint.port), "PORT": str(port),
-               "ISONIM_EDITOR_BIND": bind, "EDITOR_STATIC_ROOT": str(directory)}
+                "ISONIM_DAEMON_PORT": str(endpoint.port), "PORT": str(port),
+                "ISONIM_EDITOR_BIND": bind, "EDITOR_STATIC_ROOT": str(directory)}
         with owned_process(command, cwd=project_root, env=env) as frontend:
             while frontend.poll() is None:
                 if daemon and daemon.poll() is not None:

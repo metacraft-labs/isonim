@@ -373,19 +373,19 @@ class ProcessObserverTests(unittest.TestCase):
             self.assertIn('Ran 2 tests', absent.stderr)
             self.assertIn('OK (skipped=2)', absent.stderr)
             for name in ('test_parallel_native_shutdown_of_two_actual_backend_sessions',
-                         'test_production_routes_keep_isolated_provider_sessions_alive_until_close'):
+                          'test_production_routes_keep_isolated_provider_sessions_alive_until_close'):
                 self.assertRegex(absent.stderr, name + r'.*\.\.\. skipped')
             sibling = workspace / 'agent-harbor'
             sibling.mkdir()
             for expected in ('Cargo.toml', 'repro.nim'):
                 invalid = subprocess.run([sys.executable, str(tests / 'test_editor_harbor_scenario.py'), '-v'],
-                                         capture_output=True, text=True, timeout=10)
+                                          capture_output=True, text=True, timeout=10)
                 self.assertNotEqual(invalid.returncode, 0)
                 self.assertIn('Present Agent Harbor sibling is missing required ' + expected, invalid.stderr)
                 self.assertIn('Ran 2 tests', invalid.stderr)
                 self.assertIn('FAILED (errors=2)', invalid.stderr)
                 for name in ('test_parallel_native_shutdown_of_two_actual_backend_sessions',
-                             'test_production_routes_keep_isolated_provider_sessions_alive_until_close'):
+                              'test_production_routes_keep_isolated_provider_sessions_alive_until_close'):
                     self.assertRegex(invalid.stderr, name + r'.*\.\.\. ERROR')
                 self.assertNotIn('skipped=', invalid.stderr)
                 (sibling / expected).write_text('# required metadata boundary\n')

@@ -39,8 +39,8 @@ class AuthoringEvidence(unittest.TestCase):
         self.path = Path(self.directory.name)/'.claude/projects/project'/self.session/'tool-results/capture.txt'
         self.path.parent.mkdir(parents=True)
         self.result = {'operationId': 'capture-one', 'status': 'applied',
-                       'request': {'command': 'capture-preview'},
-                       'result': {'ready': True, 'format': 'text/html',
+                        'request': {'command': 'capture-preview'},
+                        'result': {'ready': True, 'format': 'text/html',
                                   'documentHtml': '<html><body>current preview</body></html>'}}
         self.raw = json.dumps(self.result)
         self.path.write_text(self.raw)
@@ -117,7 +117,7 @@ class AuthoringEvidence(unittest.TestCase):
             wire[-1]['message']['params']['update']['rawInput']['command'] = variant
             proof = self.verify(wire)
             self.assertEqual((proof[0]['operationId'], proof[0]['turn'], proof[0]['originTool']),
-                             ('capture-one', 1, 'capture-tool'))
+                              ('capture-one', 1, 'capture-tool'))
         for form in ('wc', 'shellgrep'):
             self.assertEqual(self.verify(self.current_reader(form))[0]['operationId'], 'capture-one')
 
@@ -128,25 +128,25 @@ class AuthoringEvidence(unittest.TestCase):
         variants = [base.replace('wc -c', head, 1) for head in
                     ('wc', 'wc -l', 'wc -c -c', 'wc --bytes', 'wc -c --', 'wc -c $EXTRA')]
         variants += [base.replace("grep -o '<body[^>]*>'", head, 1) for head in
-                     ('grep -o', 'grep -o -e body', 'grep -o -- body', 'grep -o -f patterns',
+                      ('grep -o', 'grep -o -e body', 'grep -o -- body', 'grep -o -f patterns',
                       'grep -o -n body', 'grep -o "$(cat history.jsonl)"',
                       'grep -o "$PATTERN"', 'grep -o "`cat history.jsonl`"',
                       "grep -o ''", "grep -o '-body'")]
         variants += [base.replace('wc -c '+path, 'wc -c '+target, 1) for target in
-                     (path+' other.txt', str(self.path.parent/'other.txt'), '$FILE',
+                      (path+' other.txt', str(self.path.parent/'other.txt'), '$FILE',
                       '"$FILE"', '$(echo '+path+')', '`echo '+path+'`', path+'*')]
         variants += [base.replace(
-                         "'<body[^>]*>' "+path, "'<body[^>]*>' "+str(self.path.parent/'other.txt'), 1)]
+                          "'<body[^>]*>' "+path, "'<body[^>]*>' "+str(self.path.parent/'other.txt'), 1)]
         variants += [base+tail for tail in ('true', '\ntrue', '\ncat '+path, '\n',
-                                           '; true', ' && true', ' > output.txt', ' | cat', '\nwc -c '+path)]
+                                            '; true', ' && true', ' > output.txt', ' | cat', '\nwc -c '+path)]
         variants += [base.replace('\ngrep', separator+'grep', 1) for separator in
-                     ('; ', ' && ', ' | ', ' & ', '\\\n', '\n#comment\n')]
+                      ('; ', ' && ', ' | ', ' & ', '\\\n', '\n#comment\n')]
         variants += [base.replace('python3 -c "', 'python3 -c "print(\'$HOME\')\n', 1),
-                     base.replace('python3 -c "', 'python3 -c "print(\'$(true)\')\n', 1),
-                     base.replace('python3 -c "', 'python3 -c "print(\'`true`\')\n', 1),
-                     base.replace('\n', '\r\n'), base+'\x00', base.replace('wc -c ', 'wc -c < ', 1),
-                     base.replace("'<body[^>]*>'", "'<body\n[^>]*>'", 1),
-                     base.replace('wc -c '+path, 'wc -c '+self.quote(path)+' > output', 1)]
+                      base.replace('python3 -c "', 'python3 -c "print(\'$(true)\')\n', 1),
+                      base.replace('python3 -c "', 'python3 -c "print(\'`true`\')\n', 1),
+                      base.replace('\n', '\r\n'), base+'\x00', base.replace('wc -c ', 'wc -c < ', 1),
+                      base.replace("'<body[^>]*>'", "'<body\n[^>]*>'", 1),
+                      base.replace('wc -c '+path, 'wc -c '+self.quote(path)+' > output', 1)]
         for command in variants:
             wire[-1]['message']['params']['update']['rawInput']['command'] = command
             with self.subTest(command=command), self.assertRaises((AssertionError, ValueError, SyntaxError)):
@@ -156,9 +156,9 @@ class AuthoringEvidence(unittest.TestCase):
         wire = self.current_reader('inspection')
         base = wire[-1]['message']['params']['update']['rawInput']['command']
         for escape in ("open('history.jsonl')", "f.write('changed')", "open('output', 'w')",
-                       "import os", "import subprocess", "alias=open", "alias=f.read",
-                       "alias=json", "eval('1')", "exec('1')", "__import__('os')",
-                       "sorted(['history'], key=open)", "getattr(obj, 'get')('result')"):
+                        "import os", "import subprocess", "alias=open", "alias=f.read",
+                        "alias=json", "eval('1')", "exec('1')", "__import__('os')",
+                        "sorted(['history'], key=open)", "getattr(obj, 'get')('result')"):
             crossed = copy.deepcopy(wire)
             crossed[-1]['message']['params']['update']['rawInput']['command'] = (
                 base.replace('\"\n', '\n'+escape+'\n\"\n'))
@@ -185,22 +185,22 @@ class AuthoringEvidence(unittest.TestCase):
             f'Preview (first 2KB):\n{raw[:50]}\n...\n</persisted-output>')
         proof = self.verify(wire, {1: {'capture-one': result}})
         self.assertEqual((proof[0]['command'], proof[0]['originTool'], proof[0]['turn']),
-                         ('create-story', 'capture-tool', 1))
+                          ('create-story', 'capture-tool', 1))
 
     def test_current_python_result_reader_with_output_head_is_authenticated(self):
         wire = self.current_reader('head')
         program = (f"import json,re\nwith open({str(self.path)!r}) as f:\n"
-                   " data=json.load(f)\noutput=data.get('result', {})\n"
-                   "print(output.get('ready'), output.get('format'), data.get('revision'), data.get('status'))\n"
-                   "html=output.get('documentHtml', '')\n"
-                   "body=re.search('<body>(.*?)</body>', html, re.DOTALL)\nprint(body.group(1))")
+                    " data=json.load(f)\noutput=data.get('result', {})\n"
+                    "print(output.get('ready'), output.get('format'), data.get('revision'), data.get('status'))\n"
+                    "html=output.get('documentHtml', '')\n"
+                    "body=re.search('<body>(.*?)</body>', html, re.DOTALL)\nprint(body.group(1))")
         base = 'python3 -c '+self.quote(program)
         for suffix in (' | head -60', ' 2>&1 | head -60'):
             wire[-1]['message']['params']['update']['rawInput']['command'] = base+suffix
             with self.subTest(suffix=suffix):
                 proof = self.verify(wire)
                 self.assertEqual((proof[0]['operationId'], proof[0]['originTool']),
-                                 ('capture-one', 'capture-tool'))
+                                  ('capture-one', 'capture-tool'))
 
     def test_actual_literal_heredoc_bodies_are_authenticated(self):
         for form in ('heredoc195', 'heredoc203'):
@@ -221,13 +221,13 @@ class AuthoringEvidence(unittest.TestCase):
             base=wire[-1]['message']['params']['update']['rawInput']['command']
             header,body=base.split('\n',1)
             headers=("python3 - <<EOF", "python3 - <<$EOF", "python3 - <<'E'OF", "python3 - <<$(echo EOF)",
-                     "python3 - <<'EOF'; true", "python3 - <<'EOF' | cat", "python3 - <<'EOF' > output.txt",
-                     "python3 - <<'EOF' 2>&1", "python3 - <<'EOF' <<'OTHER'", "python3 - x <<'EOF'",
-                     "$(echo python3) - <<'EOF'", "python3 - <<-'EOF'", "python3 - <<'E\nOF'")
+                      "python3 - <<'EOF'; true", "python3 - <<'EOF' | cat", "python3 - <<'EOF' > output.txt",
+                      "python3 - <<'EOF' 2>&1", "python3 - <<'EOF' <<'OTHER'", "python3 - x <<'EOF'",
+                      "$(echo python3) - <<'EOF'", "python3 - <<-'EOF'", "python3 - <<'E\nOF'")
             commands=[h+'\n'+body for h in headers]
             commands += [base+'\ntrue',base+'\n\n',base[:-3]+' EOF',base[:-3]+'EOF ',base[:-3]+'OTHER',
-                         base.replace('\n','\r\n'),base+'\x00',header+'\nEOF\n'+body,
-                         header+"\ntext='''\nEOF\n'''\n"+body]
+                          base.replace('\n','\r\n'),base+'\x00',header+'\nEOF\n'+body,
+                          header+"\ntext='''\nEOF\n'''\n"+body]
             for command in commands:
                 wire[-1]['message']['params']['update']['rawInput']['command']=command
                 with self.subTest(form=form,wrapper=command.split('\n')[0]),self.assertRaises((AssertionError,ValueError,SyntaxError)):
@@ -238,8 +238,8 @@ class AuthoringEvidence(unittest.TestCase):
             wire=self.current_reader(form)
             base=wire[-1]['message']['params']['update']['rawInput']['command']
             escapes=("open('history.jsonl')", "import os", "__import__('os')", "eval('1')", "getattr(obj,'get')('result')",
-                     "alias=open", "alias=f.read", "alias=json", "sorted(['history.jsonl'],key=open)", "f.write('changed')",
-                     "open('history.jsonl', 'w')", "import subprocess; subprocess.run(['true'])")
+                      "alias=open", "alias=f.read", "alias=json", "sorted(['history.jsonl'],key=open)", "f.write('changed')",
+                      "open('history.jsonl', 'w')", "import subprocess; subprocess.run(['true'])")
             for escape in escapes:
                 crossed=copy.deepcopy(wire)
                 crossed[-1]['message']['params']['update']['rawInput']['command']=base[:-3]+escape+'\nEOF'
@@ -253,13 +253,13 @@ class AuthoringEvidence(unittest.TestCase):
     def test_sdk_grep_rejects_extra_inputs_and_invalid_options(self):
         good = self.current_reader('grep')[-1]['message']['params']['update']['rawInput']
         changes = ({'head_limit': True}, {'head_limit': 0}, {'head_limit': -20},
-                   {'head_limit': '20'}, {'head_limit': 1.5}, {'pattern': None},
-                   {'pattern': ''}, {'path': [str(self.path)]}, {'path': ''},
-                   {'path': str(self.path.parent)}, {'path': str(self.path.parent/'*.txt')},
-                   {'path': str(self.path.parent/'[capture].txt')},
-                   {'path': str(self.path)+'\nother.txt'}, {'glob': '*.txt'},
-                   {'output_mode': 'files_with_matches'}, {'multiline': True},
-                   {'other_file': 'history.jsonl'}, {'pattern': 'PRIVATE_NONCE'})
+                    {'head_limit': '20'}, {'head_limit': 1.5}, {'pattern': None},
+                    {'pattern': ''}, {'path': [str(self.path)]}, {'path': ''},
+                    {'path': str(self.path.parent)}, {'path': str(self.path.parent/'*.txt')},
+                    {'path': str(self.path.parent/'[capture].txt')},
+                    {'path': str(self.path)+'\nother.txt'}, {'glob': '*.txt'},
+                    {'output_mode': 'files_with_matches'}, {'multiline': True},
+                    {'other_file': 'history.jsonl'}, {'pattern': 'PRIVATE_NONCE'})
         for change in changes:
             wire = self.current_reader('grep')
             wire[-1]['message']['params']['update']['rawInput'].update(change)
@@ -292,8 +292,8 @@ class AuthoringEvidence(unittest.TestCase):
                 self.verify(wire)
         prefix = f"import json\nwith open({str(self.path)!r}) as f:\n data=json.load(f)\n"
         for escape in ("open('history.jsonl')", "f.write('changed')", "alias=open",
-                       "alias=f.read", "getattr(data, 'get')('result')",
-                       "sorted(['history.jsonl'], key=open)", "import os", "eval('1')"):
+                        "alias=f.read", "getattr(data, 'get')('result')",
+                        "sorted(['history.jsonl'], key=open)", "import os", "eval('1')"):
             wire = self.current_reader('head')
             wire[-1]['message']['params']['update']['rawInput']['command'] = (
                 'python3 -c '+self.quote(prefix+escape)+' 2>&1 | head -60')
@@ -353,8 +353,8 @@ class AuthoringEvidence(unittest.TestCase):
             alias.symlink_to(self.path)
             try:
                 for target in (self.path.parent/'other.txt',
-                               self.path.parent.parent/'history.jsonl', alias,
-                               self.path.parent/'PRIVATE_NONCE.txt'):
+                                self.path.parent.parent/'history.jsonl', alias,
+                                self.path.parent/'PRIVATE_NONCE.txt'):
                     changed = copy.deepcopy(wire)
                     update = changed[-1]['message']['params']['update']
                     if form == 'grep':
@@ -374,8 +374,8 @@ class AuthoringEvidence(unittest.TestCase):
                 with self.subTest(form=form, advertised_symlink=True), self.assertRaises(AssertionError):
                     self.verify(changed)
                 for target in (self.path.parent/'..'/'tool-results'/self.path.name,
-                               self.path.parent.parent.parent/'other-session'/'tool-results/capture.txt',
-                               self.path.parent.parent/'history.jsonl'):
+                                self.path.parent.parent.parent/'other-session'/'tool-results/capture.txt',
+                                self.path.parent.parent/'history.jsonl'):
                     target.parent.mkdir(parents=True, exist_ok=True)
                     target.write_text(self.raw)
                     changed = copy.deepcopy(wire)
@@ -416,18 +416,18 @@ class AuthoringEvidence(unittest.TestCase):
         wire[-1]['message']['params']['update']['rawInput']['command'] = command+' 2>&1'
         self.assertEqual(self.verify(wire)[0]['operationId'], 'capture-one')
         for suffix in (' 2> history.jsonl', ' > output.txt', ' 2>&1; cat history.jsonl',
-                       ' 2>&1 | cat history.jsonl', ' 2>&1 2>&1'):
+                        ' 2>&1 | cat history.jsonl', ' 2>&1 2>&1'):
             wire[-1]['message']['params']['update']['rawInput']['command'] = command+suffix
             with self.subTest(suffix=suffix), self.assertRaises(AssertionError):
                 self.verify(wire)
 
     def test_sdk_read_rejects_history_extra_input_and_invalid_bounds(self):
         for data in ({'file_path': str(self.path.parent.parent/'history.jsonl')},
-                     {'file_path': str(self.path), 'other_file': 'history.jsonl'},
-                     {'file_path': str(self.path), 'limit': True},
-                     {'file_path': str(self.path), 'offset': -1},
-                     {'file_path': str(self.path), 'limit': '100'},
-                     {'file_path': str(self.path), 'limit': 0}):
+                      {'file_path': str(self.path), 'other_file': 'history.jsonl'},
+                      {'file_path': str(self.path), 'limit': True},
+                      {'file_path': str(self.path), 'offset': -1},
+                      {'file_path': str(self.path), 'limit': '100'},
+                      {'file_path': str(self.path), 'limit': 0}):
             wire = copy.deepcopy(self.wire)
             update = wire[-1]['message']['params']['update']
             update['_meta']['claudeCode']['toolName'] = 'Read'
@@ -459,7 +459,7 @@ class AuthoringEvidence(unittest.TestCase):
                 'isonim editor '+command+' --command-id capture-one --wait')
             content = wire[2]['message']['params']['update']['content'][0]['content']
             content['text'] = (f'<persisted-output>\nFull output saved to: {self.path}\n\n'
-                               f'Preview (first 2KB):\n{raw[:50]}\n...\n</persisted-output>')
+                                f'Preview (first 2KB):\n{raw[:50]}\n...\n</persisted-output>')
             wire[-1]['message']['params']['update']['rawInput']['command'] = 'python3 -c '+self.quote(
                 f"import json,re\nwith open({str(self.path)!r}) as f:\n data=json.load(f)\nprint(json.dumps(data.get('result', {{}})))\nprint(data.get('status','').lower())")+' 2>&1'
             expected = {1: {'capture-one': copy.deepcopy(result)}}
@@ -500,13 +500,13 @@ class AuthoringEvidence(unittest.TestCase):
         wire[-1]['message']['params']['update']['rawInput']['command'] = command
         self.assertEqual(self.verify(wire)[0]['operationId'], 'capture-one')
         for escape in ("eval('1')", "exec('print(1)')", "getattr(data, 'get')('result')",
-                       "__import__('os')", "globals()", "locals()", "input()",
-                       "open('history.jsonl')", "f.write('changed')",
-                       "alias=open", "alias=json", "alias=f.read",
-                       "sorted(['history.jsonl'], key=open)",
-                       "sorted(['history.jsonl'], key=json.load)",
-                       "sorted(['history.jsonl'], key=f.read)",
-                       "re.sub('x', open, 'history.jsonl')") :
+                        "__import__('os')", "globals()", "locals()", "input()",
+                        "open('history.jsonl')", "f.write('changed')",
+                        "alias=open", "alias=json", "alias=f.read",
+                        "sorted(['history.jsonl'], key=open)",
+                        "sorted(['history.jsonl'], key=json.load)",
+                        "sorted(['history.jsonl'], key=f.read)",
+                        "re.sub('x', open, 'history.jsonl')") :
             wire[-1]['message']['params']['update']['rawInput']['command'] = 'python3 -c '+self.quote(prefix+escape)
             with self.subTest(escape=escape), self.assertRaises(AssertionError):
                 self.verify(wire)
@@ -545,7 +545,7 @@ class AuthoringEvidence(unittest.TestCase):
 
     def test_history_transcript_and_arbitrary_results_are_rejected(self):
         for target in (self.path.parent.parent/'conversation.jsonl',
-                       self.path.parent/'arbitrary.txt', self.path.parent/'real-provider-wire.jsonl'):
+                        self.path.parent/'arbitrary.txt', self.path.parent/'real-provider-wire.jsonl'):
             target.write_text(self.raw)
             wire = copy.deepcopy(self.wire)
             wire[-1]['message']['params']['update']['rawInput']['command'] = 'cat '+str(target)

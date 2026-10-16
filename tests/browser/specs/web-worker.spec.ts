@@ -70,7 +70,11 @@ async function busyWhileTyping(page: Page, busyMs: number): Promise<Sample[]> {
   await page.waitForFunction(() => (window as any).beaconReady === true);
   await page.click("#editor");
   const samples: Sample[] = [];
-  for (let attempt = 1; attempt <= MAX_ATTEMPTS && samples.length < SAMPLES; attempt++) {
+  for (
+    let attempt = 1;
+    attempt <= MAX_ATTEMPTS && samples.length < SAMPLES;
+    attempt++
+  ) {
     const busy = new Promise<void>((r) => (started = r));
     await page.evaluate(() => {
       const fx = (window as any).fx;
@@ -85,7 +89,9 @@ async function busyWhileTyping(page: Page, busyMs: number): Promise<Sample[]> {
     await busy;
     await page.keyboard.press("a");
     await page.waitForFunction(
-      (r) => (window as any).fx.applied.includes(r) && (window as any).fx.keyLatency.length > 0,
+      (r) =>
+        (window as any).fx.applied.includes(r) &&
+        (window as any).fx.keyLatency.length > 0,
       rev,
     );
     const r: Sample = await page.evaluate(() => {
@@ -102,10 +108,13 @@ async function busyWhileTyping(page: Page, busyMs: number): Promise<Sample[]> {
     // In the window with BLOCKED_FLOOR_MS to spare: a key created in it is
     // handled before the busy loop ends if it waits less than that, and
     // waits at least that long if the busy thread is its own.
-    if (r.keyCreated > r.busyFrom && r.keyCreated < r.busyTo - BLOCKED_FLOOR_MS) samples.push(r);
+    if (r.keyCreated > r.busyFrom && r.keyCreated < r.busyTo - BLOCKED_FLOOR_MS)
+      samples.push(r);
   }
   const latencies = samples.map((s) => s.latency.toFixed(1)).join(", ");
-  test.info().annotations.push({ type: "latencies-ms", description: latencies });
+  test
+    .info()
+    .annotations.push({ type: "latencies-ms", description: latencies });
   console.log(`[web-worker] ${page.url()} latencies ms: ${latencies}`);
   return samples;
 }
@@ -126,7 +135,8 @@ test.describe("Web Worker build target", () => {
     const revs = await page.evaluate(() => {
       const fx = (window as any).fx;
       const out: number[] = [];
-      for (let i = 1; i <= 5; i++) out.push(fx.post(`rev ${i}\n\nblock ${i}`, 30, false));
+      for (let i = 1; i <= 5; i++)
+        out.push(fx.post(`rev ${i}\n\nblock ${i}`, 30, false));
       return out;
     });
     expect(revs).toEqual([1, 2, 3, 4, 5]);
@@ -134,7 +144,12 @@ test.describe("Web Worker build target", () => {
     await page.waitForFunction(() => (window as any).fx.stats().received === 5);
     const r = await page.evaluate(() => {
       const fx = (window as any).fx;
-      return { stats: fx.stats(), applied: fx.applied, blocks: fx.blocks, inWorker: fx.inWorker };
+      return {
+        stats: fx.stats(),
+        applied: fx.applied,
+        blocks: fx.blocks,
+        inWorker: fx.inWorker,
+      };
     });
     // All five answers came back; the four stale ones were dropped.
     expect(r.stats).toEqual({ latest: 5, received: 5, dropped: 4 });
@@ -186,11 +201,20 @@ test.describe("Web Worker build target", () => {
   test("the bundle tooling reports the worker chunk as a separate file", async () => {
     const out = execFileSync(
       "node",
-      [resolve(repoRoot, "tools/isonim-bundle.mjs"), "report", fixtureDir, "--json"],
+      [
+        resolve(repoRoot, "tools/isonim-bundle.mjs"),
+        "report",
+        fixtureDir,
+        "--json",
+      ],
       { encoding: "utf8" },
     );
-    const chunks: { file: string; kind: string; bytes: number; gzipBytes: number }[] =
-      JSON.parse(out).chunks;
+    const chunks: {
+      file: string;
+      kind: string;
+      bytes: number;
+      gzipBytes: number;
+    }[] = JSON.parse(out).chunks;
     const byFile = Object.fromEntries(chunks.map((c) => [c.file, c]));
     expect(byFile["preview.worker.js"].kind).toBe("worker");
     expect(byFile["main.js"].kind).toBe("main");
@@ -203,7 +227,8 @@ test.describe("Web Worker build target", () => {
     // loads it (the FNV-1a prime is a literal only the compile module has);
     // the inline build, by contrast, carries it.
     const { readFileSync } = await import("node:fs");
-    const has = (f: string) => readFileSync(resolve(fixtureDir, f), "utf8").includes("16777619");
+    const has = (f: string) =>
+      readFileSync(resolve(fixtureDir, f), "utf8").includes("16777619");
     expect(has("preview.worker.js")).toBe(true);
     expect(has("main.js")).toBe(false);
     expect(has("main.inline.js")).toBe(true);

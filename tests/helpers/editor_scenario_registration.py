@@ -35,7 +35,7 @@ def call_end(clean, start):
 def verify_recipe(source):
     # Relevant calls use plain strings; remove comments outside those strings.
     clean = re.sub(r'"(?:\\.|[^"\\])*"|#[^\n]*',
-                   lambda match: '' if match[0].startswith('#') else match[0], source)
+                    lambda match: '' if match[0].startswith('#') else match[0], source)
     producer_references = {}
     for match in re.finditer(r'\blet\s+(\w+)\s*=\s*([\w.]+)\(', clean):
         block = clean[match.end():call_end(clean, match.end())-1]

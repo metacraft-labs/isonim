@@ -182,7 +182,7 @@ class EditorScenarios(unittest.TestCase):
             runtime.action(action='source-permission',value=True)
             runtime.action(action='approval',value=True)
             wait(lambda:runtime.cli(['state'])['approvalRequired']==True and runtime.cli(['state'])['permissions']['writeSource']==True,
-                 'actual approval/source permission state published')
+                  'actual approval/source permission state published')
             runtime.turn(12,'Open the ready story after approval.')
             pending=runtime.cli(['wait','native-approved-open','--timeout-ms','100'],5)
             self.assertEqual(pending['operation']['status'],'pending')

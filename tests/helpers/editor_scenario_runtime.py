@@ -35,8 +35,8 @@ from helpers.editor_workspace_roles import source_role
 
 ROOT = Path(__file__).resolve().parents[2]
 HARBOR = source_role(ROOT, 'agent-harbor',
-                     override=os.environ.get('ISONIM_AGENT_HARBOR_SIBLING'),
-                     required=False)
+                      override=os.environ.get('ISONIM_AGENT_HARBOR_SIBLING'),
+                      required=False)
 
 def wait(predicate, label, seconds=70):
     deadline = time.monotonic() + seconds
@@ -72,7 +72,7 @@ def private_credentials(data):
 
 class Runtime:
     def __init__(self, host, *, real_provider=None, project_source=None,
-                 editor_directory=None, source_file="stories.nim", instructions_path=None, real_model=None, scenario_path=None, observe_scenario_wire=False):
+                  editor_directory=None, source_file="stories.nim", instructions_path=None, real_model=None, scenario_path=None, observe_scenario_wire=False):
         self.source_file = source_file
         if not optional_sibling_available(HARBOR): raise FileNotFoundError('optional private Agent Harbor sibling absent')
         verify_recipe((ROOT/'repro.nim').read_text())
@@ -110,11 +110,11 @@ class Runtime:
         unbound = sentinel_directory/'sentinel'; unbound.write_bytes(sentinel); unbound.chmod(0o600)
         positive = self.private/'bound-resource-sentinel'; positive.write_bytes(sentinel); positive.chmod(0o600)
         resources = [ROOT/'tools/editor_agent_env.py', ROOT/'tools/agent_session_launcher.py',
-                     ROOT/'prompts/ai-assistant.md', ROOT/'build/bin/isonim', self.provider,
-                     ROOT/'tests/helpers/editor_scenario_provider.py',
-                     ROOT/'tests/helpers/editor_scenario_barrier.py',
-                     ROOT/'tests/helpers/editor_scenario_network_probe.py',
-                     ROOT/'tests/helpers/editor_scenario_filesystem_probe.py']
+                      ROOT/'prompts/ai-assistant.md', ROOT/'build/bin/isonim', self.provider,
+                      ROOT/'tests/helpers/editor_scenario_provider.py',
+                      ROOT/'tests/helpers/editor_scenario_barrier.py',
+                      ROOT/'tests/helpers/editor_scenario_network_probe.py',
+                      ROOT/'tests/helpers/editor_scenario_filesystem_probe.py']
         resource_manifest = self.private/'resource-manifest.json'
         resource_manifest.write_text(json.dumps({'resources': {str(path): hashlib.sha256(path.read_bytes()).hexdigest() for path in resources},
             'boundSentinel': str(positive), 'unboundSentinel': str(unbound),
@@ -197,7 +197,7 @@ class Runtime:
                     raise
                 self.scope=json.loads((self.private/'registration.json').read_text())
             identity={repo.name:{'head':subprocess.check_output(['git','rev-parse','HEAD'],cwd=repo,text=True).strip(),
-                 'diff_sha256':hashlib.sha256(subprocess.check_output(['git','diff','HEAD'],cwd=repo)).hexdigest()} for repo in (ROOT, HARBOR, source_role(ROOT, 'nim-agents'))}
+                  'diff_sha256':hashlib.sha256(subprocess.check_output(['git','diff','HEAD'],cwd=repo)).hexdigest()} for repo in (ROOT, HARBOR, source_role(ROOT, 'nim-agents'))}
             daemonPids=[pid for pid,row in owned.items() if pid in pids and row[2] and row[2][0]==str(self.daemon)]
             if len(daemonPids)!=1:raise AssertionError('Exactly one actual selected daemon required')
             daemonPid=daemonPids[0]
@@ -591,7 +591,7 @@ class Runtime:
         (self.artifacts/'cleanup.json').write_text(json.dumps({'owned_processes':len(owned),'readers':len(self.readers),'reaped':True,'public_secret_scan':scanned},indent=2))
         exits=[{'role':self.childRoles[child.pid],'pid':child.pid,
                 'returncode':child.returncode,'allowed':sorted(expected_exits[child.pid])}
-               for child in self.children]
+                for child in self.children]
         (self.artifacts/'native-exits.json').write_text(json.dumps(exits,indent=2))
         for child in self.children:
             require_exit(child,expected_exits[child.pid],self.childRoles[child.pid])

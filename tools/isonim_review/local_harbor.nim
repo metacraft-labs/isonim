@@ -47,7 +47,7 @@ proc createPrivateDirectory*(prefix: string): string =
     setFilePermissions(result, {fpUserRead, fpUserWrite, fpUserExec})
 
 proc workspaceSourceRole(project, name: string;
-                         required: bool): tuple[workspace: bool, path: string]
+                         required: bool): tuple[workspace: bool, path: string] {.gcsafe.}
 
 proc findHarborSibling*(editorPath: string; explicitPath = ""): string =
   var root = absolutePath(editorPath).parentDir
@@ -219,7 +219,7 @@ proc startOwnedProcess*(runtime: var LocalHarbor; command: string;
 const WorkspaceRoleScript = staticRead("workspace_roles.py")
 
 proc workspaceSourceRole(project, name: string;
-                         required: bool): tuple[workspace: bool, path: string] =
+                         required: bool): tuple[workspace: bool, path: string] {.gcsafe.} =
   let root = workspaceRoot(project)
   if root.len == 0: return (false, "")
   let directory = createPrivateDirectory("isonim-workspace-roles-")

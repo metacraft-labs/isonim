@@ -73,7 +73,7 @@ and the SSR -> hydrate -> interact round trip against real nginx with the
 real `ngx-isonim` module (the sibling checkout, built in its own dev shell,
 so it needs nix): the fixture is `tests/nginx` (see its README), the tests
 are `tests/test_route_manifest.nim`, the `nginx-rpc` and `ssr-hydration`
-Playwright projects and `tests/nginx/run_mutants.sh`.  It is not part of
+Playwright projects and `tests/nginx/run_mutants.sh`. It is not part of
 `just test`.
 
 ## Browser tests

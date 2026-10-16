@@ -86,7 +86,8 @@ const specs: ServerSpec[] = [
     project: "demo-app",
     testMatch: "demo-app.spec.ts",
     basePort: 8080,
-    command: (p) => staticServer(resolve(repoRoot, "demos/isonim-replica/dist"), p),
+    command: (p) =>
+      staticServer(resolve(repoRoot, "demos/isonim-replica/dist"), p),
     requires: resolve(repoRoot, "demos/isonim-replica/dist/main.js"),
     needs: "just demo-build",
   },
@@ -138,7 +139,10 @@ const specs: ServerSpec[] = [
     basePort: 8095,
     command: (p) =>
       `bash ${JSON.stringify(resolve(repoRoot, "tests/nginx/serve_fixture.sh"))} ${p}`,
-    requires: resolve(repoRoot, "build/nginx-fixture/ngx_http_isonim_module.so"),
+    requires: resolve(
+      repoRoot,
+      "build/nginx-fixture/ngx_http_isonim_module.so",
+    ),
     needs: "just build-nginx-fixture",
   },
   {
@@ -147,8 +151,12 @@ const specs: ServerSpec[] = [
     project: "web-worker",
     testMatch: "web-worker.spec.ts",
     basePort: 8086,
-    command: (p) => staticServer(resolve(repoRoot, "build/web-worker-fixture"), p),
-    requires: resolve(repoRoot, "build/web-worker-fixture/bundle-manifest.json"),
+    command: (p) =>
+      staticServer(resolve(repoRoot, "build/web-worker-fixture"), p),
+    requires: resolve(
+      repoRoot,
+      "build/web-worker-fixture/bundle-manifest.json",
+    ),
     needs: "just build-web-worker-fixture",
   },
   {
@@ -165,7 +173,7 @@ const specs: ServerSpec[] = [
     basePort: 8092,
     cwd: resolve(workspaceRoot, "metacraft-web"),
     command: (p) =>
-      "bash -lc 'rm -rf dist/editor-dev-workspace && mkdir -p dist/editor-dev-workspace/apps/back-office/src/backoffice_ui dist/editor-dev-workspace/apps/back-office/src/backoffice_editor dist/editor-dev-workspace/packages/metacraft-design/src/metacraft_design && cp apps/back-office/src/backoffice_ui/components.nim dist/editor-dev-workspace/apps/back-office/src/backoffice_ui/components.nim && cp apps/back-office/src/backoffice_editor/component_schema.schema dist/editor-dev-workspace/apps/back-office/src/backoffice_editor/component_schema.schema && cp apps/back-office/src/backoffice_editor/story_fixtures.schema dist/editor-dev-workspace/apps/back-office/src/backoffice_editor/story_fixtures.schema && cp packages/metacraft-design/src/metacraft_design/tokens.nim dist/editor-dev-workspace/packages/metacraft-design/src/metacraft_design/tokens.nim && METACRAFT_EDITOR_SOURCE_ROOT=\"$PWD/dist/editor-dev-workspace\" node tools/serve_editor_dev_bridge.mjs dist/back-office-editor " +
+      'bash -lc \'rm -rf dist/editor-dev-workspace && mkdir -p dist/editor-dev-workspace/apps/back-office/src/backoffice_ui dist/editor-dev-workspace/apps/back-office/src/backoffice_editor dist/editor-dev-workspace/packages/metacraft-design/src/metacraft_design && cp apps/back-office/src/backoffice_ui/components.nim dist/editor-dev-workspace/apps/back-office/src/backoffice_ui/components.nim && cp apps/back-office/src/backoffice_editor/component_schema.schema dist/editor-dev-workspace/apps/back-office/src/backoffice_editor/component_schema.schema && cp apps/back-office/src/backoffice_editor/story_fixtures.schema dist/editor-dev-workspace/apps/back-office/src/backoffice_editor/story_fixtures.schema && cp packages/metacraft-design/src/metacraft_design/tokens.nim dist/editor-dev-workspace/packages/metacraft-design/src/metacraft_design/tokens.nim && METACRAFT_EDITOR_SOURCE_ROOT="$PWD/dist/editor-dev-workspace" node tools/serve_editor_dev_bridge.mjs dist/back-office-editor ' +
       p +
       "'",
     requires: resolve(
@@ -193,9 +201,7 @@ const listingOnly = process.argv.includes("--list");
 
 const active = specs.filter((s) => isSelected(s.project));
 const missing =
-  inWorker || listingOnly
-    ? []
-    : active.filter((s) => !existsSync(s.requires));
+  inWorker || listingOnly ? [] : active.filter((s) => !existsSync(s.requires));
 if (missing.length > 0) {
   throw new Error(
     "\n\nPlaywright prerequisites are missing. Build them first — or run\n" +
