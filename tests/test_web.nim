@@ -210,6 +210,17 @@ when not defined(js):
     if (idx >= 0) this._eventListeners[event].splice(idx, 1);
   };
 
+  ElementNode.prototype.click = function() {
+    const e = new Event('click', {cancelable:true});
+    let stopped = false;
+    const stop = e.stopImmediatePropagation.bind(e);
+    e.stopImmediatePropagation = () => { stopped = true; stop(); };
+    for (const h of (this._eventListeners.click || []).slice()) {
+      h(e);
+      if (stopped) break;
+    }
+  };
+
   // DocumentFragment
   function DocumentFragment() {
     this._id = ++nodeIdCounter;
@@ -536,7 +547,7 @@ import isonim/web/web_renderer
 import isonim/editor/views/choice_row
 
 proc dispatchChoiceEvent[N](node: N; event, key: cstring): bool
-  {.importjs: "((n,t,k) => { const e = {key:k, defaultPrevented:false, preventDefault(){this.defaultPrevented=true;}}; (n._eventListeners[t] || []).slice().forEach(h => h(e)); return e.defaultPrevented; })(#, #, #)".}
+  {.importjs: "((n,t,k) => { let stopped = false; const e = new Event(t, {cancelable:true}); Object.defineProperty(e, 'key', {value:k}); const stop = e.stopImmediatePropagation.bind(e); e.stopImmediatePropagation = () => { stopped = true; stop(); }; for (const h of (n._eventListeners[t] || []).slice()) { h(e); if (stopped) break; } return e.defaultPrevented; })(#, #, #)".}
 
 proc dispatchPlainChoiceEvent[N](node: N): bool
   {.importjs: "((n) => { const e = new Event('keydown', {cancelable:true}); (n._eventListeners.keydown || []).slice().forEach(h => h(e)); return e.defaultPrevented; })(#)".}
