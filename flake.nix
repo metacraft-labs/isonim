@@ -124,6 +124,8 @@
           packages =
             (with pkgs; [
               nim
+              # Maintained editor and source-role tools execute Python 3.
+              python3
               nimble
               # RS-M7 real render bridge uses the pinned in-process WebP ABI.
               libwebp

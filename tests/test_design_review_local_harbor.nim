@@ -8,6 +8,7 @@
 import std/[times, os, osproc, tempfiles, unittest, net, strutils]
 when defined(posix): import std/posix
 import ../tools/isonim_review/[config, local_harbor]
+import ./helpers/repro_workspace_fixture
 
 proc main() =
   let root = createTempDir("isonim-sibling-test-", "")
@@ -34,6 +35,36 @@ proc main() =
     test "invalid explicit checkout fails rather than silently falling back":
       expect IOError:
         discard findHarborSibling(binary, root / "missing")
+    test "default discovery uses the real declared nested checkout":
+      var ws = newReproWorkspace("harbor-nested", ["isonim", "agent-harbor"],
+        files = [("isonim", "isonim.nimble", "# editor marker\n"),
+                 ("agent-harbor", "Cargo.toml", "# producer marker\n"),
+                 ("agent-harbor", "repro.nim", "# producer marker\n")])
+      defer: ws.cleanup()
+      let nested = ws.root / "ah" / "agent-harbor"
+      createDir(nested.parentDir)
+      moveDir(ws.repoDir("agent-harbor"), nested)
+      let fragment = ws.root / "repos" / "agent-harbor.toml"
+      writeFile(fragment, readFile(fragment).replace("path = \"agent-harbor\"", "path = \"ah/agent-harbor\""))
+      check findHarborSibling(ws.repoDir("isonim") / "build/bin/isonim-review") == expandFilename(nested)
+    test "a declared missing checkout fails instead of optional skipping":
+      var ws = newReproWorkspace("harbor-declared-missing", ["isonim", "agent-harbor"],
+        files = [("isonim", "isonim.nimble", "# editor marker\n")])
+      defer: ws.cleanup()
+      moveDir(ws.repoDir("agent-harbor"), ws.scratch / "retained-harbor")
+      expect IOError:
+        discard findHarborSibling(ws.repoDir("isonim") / "build/bin/isonim-review")
+    when defined(posix):
+      test "declared borrowed source retains its physical identity":
+        var ws = newReproWorkspace("harbor-declared-borrowed", ["isonim", "agent-harbor"],
+          files = [("isonim", "isonim.nimble", "# editor marker\n"),
+                   ("agent-harbor", "Cargo.toml", "# producer marker\n"),
+                   ("agent-harbor", "repro.nim", "# producer marker\n")])
+        defer: ws.cleanup()
+        let source = ws.scratch / "retained-source"
+        moveDir(ws.repoDir("agent-harbor"), source)
+        createSymlink(source, ws.repoDir("agent-harbor"))
+        check findHarborSibling(ws.repoDir("isonim") / "build/bin/isonim-review") == expandFilename(source)
     test "explicit backend skips local preparation":
       var cfg = defaults()
       cfg.agent.backendExplicit = true

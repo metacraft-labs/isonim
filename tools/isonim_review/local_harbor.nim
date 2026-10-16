@@ -5,6 +5,7 @@
 import std/[monotimes, os, osproc, strutils, strtabs, net, httpclient, tempfiles, json, times]
 when defined(posix): import std/posix
 import ./config
+import ./workspace_roles
 import ../../src/isonim/editor/shutdown_policy
 
 type LocalHarbor* = object
@@ -45,20 +46,34 @@ proc createPrivateDirectory*(prefix: string): string =
     result = createTempDir(prefix, "")
     setFilePermissions(result, {fpUserRead, fpUserWrite, fpUserExec})
 
+proc workspaceSourceRole(project, name: string;
+                         required: bool): tuple[workspace: bool, path: string]
+
 proc findHarborSibling*(editorPath: string; explicitPath = ""): string =
+  var root = absolutePath(editorPath).parentDir
+  var declared: tuple[workspace: bool, path: string]
+  while root != root.parentDir:
+    if fileExists(root / "isonim.nimble"):
+      declared = workspaceSourceRole(root, "agent-harbor", required = false)
+      break
+    root = root.parentDir
   if explicitPath.len > 0:
     result = absolutePath(explicitPath)
     if not fileExists(result / "Cargo.toml") or not fileExists(result / "repro.nim"):
       raise newException(IOError, "Invalid ISONIM_AGENT_HARBOR_SIBLING: " & result)
+    if declared.workspace and (declared.path.len == 0 or
+        expandFilename(result) != expandFilename(declared.path)):
+      raise newException(IOError, "Explicit Harbor source differs from its workspace declaration")
     return
-  var root = absolutePath(editorPath).parentDir
-  while root != root.parentDir:
-    if fileExists(root / "isonim.nimble"):
-      let candidate = root.parentDir / "agent-harbor"
-      if fileExists(candidate / "Cargo.toml") and fileExists(candidate / "repro.nim"):
-        return candidate
-      return ""
-    root = root.parentDir
+  if declared.workspace:
+    result = declared.path
+  elif fileExists(root / "isonim.nimble"):
+    let candidate = root.parentDir / "agent-harbor"
+    if fileExists(candidate / "Cargo.toml") and fileExists(candidate / "repro.nim"):
+      result = candidate
+  if result.len > 0 and (not fileExists(result / "Cargo.toml") or
+      not fileExists(result / "repro.nim")):
+    raise newException(IOError, "Selected Harbor source lacks its producer declaration: " & result)
 
 when defined(posix):
   proc enumeratePids(executable, python: string): string =
@@ -200,6 +215,31 @@ proc startOwnedProcess*(runtime: var LocalHarbor; command: string;
   else:
     runtime.process = startProcess(command, workingDir = workingDir, env = env,
       args = args, options = {poUsePath, poParentStreams})
+
+const WorkspaceRoleScript = staticRead("workspace_roles.py")
+
+proc workspaceSourceRole(project, name: string;
+                         required: bool): tuple[workspace: bool, path: string] =
+  let root = workspaceRoot(project)
+  if root.len == 0: return (false, "")
+  let directory = createPrivateDirectory("isonim-workspace-roles-")
+  defer: removeDir(directory)
+  let output = directory / "report.json"
+  var query: LocalHarbor
+  let python = if startupEnumerationPython.len > 0: startupEnumerationPython else: findExe("python3")
+  query.startOwnedProcess(python, workingDir = project,
+    args = @["-c", WorkspaceRoleScript, "report", project, output])
+  try:
+    let deadline = getMonoTime() + initDuration(milliseconds = 30000)
+    while query.process.running:
+      if getMonoTime() >= deadline:
+        raise newException(IOError, "Repro workspace role query exceeded its bounded lifetime")
+      sleep(10)
+    if query.process.waitForExit(1) != 0 or not fileExists(output):
+      raise newException(IOError, "Repro workspace role query failed")
+    result = (true, declaredRole(parseJson(readFile(output)), root, name, required))
+  finally:
+    query.stop()
 
 proc writeBuildInput(path, contents: string) =
   # Concurrent starts write identical source. Publish atomically and preserve

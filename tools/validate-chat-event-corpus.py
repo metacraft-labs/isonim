@@ -5,11 +5,16 @@ Harbor binary is built. Its normal pinned shell compiles only the small owning
 IsoNim validator and the production contract crates it imports.
 """
 import os,pathlib,subprocess,sys
+from isonim_review.workspace_roles import source_role
 repo=pathlib.Path(__file__).resolve().parents[1]
-harbor=repo.parent/'agent-harbor'
-if not (harbor/'crates/ah-rest-api-contract/Cargo.toml').is_file():
+harbor=source_role(repo, 'agent-harbor',
+                   override=os.environ.get('ISONIM_AGENT_HARBOR_SIBLING'),
+                   required=False)
+if not os.path.lexists(harbor):
     print('Optional private Harbor absent: production Rust DTO validation unavailable. Checked-in corpus provenance remains explicit.')
     raise SystemExit(0)
+if not (harbor/'crates/ah-rest-api-contract/Cargo.toml').is_file():
+    raise RuntimeError('Present declared Harbor lacks its production REST contract crate')
 env=os.environ.copy()
 for key in ['IN_NIX_SHELL','CARGO_TARGET_DIR']:env.pop(key,None)
 launcher=harbor/'dev-bin/just'

@@ -18,6 +18,7 @@ import shutil
 import subprocess
 import sys
 import tempfile
+from editor_workspace_roles import workspace_root, workspace_report, declared_role
 
 ROOT = Path(__file__).resolve().parents[2]
 SOURCE_ROOTS = {'src', 'tests', 'tools', 'examples', 'prompts', 'db', 'vendor', 'docs'}
@@ -84,12 +85,44 @@ def snapshot(root):
     # Existing real source siblings stay outside the copied project. They are
     # compiler dependencies, not agent-writable additions to the bound project.
     siblings = {}
-    for source in root.parent.iterdir():
-        if source.name != root.name and source.is_dir() and (source / '.git').exists():
-            (workspace / source.name).symlink_to(source.resolve(), target_is_directory=True)
-            siblings[source.name] = {'path': str(source.resolve()),
-                                     'head': git('rev-parse', 'HEAD', cwd=source).decode().strip(),
-                                     'trackedDiffSha256': hashlib.sha256(git('diff', 'HEAD', cwd=source)).hexdigest()}
+    workspace_metadata = {}
+    source_workspace = workspace_root(root)
+    if source_workspace is not None:
+        # Preserve actual manifest definitions/state, without inventing aliases
+        # for nested source paths or changing the original active project set.
+        for name in git('ls-files', '-z', cwd=source_workspace).decode().split('\0'):
+            if not name or Path(name).suffix != '.toml':
+                continue
+            source, target = source_workspace / name, workspace / name
+            target.parent.mkdir(parents=True, exist_ok=True)
+            shutil.copy2(source, target)
+            workspace_metadata[name] = sha(source)
+        state = Path('.repro/workspace.toml')
+        if (source_workspace / state).is_file():
+            (workspace / state).parent.mkdir(parents=True, exist_ok=True)
+            shutil.copy2(source_workspace / state, workspace / state)
+            workspace_metadata[str(state)] = sha(source_workspace / state)
+        report = workspace_report(root, source_workspace)
+        for row in report['repos']:
+            if row.get('enabled') is not True:
+                continue
+            source = declared_role(report, source_workspace, row['repo'])
+            if source in (root.resolve(), source_workspace.resolve()):
+                continue
+            relative = Path(row['path'])
+            target = workspace / relative
+            target.parent.mkdir(parents=True, exist_ok=True)
+            target.symlink_to(source, target_is_directory=True)
+            siblings[str(relative)] = {'path': str(source),
+                'head': git('rev-parse', 'HEAD', cwd=source).decode().strip(),
+                'trackedDiffSha256': hashlib.sha256(git('diff', 'HEAD', cwd=source)).hexdigest()}
+    else:
+        for source in root.parent.iterdir():
+            if source.name != root.name and source.is_dir() and (source / '.git').exists():
+                (workspace / source.name).symlink_to(source.resolve(), target_is_directory=True)
+                siblings[source.name] = {'path': str(source.resolve()),
+                    'head': git('rev-parse', 'HEAD', cwd=source).decode().strip(),
+                    'trackedDiffSha256': hashlib.sha256(git('diff', 'HEAD', cwd=source)).hexdigest()}
     yoga = root / 'src/isonim/layout/yoga'
     if not (yoga / '.git').exists():
         raise RuntimeError('Initialize the genuine Yoga Git submodule before Harbor acceptance')
@@ -114,6 +147,7 @@ def snapshot(root):
     manifest = {'source': str(root), 'head': head, 'trackedDiffSha256':
                 hashlib.sha256(git('diff', 'HEAD', cwd=root)).hexdigest(),
                 'snapshot': str(destination), 'sources': sources, 'siblings': siblings,
+                'workspaceMetadata': workspace_metadata,
                 'yogaHead': yoga_head, 'yogaTrackedDiffSha256': hashlib.sha256(yoga_changes).hexdigest(),
                 'generated': generated, 'tailwindInvokedBySnapshot': False,
                 'sandboxConfigurationUnchanged': True}

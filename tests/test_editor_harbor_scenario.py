@@ -32,6 +32,7 @@ import threading
 import time
 import unittest
 from helpers.editor_context_evidence import resolve_context, identity as context_identity
+from helpers.editor_workspace_roles import source_role
 import urllib.error
 import urllib.request
 from helpers.editor_process_observer import (
@@ -40,7 +41,9 @@ from helpers.editor_process_observer import (
 )
 
 ROOT = Path(__file__).resolve().parents[1]
-HARBOR = ROOT.parent / 'agent-harbor'
+HARBOR = source_role(ROOT, 'agent-harbor',
+                     override=os.environ.get('ISONIM_AGENT_HARBOR_SIBLING'),
+                     required=False)
 SCENARIO = ROOT / 'tests/scenarios/agent-harbor/editor-session-continuity.yaml'
 FIRST = 'Remember the token ISONIM_CONTEXT_7309 for this conversation. Reply only with that token.'
 SECOND = ('What token did I ask you to remember? Reply with that token and the instruction sentinel '
@@ -166,7 +169,8 @@ os.execv(provider, [provider, '--scenario', scenarios[index], '--disable-followe
         inherited.write_text('parent state must remain untouched')
         env['AH_DAEMON_DB_PATH'] = str(inherited)
         identities = {}
-        for repo in (ROOT, HARBOR, ROOT.parent / 'nim-agents', ROOT.parent / 'nim-agent-harbor'):
+        for repo in (ROOT, HARBOR, source_role(ROOT, 'nim-agents'),
+                     source_role(ROOT, 'nim-agent-harbor')):
             identities[repo.name] = {'head': subprocess.check_output(['git', 'rev-parse', 'HEAD'], cwd=repo, text=True).strip(),
                                     'diff_sha256': hashlib.sha256(subprocess.check_output(['git', 'diff', 'HEAD'], cwd=repo)).hexdigest()}
         identities['daemon_sha256'] = hashlib.sha256(daemon.read_bytes()).hexdigest()

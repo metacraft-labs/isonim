@@ -31,9 +31,12 @@ from helpers.editor_process_observer import (
     require_exit,
 )
 from helpers.editor_scenario_registration import verify_recipe
+from helpers.editor_workspace_roles import source_role
 
 ROOT = Path(__file__).resolve().parents[2]
-HARBOR = ROOT.parent / 'agent-harbor'
+HARBOR = source_role(ROOT, 'agent-harbor',
+                     override=os.environ.get('ISONIM_AGENT_HARBOR_SIBLING'),
+                     required=False)
 
 def wait(predicate, label, seconds=70):
     deadline = time.monotonic() + seconds
@@ -93,6 +96,7 @@ class Runtime:
         for key in list(self.env):
             if key.startswith('ISONIM_') or key.startswith('MOCK_AGENT_'): del self.env[key]
         self.env['ISONIM_SOURCE_FRAMEWORK'] = str(ROOT)
+        self.env['ISONIM_AGENT_HARBOR_SIBLING'] = str(HARBOR)
         build_argv = [sys.executable,str(ROOT/'tools/build_source_catalog.py'),str(self.project)]
         build = subprocess.run(build_argv,cwd=self.project,env=self.env,text=True,capture_output=True,timeout=120)
         (self.artifacts/'initial-build.log').write_text(build.stdout+build.stderr)
@@ -193,7 +197,7 @@ class Runtime:
                     raise
                 self.scope=json.loads((self.private/'registration.json').read_text())
             identity={repo.name:{'head':subprocess.check_output(['git','rev-parse','HEAD'],cwd=repo,text=True).strip(),
-                 'diff_sha256':hashlib.sha256(subprocess.check_output(['git','diff','HEAD'],cwd=repo)).hexdigest()} for repo in (ROOT,HARBOR,ROOT.parent/'nim-agents')}
+                 'diff_sha256':hashlib.sha256(subprocess.check_output(['git','diff','HEAD'],cwd=repo)).hexdigest()} for repo in (ROOT, HARBOR, source_role(ROOT, 'nim-agents'))}
             daemonPids=[pid for pid,row in owned.items() if pid in pids and row[2] and row[2][0]==str(self.daemon)]
             if len(daemonPids)!=1:raise AssertionError('Exactly one actual selected daemon required')
             daemonPid=daemonPids[0]
