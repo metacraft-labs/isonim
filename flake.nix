@@ -133,6 +133,7 @@
         expectedLegacyNativeHook = nativeHookFactory legacyPreCommit;
         hookOwnershipGuard = ./nix/hook-ownership-guard.py;
         hookTransaction = ./nix/hook-transaction.py;
+        checkoutGitTemplates = ./nix/checkout-git-templates.py;
         actualNativeInstaller = pkgs.writeShellScript "isonim-native-hook-installer" preCommit.shellHook;
         managedHookConstructor = inputs.managed-hook-reprobuild.packages.${system}.reprobuild;
         guardedHookInstall = ''
@@ -141,7 +142,7 @@
             exit 1
           fi
           export REPROBUILD_REPRO="${managedHookConstructor}/bin/repro"
-          ${pkgs.python3}/bin/python3 ${hookTransaction} "$_own_repo_root" ${hookOwnershipGuard} ${expectedNativeHook} ${pkgs.git}/share/git-core/templates ${expectedLegacyNativeHook} ${preCommit.config.configFile} ${legacyPreCommit.config.configFile} ${actualNativeInstaller} ${pkgs.git}/bin/git ${pkgs.bash}/bin/bash >&2
+          ${pkgs.python3}/bin/python3 ${hookTransaction} "$_own_repo_root" ${hookOwnershipGuard} ${expectedNativeHook} ${pkgs.git}/share/git-core/templates ${expectedLegacyNativeHook} ${preCommit.config.configFile} ${legacyPreCommit.config.configFile} ${actualNativeInstaller} ${pkgs.git}/bin/git ${pkgs.bash}/bin/bash ${checkoutGitTemplates} >&2
           _isonim_hook_status=$?
           if [ "$_isonim_hook_status" -ne 0 ]; then
             unset _isonim_hook_status

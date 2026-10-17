@@ -59,6 +59,10 @@ jobs:
         with:
           submodules: recursive
 
+      - name: Bind the checkout Git templates before entering the owning shell
+        if: runner.os == 'Linux' || runner.os == 'macOS'
+        run: python3 nix/checkout-git-templates.py capture
+
       - name: Setup dev env (clones .github/sibling-repos, ngx-isonim included)
         uses: metacraft-labs/metacraft-github-actions/setup-dev-env@dev
         with:

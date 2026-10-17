@@ -56,6 +56,10 @@ jobs:
         with:
           submodules: recursive
 
+      - name: Bind the checkout Git templates before entering the owning shell
+        if: runner.os == 'Linux' || runner.os == 'macOS'
+        run: python3 nix/checkout-git-templates.py capture
+
       # Mint a GitHub App installation token via the CI Token Provider
       # app so the reprobuild flake/sibling steps can clone private
       # metacraft-labs repos (codetracer-native-recorder, runquota,
@@ -83,6 +87,12 @@ jobs:
         with:
           env-flavor: reprobuild
           gh-token: ${{ steps.ci_token.outputs.token }}
+
+      - name: Admit pinned native Windows Just task runner
+        if: runner.os == 'Windows'
+        shell: pwsh
+        run: |
+          & ./ci/admit-native-windows-just-tool.ps1 | Tee-Object -FilePath (Join-Path $env:RUNNER_TEMP 'isonim-native-just-tool.json')
 
       - name: Verify cross-repo siblings are provisioned
         # Same guard ci.yml runs. This job already reached setup-dev-env, so it
@@ -147,6 +157,7 @@ jobs:
           path: |
             .repro/build/*/build-failure-report.json
             .repro/build/*/build-engine-cache/actions/
+            ${{ runner.temp }}/isonim-native-just-tool.json
           include-hidden-files: true
           retention-days: 7
           if-no-files-found: warn

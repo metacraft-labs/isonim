@@ -111,6 +111,10 @@ jobs:
         with:
           submodules: recursive
 
+      - name: Bind the checkout Git templates before entering the owning shell
+        if: runner.os == 'Linux' || runner.os == 'macOS'
+        run: python3 nix/checkout-git-templates.py capture
+
       # Replaces the bare `nixos-modules/.github/setup-nix` this job used to
       # run. `env-flavor: nix` gets the same Nix install and substituter trust
       # through the same action, and additionally clones `.github/sibling-repos`

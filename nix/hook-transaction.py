@@ -7,8 +7,8 @@ if 'ISONIM_NATIVE_DIRECTORY_AUTHORITY' in os.environ:
   raise RuntimeError('Inherited native directory authority')
 root=pathlib.Path(sys.argv[1]); guard=sys.argv[2]; native=sys.argv[3]; templates=sys.argv[4]
 legacy=sys.argv[5]; config=sys.argv[6]; legacy_config=sys.argv[7]; installer=sys.argv[8]
-git_exe=sys.argv[9]; bash_exe=sys.argv[10]
-args=[str(root),native,'snapshot','reserved',templates,legacy,config,legacy_config]
+git_exe=sys.argv[9]; bash_exe=sys.argv[10]; checkout_helper=sys.argv[11]
+args=[str(root),native,'snapshot','reserved',templates,legacy,config,legacy_config,checkout_helper]
 ctx=pathlib.Path(tempfile.mkdtemp(prefix='isonim-hook-transaction-'))
 active=None; last_sid=None; stages=[]
 def group_exists(pgid):
@@ -169,9 +169,9 @@ snapshot={'initial':initial,'hooks':original,'gitconfig':original_config,'genera
 transaction=False; success=False; error=None
 try:
   transaction=True
-  receipt=run('prepare',[sys.executable,guard,*[str(root),native,'prepare','reserved',templates,legacy,config,legacy_config]])
+  receipt=run('prepare',[sys.executable,guard,*[str(root),native,'prepare','reserved',templates,legacy,config,legacy_config,checkout_helper]])
   (ctx/'prepared.json').write_bytes(receipt)
-  tool=run('tool',[sys.executable,guard,*[str(root),native,'tool','reserved',templates,legacy,config,legacy_config]]).decode().strip()
+  tool=run('tool',[sys.executable,guard,*[str(root),native,'tool','reserved',templates,legacy,config,legacy_config,checkout_helper]]).decode().strip()
   needed=not(config_link.is_symlink() and os.readlink(config_link)==config)
   # The prior full hook bodies embed the old default configuration path.
   # The incoming tracked config now occupies that path; retire only the exact
@@ -230,12 +230,12 @@ try:
   # resolution; the guard authenticates that directory before and after.
   run('native-install',[bash_exe,installer],native_env)
   if native_global.read_bytes()!=b'': raise RuntimeError('Native installer mutated private empty global')
-  if needed: run('native-check',[sys.executable,guard,*[str(root),native,'native','reserved',templates,legacy,config,legacy_config]])
+  if needed: run('native-check',[sys.executable,guard,*[str(root),native,'native','reserved',templates,legacy,config,legacy_config,checkout_helper]])
   run('managed-reconcile',[tool,'hooks','ensure','--vcs',str(root)])
   # Preserve original linked-worktree repair inside exact transaction authority.
   if git('config','--local','--get','core.hooksPath').decode().strip()=='.git/hooks':
     run('relative-to-common-hookspath',[git_exe,'-C',str(root),'config','--local','core.hooksPath',str(hooks)])
-  run('after',[sys.executable,guard,*[str(root),native,'after',str(ctx/'prepared.json'),templates,legacy,config,legacy_config]])
+  run('after',[sys.executable,guard,*[str(root),native,'after',str(ctx/'prepared.json'),templates,legacy,config,legacy_config,checkout_helper]])
   if git('ls-files','--stage','-z')!=index: raise RuntimeError('Semantic index changed')
   if tracked_source_identity()!=original_source: raise RuntimeError('Tracked source changed')
   if [directory_identity(root),directory_identity(common),directory_identity(hooks)]!=original_directory_authority: raise RuntimeError('Final directory authority changed')
@@ -258,7 +258,7 @@ finally:
       if tracked_source_identity()!=original_source: raise RuntimeError('Rollback tracked source changed')
       if plain_file(pathlib.Path(legacy_config))!=legacy_config_identity or {path.name:plain_file(path) for path in pathlib.Path(legacy).iterdir()}!=legacy_factory_identity: raise RuntimeError('Rollback prior source authority changed')
       # Guard admits only genuine bound bodies; it never restores unknown writes.
-      run('rollback-census',[sys.executable,guard,*[str(root),native,'rollback','reserved',templates,legacy,config,legacy_config]])
+      run('rollback-census',[sys.executable,guard,*[str(root),native,'rollback','reserved',templates,legacy,config,legacy_config,checkout_helper]])
       if git('ls-files','--stage','-z')!=index: raise RuntimeError('Unknown semantic index mutation; no restoration')
       current=plain_file(gitconfig)
       if current['mode']!=original_config['mode'] or base64.b64decode(current['bytes']) not in allowed_configs:

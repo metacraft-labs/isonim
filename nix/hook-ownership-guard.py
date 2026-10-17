@@ -6,6 +6,7 @@ import subprocess
 import sys
 import re
 import shutil
+import runpy
 
 ROOT_LEXICAL = Path(sys.argv[1])
 for part in [ROOT_LEXICAL, *ROOT_LEXICAL.parents]:
@@ -70,6 +71,8 @@ registered = [Path(os.fsdecode(field[len(b'worktree '):]))
 if not registered or ROOT not in registered:
     raise RuntimeError('Owning source is not a registered worktree')
 main_worktree = registered[0]
+checkout_helper = runpy.run_path(sys.argv[9])
+CHECKOUT_TEMPLATES = checkout_helper['load_checkout_templates'](ROOT, common_authority)
 constructor_contexts = list(dict.fromkeys([ROOT, main_worktree]))
 context_source_authority = {}
 for context in constructor_contexts:
@@ -192,7 +195,8 @@ def census():
         digest = hashlib.sha256(path.read_bytes()).hexdigest()
         mode = stat.S_IMODE(info.st_mode)
         if path.name.endswith('.sample'):
-            if SAMPLES.get(path.name) != [mode, digest]:
+            if (SAMPLES.get(path.name) != [mode, digest] and
+                (CHECKOUT_TEMPLATES is None or CHECKOUT_TEMPLATES['samples'].get(path.name) != [mode, digest])):
                 raise RuntimeError('Unknown selected Git sample body or mode: ' + path.name)
         else:
             known = set()
@@ -228,7 +232,7 @@ def census():
         if len(tokens) != 1:
             raise RuntimeError('Missing or ambiguous managed hook contract')
         subprocess.run([str(actual),'hooks','protocol','--require=2','--hook-contract='+tokens.pop()],check=True,stdout=subprocess.DEVNULL)
-    return {'generatedConfig':config_identity,'entries':result,'repro':[str(actual),hashlib.sha256(actual.read_bytes()).hexdigest()], 'git':[str(SELECTED_GIT),GIT_SHA], 'gitTemplates':{'path':str(TEMPLATES),'samples':SAMPLES}}
+    return {'generatedConfig':config_identity,'entries':result,'repro':[str(actual),hashlib.sha256(actual.read_bytes()).hexdigest()], 'git':[str(SELECTED_GIT),GIT_SHA], 'gitTemplates':{'path':str(TEMPLATES),'samples':SAMPLES}, 'checkoutGitTemplates':CHECKOUT_TEMPLATES}
 
 
 import json
@@ -261,7 +265,7 @@ elif MODE == 'after':
     for hook in ('pre-commit','pre-push'):
         if before['entries'].get(hook + '.repro-local') != [0o755, hashlib.sha256((EXPECTED_NATIVE / hook).read_bytes()).hexdigest()]:
             raise RuntimeError('Expected actual native local hook is absent: ' + hook)
-    if original['repro'] != before['repro'] or original['git'] != before['git'] or original['gitTemplates'] != before['gitTemplates']:
+    if original['repro'] != before['repro'] or original['git'] != before['git'] or original['gitTemplates'] != before['gitTemplates'] or original['checkoutGitTemplates'] != before['checkoutGitTemplates']:
         raise RuntimeError('Managed hook tool changed during installation')
     for name in set(original['entries']) | set(before['entries']):
         if name in ('pre-commit.legacy','pre-push.legacy') and name not in original['entries']:

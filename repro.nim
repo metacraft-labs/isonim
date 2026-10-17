@@ -376,6 +376,7 @@
 ## for the ``uses:`` declarations to resolve at all ("typed tool provisioning
 ## is required for uses declarations").
 
+import std/[os, strutils]
 import repro_project_dsl
 import repro_dsl_stdlib/foreign_env
 
@@ -724,7 +725,30 @@ const isonimDesignReviewSpecs: seq[DrSpec] = @[
 package isonim:
   devEnv:
     when not defined(windows):
-      useFlakeDevShell()
+      # Preserve the declared fixed hook constructor while developing siblings.
+      # Match .envrc: resolve once, validate all pairs, remove only this input.
+      var projectRoot = activeProviderProjectRoot()
+      if projectRoot.len == 0:
+        projectRoot = getCurrentDir()
+      var remainingInputs: seq[(string, string)]
+      var seenInputs: seq[string]
+      for pair in workspaceFlakeOverrides(projectRoot):
+        let name = pair[0]
+        let reference = pair[1]
+        if name.len == 0 or name[0] notin {'a'..'z', 'A'..'Z', '_'} or
+            not name.allCharsInSet({'a'..'z', 'A'..'Z', '0'..'9', '_', '-'}):
+          raise newException(ValueError, "Invalid workspace override input name")
+        if name in seenInputs:
+          raise newException(ValueError, "Duplicate workspace override input")
+        seenInputs.add(name)
+        if reference.len == 0 or reference[0] == '-':
+          raise newException(ValueError, "Invalid workspace override reference")
+        for character in reference:
+          if ord(character) < 32 or ord(character) == 127:
+            raise newException(ValueError, "Invalid workspace override reference")
+        if name != "managed-hook-reprobuild":
+          remainingInputs.add(pair)
+      useFlakeDevShell(overrideInputs = remainingInputs, workspaceOverrides = false)
 
   defaultToolProvisioning "path"
 
@@ -747,6 +771,7 @@ package isonim:
     # ``nim.js`` typed-tool comes from the already-declared ``nim`` above.
     "node >=20"
     "python3 >=3.9"
+    "just >=1"
 
     # The five landed sibling Nim-library producers (SC-11 develop-mode
     # from-source consumption). ``src/isonim/editor/*`` import each of these;
