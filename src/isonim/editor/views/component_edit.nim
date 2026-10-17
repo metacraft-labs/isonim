@@ -81,17 +81,7 @@ func componentEditPreviewDocument(preview: ProjectPreview;
 """ % [source.htmlEscape, schemaKey.htmlEscape, padding.htmlEscape,
     title.htmlEscape, preview.bodyText.htmlEscape]
 
-proc editablePreviewDocument*(documentHtml: string;
-    metadata: StoryRenderMetadata; mode: EditMode): string =
-  ## Injects editor-only click selection metadata into the project-owned
-  ## document. The project document remains the rendered component source.
-  func jsString(value: string): string =
-    value
-      .replace("\\", "\\\\")
-      .replace("\"", "\\\"")
-      .replace("\n", "\\n")
-      .replace("\r", "\\r")
-
+const editablePreviewBridgeTemplate = block:
   # The inspector's editable-property list, as a JS array literal. Built from
   # the Nim const rather than typed twice: the bridge reads these off
   # `getComputedStyle` and the editor turns them back into properties, so the
@@ -1135,8 +1125,20 @@ __ISONIM_SCENE_GRAPH_WALK__
 })();
 </script>
 """
-  let injected = bridge
-    .replace("__ISONIM_SCENE_GRAPH_WALK__", sceneGraphWalkJs)
+  bridge.replace("__ISONIM_SCENE_GRAPH_WALK__", sceneGraphWalkJs)
+
+proc editablePreviewDocument*(documentHtml: string;
+    metadata: StoryRenderMetadata; mode: EditMode): string =
+  ## Injects editor-only click selection metadata into the project-owned
+  ## document. The project document remains the rendered component source.
+  func jsString(value: string): string =
+    value
+      .replace("\\", "\\\\")
+      .replace("\"", "\\\"")
+      .replace("\n", "\\n")
+      .replace("\r", "\\r")
+
+  let injected = editablePreviewBridgeTemplate
     .replace("__ISONIM_SOURCE__", metadata.sourceFile.jsString)
     .replace("__ISONIM_LINE__", $max(metadata.sourceLine, 1))
     .replace("__ISONIM_MODE__", (case mode

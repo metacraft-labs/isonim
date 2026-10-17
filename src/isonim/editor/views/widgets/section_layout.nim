@@ -63,6 +63,7 @@ proc mountSectionLayout*[R, E](r: R; parent: E; vm: EditorVM) =
   let heightUnit = createSignal(pxUnit)
   let gap = createSignal(0.0)
   let gapUnit = createSignal(pxUnit)
+  let padding = createSignal("0")
   let padTop = createSignal(0.0)
   let padRight = createSignal(0.0)
   let padBottom = createSignal(0.0)
@@ -72,6 +73,8 @@ proc mountSectionLayout*[R, E](r: R; parent: E; vm: EditorVM) =
   let padBottomUnit = createSignal(pxUnit)
   let padLeftUnit = createSignal(pxUnit)
   let overflow = createSignal("visible")
+  let flexWrap = createSignal("nowrap")
+  let aspectRatio = createSignal("auto")
   let modeMessage = createSignal("")
   var modeAlive = true
   var modePending = false
@@ -88,6 +91,7 @@ proc mountSectionLayout*[R, E](r: R; parent: E; vm: EditorVM) =
     width.val = parseLeadingFloat(findPropertyValue(props, "width", "0"), 0.0)
     height.val = parseLeadingFloat(findPropertyValue(props, "height", "0"), 0.0)
     gap.val = parseLeadingFloat(findPropertyValue(props, "gap", "0"), 0.0)
+    padding.val = findPropertyValue(props, "padding", "0")
     padTop.val = parseLeadingFloat(findPropertyValue(props, "padding-top",
       findPropertyValue(props, "padding", "0")), 0.0)
     padRight.val = parseLeadingFloat(findPropertyValue(props, "padding-right",
@@ -97,6 +101,8 @@ proc mountSectionLayout*[R, E](r: R; parent: E; vm: EditorVM) =
     padLeft.val = parseLeadingFloat(findPropertyValue(props, "padding-left",
       findPropertyValue(props, "padding", "0")), 0.0)
     overflow.val = findPropertyValue(props, "overflow", "visible")
+    flexWrap.val = findPropertyValue(props, "flex-wrap", "nowrap")
+    aspectRatio.val = findPropertyValue(props, "aspect-ratio", "auto")
 
   # ----- Layout mode button row ------------------------------------ #
   # Four icon buttons. The active one carries ``data-layout-mode-
@@ -112,6 +118,8 @@ proc mountSectionLayout*[R, E](r: R; parent: E; vm: EditorVM) =
   # and the Figma reference.
   let modeRow = ui(r):
     tdiv(`data-layout-mode-row` = "true",
+         `data-inspector-search-label` = "Layout direction",
+         `data-inspector-search-property` = "display flex-direction",
          display = "flex", flex_direction = "row",
          background_color = "#1A1B22",
          border_radius = "4px",
@@ -357,6 +365,12 @@ proc mountSectionLayout*[R, E](r: R; parent: E; vm: EditorVM) =
          `data-layout-padding-host` = "true",
          display = "flex", flex_direction = "column")
   r.appendChild(parent, padHost)
+  discard r.mountPropertyRow(padHostEl, propertyRowText(
+    name = "Padding", value = padding,
+    bindingReactive = vm.inspectorBindingThunk("padding"),
+    onBindRequest = vm.inspectorBindRequestHandler("padding"),
+    onDetachRequest = vm.inspectorDetachRequestHandler("padding"),
+    wiring = vm.inspectorRowWiring("padding")))
   discard r.mountPropertyRow(padHostEl, propertyRowNumeric(
     name = "Pad top", value = padTop, unit = padTopUnit, units = @[pxUnit],
     bindingReactive = vm.inspectorBindingThunk("padding-top"),
@@ -393,3 +407,12 @@ proc mountSectionLayout*[R, E](r: R; parent: E; vm: EditorVM) =
     onBindRequest = vm.inspectorBindRequestHandler("overflow"),
     onDetachRequest = vm.inspectorDetachRequestHandler("overflow"),
     wiring = vm.inspectorRowWiring("overflow")))
+
+  discard r.mountPropertyRow(parent, propertyRowChoice(
+    name = "Wrap", value = flexWrap,
+    options = @[(label: "No wrap", value: "nowrap"),
+      (label: "Wrap", value: "wrap"), (label: "Reverse", value: "wrap-reverse")],
+    wiring = vm.inspectorRowWiring("flex-wrap")))
+  discard r.mountPropertyRow(parent, propertyRowText(
+    name = "Aspect ratio", value = aspectRatio,
+    wiring = vm.inspectorRowWiring("aspect-ratio")))

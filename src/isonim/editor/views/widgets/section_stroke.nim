@@ -30,6 +30,7 @@ proc mountSectionStroke*[R, E](r: R; parent: E; vm: EditorVM) =
   let strokeStyle = createSignal("solid")
   let strokePosition = createSignal("center")
   let dashPattern = createSignal("")
+  let outlineOffset = createSignal("0px")
 
   createRenderEffect proc() =
     let props = vm.inspector.properties.val
@@ -37,6 +38,7 @@ proc mountSectionStroke*[R, E](r: R; parent: E; vm: EditorVM) =
     strokeWidth.val = parseLeadingFloat(findPropertyValue(props,
       "border-width", "0"), 0.0)
     strokeStyle.val = findPropertyValue(props, "border-style", "solid")
+    outlineOffset.val = findPropertyValue(props, "outline-offset", "0px")
     # CSS has no native "stroke position" — surface a UI-only signal
     # seeded to ``center``; Phase G+1 maps to a CSS-shadow-based
     # outside/inside trick.
@@ -72,6 +74,10 @@ proc mountSectionStroke*[R, E](r: R; parent: E; vm: EditorVM) =
       (label: "Outside", value: "outside")],
     wiring = InspectorRowWiring(commitMessage: createSignal(""), readOnlyReason: proc(): string =
       "Stroke position cannot be edited in the inspector yet.")))
+
+  discard r.mountPropertyRow(parent, propertyRowText(
+    name = "Outline offset", value = outlineOffset,
+    wiring = vm.inspectorRowWiring("outline-offset")))
 
   var dashHostEl: E
   let dashHost = ui(r):

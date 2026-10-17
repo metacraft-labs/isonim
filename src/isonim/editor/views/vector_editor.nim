@@ -126,6 +126,7 @@ proc renderVectorEditor*[R, E](r: R; vm: EditorVM): E =
       var backBtn: E
       var symbolNameLabel: E
       var toolbar: E
+      var inspectorToggle: E
       tdiv(ref = toolbar, display = "flex", align_items = "center",
             justify_content = "space-between",
             height = "44px", min_height = "44px", padding = "0 16px",
@@ -172,6 +173,17 @@ proc renderVectorEditor*[R, E](r: R; vm: EditorVM): E =
               text opLabel
         # Zoom / export
         tdiv(display = "flex", align_items = "center", gap = "8px"):
+          button(ref = inspectorToggle, `type` = "button",
+                `aria-label` = "Toggle inspector panel",
+                title = "Toggle right sidebar",
+                width = "26px", height = "26px", min_width = "26px",
+                padding = "0", border_radius = "4px",
+                border = "1px solid " & border,
+                background_color = bgSurface, color = textSecondary,
+                display = "inline-flex", align_items = "center",
+                justify_content = "center", cursor = "pointer",
+                onclick = proc() = vm.togglePanel(epInspector)):
+            text "\xE2\x97\xA7"
           span(font_size = "11px", color = textMuted):
             text "100%"
           tdiv(padding = "4px 10px", border_radius = "4px",
@@ -197,6 +209,9 @@ proc renderVectorEditor*[R, E](r: R; vm: EditorVM): E =
         r.addEventListener(backBtn, "click", close)
         r.addEventListener(backBtn, "keydown", close)
         let capturedVm = vm
+        createRenderEffect proc() =
+          r.setAttribute(inspectorToggle, "aria-expanded",
+            if capturedVm.panels.val.inspector: "true" else: "false")
         createRenderEffect proc() =
           let target = capturedVm.vectorEditorTarget.val
           let label =

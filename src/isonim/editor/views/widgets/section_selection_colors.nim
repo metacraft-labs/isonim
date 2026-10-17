@@ -94,6 +94,7 @@ proc mountSectionSelectionColors*[R, E](r: R; parent: E; vm: EditorVM) =
     var bindEl, chipHost: E
     let row = ui(r):
       tdiv(`data-selection-color-row` = $idx,
+            `data-inspector-search-label` = "Selection color",
             `data-selection-color-property` = property,
             display = "flex", flex_direction = "column", gap = "4px",
             padding = "4px 6px", border = "1px solid " & border,

@@ -16,6 +16,7 @@ import isonim/editor/agent_harbor
 # ``src/isonim/editor/agent_harbor.nim``.
 from isonim/editor/types as editor_types import nil
 import isonim/editor/viewmodels
+import isonim/editor/streaming_preview
 import isonim/editor/workspace
 import isonim/editor/views/page_preview
 import isonim/editor/views/component_detail
@@ -382,6 +383,45 @@ suite "Editor ViewModels (M18 headless contracts)":
       # contradicted the spec.
       check vm.activeView.val == evStoryboard
       dispose()
+
+  test "editor_vm_story_selection_notifies_only_coherent_final_view":
+    createRoot proc(dispose: proc()) =
+      let groups = wanderlust.buildWanderlustStoryboard()
+      let vm = createEditorVM()
+      vm.sidebar.groups.val = groups
+      let pageStory = refFrom(groups, 3, 0)
+      let componentStory = refFrom(groups, 4, 0)
+      check vm.selectStory(pageStory)
+      var observed: seq[(StoryRef, EditorView)] = @[]
+      createEffect proc() =
+        observed.add((vm.selectedStory.val, vm.activeView.val))
+      observed.setLen(0)
+      check vm.selectStory(componentStory)
+      check observed == @[(componentStory, evComponentDetail)]
+      dispose()
+
+  test "editor_vm_mode_transition_notifies_only_coherent_final_surface_and_view":
+    for backend in [pbWeb, pbGpui]:
+      for initialView in [evComponentDetail, evPagePreview]:
+        createRoot proc(dispose: proc()) =
+          let vm = createEditorVM()
+          vm.streamingPreview = newStreamingPreviewVM(
+            initial = backend, available = @[pbWeb, pbGpui])
+          vm.activeView.val = initialView
+          var observed: seq[(EditMode, Surface, EditorView)] = @[]
+          createEffect proc() =
+            observed.add((vm.editMode.val, vm.surfaceSig.val, vm.activeView.val))
+          var expectedView = initialView
+          for mode in [emSpec, emComment, emView, emEdit]:
+            observed.setLen(0)
+            if backend == pbWeb and expectedView == evComponentDetail and
+                mode in {emComment, emEdit}:
+              expectedView = evComponentEdit
+            vm.setEditMode(mode)
+            let expectedSurface = if mode == emSpec: sSpec else: sPreview
+            check observed == @[(mode, expectedSurface, expectedView)]
+            check vm.streamingPreview.selectedBackend.val == backend
+          dispose()
 
   test "editor_vm_canvas_selection_drives_story_and_flow_state":
     createRoot proc(dispose: proc()) =
@@ -5253,7 +5293,8 @@ suite "Editor ViewModels (M27 workspace file writes)":
         "component.card.fontSize=15px\n" &
         "component.card.shadow=0 8px 24px #0F172A\n" &
         "component.card.motion=120ms\n" &
-        "component.card.padding=18px\n")
+        "component.card.padding=18px\n" &
+        "component.card.filter=none\n")
       atomicWrite(classFile, ".card { padding: 16px; }\nfilter=none\n")
 
       func sourceSpan(file: string; line: int): SourceSpan =
@@ -5303,6 +5344,11 @@ suite "Editor ViewModels (M27 workspace file writes)":
             property: "transition-duration", value: "120ms",
             sourceSpan: sourceSpan(tokenFile, 5), stories: @[story],
             components: @["Card"], usageCount: 3),
+          DesignSchemaNode(key: "component.card.filter",
+            kind: dsnComponentToken, name: "Card filter token",
+            property: "filter", value: "none",
+            sourceSpan: sourceSpan(tokenFile, 7), stories: @[story],
+            components: @["Card"], usageCount: 2),
           DesignSchemaNode(key: "classes.card.filter",
             kind: dsnClassDefinition, name: "card-filter",
             property: "filter", value: "none",
@@ -5332,6 +5378,9 @@ suite "Editor ViewModels (M27 workspace file writes)":
         WorkspaceEditableSchemaEntry(key: "component.card.motion",
           kind: wskToken, file: tokenFile, path: "component.card.motion",
           story: story, property: "transition-duration"),
+        WorkspaceEditableSchemaEntry(key: "component.card.filter",
+          kind: wskToken, file: tokenFile, path: "component.card.filter",
+          story: story, property: "filter"),
         WorkspaceEditableSchemaEntry(key: "classes.card.filter",
           kind: wskSourceMap, file: classFile, path: "classes.card.filter",
           story: story, property: "filter")
@@ -5404,8 +5453,9 @@ suite "Editor ViewModels (M27 workspace file writes)":
             directStyleAllowed: true)
         ]))
 
+      # A literal class writer does not establish a component-token contract.
       let unsupported = vm.planSharedDesignEdit("filter", "blur(2px)",
-        sskSharedClass)
+        sskComponentToken)
       check unsupported.status == pesRejected
       check unsupported.diagnostics.anyIt(it.message.contains("read-only"))
 
@@ -6821,6 +6871,27 @@ suite "Editor ViewModels (detail-view preview wiring)":
       # scene-graph walk itself excludes as editor chrome.
       check "isonim-editor-selection-style" in doc
 
+  test "preview_bridge_reuse_keeps_source_and_mode_specific_to_each_document":
+    let first = StoryRenderMetadata(sourceFile: "src/\"first\"\\page.nim",
+      sourceLine: -8)
+    let second = StoryRenderMetadata(sourceFile: "src/second.nim", sourceLine: 81)
+    let editDoc = editablePreviewDocument(bodyHtml, first, emEdit)
+    let commentDoc = editablePreviewDocument(bodyHtml, second, emComment)
+    check "ship this exactly" in editDoc
+    check "ship this exactly" in commentDoc
+    check """const fallbackSource = "src/\"first\"\\page.nim";""" in editDoc
+    check """const fallbackLine = "1";""" in editDoc
+    check """const editorMode = "edit";""" in editDoc
+    check """const fallbackSource = "src/second.nim";""" in commentDoc
+    check """const fallbackLine = "81";""" in commentDoc
+    check """const editorMode = "comment";""" in commentDoc
+    check editablePreviewDocument(bodyHtml, first, emEdit) == editDoc
+    for (mode, label) in [(emSpec, "spec"), (emView, "view"),
+        (emComment, "comment"), (emEdit, "edit")]:
+      let doc = editablePreviewDocument(bodyHtml, second, mode)
+      check ("const editorMode = \"" & label & "\";") in doc
+      check """const fallbackSource = "src/second.nim";""" in doc
+
   test "detail_and_edit_views_compose_the_same_document":
     ## Two copies of "when may we inject" is how the two views drifted apart
     ## in the first place. Outside View mode they must agree exactly.
@@ -7641,4 +7712,127 @@ suite "Editor ViewModels (a refresh does not take back a local edit)":
 
       check vm.foundations.tokens.val[0].value == "mine"
       check vm.foundations.tokens.val[1].value == "rebuilt"
+      dispose()
+
+
+suite "Editor ViewModels (finite shared-class CSS source writes)":
+  # The project boundary reads/writes a real temporary stylesheet and uses
+  # the production CSS scanner. Editor planning, commands, receipts and
+  # Undo/redo are production paths; no browser rendering is simulated here.
+  const cases = [
+    ("background-size", "auto", "contain"),
+    ("border-style", "solid", "dashed"),
+    ("outline-offset", "0px", "4px"),
+    ("filter", "none", "brightness(1.08) contrast(1.1)"),
+    ("transform", "none", "translateX(8px) scale(1.02)"),
+    ("flex-wrap", "nowrap", "wrap"),
+    ("overflow", "visible", "auto"),
+    ("aspect-ratio", "auto", "4 / 3")]
+
+  proc sharedCssVm(root, file, property, oldValue: string): EditorVM =
+    let key = "classes.card." & property
+    let recorder = WorkspaceEditRecorder()
+    let adapter = adapterFor(root, @[WorkspaceEditableSchemaEntry(
+      key: key, kind: wskSourceMap, file: file, path: ".card",
+      story: writeStory, property: property)], recorder = recorder)
+    adapter.patchFile = proc(plan: SourceEditPlan; content: string;
+        schema: WorkspaceEditableSchemaEntry): WorkspacePatchResult =
+      let patched = patchCssDeclaration(content, schema.path,
+        schema.property, plan.newValue)
+      if not patched.ok or patched.outcome == cpoInserted or
+          (plan.expectedOldValue.len > 0 and
+            patched.oldValue != plan.expectedOldValue):
+        return WorkspacePatchResult(ok: false, diagnostics: @[
+          WorkspaceEditDiagnostic(kind: wedSourceConflict,
+            message: "Owned declaration missing or changed", file: file)])
+      WorkspacePatchResult(ok: true, patch: WorkspaceFilePatch(
+        file: file, beforeContent: content, afterContent: patched.content,
+        affectedStory: writeStory, fullReload: true))
+    result = createEditorVM(newEditorWorkspace(
+      title = "literal class writer", storyGroups = @[
+        StoryGroup(name: "DestinationCard", kind: skComponent, items: @[
+          StoryItem(name: "Default", group: "DestinationCard", kind: skComponent)])],
+      initialStory = some(writeStory), sourceAdapterReady = true,
+      permissions = EditorWorkspacePermissions(readSource: true, writeSource: true),
+      editAdapter = adapter,
+      designSystemSchema = DesignSystemSchema(schemaVersion: 1, nodes: @[
+        DesignSchemaNode(key: key, kind: dsnClassDefinition, name: "card",
+          property: property, value: oldValue,
+          sourceSpan: SourceSpan(file: file, line: 1, column: 1, endLine: 1, endColumn: 80), stories: @[writeStory],
+          components: @["DestinationCard"], usageCount: 2)])))
+    check result.selectInspectorElement(ElementRef(id: "card", tag: "article",
+      sourceKey: "card.root", sourceFile: file, sourceLine: 1,
+      properties: @[PropertyInfo(name: property, value: oldValue,
+        origin: poTailwindClass, originDetail: "class:card",
+        sourceFile: file, sourceLine: 1, schemaKey: key,
+        sharedCount: 2, directStyleAllowed: true)]))
+
+  test "finite literal class properties write only their rule and undo exact bytes":
+    for item in cases:
+      createRoot proc(dispose: proc()) =
+        let root = tempWorkspaceDir("shared-css-" & item[0])
+        defer: removeDir(root)
+        let file = root / "card.css"
+        let original = ".card { " & item[0] & ":" & item[1] & "; }\n" &
+          ".unrelated { " & item[0] & ":" & item[1] & "; }\n"
+        atomicWrite(file, original)
+        let vm = sharedCssVm(root, file, item[0], item[1])
+        let planned = vm.planSharedDesignEdit(item[0], item[2], sskSharedClass)
+        check planned.status == pesAccepted
+        check planned.editor.category == sdecSharedClass
+        check planned.sourceEdit.expectedOldValue == item[1]
+        check not vm.telemetryEvents.val.anyIt(
+          it.budgetKind == epbkPropertyEditPreview)
+        check vm.commitInspectorValue(item[0], item[2], sskSharedClass).ok
+        let previewEvents = vm.telemetryEvents.val.filterIt(
+          it.budgetKind == epbkPropertyEditPreview)
+        require previewEvents.len == 1
+        check previewEvents[0].detail == "source-plan:" & item[0]
+        check previewEvents[0].durationMs >= 0
+        check vm.runEditorCommand(eckSave).status == ecsSucceeded
+        let expected = ".card { " & item[0] & ":" & item[2] & "; }\n" &
+          ".unrelated { " & item[0] & ":" & item[1] & "; }\n"
+        check readFile(file) == expected
+        check vm.runEditorCommand(eckUndo).status == ecsSucceeded
+        check vm.runEditorCommand(eckSave).status == ecsSucceeded
+        check readFile(file) == original
+        check vm.runEditorCommand(eckRedo).status == ecsSucceeded
+        check vm.runEditorCommand(eckSave).status == ecsSucceeded
+        check readFile(file) == expected
+        if item[0] == "filter":
+          let beforeRefusedTelemetry = vm.telemetryEvents.val
+          check not vm.commitInspectorValue("filter", "glow(4px)", sskSharedClass).ok
+          check vm.telemetryEvents.val == beforeRefusedTelemetry
+          check readFile(file) == expected
+        dispose()
+
+  test "literal class support does not authorize token or unknown families":
+    for item in cases:
+      check PropertyInfo(name: item[0]).sharedDesignCategory(sskComponentToken) == sdecUnsupported
+      check PropertyInfo(name: item[0]).sharedDesignCategory(sskSemanticToken) == sdecUnsupported
+    check PropertyInfo(name: "clip-path").sharedDesignCategory(sskSharedClass) == sdecUnsupported
+
+  test "missing project writer and stale source remain refused":
+    createRoot proc(dispose: proc()) =
+      let root = tempWorkspaceDir("shared-css-refusal")
+      defer: removeDir(root)
+      let file = root / "card.css"
+      let original = ".card { background-size:auto; }\n"
+      atomicWrite(file, original)
+      let vm = sharedCssVm(root, file, "background-size", "auto")
+      vm.workspaceEditAdapter.schema = @[]
+      check not vm.commitInspectorValue("background-size", "contain", sskSharedClass).ok
+      check readFile(file) == original
+      dispose()
+    createRoot proc(dispose: proc()) =
+      let root = tempWorkspaceDir("shared-css-stale")
+      defer: removeDir(root)
+      let file = root / "card.css"
+      atomicWrite(file, ".card { background-size:auto; }\n")
+      let vm = sharedCssVm(root, file, "background-size", "auto")
+      check vm.commitInspectorValue("background-size", "contain", sskSharedClass).ok
+      let external = ".card { background-size:cover; }\n"
+      atomicWrite(file, external)
+      check vm.runEditorCommand(eckSave).status != ecsSucceeded
+      check readFile(file) == external
       dispose()

@@ -235,14 +235,14 @@ function successfulSourceSummary(scope, operation, storyId) {
   assert(Number.isInteger(operation.revision));
   return catalog;
 }
-async function stable(scope) {
+async function stable(scope, ready = () => true) {
   let revision = -1,
     count = 0;
   for (let step = 0; step < 50; step++) {
     const state = cli(scope, ["state"]);
     count = state.revision === revision ? count + 1 : 0;
     revision = state.revision;
-    if (count >= 3) return state;
+    if (count >= 3 && ready(state)) return state;
     await new Promise((resolve) => setTimeout(resolve, 200));
   }
   throw new Error("Revision did not stabilize");
@@ -1095,7 +1095,7 @@ try {
     'title: text title\n        script(src = "/capture-delay.js"): text ""',
   );
   writeFileSync(path.join(project, "stories.nim"), delayedSource);
-  await stable(scope);
+  const beforeDelayedPreview = await stable(scope);
   await cliAsync(scope, [
     "build",
     "--command-id",
@@ -1125,10 +1125,36 @@ try {
     document.querySelector(".isonim-editor")?.appendChild(stale) ||
       document.body.appendChild(stale);
   }, capture.result.documentHtml);
-  await page.waitForFunction(
-    () =>
-      document.querySelector("#stale-capture-control")?.contentDocument
-        ?.readyState === "complete",
+  await page.waitForFunction((before) => {
+    const stale = document.querySelector(
+      "#stale-capture-control",
+    )?.contentDocument;
+    const frame = document.querySelector(
+      'iframe[data-component-project-frame="true"]',
+    );
+    const current = frame?.contentDocument;
+    const story = current?.querySelector('meta[name="isonim-rendered-story"]');
+    const generation = current?.querySelector(
+      'meta[name="isonim-rendered-generation"]',
+    );
+    return (
+      stale?.readyState === "complete" &&
+      current?.readyState === "loading" &&
+      !current.querySelector("main") &&
+      story?.content === before.storyId &&
+      Number(generation?.content) > before.previewGeneration
+    );
+  }, beforeDelayedPreview);
+  // The real reader retains old layers until its two empty polls publish [].
+  // Await that observable publication within the existing revision budget;
+  // the current document cannot acquire body layers while its head script is held.
+  await stable(
+    scope,
+    (state) =>
+      state.previewGeneration > beforeDelayedPreview.previewGeneration &&
+      state.buildStage === "wesClean" &&
+      Array.isArray(state.elements) &&
+      state.elements.length === 0,
   );
   const notReady = await cliAsync(
     scope,

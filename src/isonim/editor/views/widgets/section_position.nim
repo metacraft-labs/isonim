@@ -147,6 +147,7 @@ proc mountSectionPosition*[R, E](r: R; parent: E; vm: EditorVM) =
   # Mirrors Figma's tightly-packed alignment-button row.
   let alignmentRow = ui(r):
     tdiv(`data-position-alignment-row` = "true",
+         `data-inspector-search-label` = "Alignment",
          display = "flex", flex_direction = "row", align_items = "center",
          gap = "4px", padding = "2px 0"):
       tdiv(`data-position-alignment-cluster` = "horizontal",
@@ -262,6 +263,17 @@ proc mountSectionPosition*[R, E](r: R; parent: E; vm: EditorVM) =
     onDetachRequest = vm.inspectorDetachRequestHandler("transform"),
     wiring = rotationWiring))
 
+  # A literal CSS transform may include translation, scale and rotation. Keep
+  # the full validated source expression available alongside the constrained
+  # angle control; this never routes an unsupported matrix through angle math.
+  let transformValue = createSignal("none")
+  createRenderEffect proc() =
+    transformValue.val = findPropertyValue(vm.inspector.properties.val, "transform", "none")
+  discard r.mountPropertyRow(parent, propertyRowText(
+    name = "Transform", value = transformValue,
+    wiring = vm.inspectorRowWiring("transform")))
+
+
   # ----- Flip buttons ---------------------------------------------- #
   # Phase H (2026-05-28): flip controls render as compact icon
   # buttons inside a quiet pill row matching the Figma reference's
@@ -270,6 +282,8 @@ proc mountSectionPosition*[R, E](r: R; parent: E; vm: EditorVM) =
   # consistent across all section button rows.
   let flipRow = ui(r):
     tdiv(`data-position-flip-row` = "true",
+         `data-inspector-search-label` = "Flip",
+         `data-inspector-search-property` = "transform",
          display = "flex", flex_direction = "row",
          align_items = "center", gap = "4px",
          padding = "2px 0"):

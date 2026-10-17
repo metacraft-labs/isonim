@@ -31,7 +31,7 @@
 ## drive interactions via the VM OR via ``fireEvent``, and assert
 ## the resulting attribute / structure invariants.
 
-import std/[options, sequtils, tables, unittest]
+import std/[options, sequtils, strutils, tables, unittest]
 
 import isonim/core/[signals, computation, owner]
 import isonim/editor/types
@@ -1010,4 +1010,51 @@ suite "property_row scope chips":
         fireEvent(chip, "click")
         check chosen == @[name]
         check commits == @["20px"]
+      dispose()
+
+
+suite "property_row shared source impact before scope commit":
+  test "shared destination is visible while local, before the real scope click":
+    createRoot do (dispose: proc()):
+      let local = SourceScopeChoice(kind: sskLocalInstance, label: "Local", editable: true)
+      let shared = SourceScopeChoice(kind: sskSharedClass, label: "Shared class",
+        editable: true, ownerLabel: "DestinationCard", sourceFile: "src/cards.nim",
+        sourceLine: 42, schemaKey: "classes.destination.padding", usageCount: 2,
+        affectedComponents: @["DestinationCard", "SearchCard"],
+        affectedStories: @[StoryRef(group: "DestinationCard", name: "Default")])
+      let choices = createSignal(@[local, shared])
+      let selected = createSignal(some(local))
+      var commits = 0
+      var cfg = propertyRowText(name = "Padding", value = createSignal("18px"))
+      cfg.cssProperty = "padding"
+      cfg.sourceScopeChoices = proc(): seq[SourceScopeChoice] = choices.val
+      cfg.selectedSourceScope = proc(): Option[SourceScopeChoice] = selected.val
+      cfg.scopeOptions = proc(): seq[CompactChoiceOption] =
+        @[CompactChoiceOption(label: "Shared", shortLabel: "Shared",
+          ariaLabel: "Apply shared class scope for padding", enabled: true,
+          dataAttrs: @[("data-test-shared-scope", "true")],
+          onChoose: proc() = selected.val = some(shared))]
+      cfg.onCommitValue = proc(value: string) = inc commits
+      let (r, root) = mkRoot()
+      discard r.mountPropertyRow(root, cfg)
+      let impact = findByAttr(root, "data-property-source-impact", "padding")
+      require impact != nil
+      check selected.val.get.kind == sskLocalInstance
+      check impact.styles.getOrDefault("display") == "block"
+      for expected in ["Shared class (available)", "DestinationCard", "src/cards.nim:42",
+          "classes.destination.padding", "2 mapped uses", "SearchCard",
+          "DestinationCard / Default", "Other uses of this shared source may change."]:
+        check expected in textContent(impact)
+      check commits == 0
+      let chip = findByAttr(root, "data-test-shared-scope", "true")
+      require chip != nil
+      fireEvent(chip, "click")
+      check selected.val.get.kind == sskSharedClass
+      check commits == 1
+      check "Shared class (selected)" in textContent(impact)
+      choices.val = @[local]
+      selected.val = some(local)
+      check impact.styles.getOrDefault("display") == "none"
+      check textContent(impact) == ""
+      check commits == 1
       dispose()

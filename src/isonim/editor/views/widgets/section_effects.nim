@@ -1,7 +1,7 @@
 ## Phase G — Effects section body widget.
 ##
-## Inspect selected effect metadata while specialized source editing is
-## unavailable. No section-local list can pretend to edit the document.
+## Source-backed CSS effect parameters use the common guarded property rows.
+## The metadata layer list remains inspection-only; layer operations are separate.
 
 import std/[options, strutils]
 
@@ -9,6 +9,9 @@ import isonim/core/signals
 import isonim/core/computation
 import isonim/dsl/ui
 import isonim/editor/viewmodels
+import isonim/editor/views/widgets/property_commit
+import isonim/editor/views/widgets/property_row
+import isonim/editor/views/widgets/section_position
 
 type
   EffectEntryKind* = enum
@@ -53,6 +56,22 @@ proc mountSectionEffects*[R, E](r: R; parent: E; vm: EditorVM) =
   ## Mount the Effects section. The list host is data-attributed so
   ## tests can target it; the empty-state shows when no effects exist.
   let entries = createSignal[seq[EffectEntry]](@[])
+  proc mountParameter(label, property, fallback: string) =
+    # One closure lifetime per row; all mutations still go through the same
+    # validated source/preview/history transaction as other inspector fields.
+    let value = createSignal(fallback)
+    createRenderEffect proc() =
+      value.val = findPropertyValue(vm.inspector.properties.val, property, fallback)
+    discard r.mountPropertyRow(parent, propertyRowText(
+      name = label, value = value, wiring = vm.inspectorRowWiring(property)))
+  mountParameter("Filter", "filter", "none")
+  mountParameter("Backdrop filter", "backdrop-filter", "none")
+  mountParameter("Shadow", "box-shadow", "none")
+  mountParameter("Transition", "transition-property", "all")
+  mountParameter("Duration", "transition-duration", "0s")
+  mountParameter("Timing", "transition-timing-function", "ease")
+  mountParameter("Delay", "transition-delay", "0s")
+
   createRenderEffect proc() =
     var selected: seq[EffectEntry]
     for prop in vm.inspector.properties.val:
@@ -87,13 +106,13 @@ proc mountSectionEffects*[R, E](r: R; parent: E; vm: EditorVM) =
         text "No effect values exposed by this selection."
       tdiv(`data-effects-readonly-message` = "true", role = "note",
             font_size = "11px", color = textMuted):
-        text "Effects are read-only here. Edit them in source."
+        text "Effect layer operations are unavailable here; CSS parameters above edit source."
       tdiv(ref = addBtnEl,
             role = "button", tabindex = "0",
             `data-effects-add` = "true",
             `aria-label` = "Add effect",
             `aria-disabled` = "true",
-            title = "Effect source editing is unavailable in the inspector.",
+            title = "Adding an effect layer is unavailable in the inspector.",
             display = "flex", align_items = "center",
             justify_content = "center",
             height = "26px",
@@ -108,6 +127,8 @@ proc mountSectionEffects*[R, E](r: R; parent: E; vm: EditorVM) =
     ## Rows show the current selection's metadata, without edit actions.
     let row = ui(r):
       tdiv(`data-effects-row` = $idx,
+            `data-inspector-search-label` = effectKindLabel(entry.kind),
+            `data-inspector-search-property` = entry.label.split(':')[0],
             display = "flex", flex_direction = "row",
             align_items = "center", gap = "6px",
             padding = "4px 6px",

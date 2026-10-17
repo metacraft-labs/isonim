@@ -64,19 +64,19 @@ proc injectEditorStyles*() =
 
     .editor-tabbar::-webkit-scrollbar { display: none; }
     /* Inspector tabbar: fade the right edge so overflow reads as scrollable. */
-    .editor-manual-inspector .editor-tabbar {
+    .editor-manual-inspector:not(.editor-inspector) .editor-tabbar {
       mask-image: linear-gradient(to right, black calc(100% - 24px), transparent 100%);
       -webkit-mask-image: linear-gradient(to right, black calc(100% - 24px), transparent 100%);
     }
     .editor-sidebar,
     .editor-chat,
-    .editor-manual-inspector {
+    .editor-manual-inspector:not(.editor-inspector) {
       scrollbar-width: thin;
     }
     /* Use platform-sized, visible scrollbars in high-contrast mode. Keep
      * the same specificity as panel rules and override legacy hidden tabs. */
     @media (forced-colors: active) {
-      *, .editor-sidebar, .editor-chat, .editor-manual-inspector {
+      *, .editor-sidebar, .editor-chat, .editor-manual-inspector:not(.editor-inspector) {
         scrollbar-color: auto;
         scrollbar-width: auto;
       }
@@ -91,11 +91,11 @@ proc injectEditorStyles*() =
     .editor-tabbar [role="tab"]:hover {
       background: #1E293B !important;
     }
-    .editor-manual-inspector details {
+    .editor-manual-inspector:not(.editor-inspector) details {
       border-top: 1px solid #1E293B;
       padding-top: 2px;
     }
-    .editor-manual-inspector details:not([open]) > *:not(summary) {
+    .editor-manual-inspector:not(.editor-inspector) details:not([open]) > *:not(summary) {
       display: none !important;
     }
     /* Adapt to the preview column, including a resizable chat/inspector.
@@ -105,6 +105,7 @@ proc injectEditorStyles*() =
     @container preview-chrome (max-width: 1000px) {
       [data-preview-chrome-bar] { gap: 4px !important; padding-left: 4px !important; padding-right: 4px !important; }
       [data-preview-toolbar-spacer] { min-width: 0 !important; }
+      [data-toolbar-cluster="flow-playback"] { gap: 0 !important; }
       [data-preview-chrome-bar] [data-choice-group-has-icon="true"] {
         min-width: 24px !important; width: 24px !important;
         box-sizing: border-box; padding: 2px !important;
@@ -114,8 +115,20 @@ proc injectEditorStyles*() =
       }
     }
     @container preview-chrome (max-width: 640px) {
+      [data-preview-chrome-bar] { gap: 2px !important; }
+      [data-preview-chrome-bar] [data-toolbar-cluster="backend"] [data-choice-group="segmented"],
+      [data-preview-chrome-bar] [data-toolbar-cluster="mode"] [data-choice-group="segmented"] {
+        gap: 0 !important; padding-left: 0 !important; padding-right: 0 !important;
+      }
       [data-preview-viewport-strip-host] { display: none !important; }
-      [data-preview-viewport-current] { display: inline !important; }
+      [data-preview-chrome-bar] [data-toolbar-cluster="viewport"] {
+        min-width: 44px !important; flex-shrink: 1 !important;
+      }
+      [data-preview-viewport-overflow] { min-width: 44px !important; flex-shrink: 1; box-sizing: border-box; }
+      [data-preview-viewport-current] {
+        display: inline !important; min-width: 20px; flex-shrink: 1;
+        overflow: hidden; text-overflow: ellipsis;
+      }
       [data-preview-viewport-overflow] { gap: 4px; }
       [data-preview-viewport-pinned-option="true"] { display: flex !important; }
     }
@@ -180,7 +193,7 @@ proc injectEditorStyles*() =
     @media (max-width: 1024px) and (min-width: 769px) {
       .editor-sidebar { width: 220px !important; min-width: 220px !important; }
       .editor-inspector,
-      .editor-manual-inspector { width: min(320px, 38vw) !important; min-width: min(320px, 38vw) !important; max-width: min(320px, 38vw) !important; }
+      .editor-manual-inspector:not(.editor-inspector) { width: min(320px, 38vw) !important; min-width: min(320px, 38vw) !important; max-width: min(320px, 38vw) !important; }
       .editor-tabbar > div { padding: 0 6px !important; font-size: 10px !important; }
     }
     .editor-input::placeholder { color: #475569; }
@@ -1125,9 +1138,14 @@ proc unmountEditor*(vm: EditorVM): bool {.discardable.} =
     "globalThis.__isonimEditor = null; ", result, " = true; }"].}
 
 proc mountEditor*(vm: EditorVM; root: Element = document.body;
-                  useHashRoute = true; injectStyles = true): EditorVM =
+                  useHashRoute = true; injectStyles = true;
+                  configureAgentChat: proc(chat: AgentChatVM): BrowserAgentClient {.closure.} = nil): EditorVM =
   ## Mount a retained model through the production view path. Ownership of the
   ## model remains with its host; unmounting these views does not close sessions.
+  ## An explicit configureAgentChat factory applies to initial and new chats.
+  ## Without it, production daemon discovery and client/control binding remain
+  ## the default. A factory may return nil only for an adapter-only host; such
+  ## a chat has no BrowserAgentClient bound to the control bridge.
   if vm == nil: raise newException(ValueError, "An editor model is required.")
   var alreadyMounted = false
   {.emit: [alreadyMounted, " = !!globalThis.__isonimEditorMount;"].}
@@ -1169,7 +1187,34 @@ proc mountEditor*(vm: EditorVM; root: Element = document.body;
     {.emit: [shell, ".style.overflow='hidden'"].}
     root.appendChild(shell)
     let controlBridge = vm.installControlBridge(shell)
+    let priorConfigureChat = vm.configureChat
+    let priorTrackConfiguration = vm.trackChatConfiguration
+    var ownedChatConfigurations: seq[tuple[id: int, dispose: ChatConfigurationDisposer]]
+    var nextConfigurationId = 0
+    vm.trackChatConfiguration = proc(dispose: ChatConfigurationDisposer): ChatConfigurationDisposer =
+      inc nextConfigurationId
+      let id = nextConfigurationId
+      ownedChatConfigurations.add (id: id, dispose: dispose)
+      result = proc() =
+        for index in 0 ..< ownedChatConfigurations.len:
+          if ownedChatConfigurations[index].id == id:
+            ownedChatConfigurations.delete(index)
+            break
+    onCleanup proc() =
+      vm.configureChat = priorConfigureChat
+      vm.trackChatConfiguration = priorTrackConfiguration
+      # Remove each entry before invoking it: cleanup can unregister itself.
+      while ownedChatConfigurations.len > 0:
+        let disposeConfiguration = ownedChatConfigurations[^1].dispose
+        ownedChatConfigurations.setLen(ownedChatConfigurations.len - 1)
+        disposeConfiguration()
     vm.configureChat = proc(chat: AgentChatVM) =
+      if configureAgentChat != nil:
+        # Explicit host composition owns this chat's adapters. An adapter-only
+        # fixture returns nil and receives no daemon-client control authority.
+        let client = configureAgentChat(chat)
+        if client != nil: controlBridge.bindClient(client)
+        return
       var client: BrowserAgentClient
       {.emit: ["globalThis.__isonimEditorAgentClients ||= new WeakMap(); ", client,
         " = globalThis.__isonimEditorAgentClients.get(", chat, ") || null;"].}
@@ -1177,7 +1222,19 @@ proc mountEditor*(vm: EditorVM; root: Element = document.body;
         client = configureDaemonAgentAdapters(chat)
         {.emit: ["globalThis.__isonimEditorAgentClients.set(", chat, ", ", client, ");"].}
       controlBridge.bindClient(client)
-    for session in vm.chats.val: vm.configureChat(session.vm)
+    try:
+      for session in vm.chats.val: vm.configureChatSession(session)
+    except Exception:
+      let originalError = getCurrentException()
+      vm.configureChat = priorConfigureChat
+      # A failed initial factory must not leave a half-mounted view. Cleanup
+      # errors are secondary and must not replace the factory's original error.
+      try:
+        dispose()
+      except Exception:
+        {.emit: "console.warn('Editor mount cleanup failed after agent factory error');".}
+      {.emit: ["try { ", shell, ".remove(); } catch (_) { console.warn('Editor shell removal failed after agent factory error'); }"] .}
+      raise originalError
     # REV-M2: expose a tiny window-level handle so Playwright e2e
     # tests can drive story selection without having to scrape the
     # sidebar DOM (which omits stories that aren't part of the demo
@@ -1193,7 +1250,8 @@ proc mountEditor*(vm: EditorVM; root: Element = document.body;
 proc mountEditor*(workspace: EditorWorkspace;
                   root: Element = document.body;
                   useHashRoute = true;
-                  injectStyles = true): EditorVM =
+                  injectStyles = true;
+                  configureAgentChat: proc(chat: AgentChatVM): BrowserAgentClient {.closure.} = nil): EditorVM =
   ## Mount the editor shell into a DOM element and return the live VM.
   ##
   ## The returned VM is useful for tests and host-app integrations that need to
@@ -1240,4 +1298,4 @@ proc mountEditor*(workspace: EditorWorkspace;
   # Model computations belong to the host/session, independently of this
   # disposable presentation root, so remounting the same VM keeps its state.
   let vm = createEditorVM(workspace)
-  mountEditor(vm, root, useHashRoute, injectStyles)
+  mountEditor(vm, root, useHashRoute, injectStyles, configureAgentChat)

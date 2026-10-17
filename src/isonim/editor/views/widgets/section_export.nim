@@ -100,6 +100,7 @@ proc mountSectionExport*[R, E](r: R; parent: E; vm: EditorVM) =
     var deleteBtnEl: E
     let row = ui(r):
       tdiv(`data-export-row` = $idx,
+            `data-inspector-search-label` = "Export size format suffix",
             display = "flex", flex_direction = "row",
             align_items = "center", gap = "6px",
             padding = "4px 6px",

@@ -56,6 +56,19 @@ const
 
 proc mountSectionFill*[R, E](r: R; parent: E; vm: EditorVM) =
   let entries = createSignal[seq[FillEntry]](@[])
+  let backgroundImage = createSignal("none")
+  let backgroundSize = createSignal("auto")
+  createRenderEffect proc() =
+    let props = vm.inspector.properties.val
+    backgroundImage.val = findPropertyValue(props, "background-image", "none")
+    backgroundSize.val = findPropertyValue(props, "background-size", "auto")
+  discard r.mountPropertyRow(parent, propertyRowText(
+    name = "Image", value = backgroundImage,
+    wiring = vm.inspectorRowWiring("background-image")))
+  discard r.mountPropertyRow(parent, propertyRowText(
+    name = "Image size", value = backgroundSize,
+    wiring = vm.inspectorRowWiring("background-size")))
+
 
   # Phase G+1: the fill section hand-builds its rows rather than going
   # through ``mountPropertyRow``, so it needs the writeback wired
@@ -205,6 +218,8 @@ proc mountSectionFill*[R, E](r: R; parent: E; vm: EditorVM) =
     var chipHostEl: E
     let row = ui(r):
       tdiv(`data-fill-row` = $idx,
+            `data-inspector-search-label` = "Fill color opacity",
+            `data-inspector-search-property` = fillProperty(),
             display = "flex", flex_direction = "row",
             align_items = "center", gap = "6px",
             padding = "4px 6px",

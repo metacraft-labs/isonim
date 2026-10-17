@@ -6,7 +6,7 @@
 
 import std/[algorithm, hashes, json, math, options, sequtils, strutils, tables]
 from std/unicode import runeLen, runeSubStr
-import isonim/core/[signals, computation]
+import isonim/core/[signals, computation, owner, batch]
 import isonim/viewmodel
 import isonim/editor/types
 import isonim/editor/html_classes
@@ -300,6 +300,8 @@ type
     cancelAsyncAdapter*: proc() {.closure.}
     closeAdapter*: proc(done: proc(ok: bool) {.closure.}) {.closure.}
 
+  ChatConfigurationDisposer* = proc() {.closure.}
+
   ChatSession* = ref object
     ## One Assistant-tab chat. Each session owns its own ``AgentChatVM``
     ## (messages, proposals, permissions, …). The Assistant tab strip in
@@ -310,6 +312,9 @@ type
     id*: string
     title*: Signal[string]
     vm*: AgentChatVM
+    # Successful factory resources live until session close or mount teardown.
+    # Failed attempts dispose their private scope before the session is appended.
+    disposeConfiguration: proc() {.closure.}
 
   ReviewResultsVM* = ref object of ViewModel
     violations*: Signal[seq[Violation]]
@@ -511,6 +516,8 @@ type
     nextChatNumber: int
     chatClosePending: bool
     configureChat*: proc(chat: AgentChatVM) {.closure.}
+    trackChatConfiguration*: proc(dispose: ChatConfigurationDisposer): ChatConfigurationDisposer {.closure.}
+      ## Optional presentation owner records only scopes it establishes.
     activeChatId*: Signal[string]
       ## Identifier of the currently active chat session. Used by the
       ## Assistant-tab strip in ``shell.nim`` to highlight the active
@@ -658,6 +665,79 @@ proc createChatSession*(id: string; title = ""): ChatSession =
     title: createSignal(displayed),
     vm: createAgentChatVM())
 
+when defined(js):
+  proc reportChatCleanupWarning(message: cstring) {.importjs: "console.warn(#)".}
+
+proc reportChatCleanupFailure(message: string) =
+  try:
+    when defined(js):
+      reportChatCleanupWarning(message.cstring)
+    else:
+      stderr.writeLine(message)
+  except Exception:
+    discard # Diagnostic failure is always secondary to ownership cleanup.
+
+proc disposeChatConfiguration(session: ChatSession) =
+  let dispose = session.disposeConfiguration
+  session.disposeConfiguration = nil
+  if dispose != nil:
+    try:
+      dispose()
+    except Exception:
+      let cleanupError = getCurrentException()
+      reportChatCleanupFailure("chat configuration cleanup failed: " & cleanupError.msg)
+
+proc configureChatSession*(vm: EditorVM; session: ChatSession) =
+  ## Configure initial and new chats under identical per-session ownership.
+  ## Failed attempts clean only their own scope. Successful scopes live until
+  ## successful close or the presentation owner that established them ends.
+  if vm.configureChat == nil: return
+  if session.disposeConfiguration != nil:
+    raise newException(ValueError, "Chat configuration already has an owner")
+  var disposeAttempt: proc()
+  var unregister: ChatConfigurationDisposer
+  var disposed = false
+  let disposeOnce = proc() =
+    if not disposed:
+      disposed = true
+      let release = unregister
+      unregister = nil
+      let cleanup = disposeAttempt
+      disposeAttempt = nil
+      var firstSecondaryError: ref Exception
+      try:
+        if release != nil: release()
+      except Exception:
+        firstSecondaryError = getCurrentException()
+      try:
+        if cleanup != nil: cleanup()
+      except Exception:
+        if firstSecondaryError == nil: firstSecondaryError = getCurrentException()
+      if firstSecondaryError != nil: raise firstSecondaryError
+  try:
+    createRoot proc(dispose: proc()) =
+      disposeAttempt = dispose
+      vm.configureChat(session.vm)
+    session.disposeConfiguration = disposeOnce
+    if vm.trackChatConfiguration != nil:
+      unregister = vm.trackChatConfiguration(proc() =
+        if not disposed:
+          session.disposeConfiguration = nil
+          try:
+            disposeOnce()
+          except Exception:
+            let cleanupError = getCurrentException()
+            reportChatCleanupFailure("chat configuration cleanup failed: " & cleanupError.msg))
+  except Exception:
+    let originalError = getCurrentException()
+    session.disposeConfiguration = nil
+    try:
+      disposeOnce()
+    except Exception:
+      let cleanupError = getCurrentException()
+      reportChatCleanupFailure("new chat configuration cleanup failed: " & cleanupError.msg)
+    raise originalError
+
 proc createNewChat*(vm: EditorVM): string {.discardable.} =
   ## Append a fresh chat session, activate it, and return its id.
   ## Session ids use a monotonically increasing number prefixed with
@@ -669,7 +749,7 @@ proc createNewChat*(vm: EditorVM): string {.discardable.} =
   let id = "chat-" & $vm.nextChatNumber
   let title = defaultChatTitleFor(nextIndex)
   let session = createChatSession(id, title)
-  if vm.configureChat != nil: vm.configureChat(session.vm)
+  vm.configureChatSession(session)
   vm.chats.update proc(prev: seq[ChatSession]): seq[ChatSession] =
     result = prev
     result.add session
@@ -719,6 +799,7 @@ proc removeClosedChat(vm: EditorVM; id: string): bool {.discardable.} =
       break
   if targetIdx < 0:
     return false
+  sessions[targetIdx].disposeChatConfiguration()
   let wasActive = vm.activeChatId.val == id
   vm.chats.update proc(prev: seq[ChatSession]): seq[ChatSession] =
     result = @[]
@@ -2279,43 +2360,45 @@ proc selectStory*(editor: EditorVM; story: StoryRef): bool {.discardable.} =
   if not editor.hasStory(story):
     return false
 
-  let nextView = viewForStory(story)
-  # M-EVP-8: selecting a non-vector-symbol story while the vector editor
-  # is open closes it before routing to the new view. Selecting the same
-  # vector-symbol story keeps the editor open (no-op on the target /
-  # usages).
-  if editor.activeView.val == evVectorEditor and story.kind != skVectorSymbol:
-    editor.vectorEditorTarget.val = none(StoryRef)
-    editor.vectorEditorUsages.val = @[]
-    editor.vectorEditorUsageIndex.val = 0
-  # Track the prior view so the back affordance has a target. Skip the
-  # snapshot when we're already in the vector editor — the snapshot
-  # taken at ``openVectorEditor`` time is the one we want to restore.
-  if editor.activeView.val != evVectorEditor and
-      editor.activeView.val != nextView:
-    editor.previousView.val = editor.activeView.val
+  # Publish one coherent selection transition before dependent views render.
+  batch proc() =
+    let nextView = viewForStory(story)
+    # M-EVP-8: selecting a non-vector-symbol story while the vector editor
+    # is open closes it before routing to the new view. Selecting the same
+    # vector-symbol story keeps the editor open (no-op on the target /
+    # usages).
+    if editor.activeView.val == evVectorEditor and story.kind != skVectorSymbol:
+      editor.vectorEditorTarget.val = none(StoryRef)
+      editor.vectorEditorUsages.val = @[]
+      editor.vectorEditorUsageIndex.val = 0
+    # Track the prior view so the back affordance has a target. Skip the
+    # snapshot when we're already in the vector editor — the snapshot
+    # taken at ``openVectorEditor`` time is the one we want to restore.
+    if editor.activeView.val != evVectorEditor and
+        editor.activeView.val != nextView:
+      editor.previousView.val = editor.activeView.val
 
-  editor.selectedStory.val = story
-  editor.activeView.val = nextView
-  editor.applyFoundationStoryScope(story)
-  discard editor.ensureComponentPropertySchemaForSelectedStory()
-  editor.storyboard.selectedItem.val = editor.findCanvasItem(story)
-  editor.syncFlowStep(story)
-  editor.recordEditorTiming(epbkStorySelection, 1,
-    "story-selection:" & story.group & "/" & story.name)
-  # RS-M12: publish the ``select-story`` packet to the active bridge.
-  # On the JS target, ``canvas_mount.attachIfNeeded``'s reactive
-  # effect ALSO fires `sendCurrentStory` on its next tick — the
-  # `lastSentStoryId` guard inside the bridge binding dedupes the
-  # two send paths, so packets land exactly once. This explicit
-  # call lets headless test harnesses (and any future native render
-  # surfaces) trigger the send without driving the canvas mount
-  # render effect.
-  let storyId = storyIdFor(story)
-  let kindWire = storyKindWire(story.kind)
-  if editor.streamingPreview != nil:
-    editor.streamingPreview.publishSelectStory(story.group, story.name,
-                                                kindWire, storyId)
+    editor.selectedStory.val = story
+    editor.activeView.val = nextView
+    editor.applyFoundationStoryScope(story)
+    discard editor.ensureComponentPropertySchemaForSelectedStory()
+    editor.storyboard.selectedItem.val = editor.findCanvasItem(story)
+    editor.syncFlowStep(story)
+    editor.recordEditorTiming(epbkStorySelection, 1,
+      "story-selection:" & story.group & "/" & story.name)
+    # RS-M12: publish the ``select-story`` packet to the active bridge.
+    # On the JS target, ``canvas_mount.attachIfNeeded``'s reactive
+    # effect ALSO fires `sendCurrentStory` on its next tick — the
+    # `lastSentStoryId` guard inside the bridge binding dedupes the
+    # two send paths, so packets land exactly once. This explicit
+    # call lets headless test harnesses (and any future native render
+    # surfaces) trigger the send without driving the canvas mount
+    # render effect.
+    let storyId = storyIdFor(story)
+    let kindWire = storyKindWire(story.kind)
+    if editor.streamingPreview != nil:
+      editor.streamingPreview.publishSelectStory(story.group, story.name,
+                                                  kindWire, storyId)
   true
 
 proc computeVectorEditorUsages*(editor: EditorVM; symbolName: string):
@@ -3643,51 +3726,53 @@ proc refuseInspectorHistory(editor: EditorVM; kind: EditorCommandKind;
 proc sendAgentPrompt*(editor: EditorVM): bool {.discardable.}
 
 proc setEditMode*(editor: EditorVM; mode: EditMode) =
-  editor.editMode.val = mode
-  # Phase I/J/L (2026-05-28): the mode strip now carries Spec as a
-  # fourth option in front of View/Comment/Edit. Picking Spec couples
-  # ``surfaceSig`` to ``sSpec`` so the existing centre-column mounting
-  # logic flips to the spec pane; picking any of the other three modes
-  # restores the preview surface. This keeps ``surfaceSig`` as the
-  # authoritative signal driving the spec-pane mount + the display
-  # gating while the visible control is unified into the mode strip.
-  if mode == emSpec:
-    if editor.surfaceSig.val != sSpec:
-      editor.surfaceSig.val = sSpec
-  else:
-    if editor.surfaceSig.val != sPreview:
-      editor.surfaceSig.val = sPreview
-  # M-EVP-12 fix-cycle 2: when the canvas-preview path is active
-  # (Pattern A: any non-Web preview backend), the chrome bar Edit
-  # chip toggles the M-EVP-10 overlay handles *in place* on the
-  # component_detail / page_preview canvas — it must NOT swap the
-  # whole view to `evComponentEdit` (the source-edit screen), which
-  # would unmount the canvas + handles. The auto-switch only applies
-  # to the Web/iframe path where the canvas overlay is not painted.
-  let canvasActive =
-    editor.streamingPreview != nil and
-    editor.streamingPreview.selectedBackend.val != pbWeb
-  # Layout-invariance fix (preview layout identical across modes): a
-  # PAGE story (``evPagePreview``) must NOT swap to the source-edit
-  # canvas (``evComponentEdit``) when entering emComment/emEdit. That
-  # surface lays the composed page out at the fluid centre-column width
-  # (iframe ``width:100%`` inside a ``padding:24px`` scroll box) instead
-  # of the viewport-sized white device frame ``page_preview.nim`` uses,
-  # so the previewed page visibly re-wraps at a different width the
-  # instant the operator toggles the mode chip — and because nothing
-  # restored the surface on leaving Edit (emView left ``activeView`` on
-  # ``evComponentEdit``), View-after-Edit no longer matched
-  # View-before-Edit. Page stories now stay on ``evPagePreview`` across
-  # View/Comment/Edit; ``page_preview.nim`` overlays the editable
-  # selection bridge on the SAME device-frame render so element
-  # selection + the property inspector (the M1-M7 variable binding)
-  # still work. Keeping the surface constant also makes the round-trip
-  # emView→emEdit→emView invariant hold for free. Component stories keep
-  # their existing in-place-vs-source-edit split
-  # (``evComponentDetail`` → ``evComponentEdit``).
-  if mode in {emComment, emEdit} and
-      editor.activeView.val == evComponentDetail and not canvasActive:
-    editor.activeView.val = evComponentEdit
+  # Publish the mode, surface and owning view before dependent previews render.
+  batch proc() =
+    editor.editMode.val = mode
+    # Phase I/J/L (2026-05-28): the mode strip now carries Spec as a
+    # fourth option in front of View/Comment/Edit. Picking Spec couples
+    # ``surfaceSig`` to ``sSpec`` so the existing centre-column mounting
+    # logic flips to the spec pane; picking any of the other three modes
+    # restores the preview surface. This keeps ``surfaceSig`` as the
+    # authoritative signal driving the spec-pane mount + the display
+    # gating while the visible control is unified into the mode strip.
+    if mode == emSpec:
+      if editor.surfaceSig.val != sSpec:
+        editor.surfaceSig.val = sSpec
+    else:
+      if editor.surfaceSig.val != sPreview:
+        editor.surfaceSig.val = sPreview
+    # M-EVP-12 fix-cycle 2: when the canvas-preview path is active
+    # (Pattern A: any non-Web preview backend), the chrome bar Edit
+    # chip toggles the M-EVP-10 overlay handles *in place* on the
+    # component_detail / page_preview canvas — it must NOT swap the
+    # whole view to `evComponentEdit` (the source-edit screen), which
+    # would unmount the canvas + handles. The auto-switch only applies
+    # to the Web/iframe path where the canvas overlay is not painted.
+    let canvasActive =
+      editor.streamingPreview != nil and
+      editor.streamingPreview.selectedBackend.val != pbWeb
+    # Layout-invariance fix (preview layout identical across modes): a
+    # PAGE story (``evPagePreview``) must NOT swap to the source-edit
+    # canvas (``evComponentEdit``) when entering emComment/emEdit. That
+    # surface lays the composed page out at the fluid centre-column width
+    # (iframe ``width:100%`` inside a ``padding:24px`` scroll box) instead
+    # of the viewport-sized white device frame ``page_preview.nim`` uses,
+    # so the previewed page visibly re-wraps at a different width the
+    # instant the operator toggles the mode chip — and because nothing
+    # restored the surface on leaving Edit (emView left ``activeView`` on
+    # ``evComponentEdit``), View-after-Edit no longer matched
+    # View-before-Edit. Page stories now stay on ``evPagePreview`` across
+    # View/Comment/Edit; ``page_preview.nim`` overlays the editable
+    # selection bridge on the SAME device-frame render so element
+    # selection + the property inspector (the M1-M7 variable binding)
+    # still work. Keeping the surface constant also makes the round-trip
+    # emView→emEdit→emView invariant hold for free. Component stories keep
+    # their existing in-place-vs-source-edit split
+    # (``evComponentDetail`` → ``evComponentEdit``).
+    if mode in {emComment, emEdit} and
+        editor.activeView.val == evComponentDetail and not canvasActive:
+      editor.activeView.val = evComponentEdit
 
 proc setVectorTool*(editor: EditorVM; tool: VectorTool) =
   editor.vectorEditor.activeTool.val = tool
@@ -6614,8 +6699,6 @@ proc sourceScopeImpacts*(editor: EditorVM; prop: PropertyInfo): seq[
 
 func sharedDesignCategory*(prop: PropertyInfo;
     sourceScope = sskLocalInstance): SharedDesignEditorCategory =
-  discard sourceScope
-
   let name = prop.name.normalizedCssName()
   if cssPropertyCategory(name) == cpcColor or name in [
       "background", "background-color", "color", "border-color",
@@ -6636,6 +6719,12 @@ func sharedDesignCategory*(prop: PropertyInfo;
   elif cssPropertyCategory(name) == cpcTransitions or
       name.startsWith("transition") or name.startsWith("animation"):
     sdecMotion
+  elif sourceScope == sskSharedClass and name in [
+      "background-size", "border-style", "outline-offset", "filter",
+      "transform", "flex-wrap", "overflow", "aspect-ratio"]:
+    # These literal class declarations have file-write and Undo/redo coverage.
+    # Token families still require their own supported semantic editor.
+    sdecSharedClass
   else:
     sdecUnsupported
 

@@ -1298,12 +1298,27 @@ try {
       const bar = document.querySelector("[data-preview-chrome-bar]");
       const b = bar.getBoundingClientRect();
       const controls = Array.from(
-        bar.querySelectorAll('[role="button"]'),
+        bar.querySelectorAll('[role="button"], button'),
       ).filter((el) => el.getClientRects().length);
       return {
         height: b.height,
         width: b.width,
         scrollWidth: bar.scrollWidth,
+        children: Array.from(bar.children, (el) => {
+          const bounds = el.getBoundingClientRect();
+          const style = getComputedStyle(el);
+          return {
+            cluster: el.getAttribute("data-toolbar-cluster"),
+            spacer: el.getAttribute("data-preview-toolbar-spacer"),
+            width: bounds.width,
+            left: bounds.left - b.left,
+            right: bounds.right - b.left,
+            display: style.display,
+            gap: style.gap,
+            paddingLeft: style.paddingLeft,
+            paddingRight: style.paddingRight,
+          };
+        }),
         controls: controls.map((el) => {
           const r = el.getBoundingClientRect();
           return {
@@ -1419,6 +1434,27 @@ try {
         ).viewport,
         slug,
       );
+      if (compact) {
+        const selectedLabel = await bar
+          .locator("[data-preview-viewport-current]")
+          .innerText();
+        assert(selectedLabel.length > 0);
+        assert.equal(
+          await overflow.getAttribute("title"),
+          `Current viewport: ${selectedLabel}; choose another size`,
+        );
+        assert.equal(
+          await overflow.getAttribute("aria-description"),
+          `Current viewport: ${selectedLabel}`,
+        );
+        assert((await overflow.boundingBox()).width >= 44);
+        const visibleLabel = await bar
+          .locator("[data-preview-viewport-current]")
+          .boundingBox();
+        assert(
+          visibleLabel && visibleLabel.width >= 20 && visibleLabel.height > 0,
+        );
+      }
       const selectedGeometry = await toolbarGeometry();
       assert(
         selectedGeometry.controls.every((row) => row.inside && row.hit),

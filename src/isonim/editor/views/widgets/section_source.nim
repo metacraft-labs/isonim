@@ -105,6 +105,7 @@ proc mountSectionSource*[R, E](r: R; parent: E; vm: EditorVM) =
          gap = "8px", padding = "4px 0"):
       # File path + line row.
       tdiv(`data-source-row` = "file",
+            `data-inspector-search-label` = "Source file",
             display = "flex", flex_direction = "row",
             align_items = "center", gap = "6px",
             font_size = "11px"):
@@ -120,6 +121,7 @@ proc mountSectionSource*[R, E](r: R; parent: E; vm: EditorVM) =
           text "—"
       # Scope row.
       tdiv(`data-source-row` = "scope",
+            `data-inspector-search-label` = "Source scope",
             display = "flex", flex_direction = "row",
             align_items = "center", gap = "6px",
             font_size = "11px"):
@@ -130,6 +132,7 @@ proc mountSectionSource*[R, E](r: R; parent: E; vm: EditorVM) =
           text "Local"
       # Staged commits row.
       tdiv(`data-source-row` = "staged",
+            `data-inspector-search-label` = "Staged changes",
             display = "flex", flex_direction = "row",
             align_items = "center", gap = "6px",
             font_size = "11px"):
@@ -141,6 +144,7 @@ proc mountSectionSource*[R, E](r: R; parent: E; vm: EditorVM) =
       # Ownership warnings row — kept always-present so the data
       # attribute is queryable by tests even when empty.
       tdiv(`data-source-row` = "ownership",
+            `data-inspector-search-label` = "Ownership",
             display = "flex", flex_direction = "column", gap = "4px",
             border = "1px solid " & border, border_radius = "4px",
             padding = "6px 8px", background_color = "#0F172A",

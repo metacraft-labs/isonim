@@ -3296,7 +3296,7 @@ proc renderInspectorPanel*[R, E](r: R; vm: EditorVM): E =
           if isComponentInstance(vm.inspector.selectedElement.val): "flex" else: "none")
 
   result = ui(r):
-    tdiv(class = "editor-inspector",
+    tdiv(class = "editor-inspector editor-manual-inspector",
           `data-test-id` = "property-panel",
           `data-sidebar-content` = "inspector",
           display = "flex", flex_direction = "column",
@@ -3341,6 +3341,102 @@ proc renderInspectorPanel*[R, E](r: R; vm: EditorVM): E =
   # section list. Append BEFORE the list so the DOM order matches the
   # visual order (header first, then list).
   r.appendChild(sidebarRoot, selectionHeaderEl)
+  when isDomViewHost(E):
+    # Row discovery and search focus require a real DOM host. Other renderers
+    # keep their section controls and do not advertise an inert search field.
+    let sectionSearch = renderSidebarSearchBox[R, E](r,
+      "data-inspector-search", "Search inspector sections", "Search sections or properties")
+    r.setAttribute(sectionSearch.input, "data-isonim-focus-id", "section-search")
+    let searchHost = ui(r):
+      tdiv(display = "flex", padding = "8px 12px", flex_shrink = "0")
+    r.appendChild(searchHost, sectionSearch.root)
+    r.appendChild(sidebarRoot, searchHost)
+
+    let searchInput = sectionSearch.input
+    let searchVm = vm
+    let publishSearch = proc(query: cstring) =
+      searchVm.inspector.setSectionSearch($query)
+    let expandSearchSection = proc(slug: cstring; expanded: bool) =
+      searchVm.inspector.setSectionExpanded(inspectorSectionFromAttr($slug), expanded)
+    {.emit: ["""
+      (function (panel, list, input, publish, setExpanded) {
+        var query = '', original = null, opened = new Set();
+        var style = document.createElement('style');
+        style.textContent = '.editor-inspector [data-inspector-search-visible="false"]{display:none!important}' +
+          '.editor-inspector [data-inspector-search-match="true"]{outline:1px solid currentColor;outline-offset:-1px}';
+        panel.appendChild(style);
+        function frames() { return Array.from(list.children).filter(function (x) {
+          return x.hasAttribute('data-inspector-section-row');
+        }); }
+        function header(frame) { return frame.querySelector('[data-inspector-section-header]'); }
+        function expanded(frame) { return header(frame).getAttribute('aria-expanded') === 'true'; }
+        function apply() {
+          frames().forEach(function (frame) {
+            var slug = frame.getAttribute('data-inspector-section-row');
+            var title = frame.querySelector('[data-inspector-section-title]');
+            var nameMatch = query && title.textContent.toLowerCase().includes(query);
+            var matches = false;
+            frame.querySelectorAll('[data-property-row-name], [data-inspector-search-label]').forEach(function (row) {
+              var label = row.getAttribute('data-property-row-name') || row.getAttribute('data-inspector-search-label') || '';
+              var property = row.getAttribute('data-property-row-css-property') || row.getAttribute('data-inspector-search-property') || '';
+              var match = !!query && (label.toLowerCase().includes(query) || property.toLowerCase().includes(query));
+              row.setAttribute('data-inspector-search-match', String(match));
+              matches = matches || match;
+            });
+            frame.setAttribute('data-inspector-search-visible', String(!query || nameMatch || matches));
+            if (matches && !opened.has(slug)) {
+              opened.add(slug);
+              setExpanded(slug, true);
+            }
+          });
+        }
+        function changed() {
+          var next = input.value.trim().toLowerCase();
+          if (next !== query) {
+            if (!query && next) {
+              original = new Map(frames().map(function (frame) {
+                return [frame.getAttribute('data-inspector-section-row'), expanded(frame)];
+              }));
+            }
+            query = next;
+            opened.clear();
+            if (!query && original) {
+              original.forEach(function (value, slug) { setExpanded(slug, value); });
+              original = null;
+            }
+          }
+          publish(input.value);
+          apply();
+        }
+        function key(event) {
+          if (event.key === 'Escape') {
+            event.preventDefault(); event.stopPropagation(); input.value = ''; changed();
+          }
+        }
+        function find(event) {
+          if (event.defaultPrevented || !(event.metaKey || event.ctrlKey) || event.altKey || event.key.toLowerCase() !== 'f') return;
+          if (!panel.getClientRects().length || getComputedStyle(panel).visibility === 'hidden') return;
+          if (document.body && document.body.getAttribute('data-isonim-canvas-focused') === 'true') return;
+          var target = event.target;
+          if (target && (target.isContentEditable || (target.closest && target.closest('input,textarea,canvas,[role="textbox"],.monaco-editor,.cm-editor')))) return;
+          event.preventDefault(); input.focus(); input.select();
+        }
+        input.addEventListener('input', changed);
+        input.addEventListener('keydown', key);
+        // Bubble after local editor handlers; respect their preventDefault.
+        window.addEventListener('keydown', find);
+        var observer = new MutationObserver(apply);
+        observer.observe(list, {subtree:true, childList:true, attributes:true,
+          attributeFilter:['data-property-row-name','data-property-row-css-property','data-inspector-search-label','data-inspector-search-property']});
+        input.__isonimSearchCleanup = function () {
+          observer.disconnect(); input.removeEventListener('input', changed);
+          input.removeEventListener('keydown', key); window.removeEventListener('keydown', find); style.remove();
+        };
+      })(""", sidebarRoot, ",", sectionListEl, ",", searchInput, ",", publishSearch, ",", expandSearchSection, """);
+    """].}
+    onCleanup proc() =
+      {.emit: ["if (", searchInput, ".__isonimSearchCleanup) ", searchInput, ".__isonimSearchCleanup();"].}
+
   r.appendChild(sidebarRoot, sectionListEl)
 
   when isDomViewHost(E):
@@ -3793,6 +3889,65 @@ proc renderEditorTitleBar[R, E](r: R; vm: EditorVM): E =
       span(font_size = "11px", color = textDim, font_family = "monospace"):
         text "v" & editorVersion
 
+proc renderFlowPlaybackControls[R, E](r: R; vm: EditorVM): E =
+  ## Playback belongs to the canonical chrome so selecting a flow step
+  ## does not unmount its controls when the editor opens the target page.
+  const previousIcon = """<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" width="100%" height="100%" fill="none" stroke="currentColor" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round"><path d="M5 6v12M17 6l-8 6 8 6Z"/></svg>"""
+  const nextIcon = """<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" width="100%" height="100%" fill="none" stroke="currentColor" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round"><path d="M19 6v12M7 6l8 6-8 6Z"/></svg>"""
+  const playIcon = """<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" width="100%" height="100%" fill="none" stroke="currentColor" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round"><path d="m8 5 11 7-11 7Z"/></svg>"""
+  const pauseIcon = """<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" width="100%" height="100%" fill="none" stroke="currentColor" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round"><path d="M7 5h3v14H7zM14 5h3v14h-3z"/></svg>"""
+  const stopIcon = """<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" width="100%" height="100%" fill="none" stroke="currentColor" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round"><rect x="5" y="5" width="14" height="14" rx="1"/></svg>"""
+  var previous, toggle, stopButton, next, toggleIcon: E
+  proc playbackButton(label, glyph: string; icon: var E): E =
+    result = ui(r):
+      button(`type` = "button", `aria-label` = label, title = label,
+            width = "24px", min_width = "24px", height = "24px",
+            padding = "0", border = "none", border_radius = "4px",
+            box_sizing = "border-box", background = "transparent",
+            color = textMuted, cursor = "pointer", flex_shrink = "0",
+            display = "inline-flex", align_items = "center",
+            justify_content = "center"):
+        span(ref = icon, `aria-hidden` = "true", width = "18px",
+             height = "18px", display = "inline-flex")
+    r.setInnerHtml(icon, glyph)
+  var previousIconHost, stopIconHost, nextIconHost: E
+  previous = playbackButton("Previous flow step", previousIcon, previousIconHost)
+  toggle = playbackButton("Play flow", playIcon, toggleIcon)
+  stopButton = playbackButton("Stop flow", stopIcon, stopIconHost)
+  next = playbackButton("Next flow step", nextIcon, nextIconHost)
+  result = ui(r):
+    tdiv(`data-toolbar-cluster` = "flow-playback", role = "group",
+          `aria-label` = "Flow playback", display = "inline-flex",
+          align_items = "center", gap = "2px", flex_shrink = "0")
+  for node in [previous, toggle, stopButton, next]:
+    r.appendChild(result, node)
+  let controls = [previous, toggle, stopButton, next]
+  createRenderEffect proc() =
+    let available = vm.flowPlayer.totalSteps.val > 0
+    for node in controls:
+      r.setAttribute(node, "aria-disabled", if available: "false" else: "true")
+      r.setAttribute(node, "tabindex", if available: "0" else: "-1")
+    let playing = vm.flowPlayer.playState.val == psPlaying
+    r.setAttribute(toggle, "aria-label", if playing: "Pause flow" else: "Play flow")
+    r.setAttribute(toggle, "aria-pressed", if playing: "true" else: "false")
+    r.setAttribute(toggle, "title", if playing: "Pause flow" else: "Play flow")
+    r.setInnerHtml(toggleIcon, if playing: pauseIcon else: playIcon)
+  r.addEventListener(previous, "click", proc() =
+    if vm.flowPlayer.totalSteps.val > 0:
+      discard vm.prevFlowStep())
+  r.addEventListener(next, "click", proc() =
+    if vm.flowPlayer.totalSteps.val > 0:
+      discard vm.nextFlowStep())
+  r.addEventListener(stopButton, "click", proc() =
+    if vm.flowPlayer.totalSteps.val > 0:
+      discard vm.stopFlow())
+  r.addEventListener(toggle, "click", proc() =
+    if vm.flowPlayer.totalSteps.val > 0:
+      if vm.flowPlayer.playState.val == psPlaying:
+        vm.flowPlayer.pause()
+      else:
+        vm.flowPlayer.play())
+
 proc renderPreviewChromeBar*[R, E](r: R; vm: EditorVM): E =
   ## Shared preview-pane top toolbar that sits above every view in the
   ## center column. Carries the three reactive chip groups
@@ -3940,7 +4095,9 @@ proc renderPreviewChromeBar*[R, E](r: R; vm: EditorVM): E =
           target in capturedVm.streamingPreview.availableBackends.val:
         selectBackend(capturedVm.streamingPreview, target)
       capturedVm.changePlatform(target),
-    variant = cgvTransparent)
+    variant = cgvTransparent,
+    onPillMounted = proc(node: E; index: int) =
+      r.setAttribute(node, "data-preview-backend", backendId(backendOrder[index])))
 
   # Mirror external writes to ``vm.platform`` onto the segmented
   # control. Same ``.value``-not-``.val`` precaution as the Surface
@@ -4148,7 +4305,12 @@ proc renderPreviewChromeBar*[R, E](r: R; vm: EditorVM): E =
         text capturedVm.viewport.value.label
       text "\xE2\x96\xBE"  # ▾
   createRenderEffect proc() =
-    r.setTextContent(viewportCurrentLabel, capturedVm.viewport.val.label)
+    let currentLabel = capturedVm.viewport.val.label
+    r.setTextContent(viewportCurrentLabel, currentLabel)
+    r.setAttribute(viewportChevronBtn, "title",
+      "Current viewport: " & currentLabel & "; choose another size")
+    r.setAttribute(viewportChevronBtn, "aria-description",
+      "Current viewport: " & currentLabel)
   r.appendChild(viewportClusterWrapper, viewportChevronWrap)
 
   # The active breakpoint, immediately right of the screen-size chips.
@@ -4283,7 +4445,10 @@ proc renderPreviewChromeBar*[R, E](r: R; vm: EditorVM): E =
     proc(i: int) {.closure.} =
       if i >= 0 and i < viewportPinned.len:
         capturedVm.changeViewport(viewportPinned[i]),
-    variant = cgvTransparent)
+    variant = cgvTransparent,
+    onPillMounted = proc(node: E; index: int) =
+      r.setAttribute(node, "data-preview-viewport", viewportPinned[index].slug)
+      r.setAttribute(node, "data-preview-viewport-pinned", "true"))
 
   proc rebuildViewportDropdown(host: E; popup: seq[PreviewViewport]) =
     r.clearChildren(host)
@@ -4442,7 +4607,10 @@ proc renderPreviewChromeBar*[R, E](r: R; vm: EditorVM): E =
           proc(i: int) {.closure.} =
             if i >= 0 and i < viewportPinned.len:
               capturedVm.changeViewport(viewportPinned[i]),
-          variant = cgvTransparent))
+          variant = cgvTransparent,
+          onPillMounted = proc(node: E; index: int) =
+            r.setAttribute(node, "data-preview-viewport", viewportPinned[index].slug)
+            r.setAttribute(node, "data-preview-viewport-pinned", "true")))
     else:
       viewportPinned = newPinned
     if needsRebuild or viewportSlugSeq(newPopup) != viewportSlugSeq(viewportPopup):
@@ -4564,7 +4732,13 @@ proc renderPreviewChromeBar*[R, E](r: R; vm: EditorVM): E =
       capturedVm.setEditMode(emSpec)
     else:
       discard capturedVm.runEditorCommand(commandForMode(mode)),
-    variant = cgvTransparent)
+    variant = cgvTransparent,
+    onPillMounted = proc(node: E; index: int) =
+      let capturedIndex = index
+      r.setAttribute(node, "data-preview-mode", modeLabels[index].toLowerAscii())
+      createRenderEffect proc() =
+        r.setAttribute(node, "data-preview-mode-disabled",
+          if modeVm.isDisabled(capturedIndex): "true" else: "false"))
 
   block:
     let syncVm = modeVm
@@ -4581,6 +4755,7 @@ proc renderPreviewChromeBar*[R, E](r: R; vm: EditorVM): E =
       syncVm.setDisabledIndices(computeModeDisabled())
 
   r.appendChild(toolbar, modeWrapper)
+  r.appendChild(toolbar, renderFlowPlaybackControls[R, E](r, vm))
 
   # Phase Q (2026-05-29): right-sidebar toggle button — the trailing
   # bookend symmetrical to the leading left-sidebar toggle. Promoted
@@ -5219,15 +5394,17 @@ proc renderEditorShell*[R, E](r: R; vm: EditorVM;
     let capturedVm = vm
     var lastBody = ""
     var lastBriefId = ""
+    # This Spec mount owns its snapshot; no mutable index is shared with
+    # gallery state or standalone callers of builtInBriefIndex().
+    let briefIndex = builtInBriefIndex()
     createRenderEffect proc() =
       let story = capturedVm.selectedStory.val
       let backend = capturedVm.platform.val
-      let bid = design_review_mount_view.resolveBriefId(story, backend)
+      let bid = design_review_mount_view.resolveBriefId(story, backend, briefIndex)
       var body = ""
       if bid.len > 0:
-        let idx = builtInBriefIndex()
-        if idx != nil and bid in idx.byBriefId:
-          let b = idx.byBriefId[bid]
+        if briefIndex != nil and bid in briefIndex.byBriefId:
+          let b = briefIndex.byBriefId[bid]
           if b.title.len > 0:
             body.add "# "
             body.add b.title
@@ -5372,13 +5549,14 @@ proc renderEditorShell*[R, E](r: R; vm: EditorVM;
   # AIVS-NSO — "Select an item to edit its properties" overlay.
   #
   # Several centre-column surfaces are meaningless without a selected
-  # story: the component detail / component edit / page preview /
-  # foundations views all depend on ``vm.selectedStory`` to know what
-  # to render, and the Spec pane (View / Comment / Edit) needs a
+  # story: the component detail, component edit and page preview
+  # views depend on ``vm.selectedStory`` to know what to render,
+  # and the Spec pane (View / Comment / Edit) needs a
   # brief to display.  Storyboard is the exception — it shows the
   # whole flow graph regardless of selection — and so is the vector
   # editor, which only opens via an explicit ``openVectorEditor``
-  # affordance.
+  # affordance. Foundations also exposes the workspace token catalog
+  # without a selected story; only its optional project preview needs one.
   #
   # The overlay sits absolute-positioned over the centre column, gated
   # by a single ``createRenderEffect`` that observes ``selectedStory``,
@@ -5386,7 +5564,7 @@ proc renderEditorShell*[R, E](r: R; vm: EditorVM;
   # adapts to the current mode per the user's spec:
   #   * Spec View / Comment / Edit, no story: "Select an item to view
   #     its specification."
-  #   * Preview View / Comment / Edit (Component/Page/Foundation
+  #   * Preview View / Comment / Edit (Component/Page
   #     views) without a story: "Select an item to edit its
   #     properties."
   let overlayEl = ui(r):
@@ -5444,12 +5622,11 @@ proc renderEditorShell*[R, E](r: R; vm: EditorVM;
       # ``openVectorEditor`` affordance so it always has a target;
       # ``storyboard`` renders the whole flow graph and is the
       # default landing surface — both are exempt from the no-story
-      # overlay.  The remaining centre-column surfaces all hinge on
-      # ``vm.selectedStory``.
+      # overlay. Foundations token browsing is workspace-wide too;
+      # its optional story preview handles absence independently.
       let surfaceNeedsStory =
         surface == sSpec or
-        view in {evComponentDetail, evComponentEdit,
-                 evPagePreview, evFoundationsPage}
+        view in {evComponentDetail, evComponentEdit, evPagePreview}
       let noStory = story.name.len == 0
       let want = surfaceNeedsStory and noStory
       r.setStyle(overlayEl, "display", if want: "flex" else: "none")

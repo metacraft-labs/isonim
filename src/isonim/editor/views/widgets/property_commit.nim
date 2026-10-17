@@ -25,7 +25,7 @@
 ## Test fixture: ``tests/test_editor_viewmodels.nim`` §"inspector
 ## section writeback".
 
-import std/options
+import std/[math, options]
 
 import isonim/core/signals
 import isonim/editor/types
@@ -179,10 +179,11 @@ proc localPreviewRefusal(elementId, domPath, property: string): string =
       for (const frame of document.querySelectorAll('iframe')) {
         try {
           const doc = frame.contentDocument;
-          if (!doc || !frame.getClientRects().length) continue;
+          if (!doc) continue;
           const target = (id && doc.querySelector('[data-isonim-element-id="' + CSS.escape(id) + '"]')) ||
             (path && doc.querySelector(path));
-          if (target && typeof frame.contentWindow.__isonimLocalDeclarationRefusal === 'function')
+          if (target && typeof frame.contentWindow.__isonimLocalDeclarationRefusal === 'function' &&
+              frame.getClientRects().length)
             return frame.contentWindow.__isonimLocalDeclarationRefusal(id,path,property);
         } catch(e) {}
       }
@@ -302,6 +303,13 @@ proc applyPreviewStyle*(elementId, domPath, property, value: string;
     discard property
     discard value
 
+when defined(js):
+  proc inspectorCommitNowMs(): float {.importjs: "performance.now()".}
+else:
+  import std/monotimes
+  proc inspectorCommitNowMs(): float =
+    getMonoTime().ticks.float / 1_000_000.0
+
 proc commitInspectorValue*(vm: EditorVM; property, rawValue: string;
     scope: SourceScopeChoiceKind): PropertyCommitOutcome =
   ## Commit ``rawValue`` for ``property`` at ``scope``.
@@ -325,6 +333,11 @@ proc commitInspectorValue*(vm: EditorVM; property, rawValue: string;
   ## What is NOT verbatim, and is the point of the exercise: the old
   ## path discarded both results. Every refusal below was already being
   ## computed and thrown away.
+  # Time this synchronous accepted commit through preview dispatch, not
+  # asynchronous source writes or a later browser frame/paint. The local
+  # route already has its own telemetry producer in editInspectorProperty.
+  let sharedPreviewStarted =
+    if scope != sskLocalInstance: inspectorCommitNowMs() else: 0.0
   let element = vm.inspector.selectedElement.val
   if element.tag.len == 0:
     return refusal("Select an element before editing " & property & ".", scope)
@@ -383,6 +396,10 @@ proc commitInspectorValue*(vm: EditorVM; property, rawValue: string;
     applyPreviewStyle(previewId, selected.domPath, property, normalized, scope)
     # The write that follows must not reload the preview out from under this.
     vm.previewShowsPendingEdits.val = true
+    if scope != sskLocalInstance:
+      vm.recordEditorTiming(epbkPropertyEditPreview,
+        max(0, int(ceil(inspectorCommitNowMs() - sharedPreviewStarted))),
+        "source-plan:" & property)
 
   # The edit is staged; the browser layer debounces it into a write. Placed
   # after every refusal so a rejected edit never schedules one.
@@ -415,6 +432,8 @@ type
       ## eye slides past. A control that keeps a value the system rejected is
       ## lying about the document.
     scopeOptions*: proc(): seq[CompactChoiceOption]
+    sourceScopeChoices*: proc(): seq[SourceScopeChoice]
+      ## Read-only destinations; choosing one may immediately commit a value.
     selectedSourceScope*: proc(): Option[SourceScopeChoice]
       ## Optional read-only projection of the exact choice used by commit.
     commit*: proc(value: string)
@@ -559,6 +578,7 @@ proc inspectorRowWiring*(vm: EditorVM; property: string): InspectorRowWiring =
     commitMessage: message,
     commitRejected: rejected,
     scopeOptions: scopeOptions,
+    sourceScopeChoices: currentChoices,
     selectedSourceScope: proc(): Option[SourceScopeChoice] =
       let active = effectiveScope()
       for choice in currentChoices():

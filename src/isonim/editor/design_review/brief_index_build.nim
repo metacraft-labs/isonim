@@ -73,13 +73,19 @@ proc kindToJson(k: BriefKind): string =
   of bkVectorSymbol:  "vectorsymbol"
   of bkGuideline:     "guideline"
 
-proc briefToJson(b: Brief): JsonNode =
+proc snapshotPath(path, briefsRoot: string): string =
+  ## Browser snapshot locations are logical paths rooted at the briefs directory.
+  ## Native BriefIndex paths remain absolute for the server's rooted save resolver.
+  if path.len == 0: return ""
+  result = relativePath(path, briefsRoot).replace('\\', '/')
+
+proc briefToJson(b: Brief; briefsRoot: string): JsonNode =
   result = newJObject()
   result["briefId"] = %b.briefId
   result["schemaVersion"] = %b.schemaVersion
   result["kind"] = %kindToJson(b.kind)
   result["title"] = %b.title
-  result["sourceFile"] = %b.sourceFile
+  result["sourceFile"] = %snapshotPath(b.sourceFile, briefsRoot)
   result["bodyMarkdown"] = %b.bodyMarkdown
   result["reviewerSchemaVersion"] = %b.reviewerSchemaVersion
   result["relatedBriefs"] = %b.relatedBriefs
@@ -100,7 +106,7 @@ proc briefToJson(b: Brief): JsonNode =
     extra[k] = %v
   result["extra"] = extra
 
-proc indexToJson(idx: BriefIndex): JsonNode =
+proc indexToJson(idx: BriefIndex; briefsRoot: string): JsonNode =
   ## Serialise a ``BriefIndex`` to a JSON document. The on-disk shape:
   ##
   ##   { "briefs": [ Brief, ... ],
@@ -109,7 +115,7 @@ proc indexToJson(idx: BriefIndex): JsonNode =
   result = newJObject()
   var briefs = newJArray()
   for id, b in idx.byBriefId.pairs:
-    briefs.add briefToJson(b)
+    briefs.add briefToJson(b, briefsRoot)
   result["briefs"] = briefs
   var byPreview = newJObject()
   for previewId, briefIds in idx.byPreview.pairs:
@@ -117,7 +123,11 @@ proc indexToJson(idx: BriefIndex): JsonNode =
   result["byPreview"] = byPreview
   var errors = newJArray()
   for e in idx.errors:
-    errors.add %*{"path": e.path, "message": e.message}
+    # Diagnostic reasons are retained; only this owned root's location prefix is
+    # omitted. Brief body text and the native index are never rewritten.
+    let rootPrefix = if briefsRoot.endsWith($DirSep): briefsRoot else: briefsRoot & $DirSep
+    let message = if briefsRoot.len > 0: e.message.replace(rootPrefix, "") else: e.message
+    errors.add %*{"path": snapshotPath(e.path, briefsRoot), "message": message}
   result["errors"] = errors
 
 # --------------------------------------------------------------------------- #
@@ -303,6 +313,6 @@ when isMainModule:
       echo "brief_index_build: ", briefsDir,
            " does not exist; emitting empty index"
 
-  let payload = pretty(indexToJson(idx))
+  let payload = pretty(indexToJson(idx, briefsDir))
   emitStaticModule(payload, outPath)
   echo "brief_index_build: wrote ", outPath

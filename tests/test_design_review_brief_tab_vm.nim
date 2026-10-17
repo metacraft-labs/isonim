@@ -67,6 +67,20 @@ suite "REV-M2 current Spec pane compatibility":
       @["chrome.story-selected-laptop", "chrome.story-selected-wide"]
     check resolveBriefId(appearance(), pbWeb) == "chrome.story-selected-laptop"
 
+  test "private routing snapshots agree and standalone callers remain isolated":
+    let privateIndex = builtInBriefIndex()
+    let otherIndex = builtInBriefIndex()
+    require privateIndex != nil and otherIndex != nil
+    check privateIndex != otherIndex
+    for story in [inbox(), appearance(), StoryRef()]:
+      for backend in PreviewBackend:
+        check resolveBriefId(story, backend, privateIndex) ==
+          resolveBriefId(story, backend)
+    require "render.task-app" in privateIndex.byBriefId
+    privateIndex.byBriefId.del("render.task-app")
+    check resolveBriefId(inbox(), pbWeb, otherIndex) == "render.task-app"
+    check resolveBriefId(inbox(), pbWeb) == "render.task-app"
+
   test "backend and uncovered selection reactively replace the actual mounted body":
     createRoot do (dispose: proc()):
       let vm = createEditorVM()

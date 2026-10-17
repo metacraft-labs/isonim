@@ -87,6 +87,28 @@ proc countInteractive(node: MockNode): int =
 
 suite "Editor Shell Views (M2)":
 
+  test "workspace foundation tokens remain reachable without a story":
+    createRoot do (dispose: proc()):
+      let r = MockRenderer()
+      let vm = createEditorVM()
+      check vm.selectedStory.val.name.len == 0
+      vm.setActiveView(evFoundationsPage)
+      let shell = renderEditorShell[MockRenderer, MockNode](r, vm)
+      let overlay = findByAttr(shell, "data-no-story-overlay", "true")
+      check overlay != nil
+      check overlay.styles.getOrDefault("display") == "none"
+      check findByAttr(shell, "data-foundations-page", "true") != nil
+      # Story-dependent preview views and the Spec surface stay guarded.
+      for view in [evComponentDetail, evComponentEdit, evPagePreview]:
+        vm.setActiveView(view)
+        check overlay.styles.getOrDefault("display") == "flex"
+      vm.setActiveView(evFoundationsPage)
+      check overlay.styles.getOrDefault("display") == "none"
+      vm.setEditMode(emSpec)
+      check overlay.styles.getOrDefault("display") == "flex"
+      dispose()
+
+
   test "test_editor_shell_three_panel_layout":
     ## Editor renders sidebar, center column (chrome bar + views), and
     ## inspector panels. The global title bar and the M57 left/right
@@ -841,17 +863,51 @@ suite "Editor Shell Views (M2)":
 
       vm.flowPlayer.steps.val = userFlows()[0].steps
       let flowShell = renderEditorShell[MockRenderer, MockNode](r, vm)
-      # M-EVP-6: the storyboard's inner toolbar (with Next/Previous/Play/
-      # Stop flow buttons) is gone. The underlying flow-player VM
-      # operations remain reachable and drive the same state changes;
-      # the visual affordances are tracked under the broader chrome
-      # consolidation series (M-EVP-7..M-EVP-9). The test now exercises
-      # the VM API directly so the storyboard's flow-player semantics
-      # stay covered.
-      check findByAttr(flowShell, "aria-label", "Next flow step") == nil
-      check findByAttr(flowShell, "aria-label", "Previous flow step") == nil
-      check findByAttr(flowShell, "aria-label", "Play flow") == nil
-      check findByAttr(flowShell, "aria-label", "Stop flow") == nil
+      # Playback has one canonical owner; the storyboard body does not
+      # regain the removed per-view toolbar or duplicate mode controls.
+      let playback = findByAttr(flowShell, "data-toolbar-cluster", "flow-playback")
+      check playback != nil
+      check countByAttr(flowShell, "data-toolbar-cluster", "flow-playback") == 1
+      let canonicalBar = findByAttr(flowShell, "data-preview-chrome-bar", "true")
+      check findByAttr(canonicalBar, "data-toolbar-cluster", "flow-playback") == playback
+      let storyboardBody = findByAttr(flowShell, "data-storyboard-canvas", "true")
+      check storyboardBody != nil
+      check findByAttr(storyboardBody, "data-toolbar-cluster", "flow-playback") == nil
+      let playControl = findByAttr(playback, "aria-label", "Play flow")
+      let nextControl = findByAttr(playback, "aria-label", "Next flow step")
+      let previousControl = findByAttr(playback, "aria-label", "Previous flow step")
+      let stopControl = findByAttr(playback, "aria-label", "Stop flow")
+      check playControl != nil
+      check nextControl != nil
+      check previousControl != nil
+      check stopControl != nil
+      check playControl.attributes["aria-disabled"] == "false"
+      playControl.fireEvent("click")
+      check vm.flowPlayer.playState.val == psPlaying
+      check playControl.attributes["aria-label"] == "Pause flow"
+      check playControl.attributes["aria-pressed"] == "true"
+      playControl.fireEvent("click")
+      check vm.flowPlayer.playState.val == psPaused
+      check playControl.attributes["aria-label"] == "Play flow"
+      nextControl.fireEvent("click")
+      check vm.flowPlayer.currentStep.val == 1
+      previousControl.fireEvent("click")
+      check vm.flowPlayer.currentStep.val == 0
+      playControl.fireEvent("click")
+      stopControl.fireEvent("click")
+      check playControl.attributes["aria-pressed"] == "false"
+      let savedFlowSteps = vm.flowPlayer.steps.val
+      vm.flowPlayer.steps.val = @[]
+      check playControl.attributes["aria-disabled"] == "true"
+      check nextControl.attributes["aria-disabled"] == "true"
+      check previousControl.attributes["aria-disabled"] == "true"
+      check stopControl.attributes["aria-disabled"] == "true"
+      for control in [playControl, nextControl, previousControl, stopControl]:
+        control.fireEvent("click")
+      check vm.flowPlayer.playState.val == psStopped
+      check vm.flowPlayer.currentStep.val == 0
+      vm.flowPlayer.steps.val = savedFlowSteps
+      check playControl.attributes["aria-disabled"] == "false"
       check vm.flowPlayer.playState.val == psStopped
 
       discard vm.nextFlowStep()
@@ -1088,6 +1144,14 @@ suite "Editor Shell Views (M2)":
       let editChip = findByAttr(modeCluster, "data-choice-group-pill", "3")
       check editChip != nil
       check editChip.attributes["role"] == "button"
+      for mode in ["spec", "view", "comment", "edit"]:
+        check findByAttr(modeCluster, "data-preview-mode", mode) != nil
+      check editChip.attributes["data-preview-mode"] == "edit"
+      check editChip.attributes["data-preview-mode-disabled"] == "false"
+      let backend = findByAttr(shell, "data-toolbar-cluster", "backend")
+      check findByAttr(backend, "data-preview-backend", "web") != nil
+      let viewport = findByAttr(shell, "data-toolbar-cluster", "viewport")
+      check findByAttr(viewport, "data-preview-viewport", "desktop") != nil
 
       editChip.fireEvent("click")
       check vm.editMode.val == emEdit

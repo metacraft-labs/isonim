@@ -177,6 +177,10 @@ type
       ## the scope half, which is why the sections had nowhere to say
       ## which source an edit should modify. Nil keeps the slot
       ## bind-only.
+    sourceScopeChoices*: proc(): seq[SourceScopeChoice]
+      ## Available destinations, visible before a scope choice also commits.
+    selectedSourceScope*: proc(): Option[SourceScopeChoice]
+      ## Read-only metadata from the exact scope that commits this row.
     commitMessage*: Signal[string]
     commitRejected*: Signal[int]
       ## See `InspectorRowWiring.commitRejected`: a refused commit must put
@@ -538,7 +542,8 @@ proc propertyRowNumeric*(name: string;
     onVariableNameClick: onVariableNameClick,
     numericCssValue: wiring.numericCssValue, numericFormat: wiring.numericFormat,
     cssProperty: wiring.cssProperty, authoredValue: wiring.authoredValue, readOnlyReason: wiring.readOnlyReason,
-    scopeOptions: wiring.scopeOptions,
+    scopeOptions: wiring.scopeOptions, sourceScopeChoices: wiring.sourceScopeChoices,
+    selectedSourceScope: wiring.selectedSourceScope,
     commitMessage: wiring.commitMessage,
     commitRejected: wiring.commitRejected,
     onCommitValue: wiring.commit, onAsyncCommitValue: wiring.commitAsync)
@@ -563,7 +568,8 @@ proc propertyRowColor*(name: string;
     onDetachRequest: onDetachRequest,
     onVariableNameClick: onVariableNameClick,
     cssProperty: wiring.cssProperty, authoredValue: wiring.authoredValue, readOnlyReason: wiring.readOnlyReason,
-    scopeOptions: wiring.scopeOptions,
+    scopeOptions: wiring.scopeOptions, sourceScopeChoices: wiring.sourceScopeChoices,
+    selectedSourceScope: wiring.selectedSourceScope,
     commitMessage: wiring.commitMessage,
     commitRejected: wiring.commitRejected,
     onCommitValue: wiring.commit, onAsyncCommitValue: wiring.commitAsync)
@@ -588,7 +594,8 @@ proc propertyRowChoice*(name: string;
     onDetachRequest: onDetachRequest,
     onVariableNameClick: onVariableNameClick,
     cssProperty: wiring.cssProperty, authoredValue: wiring.authoredValue, readOnlyReason: wiring.readOnlyReason,
-    scopeOptions: wiring.scopeOptions,
+    scopeOptions: wiring.scopeOptions, sourceScopeChoices: wiring.sourceScopeChoices,
+    selectedSourceScope: wiring.selectedSourceScope,
     commitMessage: wiring.commitMessage,
     commitRejected: wiring.commitRejected,
     onCommitValue: wiring.commit, onAsyncCommitValue: wiring.commitAsync)
@@ -612,7 +619,8 @@ proc propertyRowText*(name: string;
     onDetachRequest: onDetachRequest,
     onVariableNameClick: onVariableNameClick,
     cssProperty: wiring.cssProperty, authoredValue: wiring.authoredValue, readOnlyReason: wiring.readOnlyReason,
-    scopeOptions: wiring.scopeOptions,
+    scopeOptions: wiring.scopeOptions, sourceScopeChoices: wiring.sourceScopeChoices,
+    selectedSourceScope: wiring.selectedSourceScope,
     commitMessage: wiring.commitMessage,
     commitRejected: wiring.commitRejected,
     onCommitValue: wiring.commit, onAsyncCommitValue: wiring.commitAsync)
@@ -636,7 +644,8 @@ proc propertyRowBoolean*(name: string;
     onDetachRequest: onDetachRequest,
     onVariableNameClick: onVariableNameClick,
     cssProperty: wiring.cssProperty, authoredValue: wiring.authoredValue, readOnlyReason: wiring.readOnlyReason,
-    scopeOptions: wiring.scopeOptions,
+    scopeOptions: wiring.scopeOptions, sourceScopeChoices: wiring.sourceScopeChoices,
+    selectedSourceScope: wiring.selectedSourceScope,
     commitMessage: wiring.commitMessage,
     commitRejected: wiring.commitRejected,
     onCommitValue: wiring.commit, onAsyncCommitValue: wiring.commitAsync)
@@ -1848,6 +1857,49 @@ proc mountPropertyRow*[R, E](r: R; parent: E;
     r.setAttribute(strip.root, "data-source-scope-count",
       $scopeOptionsThunk().len)
     r.appendChild(scopeSlot, strip.root)
+
+  # Shared edits expose their actual destination and mapped impact before the
+  # next value commit. This projection never plans or writes source itself.
+  if cfg.sourceScopeChoices != nil:
+    var impactText: E
+    let impact = ui(r):
+      tdiv(`data-property-source-impact` = cfg.cssProperty,
+           display = "none", width = "100%", min_width = "0",
+           box_sizing = "border-box",
+           padding = "4px 6px", border_radius = "4px",
+           background_color = "#171923", font_size = "10px",
+           line_height = "1.4", overflow_wrap = "anywhere"):
+        span(ref = impactText, white_space = "pre-line"): text ""
+    r.appendChild(root, impact)
+    let sourceScopes = cfg.sourceScopeChoices
+    let selectedScope = cfg.selectedSourceScope
+    createRenderEffect proc() =
+      let selected = if selectedScope != nil: selectedScope() else: none(SourceScopeChoice)
+      var descriptions: seq[string]
+      for choice in sourceScopes():
+        if choice.kind in {sskLocalInstance, sskStoryFixture}: continue
+        let active = selected.isSome and selected.get.kind == choice.kind
+        if not choice.editable and not active: continue
+        let owner = if choice.ownerLabel.len > 0: choice.ownerLabel else: choice.label
+        var location = choice.sourceFile
+        if location.len > 0 and choice.sourceLine > 0:
+          location.add ":" & $choice.sourceLine
+        if choice.schemaKey.len > 0:
+          if location.len > 0: location.add " · "
+          location.add choice.schemaKey
+        if location.len == 0: location = "Source mapping unavailable"
+        var uses = choice.affectedComponents
+        for story in choice.affectedStories:
+          let label = story.group & " / " & story.name
+          if label notin uses: uses.add label
+        let count = if choice.usageCount > 0: $choice.usageCount & " mapped uses"
+          else: "Usage count unavailable"
+        let mapped = if uses.len > 0: uses.join(", ") else: "Mapped uses unavailable"
+        descriptions.add choice.label & (if active: " (selected)" else: " (available)") &
+          " — " & owner & "\n" & location & "\n" & count & ": " & mapped &
+          "\nOther uses of this shared source may change."
+      r.setTextContent(impactText, descriptions.join("\n\n"))
+      r.setStyle(impact, "display", if descriptions.len > 0: "block" else: "none")
 
   # ------------------------------------------------------------------------- #
   #  Phase G+1: the refusal line.

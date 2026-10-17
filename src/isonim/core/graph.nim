@@ -116,16 +116,25 @@ proc cleanNode*(node: OwnerBase; dispose: bool = false) =
       comp.state = csClean
       comp.fn = nil
 
-  # Recursively clean owned computations
+  # An exceptional cleanup must not strand later child scopes or callbacks.
+  # Drain every established resource once, then propagate the first failure.
+  var firstCleanupError: ref Exception
   for child in node.owned:
-    cleanNode(child, dispose = true)
+    try:
+      cleanNode(child, dispose = true)
+    except Exception:
+      if firstCleanupError == nil: firstCleanupError = getCurrentException()
   node.owned.setLen(0)
   node.resourceStates.setLen(0)
 
-  # Run cleanup callbacks
   for cleanup in node.cleanups:
-    cleanup()
+    try:
+      cleanup()
+    except Exception:
+      if firstCleanupError == nil: firstCleanupError = getCurrentException()
   node.cleanups.setLen(0)
+  if firstCleanupError != nil:
+    raise firstCleanupError
 
 proc notifyObservers*(signal: SignalStateBase) =
   ## Marks all observers as stale. Called after a signal value changes.

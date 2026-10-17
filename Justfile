@@ -407,8 +407,14 @@ isonim-review-build:
 test-editor-source-metadata: isonim-review-build
     python3 tests/test_editor_source_metadata_transactions.py
 
+# Static browser metadata must not depend on the absolute checkout location.
+test-design-review-static-paths:
+    mkdir -p build/brief-index-paths
+    nim c --path:src --path:. --path:../nim-everywhere/src --hints:off -o:build/brief-index-paths/brief-index-build src/isonim/editor/design_review/brief_index_build.nim
+    python3 -B tests/test_design_review_static_brief_paths.py --baker build/brief-index-paths/brief-index-build --briefs "${ISONIM_BRIEFS:-../isonim-examples/briefs}"
+
 # Run REV-M1's design-review unit + integration tests.
-test-design-review: isonim-review-build
+test-design-review: isonim-review-build test-design-review-static-paths
     nim c -r tests/test_design_review_brief_format.nim
     nim c -r tests/test_design_review_brief_index.nim
     nim c -r tests/test_design_review_isonim_review_cli.nim
@@ -907,7 +913,7 @@ editor-screenshot-list:
     node tools/editor-screenshot.mjs --list
 
 # Run editor ViewModel tests
-test-editor: test-design-review-local-harbor test-design-review-harbor-build test-design-review-harbor-own-producer test-editor-control test-editor-source test-editor-chat-activity
+test-editor: test-design-review-local-harbor test-design-review-harbor-build test-design-review-harbor-own-producer test-editor-control test-editor-source test-editor-chat-activity test-editor-choice-group test-editor-agent-factory
     nim c -r tests/test_editor_workspace.nim
     nim c -r tests/test_editor_public_api.nim
     nim js --path:src -o:build/test_editor_public_browser_imports.js tests/test_editor_public_browser_imports.nim
@@ -1395,6 +1401,22 @@ test-editor-source: isonim-review-build source-editor-build
     python3 tests/test_editor_source_project.py
     python3 tests/test_editor_native_acp_shutdown.py
     node tests/test_editor_source_gui.mjs
+
+# Full native/JS ChoiceGroup ownership metadata and activation regressions.
+test-editor-choice-group:
+    mkdir -p build
+    nim c -r --out:build/test_editor_choice_group_vm tests/test_editor_choice_group_vm.nim
+    nim js -d:nodejs --out:build/test_editor_choice_group_vm.js tests/test_editor_choice_group_vm.nim
+    python3 tools/run_nim_js_test.py build/test_editor_choice_group_vm.js
+
+# Genuine shipping browser import closure with explicit test-owned chat composition.
+editor-agent-factory-build: build-tailwind
+    mkdir -p build/editor-agent-factory
+    nim js --path:src --path:. --path:../nim-everywhere/src --path:../isonim-render-serve/src --path:../nim-acp/src --path:../nim-agent-harbor/src --path:../nim-agents/src -o:build/editor-agent-factory/editor.js tests/helpers/editor_agent_factory_browser.nim
+    node --check build/editor-agent-factory/editor.js
+
+test-editor-agent-factory: editor-agent-factory-build
+    ISONIM_AGENT_FACTORY_CONTROL_BUNDLE="{{justfile_directory()}}/build/editor-agent-factory/editor.js" ISONIM_AGENT_FACTORY_PLAYWRIGHT="{{justfile_directory()}}/tests/browser/node_modules/playwright/index.mjs" "${ISONIM_SCENARIO_NODE:-node}" tests/test_editor_agent_factory_gui.mjs
 
 # Production mounted chat state/keyboard/layout verification, isolated assets.
 editor-chat-build:
