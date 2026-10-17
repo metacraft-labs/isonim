@@ -58,7 +58,13 @@ jobs:
 
       - name: Bind the checkout Git templates before entering the owning shell
         if: runner.os == 'Linux' || runner.os == 'macOS'
-        run: python3 nix/checkout-git-templates.py capture
+        run: |
+          checkout_git="$(command -v git)" || exit $?
+          case "$checkout_git" in /*) ;; *) exit 1 ;; esac
+          nix shell --inputs-from . nixpkgs#python3 --command "$BASH" -c '
+            test "$(command -v git)" = "$1" || exit 1
+            exec python3 nix/checkout-git-templates.py capture
+          ' isonim-checkout-capture "$checkout_git"
 
       # Mint a GitHub App installation token via the CI Token Provider
       # app so the reprobuild flake/sibling steps can clone private
