@@ -120,6 +120,76 @@ def load_checkout_templates(root, common):
                                           for name, row in package['templates'].items()}}
 
 
+def capture_failure_diagnostic(root, git_path):
+    # Observation only: unsupported Git is never executed or made an authority.
+    common = root / '.git'
+    info = common.lstat()
+    if not stat.S_ISDIR(info.st_mode) or common.is_symlink():
+        raise RuntimeError('Diagnostic common directory is not regular')
+    report = {'diagnosticOnly': True, 'scope': 'No receipt or additional hook authority',
+              'binding': job_binding(root, common), 'gitPath': str(git_path),
+              'entries': [], 'errors': [], 'truncated': False,
+              'limits': {'entries': 64, 'gitImageReadAllowanceBytes': 128 * 1024 * 1024, 'perFileReadAllowanceBytes': 1024 * 1024,
+                          'readOverrunAllowanceBytes': 65536,
+                          'totalHookReadAllowanceBytes': 8 * 1024 * 1024}}
+    try:
+        _, report['gitImage'] = read_regular(git_path, limit=128 * 1024 * 1024 - 65536)
+    except Exception as error:
+        report['errors'].append('Git image observation: ' + repr(error)[:512])
+    try:
+        head, identity = read_regular(common / 'HEAD', limit=256)
+        report['headFileIdentity'] = identity
+        value = head.decode('ascii').strip()
+        if re.fullmatch(r'[0-9a-f]{40}|[0-9a-f]{64}', value):
+            report['detachedHEAD'] = value
+            report['headMatchesEventRevision'] = value == report['binding']['job']['GITHUB_SHA']
+        else:
+            report['headStatus'] = 'Not a detached hexadecimal revision; bytes not retained'
+    except Exception as error:
+        report['errors'].append('HEAD observation: ' + repr(error)[:512])
+    hooks = common / 'hooks'
+    directory = hooks.lstat()
+    if not stat.S_ISDIR(directory.st_mode) or hooks.is_symlink():
+        raise RuntimeError('Diagnostic hook directory is not regular')
+    remaining = report['limits']['totalHookReadAllowanceBytes']
+    with os.scandir(hooks) as entries:
+        for count, entry in enumerate(entries):
+            if count == report['limits']['entries']:
+                report['truncated'] = True
+                break
+            row = {'name': entry.name[:256], 'nameTruncated': len(entry.name) > 256}
+            report['entries'].append(row)
+            try:
+                item = entry.stat(follow_symlinks=False)
+                row.update(type=stat.S_IFMT(item.st_mode), mode=stat.S_IMODE(item.st_mode),
+                            uid=item.st_uid, device=item.st_dev, inode=item.st_ino)
+                if not stat.S_ISREG(item.st_mode):
+                    row['readStatus'] = 'Nonregular entry observed only; never opened or followed'
+                    continue
+                # read_regular can consume one extra 64KiB chunk before refusing
+                # growth. Reserve that worst case BEFORE opening, never refund a
+                # failed read, and pass the observed size as the accepted limit.
+                reservation = item.st_size + report['limits']['readOverrunAllowanceBytes']
+                if reservation > min(report['limits']['perFileReadAllowanceBytes'], remaining):
+                    row['readStatus'] = 'File exceeds remaining diagnostic read allowance'
+                    report['truncated'] = True
+                    continue
+                remaining -= reservation
+                row['reservedReadAllowanceBytes'] = reservation
+                body, identity = read_regular(hooks / entry.name, limit=item.st_size)
+                row['heldRegularFileIdentity'] = identity
+                row['bytesRead'] = len(body)
+                # No hook body, config value or environment credential is emitted.
+            except Exception as error:
+                row['readError'] = repr(error)[:512]
+    after = hooks.lstat()
+    report['directoryChangedDuringObservation'] = (
+        directory.st_dev, directory.st_ino, directory.st_mtime_ns, directory.st_ctime_ns
+    ) != (after.st_dev, after.st_ino, after.st_mtime_ns, after.st_ctime_ns)
+    report['entries'].sort(key=lambda row: row['name'])
+    print('ISONIM_CHECKOUT_REFUSAL_DIAGNOSTIC ' + json.dumps(report, sort_keys=True), file=sys.stderr)
+
+
 def capture():
     if 'ISONIM_CHECKOUT_GIT_RECEIPT' in os.environ:
         raise RuntimeError('Inherited checkout-template receipt authority')
@@ -130,7 +200,14 @@ def capture():
     if not selected:
         raise RuntimeError('Checkout Git is absent')
     git_path = Path(selected).resolve(strict=True)
-    package = package_inventory(git_path)
+    try:
+        package = package_inventory(git_path)
+    except Exception as primary:
+        try:
+            capture_failure_diagnostic(root, git_path)
+        except Exception as secondary:
+            primary.add_note('Secondary checkout diagnostic failed: ' + repr(secondary)[:512])
+        raise
     def git(*args):
         return subprocess.check_output([str(git_path), '-C', str(root), *args]).decode().strip()
     if git('rev-parse', '--show-toplevel') != str(root):

@@ -197,7 +197,18 @@ def census():
         if path.name.endswith('.sample'):
             if (SAMPLES.get(path.name) != [mode, digest] and
                 (CHECKOUT_TEMPLATES is None or CHECKOUT_TEMPLATES['samples'].get(path.name) != [mode, digest])):
-                raise RuntimeError('Unknown selected Git sample body or mode: ' + path.name)
+                refusal = RuntimeError('Unknown selected Git sample body or mode: ' + path.name)
+                try:
+                    refusal.add_note('Sample mismatch observation: ' + repr({
+                        'name': path.name[:256], 'actual': [mode, digest],
+                        'selectedExpected': SAMPLES.get(path.name),
+                        'checkoutReceiptLoaded': CHECKOUT_TEMPLATES is not None,
+                        'checkoutExpected': None if CHECKOUT_TEMPLATES is None else CHECKOUT_TEMPLATES['samples'].get(path.name),
+                        'eventRevision': os.environ.get('GITHUB_SHA'),
+                    }))
+                except Exception as secondary:
+                    refusal.add_note('Secondary mismatch diagnostic failed: ' + type(secondary).__name__)
+                raise refusal
         else:
             known = set()
             if path.name in MANAGED:
