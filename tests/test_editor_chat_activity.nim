@@ -1,0 +1,838 @@
+## Production chat VM + pure reducer and safe block parser, native and JS.
+## Controlled admission closures substitute only external request dispatch to
+## force rejection or latch an unresolved turn. The generic-backend compatibility case uses the
+## real MockRenderer backend to prove production views need no browser globals;
+## actual DOM focus/selection is covered by the mounted GUI suite. EditorVM and
+## signals/reducer remain production code. The full public DTO corpus substitutes
+## external transport timing with protocol data, not a fake service. Its frames
+## traverse the real Harbor parser, safe projection, JSON codec, reducer and
+## generic renderer; official Rust scenario E2E is separately registered.
+## Code reading cases drive actual renderer buttons through streamed fenced code,
+## replacement/removal, independent timelines and disposal; MockRenderer substitutes
+## browser DOM only, and mounted tests separately prove geometry/keyboard behavior.
+## Long tool reading injects genuine public tool_use/tool_result DTO delivery,
+## through the real Harbor parser, projection, codec and reducer, including
+## crossing the excerpt boundary and updating code beyond it; full Details remains.
+## Footer cases use those same real parser/wire/reducer and renderer boundaries,
+## with only the admitted-flight latch controlled to distinguish public reports
+## from host completion. No provider answer, sign-in or cancellation is invented.
+import std/[unittest, strutils, tables, json, sets, sequtils]
+import nim_agents
+import nim_agents/[activity, activity_presentation]
+import isonim/viewmodel
+import isonim/core/[signals, computation, owner]
+import isonim/editor/[viewmodels, agent_harbor, control]
+import isonim/editor/design_review/editor_agent_adapter
+import isonim/editor/views/[chat_activity, chat_panel]
+import isonim/editor/views/chat_theme
+import isonim/testing/mock_dom
+
+const codeReadingScenarioText = staticRead("scenarios/chat-activity/code-reading.json")
+let codeReadingScenario = parseJson(codeReadingScenarioText)
+
+proc activityNode(node: MockNode; role: string): MockNode =
+  if node.attributes.getOrDefault("data-chat-role") == role: return node
+  for child in node.children:
+    result = activityNode(child, role)
+    if result != nil: return
+
+
+proc entryNode(node: MockNode; id: string): MockNode =
+  if node.attributes.getOrDefault("data-chat-entry") == id: return node
+  for child in node.children:
+    result = entryNode(child, id)
+    if result != nil: return
+
+proc markedNode(node: MockNode; name: string): MockNode =
+  if name in node.attributes: return node
+  for child in node.children:
+    result = markedNode(child, name)
+    if result != nil: return
+
+suite "Chat activity and composition":
+  test "fenced code reader uses exact live text and closes when its block changes":
+    createRoot proc(dispose: proc()) =
+      let vm = createEditorVM()
+      let r = MockRenderer()
+      let host = r.createElement("div")
+      vm.chat.applyAgentEvent(agentEventFromJson(codeReadingScenario["streaming"]["open"]))
+      r.renderActivityTimeline(host, vm.chat)
+      let trigger = markedNode(host, "data-chat-code-expand")
+      let overlay = markedNode(host, "data-chat-code-reader")
+      let content = markedNode(host, "data-chat-code-expanded-text")
+      let close = markedNode(host, "data-chat-code-close")
+      check trigger != nil
+      check trigger.styles["display"] == "inline-block"
+      trigger.fireEvent("click")
+      check overlay.styles["display"] == "flex"
+      check content.textContent == "\nlet safe = \"<script>保持😀\"\n\n"
+      check r.activeElement() == close
+      vm.chat.applyAgentEvent(agentEventFromJson(codeReadingScenario["streaming"]["append"]))
+      check content.textContent == "\nlet safe = \"<script>保持😀\"\n\necho safe"
+      check r.activeElement() == close
+      close.fireEvent("click")
+      check overlay.styles["display"] == "none"
+      check content.textContent == ""
+      check r.activeElement() == trigger
+      check trigger.attributes["aria-expanded"] == "false"
+      trigger.fireEvent("click")
+      var state = vm.chat.activity.val
+      state.entries[0].text = codeReadingScenario["replacement"]["prose"].getStr()
+      vm.chat.activity.val = state
+      check overlay.styles["display"] == "none"
+      check markedNode(host, "data-chat-code-expand") == nil
+      trigger.fireEvent("click")
+      check overlay.styles["display"] == "none"
+      dispose()
+      trigger.fireEvent("click")
+      close.fireEvent("click")
+      check markedNode(host, "data-chat-code-reader") == nil
+
+  test "multiple fenced blocks keep distinct real trigger bindings after reconciliation":
+    createRoot proc(dispose: proc()) =
+      let vm = createEditorVM()
+      let r = MockRenderer()
+      let host = r.createElement("div")
+      vm.chat.applyAgentEvent(agentEventFromJson(codeReadingScenario["multiple"]["event"]))
+      r.renderActivityTimeline(host, vm.chat)
+      let row = activityNode(host, "arAssistant")
+      var triggers: seq[MockNode]
+      proc collect(node: MockNode) =
+        if "data-chat-code-expand" in node.attributes: triggers.add node
+        for child in node.children: collect(child)
+      collect(row)
+      check triggers.len == 2
+      triggers[0].fireEvent("click")
+      check markedNode(host, "data-chat-code-expanded-text").textContent == "\nlet safe = \"<script>保持😀\"\n\necho safe"
+      check markedNode(host, "data-chat-code-reader").attributes["data-chat-code-language"] == "nim"
+      markedNode(host, "data-chat-code-close").fireEvent("click")
+      triggers[1].fireEvent("click")
+      check markedNode(host, "data-chat-code-expanded-text").textContent == "echo second"
+      check markedNode(host, "data-chat-code-reader").attributes["data-chat-code-language"] == "sh"
+      var state = vm.chat.activity.val
+      state.entries[0].text = codeReadingScenario["replacement"]["prose"].getStr()
+      vm.chat.activity.val = state
+      check markedNode(host, "data-chat-code-expand") == nil
+      state.entries[0].text = codeReadingScenario["replacement"]["code"].getStr()
+      vm.chat.activity.val = state
+      triggers[0].fireEvent("click")
+      check markedNode(host, "data-chat-code-reader").styles["display"] == "none"
+      let fresh = markedNode(host, "data-chat-code-expand")
+      check fresh != nil
+      fresh.fireEvent("click")
+      check markedNode(host, "data-chat-code-expanded-text").textContent == "restored code"
+      dispose()
+
+  test "code readers remain isolated through entry removal and disposed remounts":
+    for iteration in 0 ..< 4:
+      createRoot proc(dispose: proc()) =
+        let vm = createEditorVM()
+        let r = MockRenderer()
+        let first = r.createElement("div")
+        let second = r.createElement("div")
+        let original = vm.chat
+        original.applyAgentEvent(AgentEvent(kind: aekMessageChunk, text: "```nim\nfirst code\n```"))
+        r.renderActivityTimeline(first, original)
+        discard vm.createNewChat()
+        vm.chat.applyAgentEvent(AgentEvent(kind: aekMessageChunk, text: "```nim\nsecond code\n```"))
+        r.renderActivityTimeline(second, vm.chat)
+        let firstTrigger = markedNode(first, "data-chat-code-expand")
+        let secondTrigger = markedNode(second, "data-chat-code-expand")
+        firstTrigger.fireEvent("click")
+        secondTrigger.fireEvent("click")
+        check markedNode(first, "data-chat-code-expanded-text").textContent == "first code"
+        check markedNode(second, "data-chat-code-expanded-text").textContent == "second code"
+        var state = original.activity.val
+        state.entries.setLen(0)
+        original.activity.val = state
+        check markedNode(first, "data-chat-code-reader").styles["display"] == "none"
+        check markedNode(second, "data-chat-code-reader").styles["display"] == "flex"
+        firstTrigger.fireEvent("click")
+        check markedNode(first, "data-chat-code-reader").styles["display"] == "none"
+        dispose()
+        firstTrigger.fireEvent("click")
+        secondTrigger.fireEvent("click")
+        check first.children.len == 0 or markedNode(first, "data-chat-code-reader") == nil
+        check markedNode(second, "data-chat-code-reader") == nil
+
+  test "public long tool code stays complete across excerpt growth and late tail updates":
+    createRoot proc(dispose: proc()) =
+      let vm = createEditorVM()
+      let r = MockRenderer()
+      let host = r.createElement("div")
+      let scenario = codeReadingScenario["publicTool"]
+      proc feed(key: string) =
+        let projected = harborEventToAgentEvent("complete-code-session", eventFromJson(scenario[key]))
+        vm.chat.applyAgentEvent(agentEventFromJson(projected.toJson()))
+      feed("use")
+      feed("short")
+      r.renderActivityTimeline(host, vm.chat)
+      check vm.chat.activity.val.entries.len == 1
+      let row = activityNode(host, "arActivity")
+      var buttons: seq[MockNode]
+      proc collect(node: MockNode) =
+        if "data-chat-code-expand" in node.attributes: buttons.add node
+        for child in node.children: collect(child)
+      collect(row)
+      check buttons.len == 2
+      let first = buttons[0]
+      let second = buttons[1]
+      let overlay = markedNode(host, "data-chat-code-reader")
+      let content = markedNode(host, "data-chat-code-expanded-text")
+      let close = markedNode(host, "data-chat-code-close")
+      first.fireEvent("click")
+      check content.textContent == "echo \"short start\""
+      feed("long")
+      check vm.chat.activity.val.entries.len == 1
+      check content.textContent == scenario["expectedFirst"].getStr()
+      check content.textContent.endsWith("echo \"FINAL tool line 23 beyond excerpt\"")
+      check overlay.attributes["data-chat-code-language"] == "nim"
+      check r.activeElement() == close
+      let compact = markedNode(row, "data-chat-markdown")
+      check compact.textContent == "Tool output follows."
+      var excerpt = ""
+      for node in first.parent.children:
+        if node.attributes.getOrDefault("data-chat-markdown") == "code" and node.styles.getOrDefault("display") == "block": excerpt = node.textContent
+      check excerpt.endsWith("…")
+      check excerpt.len < 240
+      check not excerpt.contains("FINAL tool line 23")
+      let details = markedNode(row, "data-chat-detail")
+      check details.textContent.contains(scenario["long"]["tool_output"].getStr())
+      check second.parent.tag == "details"
+      check second.textContent == "Expand code block 2 · sh"
+      feed("update")
+      check content.textContent == scenario["expectedUpdated"].getStr()
+      check content.textContent.endsWith("echo \"UPDATED final tool line 23 beyond excerpt\"")
+      check r.activeElement() == close
+      check details.textContent.contains(scenario["update"]["tool_output"].getStr())
+      close.fireEvent("click")
+      check r.activeElement() == first
+      second.fireEvent("click")
+      check content.textContent == "printf '<img src=x onerror=alert(1)> Ω'\necho SECOND final block"
+      check overlay.attributes["data-chat-code-language"] == "sh"
+      close.fireEvent("click")
+      check r.activeElement() == second
+      first.fireEvent("click")
+      check content.textContent == scenario["expectedUpdated"].getStr()
+      dispose()
+      first.fireEvent("click")
+      second.fireEvent("click")
+      check markedNode(host, "data-chat-code-reader") == nil
+
+  test "chat content fills the rail without a second width binding":
+    createRoot proc(dispose: proc()) =
+      let vm = createEditorVM()
+      let panel = renderChatPanel[MockRenderer, MockNode](MockRenderer(), vm)
+      for width in [200, 240, 320, 420]:
+        vm.setRightPanelWidth(width)
+        check vm.rightPanelWidth.val == width
+        check panel.styles.getOrDefault("width") == "100%"
+        check panel.styles.getOrDefault("min-width") == "0"
+        check panel.styles.getOrDefault("max-width") == "100%"
+        check panel.styles.getOrDefault("flex") == "1"
+        check "flex-basis" notin panel.styles
+        check "data-right-panel-width" notin panel.attributes
+      dispose()
+
+  test "rendered admission tracks flight and closure even when activity already looks ready":
+    createRoot proc(dispose: proc()) =
+      let vm = createEditorVM()
+      var dispatched: seq[string]
+      vm.chat.configureAgentAdapters(proc(prompt: string; context: AgentPromptContext): bool =
+        dispatched.add prompt
+        vm.chat.promptInFlight = true
+        true, nil)
+      vm.chat.asyncAgentAdapter = true
+      vm.chat.inputText.val = "exact next draft"
+      vm.chat.promptInFlight = true
+      vm.chat.sessionStatus.val = asReady
+      let panel = renderChatPanel[MockRenderer, MockNode](MockRenderer(), vm)
+      proc send(node: MockNode): MockNode =
+        if node.attributes.getOrDefault("aria-label") == "Send agent prompt": return node
+        for child in node.children:
+          result = send(child)
+          if result != nil: return
+      let control = send(panel)
+      check control != nil
+      check control.attributes.getOrDefault("aria-disabled") == "true"
+      check not vm.sendAgentPrompt()
+      check dispatched.len == 0
+      check vm.chat.inputText.val == "exact next draft"
+      vm.chat.promptInFlight = false
+      check control.attributes.getOrDefault("aria-disabled") == "false"
+      vm.chat.closingSession = true
+      check control.attributes.getOrDefault("aria-disabled") == "true"
+      check not vm.sendAgentPrompt()
+      vm.chat.closingSession = false
+      check control.attributes.getOrDefault("aria-disabled") == "false"
+      check vm.sendAgentPrompt()
+      check dispatched == @["exact next draft"]
+      vm.chat.inputText.val = "newer unsent draft"
+      vm.chat.applyAgentEvent(AgentEvent(kind: aekCompleted, stopReason: srEndTurn))
+      check control.attributes.getOrDefault("aria-disabled") == "true"
+      vm.chat.sessionStatus.val = asError
+      check control.attributes.getOrDefault("aria-disabled") == "true"
+      check not vm.sendAgentPrompt()
+      check vm.chat.inputText.val == "newer unsent draft"
+      check dispatched.len == 1
+      dispose()
+  test "attempted missing-adapter send dismisses guidance and preserves retry draft":
+    createRoot proc(dispose: proc()) =
+      let vm = createEditorVM()
+      vm.chat.inputText.val = "draft to retry"
+      check not vm.sendAgentPrompt()
+      check vm.chat.placeholdersDismissed.val
+      check vm.chat.inputText.val == "draft to retry"
+      let first = vm.activeChatId.val
+      discard vm.createNewChat()
+      check not vm.chat.placeholdersDismissed.val
+      vm.chat.inputText.val = "different draft"
+      discard vm.switchToChat(first)
+      check vm.chat.inputText.val == "draft to retry"
+      check vm.chat.placeholdersDismissed.val
+      dispose()
+  test "rejected and busy sends preserve drafts and attempted state":
+    createRoot proc(dispose: proc()) =
+      let vm = createEditorVM()
+      vm.chat.configureAgentAdapters(proc(prompt: string; context: AgentPromptContext): bool = false, nil)
+      vm.chat.inputText.val = "rejected"
+      check not vm.sendAgentPrompt()
+      check vm.chat.inputText.val == "rejected"
+      vm.chat.asyncAgentAdapter = true
+      vm.chat.promptInFlight = true
+      vm.chat.inputText.val = "next draft"
+      check not vm.sendAgentPrompt()
+      check vm.chat.inputText.val == "next draft"
+      check vm.chat.placeholdersDismissed.val
+      dispose()
+  test "streaming chunks form an assistant turn while local input stays distinct":
+    createRoot proc(dispose: proc()) =
+      let vm = createEditorVM()
+      vm.chat.addUserMessage("hello")
+      vm.chat.applyAgentEvent(AgentEvent(kind: aekMessageChunk, text: "First "))
+      vm.chat.applyAgentEvent(AgentEvent(kind: aekMessageChunk, text: "second"))
+      vm.chat.inputText.val = "next draft"
+      vm.chat.applyAgentEvent(AgentEvent(kind: aekToolCall, toolCallId: "t", toolName: "build", status: "running"))
+      check vm.chat.activity.val.entries.len == 3
+      check vm.chat.activity.val.entries[1].text == "First second"
+      check vm.chat.inputText.val == "next draft"
+      dispose()
+  test "safe Markdown keeps lists code and headings without interpreting HTML":
+    let blocks = chatMarkdownBlocks("# Title\n- first\n- second\n```nim\nlet value = \"<script>\"\n```\n<script>alert(1)</script>")
+    check blocks.len == 5
+    check blocks[0].kind == "heading"
+    check blocks[1].kind == "list"
+    check blocks[3].kind == "code"
+    check blocks[3].language == "nim"
+    check blocks[4].text == "<script>alert(1)</script>"
+  test "full REST wait login and lifecycle types have purposeful host presentations":
+    for source in ["session_started", "session_awaiting_input", "session_resumed",
+        "session_ended", "proxy_credential_rotated", "proxy_rate_limit_absorbed",
+        "dispatcher_restarted", "anti_halting_resume_confirmed", "session_leadership_migrated",
+        "participant", "context_injection", "fleet_host", "fleet_fence", "orchestration",
+        "delegation", "file_read", "link_spans", "login_required", "context_files", "agent_question"]:
+      createRoot proc(dispose: proc()) =
+        let vm = createEditorVM()
+        vm.chat.applyAgentEvent(AgentEvent(kind: aekStatus, sourceType: source, text: "actual content"))
+        check activityTitle(vm.chat.activity.val.entries[0]) != "Activity"
+        dispose()
+
+  test "replayed durable events cannot duplicate transcript or source edit context":
+    createRoot proc(dispose: proc()) =
+      let vm = createEditorVM()
+      let edit = AgentEvent(sessionId: "s", eventId: "12", kind: aekFileEdit,
+        filePath: "stories.nim", linesAdded: 2)
+      vm.chat.applyAgentEvent(edit)
+      vm.chat.applyAgentEvent(edit)
+      check vm.chat.accumulatedEdits.val.len == 1
+      let message = AgentEvent(sessionId: "s", eventId: "13", kind: aekMessageChunk, text: "once")
+      vm.chat.applyAgentEvent(message)
+      vm.chat.applyAgentEvent(message)
+      check vm.chat.messages.val.len == 2
+      check vm.chat.activity.val.entries.len == 2
+      dispose()
+
+  test "generic chat renderer under JS requires no browser globals":
+    when defined(js):
+      var noBrowserGlobals = false
+      {.emit: [noBrowserGlobals, " = typeof document === 'undefined' && typeof window === 'undefined';"].}
+      check noBrowserGlobals
+    createRoot proc(dispose: proc()) =
+      let vm = createEditorVM()
+      vm.chat.addUserMessage("generic user prompt")
+      vm.chat.inputText.val = "retained next draft"
+      vm.chat.applyAgentEvent(AgentEvent(kind: aekMessageChunk, text: "partial"))
+      let panel = renderChatPanel[MockRenderer, MockNode](MockRenderer(), vm)
+      let user = activityNode(panel, "arUser")
+      check user != nil
+      check user.textContent.contains("generic user prompt")
+      vm.chat.applyAgentEvent(AgentEvent(kind: aekMessageChunk, text: " completed"))
+      let assistant = activityNode(panel, "arAssistant")
+      check assistant != nil
+      check assistant.textContent.contains("partial completed")
+      check vm.chat.inputText.val == "retained next draft"
+      dispose()
+
+# DTO corpus is intentional boundary data, not an emulated Harbor service. Every
+# frame traverses the real public parser, safe projection, wire codec, reducer and
+# generic renderer; official Rust scenario E2E remains separately registered.
+suite "Full public Harbor event presentation":
+  test "actual file edit description and reported running status render without changing admission":
+    const corpusText = staticRead("scenarios/chat-activity/public-session-events.json")
+    let corpus = parseJson(corpusText)
+    createRoot proc(dispose: proc()) =
+      let vm = createEditorVM()
+      vm.chat.inputText.val = "Retained next draft"
+      vm.chat.asyncAgentAdapter = true
+      vm.chat.promptInFlight = true
+      let admitted = vm.chat.promptAdmitted
+      let panel = renderChatPanel[MockRenderer, MockNode](MockRenderer(), vm)
+      proc matching(node: MockNode; attribute, value: string): seq[MockNode] =
+        var pending = @[node]
+        while pending.len > 0:
+          let child = pending.pop()
+          if child.attributes.getOrDefault(attribute) == value: result.add child
+          for nested in child.children: pending.add nested
+      proc textContent(node: MockNode): string =
+        var pending = @[node]
+        while pending.len > 0:
+          let child = pending.pop()
+          result.add child.text
+          for nested in child.children: pending.add nested
+      let fileEvent = agentEventFromJson(harborEventToAgentEvent("s",
+        eventFromJson(corpus["scenes"]["files"][0])).toJson())
+      check fileEvent.text == "Use shared spacing and preserve the title."
+      vm.chat.applyAgentEvent(fileEvent)
+      let fileEntry = vm.chat.activity.val.entries[^1]
+      let fileNode = entryNode(panel, fileEntry.id)
+      let prose = matching(fileNode, "data-chat-markdown", "paragraph")
+      check prose.len == 1
+      check textContent(prose[0]) == "Use shared spacing and preserve the title."
+      check prose[0].parent.parent == fileNode
+      check prose[0].styles.getOrDefault("display") != "none"
+      check matching(fileNode, "data-chat-fact", "File").len == 1
+      check matching(fileNode, "data-chat-fact", "Changes").len == 1
+      check textContent(fileNode).contains("stories/hero.nim")
+      check textContent(fileNode).contains("+4 / −2 lines")
+      let details = fileNode.children.filterIt(it.tag == "details")
+      check details.len == 1
+      check not details[0].attributes.hasKey("open")
+      let running = agentEventFromJson(harborEventToAgentEvent("s",
+        eventFromJson(corpus["scenes"]["error"][0])).toJson())
+      check running.state == acsStreaming
+      vm.chat.applyAgentEvent(running)
+      let sessionEntry = vm.chat.activity.val.entries[^1]
+      check sessionEntry.status == "streaming"
+      check sessionEntry.data.status == "running"
+      check vm.chat.connectionState.val == "streaming"
+      check vm.chat.sessionStatus.val == asLoading
+      let sessionNode = entryNode(panel, sessionEntry.id)
+      let badge = matching(sessionNode, "data-chat-activity-status", "true")
+      check badge.len == 1
+      check textContent(badge[0]) == "running"
+      check badge[0].styles.getOrDefault("display") == "inline-block"
+      let revision = vm.chat.activity.val.revision
+      vm.chat.applyAgentEvent(running)
+      check vm.chat.activity.val.revision == revision
+      check vm.chat.promptInFlight
+      check vm.chat.promptAdmitted == admitted
+      check not vm.sendAgentPrompt()
+      check vm.chat.inputText.val == "Retained next draft"
+      check vm.chat.accumulatedEdits.val.len == 1
+      dispose()
+
+  test "every public question mode preserves content without unsupported answer controls":
+    const questionCorpusText = staticRead("scenarios/chat-activity/public-session-events.json")
+    let corpus = parseJson(questionCorpusText)
+    var modes = initHashSet[string]()
+    for name in ["question", "question-free-form", "question-multi-choice", "question-confirmation"]:
+      createRoot proc(dispose: proc()) =
+        let vm = createEditorVM()
+        vm.chat.inputText.val = "Retained next draft"
+        let payload = corpus["scenes"][name][0]
+        let decoded = agentEventFromJson(harborEventToAgentEvent("question-session", eventFromJson(payload)).toJson())
+        vm.chat.applyAgentEvent(decoded)
+        modes.incl payload["kind"].getStr()
+        let entry = vm.chat.activity.val.entries[^1]
+        let presentation = activityPresentation(entry)
+        check entry.data.question == payload["prompt"].getStr()
+        check presentation.facts.anyIt(it.value == payload["kind"].getStr())
+        check presentation.facts.anyIt(it.value == payload["request"].getStr())
+        for option in payload["options"]:
+          check presentation.facts.anyIt(it.label == "Choice" and it.value == option["label"].getStr())
+        let panel = renderChatPanel[MockRenderer, MockNode](MockRenderer(), vm)
+        let node = entryNode(panel, entry.id)
+        check activityDetail(entry).contains("This editor cannot answer this request.")
+        let notice = node.children.filterIt(it.attributes.getOrDefault("data-chat-availability") == "true")
+        check notice.len == 1
+        check notice[0].parent == node
+        check notice[0].tag == "p"
+        check notice[0].children.len == 1
+        check notice[0].children[0].text == "This editor cannot answer this request."
+        check notice[0].styles.getOrDefault("display") == "block"
+        let details = node.children.filterIt(it.tag == "details")
+        check details.len == 1
+        check not details[0].attributes.hasKey("open")
+        check activityDetail(entry).contains(payload["request"].getStr())
+        proc noAnswerControls(child: MockNode) =
+          check child.tag notin ["button", "input", "textarea", "select"]
+          for nested in child.children: noAnswerControls(nested)
+        noAnswerControls(node)
+        check vm.chat.inputText.val == "Retained next draft"
+        dispose()
+    check modes == ["free_form", "single_choice", "multi_choice", "confirmation"].toHashSet()
+
+  test "waiting-only request exposes truthful availability without changing admission":
+    const corpusText = staticRead("scenarios/chat-activity/public-session-events.json")
+    let payload = parseJson(corpusText)["scenes"]["login"][1]
+    createRoot proc(dispose: proc()) =
+      let vm = createEditorVM()
+      vm.chat.addUserMessage("Help build this page")
+      vm.chat.applyAgentEvent(AgentEvent(sessionId: "waiting-session", eventId: "edit", kind: aekFileEdit,
+        filePath: "stories.nim", linesAdded: 2))
+      vm.chat.inputText.val = "Retained waiting draft"
+      vm.chat.promptInFlight = true
+      vm.chat.promptAdmitted = true
+      vm.chat.sessionStatus.val = asLoading
+      vm.chat.connectionState.val = "streaming"
+      let edits = vm.chat.accumulatedEdits.val
+      let decoded = agentEventFromSseJson(harborEventToAgentEvent("waiting-session",
+        eventFromJson(payload)).toJson())
+      vm.chat.applyAgentEvent(decoded)
+      let entry = vm.chat.activity.val.entries[^1]
+      check entry.data.sourceType == "session_awaiting_input"
+      check entry.data.question.len == 0
+      check activityTitle(entry) == "Waiting for input"
+      check activityPresentation(entry).facts.anyIt(it.label == "Request" and it.value == payload["request"].getStr())
+      let panel = renderChatPanel[MockRenderer, MockNode](MockRenderer(), vm)
+      let node = entryNode(panel, entry.id)
+      let notice = node.children.filterIt(it.attributes.getOrDefault("data-chat-availability") == "true")
+      check notice.len == 1
+      check notice[0].parent == node
+      check notice[0].tag == "p"
+      check notice[0].textContent == "Waiting for input. This editor cannot respond to this request."
+      check notice[0].styles.getOrDefault("display") == "block"
+      let details = node.children.filterIt(it.tag == "details")
+      check details.len == 1
+      check not details[0].attributes.hasKey("open")
+      check activityDetail(entry).contains(payload["request"].getStr())
+      var pending = @[node]
+      while pending.len > 0:
+        let child = pending.pop()
+        check child.tag notin ["button", "input", "textarea", "select", "a"]
+        for nested in child.children: pending.add nested
+      check not vm.sendAgentPrompt()
+      check vm.chat.promptInFlight
+      check vm.chat.promptAdmitted
+      check vm.chat.sessionStatus.val == asLoading
+      check vm.chat.connectionState.val == "streaming"
+      check vm.chat.inputText.val == "Retained waiting draft"
+      check vm.chat.accumulatedEdits.val == edits
+      dispose()
+
+  test "login recovery stays visible before details with correlated request availability":
+    const corpusText = staticRead("scenarios/chat-activity/public-session-events.json")
+    let payload = parseJson(corpusText)["scenes"]["login"][0]
+    for correlated in [false, true]:
+      createRoot proc(dispose: proc()) =
+        let vm = createEditorVM()
+        vm.chat.inputText.val = "Retained login draft"
+        var decoded = agentEventFromJson(harborEventToAgentEvent("login-session", eventFromJson(payload)).toJson())
+        if correlated: decoded.question = "Provider authentication request"
+        vm.chat.applyAgentEvent(decoded)
+        let entry = vm.chat.activity.val.entries[^1]
+        let panel = renderChatPanel[MockRenderer, MockNode](MockRenderer(), vm)
+        let node = entryNode(panel, entry.id)
+        let notice = node.children.filterIt(it.attributes.getOrDefault("data-chat-availability") == "true")
+        check notice.len == 1
+        check notice[0].parent == node
+        check notice[0].styles.getOrDefault("display") == "block"
+        check notice[0].children[0].text.contains("Open the matching LOGIN REQUIRED card in Agent Harbor WebUI task details or Inbox, if available. This editor cannot open sign-in. If you cannot access Harbor, ask this editor's operator to open the request.")
+        check notice[0].children[0].text.contains("This editor cannot answer this request.") == correlated
+        let details = node.children.filterIt(it.tag == "details")
+        check details.len == 1
+        check not details[0].attributes.hasKey("open")
+        var pending = @[node]
+        while pending.len > 0:
+          let child = pending.pop()
+          check child.tag notin ["button", "input", "textarea", "select", "a"]
+          for nested in child.children: pending.add nested
+        check vm.chat.inputText.val == "Retained login draft"
+        dispose()
+
+  test "all 34 public discriminators traverse safe production presentation":
+    const corpusText = staticRead("scenarios/chat-activity/public-session-events.json")
+    let corpus = parseJson(corpusText)
+    var sources = initHashSet[string]()
+    for name, events in corpus["scenes"]:
+      createRoot proc(dispose: proc()) =
+        let vm = createEditorVM()
+        vm.chat.addUserMessage("Improve the hero spacing.")
+        for payload in events.items:
+          sources.incl payload["type"].getStr()
+          # Unknown/private fields are projection negative controls, separate
+          # from the production-serialized public DTO corpus.
+          let contaminated = parseJson($payload)
+          contaminated["config"] = %*{"token": "PRIVATE_CAMPAIGN_SECRET"}
+          if contaminated["type"].getStr() == "tool_use":
+            contaminated["tool_args"] = %*{"token": "PRIVATE_CAMPAIGN_SECRET", "path": "stories/hero.nim"}
+          let privateProjection = harborEventToAgentEvent("presentation-session", eventFromJson(contaminated))
+          check not ($privateProjection.toJson()).contains("PRIVATE_CAMPAIGN_SECRET")
+          # Backend-local raw diagnostics remain before safe serialization;
+          # the wire excludes private bytes and the timeline drops raw entirely.
+          let privateDecoded = agentEventFromJson(privateProjection.toJson())
+          check not ($privateDecoded.raw).contains("PRIVATE_CAMPAIGN_SECRET")
+          var privateTimeline: ActivityTimeline
+          discard privateTimeline.reduce(privateDecoded)
+          for entry in privateTimeline.entries: check entry.data.raw == nil
+          let projected = harborEventToAgentEvent("presentation-session", eventFromJson(payload))
+          let wire = projected.toJson()
+          check not ($wire).contains("PRIVATE_CAMPAIGN_SECRET")
+          let decoded = agentEventFromJson(wire)
+          # Inventory is checked after the real projection/codec, not merely
+          # counted from incoming frames. Local user acknowledgement and
+          # assistant/thought chunks intentionally coalesce in the timeline.
+          check decoded.sourceType == payload["type"].getStr()
+          vm.chat.applyAgentEvent(decoded)
+          let rendered = renderChatPanel[MockRenderer, MockNode](MockRenderer(), vm)
+          proc textTree(node: MockNode): string =
+            result = node.textContent
+            for child in node.children: result.add "\n" & textTree(child)
+          let text = textTree(rendered)
+          for field in decoded.presentationFields:
+            check text.contains(field.value.replace("_", " ")) or text.contains(field.value)
+          if decoded.filePath.len > 0: check text.contains(decoded.filePath)
+          if decoded.model.len > 0: check text.contains(decoded.model)
+          if decoded.question.len > 0: check text.contains(decoded.question)
+          if decoded.toolName.len > 0: check text.contains(decoded.toolName)
+          if decoded.kind in {aekToolCall, aekToolCallUpdate}:
+            check vm.chat.activity.val.entries[^1].status == decoded.status
+            check vm.chat.activity.val.entries[^1].data.sourceType == decoded.sourceType
+            let tool = entryNode(rendered, vm.chat.activity.val.entries[^1].id)
+            check tool != nil
+            let expectedColor = if decoded.status == "started": gold
+              elif decoded.status == "completed": green else: errorAccent
+            check tool.styles.getOrDefault("border-left-color") == expectedColor
+
+        let panel = renderChatPanel[MockRenderer, MockNode](MockRenderer(), vm)
+        check panel != nil
+        for entry in vm.chat.activity.val.entries:
+          check entry.data.raw == nil
+          let presentation = activityPresentation(entry)
+          check presentation.surface.len > 0
+          if entry.kind == aekPlan:
+            check presentation.facts.len == 3
+            check presentation.facts[0].label == "completed"
+            check presentation.facts[1].tone == "attention"
+          if entry.kind == aekLlmRequest:
+            check presentation.facts.anyIt(it.label == "Input tokens" and it.value == "1260")
+            check presentation.facts.anyIt(it.label == "Output tokens" and it.value == "180")
+          if entry.data.sourceType == "agent_question":
+            check presentation.tone == "attention"
+            if name == "question":
+              check presentation.facts.anyIt(it.label == "Choice" and it.value == "Comfortable")
+          if entry.data.sourceType == "file_read":
+            check presentation.facts.anyIt(it.label == "From line" and it.value == "8")
+          if entry.data.sourceType == "diff":
+            check presentation.facts.anyIt(it.label == "Before" and it.value.contains("16px"))
+            check presentation.facts.anyIt(it.label == "After" and it.value.contains("32px"))
+          if name == "completed" and entry.role == arAssistant:
+            check entry.status == "completed"
+          if name == "conversation" and entry.kind == aekThoughtChunk:
+            check entry.status == "streaming"
+        dispose()
+    check sources.len == 34
+    for source in ["status", "log", "error", "thought", "tool_use", "tool_result",
+        "file_edit", "file_read", "diff", "user_input", "plan", "turn_complete",
+        "workspace", "sub_agent", "delegation", "orchestration", "llm_request",
+        "context_files", "fleet_fence", "fleet_host", "session_started",
+        "session_awaiting_input", "session_resumed", "session_ended",
+        "proxy_credential_rotated", "proxy_rate_limit_absorbed", "dispatcher_restarted",
+        "anti_halting_resume_confirmed", "session_leadership_migrated", "agent_question",
+        "participant", "context_injection", "login_required", "link_spans"]:
+      check source in sources
+
+  test "normalized common tool states and settled thoughts remain distinct from REST DTOs":
+    const corpusText = staticRead("scenarios/chat-activity/public-session-events.json")
+    let corpus = parseJson(corpusText)
+    for name, events in corpus["normalizedScenes"]:
+      createRoot proc(dispose: proc()) =
+        let vm = createEditorVM()
+        vm.chat.addUserMessage("Inspect the hero")
+        for payload in events.items:
+          vm.chat.applyAgentEvent(agentEventFromJson(payload))
+        if name == "tool-waiting": check vm.chat.activity.val.entries[^1].status == "pending"
+        if name == "tool-running": check vm.chat.activity.val.entries[^1].status == "running"
+        if name in ["tool-waiting", "tool-running"]:
+          let panel = renderChatPanel[MockRenderer, MockNode](MockRenderer(), vm)
+          let tool = entryNode(panel, vm.chat.activity.val.entries[^1].id)
+          check tool != nil
+          check tool.styles.getOrDefault("border-left-color") == gold
+        if name == "thought-settled":
+          check vm.chat.activity.val.entries[1].kind == aekThoughtChunk
+          check vm.chat.activity.val.entries[1].status == "completed"
+        dispose()
+
+  test "footer distinguishes provider reports from the still admitted reply":
+    createRoot proc(dispose: proc()) =
+      let vm = createEditorVM()
+      let panel = renderChatPanel[MockRenderer, MockNode](MockRenderer(), vm)
+      proc findStatus(node: MockNode): MockNode =
+        if node.attributes.getOrDefault("data-chat-session-status") == "true": return node
+        for child in node.children:
+          result = findStatus(child)
+          if result != nil: return
+      let footer = findStatus(panel)
+      check footer != nil
+      check footer.textContent == "Start a conversation"
+      vm.chat.addUserMessage("Help build this page")
+      vm.chat.promptInFlight = true
+      vm.chat.promptAdmitted = true
+      vm.chat.sessionStatus.val = asLoading
+      vm.chat.connectionState.val = "streaming"
+      vm.chat.inputText.val = "Preserved next draft"
+      check footer.textContent == "Working"
+      proc feed(payload: JsonNode) =
+        vm.chat.applyAgentEvent(agentEventFromSseJson(harborEventToAgentEvent("s",
+          eventFromJson(payload)).toJson()))
+      feed(%*{"type": "agent_question", "kind": "free_form", "prompt": "Which page?", "request": "q"})
+      check footer.textContent == "Waiting for input\nReply still open"
+      feed(%*{"type": "login_required", "provider": "anthropic", "request": "login"})
+      feed(%*{"type": "session_awaiting_input", "request": "login"})
+      check footer.textContent == "Sign-in required\nReply still open"
+      feed(%*{"type": "session_ended", "outcome": "completed", "eventId": "end"})
+      check footer.textContent == "Agent reported completion\nReply still open"
+      feed(%*{"type": "session_ended", "outcome": "completed", "eventId": "end"})
+      check footer.textContent == "Agent reported completion\nReply still open"
+      check vm.chat.promptInFlight
+      check vm.chat.promptAdmitted
+      check vm.chat.connectionState.val == "streaming"
+      check vm.chat.sessionStatus.val == asLoading
+      check vm.chat.inputText.val == "Preserved next draft"
+      feed(%*{"type": "session_resumed", "deliverer": "human"})
+      check footer.textContent == "Working"
+      vm.chat.applyAgentEvent(AgentEvent(kind: aekCompleted))
+      check footer.textContent == "Finishing reply"
+      # Provider completion presentation is not the host's flight-release ACK.
+      check vm.chat.promptInFlight
+      vm.chat.promptInFlight = false
+      check footer.textContent == "Ready for next message"
+      vm.chat.closingSession = true
+      check footer.textContent == "Closing conversation"
+      vm.chat.closingSession = false
+      vm.chat.applyAgentEvent(AgentEvent(kind: aekError, text: "Network lost"))
+      check footer.textContent == "Reply failed"
+      vm.chat.applyAgentEvent(AgentEvent(kind: aekCancelled))
+      check footer.textContent == "Reply stopped"
+      dispose()
+
+  test "navigation preference explains automatic control and retains readable guidance":
+    createRoot proc(dispose: proc()) =
+      let vm = createEditorVM()
+      vm.agentControlApproval.val = true
+      let panel = renderChatPanel[MockRenderer, MockNode](MockRenderer(), vm)
+      proc matching(node: MockNode; attribute, value: string): seq[MockNode] =
+        if node.attributes.getOrDefault(attribute) == value: result.add node
+        for child in node.children: result.add matching(child, attribute, value)
+      let setting = matching(panel, "data-editor-control-approval", "true")
+      let support = matching(panel, "data-editor-control-approval-help", "true")
+      check setting.len == 1
+      check support.len == 1
+      check panel.textContent.contains("Require approval for agent navigation")
+      check support[0].textContent == "Turn off to let the agent focus, select, and highlight items automatically."
+      check setting[0].attributes.getOrDefault("aria-describedby") == support[0].attributes.getOrDefault("id")
+      check support[0].styles.getOrDefault("color") == textSecondary
+      check setting[0].attributes.getOrDefault("aria-checked") == "true"
+      vm.agentControlApproval.val = false
+      check setting[0].attributes.getOrDefault("aria-checked") == "false"
+      var guidanceCount = 0
+      proc guidance(node: MockNode) =
+        if node.tag == "span" and node.textContent in ["Manual Edit mode opens the source-backed inspector in this same sidebar space.", "tap to insert"]:
+          inc guidanceCount
+          check node.styles.getOrDefault("color") == textSecondary
+        for child in node.children: guidance(child)
+      check panel.textContent.contains("Manual Edit mode opens the source-backed inspector in this same sidebar space.")
+      check panel.textContent.contains("tap to insert")
+      guidance(panel)
+      check guidanceCount == 2
+      dispose()
+
+  test "login location and operator fallback retain identity and hide opaque surfaces":
+    const corpusText = staticRead("scenarios/chat-activity/public-session-events.json")
+    for provider in ["anthropic", "openai"]:
+      createRoot proc(dispose: proc()) =
+        let payload = parseJson(corpusText)["scenes"]["login"][0]
+        payload["provider"] = %provider
+        payload["request"] = %"request-visible-42"
+        payload["surface"] = %"https://private-login.invalid/OPAQUE_LOGIN_SECRET"
+        let projected = harborEventToAgentEvent("login-location-session", eventFromJson(payload))
+        check not ($projected.toJson()).contains("OPAQUE_LOGIN_SECRET")
+        let decoded = agentEventFromJson(projected.toJson())
+        let vm = createEditorVM()
+        vm.chat.inputText.val = "Login location retained draft"
+        vm.chat.applyAgentEvent(decoded)
+        let entry = vm.chat.activity.val.entries[^1]
+        let panel = renderChatPanel[MockRenderer, MockNode](MockRenderer(), vm)
+        let node = entryNode(panel, entry.id)
+        check node != nil
+        let notice = node.children.filterIt(it.attributes.getOrDefault("data-chat-availability") == "true")
+        check notice.len == 1
+        let text = notice[0].children[0].text
+        check text.contains("LOGIN REQUIRED card in Agent Harbor WebUI task details or Inbox, if available.")
+        check text.contains("This editor cannot open sign-in.")
+        check text.contains("If you cannot access Harbor, ask this editor's operator to open the request.")
+        check notice[0].parent == node
+        check notice[0].styles.getOrDefault("display") == "block"
+        let details = node.children.filterIt(it.tag == "details")
+        check details.len == 1
+        check not details[0].attributes.hasKey("open")
+        check activityDetail(entry).contains(provider)
+        check activityDetail(entry).contains("request-visible-42")
+        var pending = @[node]
+        var rendered = ""
+        while pending.len > 0:
+          let child = pending.pop()
+          rendered.add child.text
+          check child.tag notin ["button", "input", "textarea", "select", "a", "iframe"]
+          for nested in child.children: pending.add nested
+        check rendered.contains(provider)
+        check rendered.contains("request-visible-42")
+        check not rendered.contains("OPAQUE_LOGIN_SECRET")
+        check not rendered.contains("private-login.invalid")
+        check vm.chat.inputText.val == "Login location retained draft"
+        dispose()
+
+  test "real control history themes pending actions and renders the actual stale reason":
+    createRoot proc(dispose: proc()) =
+      let vm = createEditorVM()
+      vm.workspaceId = "navigation-history"
+      vm.controlInstanceId = "one"
+      vm.controlConnected = true
+      vm.agentControlApproval.val = true
+      let panel = renderChatPanel[MockRenderer, MockNode](MockRenderer(), vm)
+      proc find(node: MockNode; attribute, value: string): MockNode =
+        if node.attributes.getOrDefault(attribute) == value: return node
+        for child in node.children:
+          result = find(child, attribute, value)
+          if result != nil: return
+      let request = %* {"workspace": vm.workspaceId, "instance": "one", "commandId": "history",
+        "command": "viewport", "viewport": "phone", "expectedRevision": vm.controlSnapshot()["revision"]}
+      check vm.admitControlOperation(request)["status"].getStr == "pending"
+      let actions = find(panel, "data-editor-control-actions", "history")
+      check actions != nil
+      if actions != nil:
+        check actions.styles.getOrDefault("display") == "flex"
+        check actions.styles.getOrDefault("gap") == "8px"
+        check actions.children.len == 2
+        for action in actions.children:
+          check action.styles.getOrDefault("min-height") == "32px"
+          check action.styles.getOrDefault("color") == textPrimary
+      vm.changeViewport(builtinViewportFromSlug("tablet"))
+      let failed = vm.resolveControlApproval("history", true)
+      check failed["error"].getStr == "revision_conflict"
+      check find(panel, "data-editor-control-actions", "history") == nil
+      let reason = find(panel, "data-editor-control-failure", "revision_conflict")
+      check reason != nil
+      if reason != nil:
+        check reason.textContent == "The editor changed after this request. Ask the agent to make a fresh request."
+      dispose()

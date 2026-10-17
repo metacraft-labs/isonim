@@ -1,5 +1,5 @@
 import unittest
-import isonim/core/[types, graph, signals]
+import isonim/core/[types, graph, signals, computation, owner]
 
 suite "Signal Creation and Basic Operations":
   test "createSignal returns typed signal with initial value":
@@ -154,3 +154,121 @@ suite "Signal compiles on both targets":
     check a.val == 2
     check b.val == "updated"
     check c.val == 2.71
+
+
+suite "Owner and computation cleanup boundaries":
+  test "plain owner disposes nested computations and root cleanup exactly once":
+    let value = createSignal(0)
+    var runs, effectCleanups, rootCleanups: int
+    var dispose: proc()
+    createRoot proc(cleanup: proc()) =
+      dispose = cleanup
+      onCleanup proc() = rootCleanups.inc
+      createEffect proc() =
+        discard value.val
+        runs.inc
+        onCleanup proc() = effectCleanups.inc
+    check value.observers.len == 1
+    value.val = 1
+    check runs == 2
+    check effectCleanups == 1
+    check value.observers.len == 1
+    dispose()
+    dispose()
+    check rootCleanups == 1
+    check effectCleanups == 2
+    check value.observers.len == 0
+    value.val = 2
+    check runs == 2
+
+  test "computation cleanup removes reciprocal source edges without executing it":
+    let value = createSignal(0)
+    let comp = ComputationBase(sources: @[], sourceSlots: @[], owned: @[],
+      cleanups: @[], resourceStates: @[])
+    Listener = comp
+    discard value.val
+    Listener = nil
+    check value.observers.len == 1
+    check comp.sources.len == 1
+    cleanNode(comp)
+    check value.observers.len == 0
+    check value.observerSlots.len == 0
+    check comp.sources.len == 0
+    check comp.sourceSlots.len == 0
+
+suite "Owner exceptional cleanup drains every resource":
+  test "later callbacks run once and the first exception object survives":
+    let first = newException(ValueError, "first cleanup")
+    let second = newException(IOError, "later cleanup")
+    var disposeRoot: proc()
+    var calls = 0
+    createRoot proc(dispose: proc()) =
+      disposeRoot = dispose
+      onCleanup proc() =
+        inc calls
+        raise first
+      onCleanup proc() =
+        inc calls
+        raise second
+      onCleanup proc() = inc calls
+    var caught: ref Exception
+    try: disposeRoot()
+    except Exception: caught = getCurrentException()
+    check caught == first
+    check calls == 3
+    disposeRoot()
+    check calls == 3
+
+  test "recursive children siblings and parent drain despite nested failure":
+    let first = newException(ValueError, "nested cleanup")
+    let second = newException(IOError, "parent computation cleanup")
+    let trigger = createSignal(0)
+    var disposeRoot: proc()
+    var effects = 0
+    var childCalls, nestedCalls, siblingCalls, parentCalls: int
+    createRoot proc(dispose: proc()) =
+      disposeRoot = dispose
+      createEffect proc() =
+        discard trigger.val
+        inc effects
+        onCleanup proc() =
+          inc childCalls
+          raise second
+        createEffect proc() =
+          onCleanup proc() =
+            inc nestedCalls
+            raise first
+      createEffect proc() =
+        onCleanup proc() = inc siblingCalls
+      onCleanup proc() = inc parentCalls
+    var caught: ref Exception
+    try: disposeRoot()
+    except Exception: caught = getCurrentException()
+    check caught == first
+    check childCalls == 1
+    check nestedCalls == 1
+    check siblingCalls == 1
+    check parentCalls == 1
+    check trigger.observers.len == 0
+    let effectsBefore = effects
+    trigger.val = 1
+    check effects == effectsBefore
+    disposeRoot()
+    check childCalls == 1 and nestedCalls == 1
+    check siblingCalls == 1 and parentCalls == 1
+
+  test "defect cleanup also drains later callbacks before propagating":
+    let failure = newException(AssertionDefect, "declared cleanup defect")
+    var disposeRoot: proc()
+    var calls = 0
+    createRoot proc(dispose: proc()) =
+      disposeRoot = dispose
+      onCleanup proc() = raise failure
+      onCleanup proc() = inc calls
+    var caught: ref Exception
+    try: disposeRoot()
+    except Exception: caught = getCurrentException()
+    check caught == failure
+    check calls == 1
+    disposeRoot()
+    check calls == 1

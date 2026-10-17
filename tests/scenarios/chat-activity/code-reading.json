@@ -1,0 +1,77 @@
+{
+  "schema": 1,
+  "boundary": "Normalized production message events replace only external delivery timing. Real parser/reducer/view/DOM run; official REST/tool integration remains separately required. Reconciled replacement/removal reseeds the synthetic restored transcript through the real activity signal to exercise view lifecycle, not a new provider event.",
+  "multiple": {
+    "event": {
+      "kind": "message_chunk",
+      "text": "# Code reading\n\n```nim\n\nlet safe = \"<script>保持😀\"\n\necho safe\n```\n```sh\necho second\n```"
+    },
+    "expected": [
+      {
+        "language": "nim",
+        "text": "\nlet safe = \"<script>保持😀\"\n\necho safe"
+      },
+      {
+        "language": "sh",
+        "text": "echo second"
+      }
+    ]
+  },
+  "streaming": {
+    "open": {
+      "kind": "message_chunk",
+      "text": "```nim\n\nlet safe = \"<script>保持😀\"\n\n"
+    },
+    "append": {
+      "kind": "message_chunk",
+      "text": "echo safe\n```"
+    },
+    "expectedOpen": "\nlet safe = \"<script>保持😀\"\n\n",
+    "expectedComplete": "\nlet safe = \"<script>保持😀\"\n\necho safe"
+  },
+  "replacement": {
+    "prose": "now ordinary prose",
+    "code": "```nim\nrestored code\n```"
+  },
+  "publicTool": {
+    "boundary": "Genuine public tool_use/tool_result DTOs replace external delivery timing only; production Harbor parser, safe projection, wire codec, reducer and renderer execute. Expected code literals are separately authored; ordinary compact excerpt and full Details must remain.",
+    "use": {
+      "type": "tool_use",
+      "status": "started",
+      "timestamp": 1700000099,
+      "tool_execution_id": "complete-code-tool",
+      "tool_name": "isonim inspect",
+      "tool_args": {
+        "path": "example.nim"
+      }
+    },
+    "short": {
+      "type": "tool_result",
+      "status": "completed",
+      "timestamp": 1700000100,
+      "tool_execution_id": "complete-code-tool",
+      "tool_name": "isonim inspect",
+      "tool_output": "Tool output follows.\n```nim\necho \"short start\"\n```\nSecond fenced result follows.\n```sh\nprintf '<img src=x onerror=alert(1)> Ω'\necho SECOND final block\n```"
+    },
+    "long": {
+      "type": "tool_result",
+      "status": "completed",
+      "timestamp": 1700000101,
+      "tool_execution_id": "complete-code-tool",
+      "tool_name": "isonim inspect",
+      "tool_output": "Tool output follows.\n```nim\necho \"actual tool line 0 retains full code\"\necho \"actual tool line 1 retains full code\"\necho \"actual tool line 2 retains full code\"\necho \"actual tool line 3 retains full code\"\necho \"actual tool line 4 retains full code\"\necho \"actual tool line 5 retains full code\"\necho \"actual tool line 6 retains full code\"\necho \"actual tool line 7 retains full code\"\necho \"actual tool line 8 retains full code\"\necho \"actual tool line 9 retains full code\"\necho \"actual tool line 10 retains full code\"\necho \"actual tool line 11 retains full code\"\necho \"actual tool line 12 retains full code\"\necho \"actual tool line 13 retains full code\"\necho \"actual tool line 14 retains full code\"\necho \"actual tool line 15 retains full code\"\necho \"actual tool line 16 retains full code\"\necho \"actual tool line 17 retains full code\"\necho \"actual tool line 18 retains full code\"\necho \"actual tool line 19 retains full code\"\necho \"actual tool line 20 retains full code\"\necho \"actual tool line 21 retains full code\"\necho \"<script>保持😀</script>\"\necho \"FINAL tool line 23 beyond excerpt\"\n```\nSecond fenced result follows.\n```sh\nprintf '<img src=x onerror=alert(1)> Ω'\necho SECOND final block\n```"
+    },
+    "update": {
+      "type": "tool_result",
+      "status": "completed",
+      "timestamp": 1700000102,
+      "tool_execution_id": "complete-code-tool",
+      "tool_name": "isonim inspect",
+      "tool_output": "Tool output follows.\n```nim\necho \"actual tool line 0 retains full code\"\necho \"actual tool line 1 retains full code\"\necho \"actual tool line 2 retains full code\"\necho \"actual tool line 3 retains full code\"\necho \"actual tool line 4 retains full code\"\necho \"actual tool line 5 retains full code\"\necho \"actual tool line 6 retains full code\"\necho \"actual tool line 7 retains full code\"\necho \"actual tool line 8 retains full code\"\necho \"actual tool line 9 retains full code\"\necho \"actual tool line 10 retains full code\"\necho \"actual tool line 11 retains full code\"\necho \"actual tool line 12 retains full code\"\necho \"actual tool line 13 retains full code\"\necho \"actual tool line 14 retains full code\"\necho \"actual tool line 15 retains full code\"\necho \"actual tool line 16 retains full code\"\necho \"actual tool line 17 retains full code\"\necho \"actual tool line 18 retains full code\"\necho \"actual tool line 19 retains full code\"\necho \"actual tool line 20 retains full code\"\necho \"actual tool line 21 retains full code\"\necho \"<script>保持😀</script>\"\necho \"UPDATED final tool line 23 beyond excerpt\"\n```\nSecond fenced result follows.\n```sh\nprintf '<img src=x onerror=alert(1)> Ω'\necho SECOND final block\n```"
+    },
+    "expectedShort": "echo \"short start\"",
+    "expectedFirst": "echo \"actual tool line 0 retains full code\"\necho \"actual tool line 1 retains full code\"\necho \"actual tool line 2 retains full code\"\necho \"actual tool line 3 retains full code\"\necho \"actual tool line 4 retains full code\"\necho \"actual tool line 5 retains full code\"\necho \"actual tool line 6 retains full code\"\necho \"actual tool line 7 retains full code\"\necho \"actual tool line 8 retains full code\"\necho \"actual tool line 9 retains full code\"\necho \"actual tool line 10 retains full code\"\necho \"actual tool line 11 retains full code\"\necho \"actual tool line 12 retains full code\"\necho \"actual tool line 13 retains full code\"\necho \"actual tool line 14 retains full code\"\necho \"actual tool line 15 retains full code\"\necho \"actual tool line 16 retains full code\"\necho \"actual tool line 17 retains full code\"\necho \"actual tool line 18 retains full code\"\necho \"actual tool line 19 retains full code\"\necho \"actual tool line 20 retains full code\"\necho \"actual tool line 21 retains full code\"\necho \"<script>保持😀</script>\"\necho \"FINAL tool line 23 beyond excerpt\"",
+    "expectedUpdated": "echo \"actual tool line 0 retains full code\"\necho \"actual tool line 1 retains full code\"\necho \"actual tool line 2 retains full code\"\necho \"actual tool line 3 retains full code\"\necho \"actual tool line 4 retains full code\"\necho \"actual tool line 5 retains full code\"\necho \"actual tool line 6 retains full code\"\necho \"actual tool line 7 retains full code\"\necho \"actual tool line 8 retains full code\"\necho \"actual tool line 9 retains full code\"\necho \"actual tool line 10 retains full code\"\necho \"actual tool line 11 retains full code\"\necho \"actual tool line 12 retains full code\"\necho \"actual tool line 13 retains full code\"\necho \"actual tool line 14 retains full code\"\necho \"actual tool line 15 retains full code\"\necho \"actual tool line 16 retains full code\"\necho \"actual tool line 17 retains full code\"\necho \"actual tool line 18 retains full code\"\necho \"actual tool line 19 retains full code\"\necho \"actual tool line 20 retains full code\"\necho \"actual tool line 21 retains full code\"\necho \"<script>保持😀</script>\"\necho \"UPDATED final tool line 23 beyond excerpt\"",
+    "expectedSecond": "printf '<img src=x onerror=alert(1)> Ω'\necho SECOND final block"
+  }
+}

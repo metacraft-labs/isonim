@@ -29,7 +29,7 @@ when defined(js):
     # createSession/submitPrompt/cancel just need to be callable.
     c.createSession(proc(sessionId: cstring) {.closure.} =
       c.submitPrompt($sessionId, "hello"))
-    c.cancel("sid")
+    c.cancel("sid", proc(ok: bool; message: cstring) = discard)
     # Daemon discovery returns a non-empty URL on every build path.
     doAssert resolveDaemonUrl().len > 0
     # The adapter helper installs an SSE dispatcher with no side
@@ -46,7 +46,7 @@ else:
     c.createSession(proc(sessionId: cstring) {.closure.} =
       discard sessionId)
     c.submitPrompt("sid", "hello")
-    c.cancel("sid")
+    c.cancel("sid", proc(ok: bool; message: cstring) = discard)
     doAssert resolveDaemonUrl().len > 0
     installAgentDispatcher()
 

@@ -1,0 +1,73 @@
+# Complete MCL standard hooks, including the portable Windows entrypoint.
+# Source membership: devops-modules 6ba34072 git-hooks/mcl-standard-hooks.yaml.
+# Retain the existing portable 1024 KB and native 500 KB limits, plus the
+# original lint and merge-conflict checks. Do not add --enforce-all to the added-file gates.
+#
+# POSIX Nix shells install the separately generated full native configuration
+# through the guarded constructor. This tracked portable file remains a regular
+# source file. Windows developers install it with `prek install --install-hooks`
+# (or pre-commit) after provisioning editorconfig-checker, nixfmt, tofu, prettier,
+# Nim, Just, Python 3, Node and Bash in their declared environment. Run
+# `prek run --all-files` to check the complete set. Validate the actual owning
+# tool paths before treating the declared POSIX shell as qualified.
+
+minimum_pre_commit_version: "3.0.0"
+
+repos:
+  # --- The committed-binaries tier. Mandatory, strict by default. ---------
+  - repo: https://github.com/pre-commit/pre-commit-hooks
+    rev: v6.0.0
+    hooks:
+      # Preserve the existing portable ceiling; native enforcement remains 500 KB.
+      - id: check-added-large-files
+        args: ["--maxkb=1024"]
+      - id: end-of-file-fixer
+      - id: check-merge-conflict
+
+  - repo: https://github.com/metacraft-labs/devops-modules
+    rev: 6ba34072850f7348e1669a6daf8a0acb79669434
+    hooks:
+      - id: ban-added-ct-recordings
+
+  # --- Formatting and style. `language: system`, so the tool comes from the
+  # --- dev env (Nix devShell on Linux/macOS, winget/scoop/choco on Windows)
+  # --- rather than from a hook environment this file would have to pin per OS.
+  # --- This is the agent-harbor pattern: the flake provides the TOOLS, the
+  # --- committed config provides the RULES.
+  #
+  # MEMBERSHIP HERE MUST MATCH `git-hooks/standard-hooks.nix` EXACTLY. Two
+  # expressions of one list that disagree are worse than one expression that is
+  # awkward for half the fleet, because neither reader can tell which is the
+  # rule. If you add a hook to one, add it to the other in the same commit.
+  - repo: local
+    hooks:
+      - id: editorconfig-checker
+        name: editorconfig-checker
+        entry: editorconfig-checker
+        language: system
+        types: [file]
+
+      - id: nixfmt
+        name: nixfmt
+        entry: nixfmt
+        language: system
+        files: \.nix$
+
+      - id: terraform-format
+        name: terraform-format
+        description: Format Terraform/OpenTofu HCL files
+        entry: tofu fmt
+        language: system
+        types: [file]
+        files: \.(tf|tftest\.hcl)$
+
+      - id: prettier
+        name: prettier
+        entry: prettier --check --list-different=false --log-level=warn --ignore-unknown --write
+        language: system
+        types: [text]
+      - id: lint
+        name: just lint
+        entry: just lint
+        language: system
+        pass_filenames: false

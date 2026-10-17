@@ -1,0 +1,8 @@
+{
+  "workspace": "grip-web-site",
+  "title": "Actual GRIP SSR source-provider acceptance",
+  "catalog": ".isonim/catalog.json",
+  "build": ["python3", "tools/build_editor_catalog.py"],
+  "fixtures": [],
+  "editableStyles": []
+}

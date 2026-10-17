@@ -103,11 +103,11 @@ order.
   `capturedVm.changeViewport(viewportChoices[i])` (shell.nim:2243–2246
   and again at the rebuild path 2274–2277; downstream proc at
   viewmodels.nim:2205).
-- **Signal mirrored:** `vm.platform` *and* `vm.viewport` — a single
+- **Signal mirrored:** `vm.platform` _and_ `vm.viewport` — a single
   `createRenderEffect` at shell.nim:2256–2284 rebuilds the chevron VM +
   remounts when the per-backend viewport list (pinned + popup) churns
   on backend change, otherwise calls `viewportChevronVm.activate(i)` to
-  reflect external `viewport` writes.  Same `.value`-not-`.val`
+  reflect external `viewport` writes. Same `.value`-not-`.val`
   feedback-loop precaution as the surface cluster (documented inline at
   shell.nim:2247–2255).
 - **Option list:** `viewportOptionList(backend)` = union of
@@ -122,7 +122,7 @@ order.
   `View / Comment / Edit` chips, then `bindModeChip`
   (shell.nim:1171–1222) wires each chip's reactive styling + click
   handler imperatively via `setStyle` calls inside a
-  `createRenderEffect`.  Not a `ChoiceGroup` widget.
+  `createRenderEffect`. Not a `ChoiceGroup` widget.
 - **Signal driven:** `vm.editMode: Signal[EditMode]`
   (viewmodels.nim:183) — chip click goes through
   `editModeHandler(vm, captured)` which routes to
@@ -158,9 +158,9 @@ order.
 
 ## In-pane Preview/Brief row
 
-**Confirmed present.** It is *not* in `preview_pane.nim`'s legacy
+**Confirmed present.** It is _not_ in `preview_pane.nim`'s legacy
 inner toolbar (that one was removed by M-EVP-7) — instead REV-M2
-mounted a freshly added tab-strip *below* the view stack via
+mounted a freshly added tab-strip _below_ the view stack via
 `preview_pane_view.mountBriefTabIntoPreviewPane`.
 
 ### File / line range
@@ -274,7 +274,7 @@ preserve elsewhere:
 1. **Per-brief sub-tabs** (`brief_tab.nim`:302–309 `subTabsHost`,
    populated at 411–444). When more than one brief covers the active
    `(story, backend)`, the user gets one chip per brief and can swap
-   between them. *Delete with the row* — the chrome-bar Spec surface
+   between them. _Delete with the row_ — the chrome-bar Spec surface
    today shows exactly one brief at a time (driven by the single
    `resolveBriefId(story, backend)` call at shell.nim:2424) and there
    is no top-bar affordance to pick one of several. If multi-brief
@@ -284,8 +284,8 @@ preserve elsewhere:
 2. **Frontmatter chip strip** (`brief_tab.nim`:310–315 `chipStripHost`,
    populated at 447–478). Colour-coded chips for `kind`, coverage
    count, capture viewports, scoring dimensions + weights. This is
-   *metadata*, not a markdown rendering; the TipTap-backed spec pane
-   does not display it. *Delete with the row* — its consumers (the
+   _metadata_, not a markdown rendering; the TipTap-backed spec pane
+   does not display it. _Delete with the row_ — its consumers (the
    review-this-preview workflow) read the same data from the brief
    file directly, no UI surface depends on the chips.
 
@@ -295,7 +295,7 @@ preserve elsewhere:
    (`vm.chat.inputText` + `vm.sendAgentPrompt`). Composes a
    context-loaded prompt from brief body + storyRef + scoring rubric.
    **This one is load-bearing** — the user-facing review campaign
-   workflow ends here. *Preserve* by surfacing the button elsewhere
+   workflow ends here. _Preserve_ by surfacing the button elsewhere
    if CHRM-M2 deletes the row. Options: (a) move it into the
    chrome bar as a new affordance next to the 🕘 history button, or
    (b) move it into the TipTap pane's Edit-mode toolbar in CHRM-M4.
@@ -324,7 +324,7 @@ preserve elsewhere:
 5. **Per-VM caching of brief state** (`preview_pane.nim`:42–86 — the
    `previewPaneStates` threadvar + `statefor` proc). Builds a
    `BriefTabVM` once per `EditorVM` instance and reuses it across
-   re-mounts. *Delete with the row* — the spec pane lookup uses a
+   re-mounts. _Delete with the row_ — the spec pane lookup uses a
    simpler `resolveBriefId(story, backend)` per render-effect run
    (shell.nim:2421–2451) and the per-VM caching is not needed for
    that path.
@@ -334,7 +334,7 @@ preserve elsewhere:
 ## Other axis-like switches
 
 Beyond the chrome bar, the editor has several toggle rows that today
-are *not* `ChoiceGroup`-backed but follow the same "pick one of N"
+are _not_ `ChoiceGroup`-backed but follow the same "pick one of N"
 pattern. CHRM-M2's scope is the chrome bar, but this list is the
 source for any follow-on consolidation:
 
@@ -402,17 +402,17 @@ source for any follow-on consolidation:
     segmented-choice fit.
 
 11. **Vector editor — tool palette** —
-    `src/isonim/editor/views/vector_editor.nim:229-251`.  N tool
+    `src/isonim/editor/views/vector_editor.nim:229-251`. N tool
     buttons in a vertical column, driven by
     `vm.isActiveVectorTool(...) / vectorToolHandler(vm, toolKind)`.
-    Each is a raw `tdiv role="button"`.  Same shape — could move to a
+    Each is a raw `tdiv role="button"`. Same shape — could move to a
     vertical `mountSegmentedChoice` (CHRM-M2 ChoiceGroup orientation
     extension).
 
 12. **Vector editor — Grid + Snap toggles** —
     `src/isonim/editor/views/vector_editor.nim:260-303`. Two
     independent boolean toggles (each its own `tdiv role="button"`
-    with `aria-pressed`).  These are *not* axis-like (each is a
+    with `aria-pressed`). These are _not_ axis-like (each is a
     single bool, not a "pick one of N"), so they are not a
     `ChoiceGroup` candidate — flagged here only because they sit in
     the same toolbar and might be visually unified with whatever
@@ -460,8 +460,8 @@ breakdown the milestone brief asked for.
 - **Mode cluster** (chrome bar) — swap
   `renderCompactChoiceColumn` + `bindModeChip` + `tiltHorizontal` for
   `mountSegmentedChoice(["View", "Comment", "Edit"])` wired to
-  `vm.editMode`.  Preserve the per-mode availability gate
-  (`vm.evaluateCommand(eckInspect|eckComment|eckEdit)`).  The
+  `vm.editMode`. Preserve the per-mode availability gate
+  (`vm.evaluateCommand(eckInspect|eckComment|eckEdit)`). The
   reactive mirror that drives `SpecPaneVM.mode` from
   `editMode + surface == sSpec` (shell.nim:2457–2470) stays as-is.
 
@@ -500,7 +500,7 @@ breakdown the milestone brief asked for.
   `src/isonim/editor/design_review/markdown.nim` — last consumer was
   `brief_tab.nim`'s `renderMarkdown` import; with the row gone the
   module has no callers and should be deleted to keep the canonical
-  TipTap path single-sourced.  (Verify:
+  TipTap path single-sourced. (Verify:
   `grep -rn "design_review/markdown" src/` should return zero hits
   after the deletion.)
 - **`buildBackendOptions` / `buildModeOptions` thunks +

@@ -1,7 +1,7 @@
 import std/[json, os, strutils, tables, unittest]
 
 const
-  MatrixPath = "docs/editor-feature-matrix.json"
+  MatrixPath = "docs/contributors/editor-feature-matrix.json"
   MaturityStatuses = [
     "not_started",
     "prototype",
@@ -331,7 +331,7 @@ proc checkNoWeakMarkers(path: string) =
 const MissingSiblingDiagnostic = """
 test_editor_release_gate requires the metacraft-web sibling repo to be
 present at ../metacraft-web (relative to isonim). The release-gate
-manifest in docs/editor-feature-matrix.json declares cross-repo test
+manifest in docs/contributors/editor-feature-matrix.json declares cross-repo test
 files; without the sibling, the gate cannot verify the editor is
 releaseable. Per the user's real-environment-tests rule, this is a
 hard failure, not a skip. Clone the sibling via the workspace tooling
@@ -470,7 +470,7 @@ suite "IsoNim editor maturity gate":
 
   test "m48_write_bridge_hardening_evidence_is_versioned_and_bounded":
     let doc = matrix()
-    let protocol = readFile("docs/editor-write-bridge-protocol.md")
+    let protocol = readFile("docs/contributors/editor-write-bridge-protocol.md")
     check protocol.contains("isonim.write-bridge.v1")
     check protocol.contains("symlink-owned files")
     check protocol.contains("remote multi-user collaboration")
@@ -485,11 +485,11 @@ suite "IsoNim editor maturity gate":
     check sourceSync["knownLimitations"].getStr.contains(
       "Remote multi-user collaboration")
     check stringItems(sourceSync["implementationReferences"]).contains(
-      "docs/editor-write-bridge-protocol.md")
+      "docs/contributors/editor-write-bridge-protocol.md")
 
   test "m49_long_tail_property_matrix_is_honest_and_evidenced":
     let doc = matrix()
-    let guide = checkedText("docs/editor-long-tail-property-evidence.md")
+    let guide = checkedText("docs/contributors/editor-long-tail-property-evidence.md")
     check doc.hasKey("longTailPropertyEvidence")
     check guide.contains("M49 Long-Tail CSS and Property Evidence")
 
@@ -672,7 +672,7 @@ suite "IsoNim editor maturity gate":
     checkNoWeakMarkers("tests/test_editor_release_gate.nim")
 
   test "mature_editor_docs_are_actionable_for_new_consumers":
-    let guide = checkedText("docs/editor-dogfood-release.md")
+    let guide = checkedText("docs/contributors/editor-dogfood-release.md")
     let readme = checkedText("README.md")
     let metacraftJust = checkedText("../metacraft-web/Justfile")
 
@@ -695,7 +695,7 @@ suite "IsoNim editor maturity gate":
       check guide.contains(required)
 
     check readme.contains("IsoNim Editor")
-    check readme.contains("docs/editor-dogfood-release.md")
+    check readme.contains("docs/contributors/editor-dogfood-release.md")
     check metacraftJust.contains("run-back-office-editor-test-matrix:")
 
   test "editor_framework_consumer_boundary_is_preserved":

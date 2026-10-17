@@ -25,7 +25,7 @@
 ## for the acceptance criteria this helper exists to satisfy.
 
 import std/options
-import isonim/core/[computation, signals]
+import isonim/core/[computation, signals, owner]
 import isonim/dsl/ui
 import isonim/editor/types
 import isonim/editor/viewmodels
@@ -578,9 +578,17 @@ when defined(js):
       ## skip those no-op packets.
 
   proc newBridgeBinding*(): BridgeBinding =
-    BridgeBinding(handle: nil, tuiHandle: nil, tuiHost: nil,
+    result = BridgeBinding(handle: nil, tuiHandle: nil, tuiHost: nil,
                   attachedBackend: pbWeb,
                   lastSentStoryId: "")
+    let binding = result
+    onCleanup proc() =
+      # Detach this UI transport, retaining the preview model/backend process.
+      if binding.handle != nil: detachBridgeClient(binding.handle)
+      if binding.tuiHandle != nil: detachTuiTerminalClient(binding.tuiHandle)
+      binding.handle = nil
+      binding.tuiHandle = nil
+      binding.tuiHost = nil
 
   proc sendCurrentStory*(binding: BridgeBinding; vm: EditorVM) =
     ## RS-M12 / RS-M13: emit the ``select-story`` packet for the

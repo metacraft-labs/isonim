@@ -3,10 +3,19 @@
 ## Each test runs ``build/bin/isonim-review campaign ...`` as a real
 ## subprocess against the real daemon + real Postgres + the fake ACP
 ## agent.  No in-process mocks at the DB, HTTP, or CLI boundary.
+##
+## ``campaign start`` pins the workspace the way ``capture`` does (REV-M5
+## follow-up, migration 012), so every test gets a hermetic reprobuild
+## workspace (``helpers/repro_workspace_fixture``) and every CLI call gets
+## ``--config`` naming it: the CLI never reads ``~/.isonim/config.toml``
+## or gates the developer's real workspace.
 
 import std/[json, os, osproc, strutils, times, unittest]
 
+import isonim/editor/design_review/workspace_gate
+
 import helpers/campaign_routes_fixture
+import helpers/repro_workspace_fixture
 
 # ---------------------------------------------------------------------------
 # Fixture campaign doc + brief on disk — the CLI's ``start`` subcommand
@@ -19,11 +28,16 @@ type FixturePaths = object
   briefsDir: string
   campaignPath: string
   briefPath: string
+  ws: ReproWorkspace       ## the workspace ``campaign start`` pins
+  configPath: string       ## ``--config`` for every CLI call
 
 proc writeFixtures(): FixturePaths =
   result.projectDir = getTempDir() / ("cmp_m2_proj_" &
                        $((int(epochTime() * 1000)) mod 1_000_000))
   removeDir(result.projectDir)
+  result.ws = newReproWorkspace("cli_cmp", ["isonim", "isonim-examples"])
+  createDir(result.projectDir)
+  result.configPath = writeCliConfig(result.projectDir, result.ws.root)
   result.campaignDir = result.projectDir / "campaigns"
   result.briefsDir = result.projectDir / "briefs" / "render"
   createDir(result.campaignDir)
@@ -66,7 +80,11 @@ scoringDimensions:
 This is a CLI fixture brief.
 """)
 
-proc invokeCli(baseUrl: string;
+proc cleanupFixtures(fx: FixturePaths) =
+  removeDir(fx.projectDir)
+  fx.ws.cleanup()
+
+proc invokeCli(fx: FixturePaths; baseUrl: string;
                args: openArray[string]):
     tuple[exitCode: int; outText, errText: string] =
   let outPath = getTempDir() / ("cli_campaign_stdout_" &
@@ -76,7 +94,8 @@ proc invokeCli(baseUrl: string;
   defer:
     try: removeFile(outPath) except OSError: discard
     try: removeFile(errPath) except OSError: discard
-  let parts = @[CliPath, "campaign"] & @args & @["--daemon=" & baseUrl]
+  let parts = @[CliPath, "campaign"] & @args &
+    @["--daemon=" & baseUrl, quoteShell("--config=" & fx.configPath)]
   let cmd = parts.join(" ") &
     " > " & quoteShell(outPath) & " 2> " & quoteShell(errPath)
   let exitCode = execShellCmd(cmd)
@@ -95,9 +114,9 @@ test "test_cli_campaign_start_streams_orchestrator_output":
   ])
   defer: f.shutdown()
   let fx = writeFixtures()
-  defer: removeDir(fx.projectDir)
+  defer: cleanupFixtures(fx)
 
-  let (exitCode, outText, errText) = invokeCli(f.baseUrl,
+  let (exitCode, outText, errText) = invokeCli(fx, f.baseUrl,
     ["start", "--doc", fx.campaignPath])
   check exitCode == 0
   # The fake-ACP reply is split across three chunks; check that they
@@ -114,8 +133,8 @@ test "test_cli_campaign_list_shows_running_campaign":
   let f = startCampaignDaemon()
   defer: f.shutdown()
   let fx = writeFixtures()
-  defer: removeDir(fx.projectDir)
-  let (sExit, _, _) = invokeCli(f.baseUrl,
+  defer: cleanupFixtures(fx)
+  let (sExit, _, _) = invokeCli(fx, f.baseUrl,
     ["start", "--doc", fx.campaignPath, "--no-tail"])
   check sExit == 0
 
@@ -125,7 +144,7 @@ test "test_cli_campaign_list_shows_running_campaign":
   # or ``failed`` depending on timing.  We accept either, but assert
   # the campaign appears in the listing AND that one of the two
   # statuses landed.
-  let (lExit, lOut, _) = invokeCli(f.baseUrl, ["list"])
+  let (lExit, lOut, _) = invokeCli(fx, f.baseUrl, ["list"])
   check lExit == 0
   check lOut.contains("active") or lOut.contains("failed")
   check lOut.contains(fx.campaignPath.extractFilename) or
@@ -135,14 +154,14 @@ test "test_cli_campaign_show_prints_state":
   let f = startCampaignDaemon()
   defer: f.shutdown()
   let fx = writeFixtures()
-  defer: removeDir(fx.projectDir)
-  let (sExit, sOut, _) = invokeCli(f.baseUrl,
+  defer: cleanupFixtures(fx)
+  let (sExit, sOut, _) = invokeCli(fx, f.baseUrl,
     ["start", "--doc", fx.campaignPath, "--no-tail"])
   check sExit == 0
   let campaignId = sOut.strip()
   check campaignId.len >= 32
 
-  let (showExit, showOut, _) = invokeCli(f.baseUrl,
+  let (showExit, showOut, _) = invokeCli(fx, f.baseUrl,
     ["show", campaignId])
   check showExit == 0
   check showOut.contains("brief_refs:")
@@ -154,8 +173,14 @@ test "test_cli_campaign_show_prints_state":
         showOut.contains("status:         failed")
   check showOut.contains("max_iterations: 3")
   check showOut.contains("recent_events:")
+  # Provenance: the start pin is the workspace pin the CLI took, and it is
+  # also round 1's pin.
+  let pin = pinCleanWorkspace(fx.ws.root)
+  check showOut.contains("start_pin:      " & pin.pin)
+  check showOut.contains("  round 1: " & pin.pin)
+  check not showOut.contains("legacy")
 
-proc invokeCliWithStdin(baseUrl: string;
+proc invokeCliWithStdin(fx: FixturePaths; baseUrl: string;
                         args: openArray[string];
                         stdinPayload: string):
     tuple[exitCode: int; outText, errText: string] =
@@ -173,7 +198,8 @@ proc invokeCliWithStdin(baseUrl: string;
     try: removeFile(outPath) except OSError: discard
     try: removeFile(errPath) except OSError: discard
     try: removeFile(stdinPath) except OSError: discard
-  let parts = @[CliPath, "campaign"] & @args & @["--daemon=" & baseUrl]
+  let parts = @[CliPath, "campaign"] & @args &
+    @["--daemon=" & baseUrl, quoteShell("--config=" & fx.configPath)]
   let cmd = parts.join(" ") &
     " < " & quoteShell(stdinPath) &
     " > " & quoteShell(outPath) & " 2> " & quoteShell(errPath)
@@ -213,13 +239,13 @@ test "test_cli_campaign_inject_after_turn_end_positional_text_returns_404":
   let f = startCampaignDaemon()
   defer: f.shutdown()
   let fx = writeFixtures()
-  defer: removeDir(fx.projectDir)
-  let (sExit, sOut, _) = invokeCli(f.baseUrl,
+  defer: cleanupFixtures(fx)
+  let (sExit, sOut, _) = invokeCli(fx, f.baseUrl,
     ["start", "--doc", fx.campaignPath, "--no-tail"])
   check sExit == 0
   let campaignId = sOut.strip()
 
-  let (iExit, _, iErr) = invokeCli(f.baseUrl,
+  let (iExit, _, iErr) = invokeCli(fx, f.baseUrl,
     ["inject", campaignId, "hello operator"])
   check iExit == 5
   check iErr.contains("no_active_session")
@@ -241,8 +267,8 @@ test "test_cli_campaign_inject_after_turn_end_message_file_returns_404":
   let f = startCampaignDaemon()
   defer: f.shutdown()
   let fx = writeFixtures()
-  defer: removeDir(fx.projectDir)
-  let (sExit, sOut, _) = invokeCli(f.baseUrl,
+  defer: cleanupFixtures(fx)
+  let (sExit, sOut, _) = invokeCli(fx, f.baseUrl,
     ["start", "--doc", fx.campaignPath, "--no-tail"])
   check sExit == 0
   let campaignId = sOut.strip()
@@ -254,7 +280,7 @@ test "test_cli_campaign_inject_after_turn_end_message_file_returns_404":
   defer:
     try: removeFile(msgPath) except OSError: discard
 
-  let (iExit, _, iErr) = invokeCli(f.baseUrl,
+  let (iExit, _, iErr) = invokeCli(fx, f.baseUrl,
     ["inject", campaignId, "--message-file", msgPath])
   check iExit == 5
   check iErr.contains("no_active_session")
@@ -276,14 +302,14 @@ test "test_cli_campaign_inject_after_turn_end_stdin_returns_404":
   let f = startCampaignDaemon()
   defer: f.shutdown()
   let fx = writeFixtures()
-  defer: removeDir(fx.projectDir)
-  let (sExit, sOut, _) = invokeCli(f.baseUrl,
+  defer: cleanupFixtures(fx)
+  let (sExit, sOut, _) = invokeCli(fx, f.baseUrl,
     ["start", "--doc", fx.campaignPath, "--no-tail"])
   check sExit == 0
   let campaignId = sOut.strip()
 
   let payload = "stdin-piped operator inject"
-  let (iExit, _, iErr) = invokeCliWithStdin(f.baseUrl,
+  let (iExit, _, iErr) = invokeCliWithStdin(fx, f.baseUrl,
     ["inject", campaignId, "--stdin"], payload)
   check iExit == 5
   check iErr.contains("no_active_session")
@@ -302,8 +328,8 @@ test "test_cli_campaign_edit_doc_refreshes_sha":
   let f = startCampaignDaemon()
   defer: f.shutdown()
   let fx = writeFixtures()
-  defer: removeDir(fx.projectDir)
-  let (sExit, sOut, _) = invokeCli(f.baseUrl,
+  defer: cleanupFixtures(fx)
+  let (sExit, sOut, _) = invokeCli(fx, f.baseUrl,
     ["start", "--doc", fx.campaignPath, "--no-tail"])
   check sExit == 0
   let campaignId = sOut.strip()
@@ -317,7 +343,7 @@ test "test_cli_campaign_edit_doc_refreshes_sha":
     original & "\n## CLI edit-doc test\n\n- Added marker " &
     $epochTime() & "\n")
 
-  let (eExit, _, eErr) = invokeCli(f.baseUrl,
+  let (eExit, _, eErr) = invokeCli(fx, f.baseUrl,
     ["edit-doc", campaignId, "--no-edit"])
   check eExit == 0
   check eErr.contains("doc refreshed")
@@ -343,8 +369,8 @@ test "test_cli_campaign_stop_marks_status":
   let f = startCampaignDaemon()
   defer: f.shutdown()
   let fx = writeFixtures()
-  defer: removeDir(fx.projectDir)
-  let (sExit, sOut, _) = invokeCli(f.baseUrl,
+  defer: cleanupFixtures(fx)
+  let (sExit, sOut, _) = invokeCli(fx, f.baseUrl,
     ["start", "--doc", fx.campaignPath, "--no-tail"])
   check sExit == 0
   let campaignId = sOut.strip()
@@ -356,12 +382,68 @@ test "test_cli_campaign_stop_marks_status":
   #   * the failed-fallback wins → stop's transition_campaign rejects
   #     the terminal-to-terminal flip, the CLI exits 5, and the show
   #     output reflects ``failed``.
-  let (stopExit, _, _) = invokeCli(f.baseUrl,
+  let (stopExit, _, _) = invokeCli(fx, f.baseUrl,
     ["stop", campaignId, "--reason", "cli-test-shutdown"])
   check stopExit in [0, 5]
 
-  let (showExit, showOut, _) = invokeCli(f.baseUrl,
+  let (showExit, showOut, _) = invokeCli(fx, f.baseUrl,
     ["show", campaignId])
   check showExit == 0
   check showOut.contains("status:         stopped") or
         showOut.contains("status:         failed")
+
+test "test_cli_campaign_start_refuses_an_unpinnable_workspace":
+  ## REV-M5 follow-up: ``campaign start`` pins the workspace like
+  ## ``capture``; a dirty or unpublished workspace refuses the start
+  ## (exit 3), names what to fix, and creates no campaign.
+  let f = startCampaignDaemon()
+  defer: f.shutdown()
+  let fx = writeFixtures()
+  defer: cleanupFixtures(fx)
+  writeFile(fx.ws.repoDir("isonim") / "README.md", "edited\n")
+  discard fx.ws.commit("isonim-examples", "not pushed", [("x.txt", "x\n")])
+  let (exitCode, outText, errText) = invokeCli(fx, f.baseUrl,
+    ["start", "--doc", fx.campaignPath, "--no-tail"])
+  check exitCode == 3
+  check outText.strip() == ""
+  check errText.contains("cannot pin the workspace")
+  check errText.contains("README.md")
+  check errText.contains("HEAD is not on the declared remote")
+  check errText.contains("push it so the campaign's pin")
+  check errText.contains("commit and push")
+  check countCampaigns(f) == 0
+
+test "test_cli_campaign_restart_pins_the_new_round":
+  ## A second ``campaign start`` on the same doc is the campaign's next
+  ## round: it pins the workspace as it is now (here: after a pushed
+  ## fix), and the start pin stays the first round's.
+  let f = startCampaignDaemon()
+  defer: f.shutdown()
+  let fx = writeFixtures()
+  defer: cleanupFixtures(fx)
+  let first = pinCleanWorkspace(fx.ws.root)
+  let (s1, out1, _) = invokeCli(fx, f.baseUrl,
+    ["start", "--doc", fx.campaignPath, "--no-tail"])
+  check s1 == 0
+  let campaignId = out1.strip()
+  discard fx.ws.commitAndPublish("isonim", "round 1 fix",
+                                 [("fix.txt", "1\n")])
+  let second = pinCleanWorkspace(fx.ws.root)
+  check second.pin != first.pin
+  # The first turn ends ``failed`` (the fixture doc sets no terminal
+  # status); wait for it so the restart reopens the row.
+  let deadline = epochTime() + 10.0
+  while epochTime() < deadline:
+    let rows = fetchCampaignByDoc(f, fx.campaignPath.absolutePath())
+    if rows.len > 0 and rows[0][1] == "failed": break
+    sleep(80)
+  let (s2, out2, _) = invokeCli(fx, f.baseUrl,
+    ["start", "--doc", fx.campaignPath, "--no-tail"])
+  check s2 == 0
+  check out2.strip() == campaignId
+  let (showExit, showOut, _) = invokeCli(fx, f.baseUrl,
+    ["show", campaignId])
+  check showExit == 0
+  check showOut.contains("start_pin:      " & first.pin)
+  check showOut.contains("  round 1: " & first.pin)
+  check showOut.contains("  round 2: " & second.pin)

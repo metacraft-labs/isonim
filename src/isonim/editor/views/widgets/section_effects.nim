@@ -1,21 +1,7 @@
 ## Phase G — Effects section body widget.
 ##
-## Per the spec (§ "Effects section consolidates Transitions + Filters")
-## the Effects section folds in Transitions + Filters. Each effect is a
-## row with a type icon + parameter controls inline + visibility toggle
-## + delete button. Phase G renders the scaffold:
-##
-##   * A list host that paints one row per stored effect (initially
-##     empty).
-##   * A "+ Add effect" pill below the list. (The section header also
-##     exposes a ``+`` button; this body-level button mirrors it so the
-##     affordance is reachable when the section is scrolled mid-body.)
-##   * Per-row controls land in Phase G+1.
-##
-## The effect entries are stored in a section-local
-## ``Signal[seq[EffectEntry]]`` for now. When the editor gains a real
-## ``vm.inspector.effects`` signal (Phase H), the section reads from it
-## instead.
+## Source-backed CSS effect parameters use the common guarded property rows.
+## The metadata layer list remains inspection-only; layer operations are separate.
 
 import std/[options, strutils]
 
@@ -23,6 +9,9 @@ import isonim/core/signals
 import isonim/core/computation
 import isonim/dsl/ui
 import isonim/editor/viewmodels
+import isonim/editor/views/widgets/property_commit
+import isonim/editor/views/widgets/property_row
+import isonim/editor/views/widgets/section_position
 
 type
   EffectEntryKind* = enum
@@ -67,6 +56,35 @@ proc mountSectionEffects*[R, E](r: R; parent: E; vm: EditorVM) =
   ## Mount the Effects section. The list host is data-attributed so
   ## tests can target it; the empty-state shows when no effects exist.
   let entries = createSignal[seq[EffectEntry]](@[])
+  proc mountParameter(label, property, fallback: string) =
+    # One closure lifetime per row; all mutations still go through the same
+    # validated source/preview/history transaction as other inspector fields.
+    let value = createSignal(fallback)
+    createRenderEffect proc() =
+      value.val = findPropertyValue(vm.inspector.properties.val, property, fallback)
+    discard r.mountPropertyRow(parent, propertyRowText(
+      name = label, value = value, wiring = vm.inspectorRowWiring(property)))
+  mountParameter("Filter", "filter", "none")
+  mountParameter("Backdrop filter", "backdrop-filter", "none")
+  mountParameter("Shadow", "box-shadow", "none")
+  mountParameter("Transition", "transition-property", "all")
+  mountParameter("Duration", "transition-duration", "0s")
+  mountParameter("Timing", "transition-timing-function", "ease")
+  mountParameter("Delay", "transition-delay", "0s")
+
+  createRenderEffect proc() =
+    var selected: seq[EffectEntry]
+    for prop in vm.inspector.properties.val:
+      let kind = case prop.name
+        of "box-shadow": eekDropShadow
+        of "filter": eekFilter
+        of "backdrop-filter": eekBackdropBlur
+        of "transition": eekTransition
+        else: continue
+      let value = (if prop.authoredValue.len > 0: prop.authoredValue else: prop.value).strip()
+      if value.len > 0 and value != "none":
+        selected.add EffectEntry(kind: kind, label: prop.name & ": " & value, visible: true)
+    entries.val = selected
 
   var listEl: E
   var emptyEl: E
@@ -85,28 +103,32 @@ proc mountSectionEffects*[R, E](r: R; parent: E; vm: EditorVM) =
             padding = "8px 0",
             font_size = "11px",
             color = textMuted):
-        text "No effects. Press + to add one."
+        text "No effect values exposed by this selection."
+      tdiv(`data-effects-readonly-message` = "true", role = "note",
+            font_size = "11px", color = textMuted):
+        text "Effect layer operations are unavailable here; CSS parameters above edit source."
       tdiv(ref = addBtnEl,
             role = "button", tabindex = "0",
             `data-effects-add` = "true",
             `aria-label` = "Add effect",
+            `aria-disabled` = "true",
+            title = "Adding an effect layer is unavailable in the inspector.",
             display = "flex", align_items = "center",
             justify_content = "center",
             height = "26px",
             border = "1px dashed " & border,
             border_radius = "4px",
             color = textMuted, font_size = "11px",
-            cursor = "pointer"):
+            cursor = "default"):
         text "+ Add effect"
   r.appendChild(parent, body)
 
   proc mountRow(idx: int; entry: EffectEntry) =
-    ## Isolating helper — closure-captures ``idx`` from this proc's
-    ## scope so each row's click handlers bind to the right index.
-    var visBtnEl: E
-    var delBtnEl: E
+    ## Rows show the current selection's metadata, without edit actions.
     let row = ui(r):
       tdiv(`data-effects-row` = $idx,
+            `data-inspector-search-label` = effectKindLabel(entry.kind),
+            `data-inspector-search-property` = entry.label.split(':')[0],
             display = "flex", flex_direction = "row",
             align_items = "center", gap = "6px",
             padding = "4px 6px",
@@ -117,43 +139,12 @@ proc mountSectionEffects*[R, E](r: R; parent: E; vm: EditorVM) =
               justify_content = "center",
               color = accent, font_size = "12px"):
           text effectKindGlyph(entry.kind)
-        span(flex = "1",
+        span(flex = "1", min_width = "0",
               color = textPrimary, font_size = "11px",
-              overflow = "hidden", text_overflow = "ellipsis",
-              white_space = "nowrap"):
+              overflow_wrap = "anywhere"):
           text (if entry.label.len > 0: entry.label
                 else: effectKindLabel(entry.kind))
-        tdiv(ref = visBtnEl,
-              role = "button", tabindex = "0",
-              `data-effects-row-visibility` = $idx,
-              `aria-label` = "Toggle effect visibility",
-              width = "20px", height = "20px",
-              display = "flex", align_items = "center",
-              justify_content = "center",
-              color = textMuted, font_size = "11px",
-              cursor = "pointer"):
-          text (if entry.visible: "\xE2\x97\x90" else: "\xE2\x97\x8B")
-        tdiv(ref = delBtnEl,
-              role = "button", tabindex = "0",
-              `data-effects-row-delete` = $idx,
-              `aria-label` = "Delete effect",
-              width = "20px", height = "20px",
-              display = "flex", align_items = "center",
-              justify_content = "center",
-              color = textMuted, font_size = "11px",
-              cursor = "pointer"):
-          text "\xC3\x97"
     r.appendChild(listEl, row)
-    r.addEventListener(visBtnEl, "click", proc() =
-      var next = entries.val
-      if idx >= 0 and idx < next.len:
-        next[idx].visible = not next[idx].visible
-        entries.val = next)
-    r.addEventListener(delBtnEl, "click", proc() =
-      var next = entries.val
-      if idx >= 0 and idx < next.len:
-        next.delete(idx)
-        entries.val = next)
 
   proc rebuildList() =
     r.clearChildren(listEl)
@@ -164,11 +155,3 @@ proc mountSectionEffects*[R, E](r: R; parent: E; vm: EditorVM) =
     rebuildList()
     r.setStyle(emptyEl, "display",
       if entries.val.len == 0: "block" else: "none")
-
-  let onAdd = proc() =
-    var next = entries.val
-    next.add EffectEntry(kind: eekDropShadow,
-      label: "Drop shadow", visible: true)
-    entries.val = next
-  r.addEventListener(addBtnEl, "click", onAdd)
-  r.addEventListener(addBtnEl, "keydown", onAdd)

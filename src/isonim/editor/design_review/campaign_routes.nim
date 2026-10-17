@@ -12,8 +12,11 @@
 ##
 ## Routes:
 ##
-##   * ``POST /api/campaign/start``  — open an ACP session, INSERT a
-##     campaign row + ``'started'`` event, send the single composite
+##   * ``POST /api/campaign/start``  — verify and store the workspace pin
+##     the CLI took (``workspacePin``; see ``campaign_pin.nim``), INSERT
+##     or reopen the campaign row and begin a pinned round
+##     (``campaign_db.openCampaignRound``), open an ACP session, send the
+##     single composite
 ##     prompt to the orchestrator and stream the agent's
 ##     ``session/update`` events back to the caller as an SSE
 ##     response.  Closes with ``event: end`` + a ``round_complete``
@@ -50,9 +53,12 @@ import nim_acp
 import nim_agents
 
 import ./agent_routes
+import ./campaign_db
 import ./campaign_format
+import ./campaign_pin
 import ./db as dr_db
 import ./log_setup
+import ./workspace_pin
 
 logScope:
   topics = "campaign"
@@ -212,37 +218,6 @@ proc peekPendingInjectionEventIds*(reg: CampaignRegistry;
 
 proc escSql(s: string): string =
   s.replace("'", "''")
-
-proc dbStartCampaign(reg: CampaignRegistry;
-    docPath, docSha: string;
-    briefRefs: seq[string];
-    targetScore: float; hasTargetScore: bool;
-    maxIterations: int; manifestHash: string;
-    agentBackend, agentModel, startedBy: string): string =
-  reg.db.asApp()
-  var arrLit = "ARRAY["
-  for i, b in briefRefs:
-    if i > 0: arrLit.add ", "
-    arrLit.add "'" & escSql(b) & "'"
-  arrLit.add "]::text[]"
-  let scoreLit =
-    if hasTargetScore: $targetScore else: "NULL"
-  let modelLit =
-    if agentModel.len == 0: "NULL" else: "'" & escSql(agentModel) & "'"
-  let stmt = "SELECT design_review.start_campaign(" &
-    "'" & escSql(docPath) & "', " &
-    "'" & escSql(docSha) & "', " &
-    arrLit & ", " &
-    scoreLit & "::real, " &
-    $maxIterations & ", " &
-    "'" & escSql(manifestHash) & "', " &
-    "'" & escSql(agentBackend) & "', " &
-    modelLit & ", " &
-    "'" & escSql(startedBy) & "')::text"
-  result = reg.db.conn.getValue(sql(stmt))
-  if result.len == 0:
-    raise newException(CampaignSchedulerError,
-      "start_campaign returned empty id")
 
 proc dbBindAcpSession(reg: CampaignRegistry; campaignId, sessionId: string) =
   reg.db.asApp()
@@ -412,10 +387,11 @@ proc dbRecentEvents(reg: CampaignRegistry;
 
 # ---------------------------------------------------------------------------
 # Prompt assembly.  The single user message we send to the orchestrator
-# carries the system prompt verbatim, the campaign doc, every referenced
-# brief, and the latest report.  After this prompt the daemon does NOT
-# send a second one — the orchestrator drives any further work itself
-# inside this same ACP turn.
+# carries the system prompt verbatim, the round this turn runs as (with
+# its workspace pin), the campaign doc, every referenced brief, and the
+# latest report.  After this prompt the daemon does NOT send a second
+# one — the orchestrator drives any further work itself inside this same
+# ACP turn.
 # ---------------------------------------------------------------------------
 
 type
@@ -424,6 +400,13 @@ type
     docBody*:     string
     briefs*:      seq[tuple[briefId: string; body: string]]
     latestReport*: string
+    campaignId*:  string
+    round*:       int
+      ## The round this turn runs as (``begin_campaign_round``); 0 omits
+      ## the CAMPAIGN ROUND section.
+    workspacePin*: string
+      ## The round's workspace pin: the committed and pushed source state
+      ## the turn starts from.
 
 proc assembleFirstPrompt*(orchestratorPrompt: string;
                           inputs: CampaignPromptInputs): string =
@@ -433,6 +416,15 @@ proc assembleFirstPrompt*(orchestratorPrompt: string;
   ## does afterwards is driven by its own tool-call loop.
   result = "SYSTEM CONTEXT — orchestrator system prompt:\n"
   result.add orchestratorPrompt
+  if inputs.round > 0:
+    result.add "\n\nCAMPAIGN ROUND:\n"
+    if inputs.campaignId.len > 0:
+      result.add "  campaign:      " & inputs.campaignId & "\n"
+    result.add "  round:         " & $inputs.round & "\n"
+    if inputs.workspacePin.len > 0:
+      result.add "  workspace pin: " & inputs.workspacePin & "\n"
+      result.add "  (the committed and pushed source state this round " &
+                 "starts from; resolve briefs at this pin)\n"
   result.add "\n\nCAMPAIGN DOCUMENT (" & inputs.docPath & "):\n"
   result.add inputs.docBody
   result.add "\n\nBRIEFS REFERENCED:\n"
@@ -498,6 +490,8 @@ type
     sessionId: string
     prompt: seq[ContentBlock]
     client: AgentClient
+    state: AgentSessionState
+    registry: AgentRegistry
     response: PromptResponse
     error: string
     done: bool
@@ -506,10 +500,7 @@ type
 proc runPromptThread(args: PromptArgs) {.thread, gcsafe.} =
   {.cast(gcsafe).}:
     try:
-      var client = args.client
-      let turn = sendPromptStreaming(client,
-        AgentSession(id: args.sessionId, backend: abkAcp),
-        args.prompt, args.callback)
+      let turn = runAgentTurn(args.registry, args.state, args.prompt, args.callback)
       args.response = PromptResponse(sessionId: args.sessionId,
                                      stopReason: turn.stopReason)
     except CatchableError as e:
@@ -608,26 +599,17 @@ proc streamPromptToSocket(reg: CampaignRegistry;
   let onEvent: AgentEventCallback = proc(ev: AgentEvent) {.gcsafe.} =
     {.cast(gcsafe).}:
       var payload: JsonNode
-      if ev.raw != nil:
+      if ev.raw != nil and ev.raw.hasKey("update"):
         payload = ev.raw
       else:
-        payload = %* {
-          "sessionId": ev.sessionId,
-          "update": {
-            "sessionUpdate": $ev.kind,
-            "content": {"type": "text", "text": ev.text},
-            "toolCallId": ev.toolCallId,
-            "title": ev.toolName,
-            "status": ev.status,
-          },
-        }
+        payload = toJson(ev)
       let frame = encodeSseEvent("session/update", $payload)
       pushFrame(frame)
       if ev.kind == aekMessageChunk and ev.text.len > 0:
         pushText(ev.text)
 
   var args = PromptArgs(sessionId: sessionId, prompt: prompt,
-                        client: state.client, callback: onEvent)
+                        client: state.client, state: state, registry: reg.agents, callback: onEvent)
   var worker: Thread[PromptArgs]
   createThread(worker, runPromptThread, args)
 
@@ -662,7 +644,8 @@ proc streamPromptToSocket(reg: CampaignRegistry;
     let stOpt = reg.agents.getState(sessionId)
     if stOpt.isSome:
       var s = stOpt.get
-      discard s.client.acp.drainUpdates()
+      if s.client.backend == abkAcp:
+        discard s.client.acp.drainUpdates()
 
   let stopReason =
     if args.error.len > 0: "error"
@@ -787,16 +770,16 @@ proc handleStart*(reg: CampaignRegistry; req: Request) {.async, gcsafe.} =
       body:      string
       briefs:    seq[tuple[briefId: string; body: string]]
       latestReport: string
-      manifestHash: string
       startedBy: string
       notesToOrchestrator: string
   var body: CampaignStartBody
+  var pinNode: JsonNode
   try:
     let node = parseJson(req.body)
+    pinNode = node{"workspacePin"}
     body.docPath = node{"docPath"}.getStr("")
     body.docSha = node{"docSha"}.getStr("")
     body.body = node{"body"}.getStr("")
-    body.manifestHash = node{"manifestHash"}.getStr("local")
     body.startedBy = node{"startedBy"}.getStr("cli")
     body.maxIterations = node{"maxIterations"}.getInt(30)
     body.latestReport = node{"latestReport"}.getStr("")
@@ -830,25 +813,54 @@ proc handleStart*(reg: CampaignRegistry; req: Request) {.async, gcsafe.} =
     await respondJson(req, Http400, $(%* {"error": "missing_briefRefs"}))
     return
 
-  # Phase 1: ensure the campaign row exists.  ``start_campaign`` is
-  # idempotent on (doc_path, doc_sha) so a repeat call returns the same
-  # id without writing a second 'started' event.
-  var campaignId = ""
+  # Phase 0: the round's workspace pin.  The CLI took it exactly as a
+  # capture does (clean-tree gate + canonical lock record); re-verify the
+  # record against the pin here so nothing but a real workspace lock —
+  # never a placeholder like the pre-012 ``manifestHash: "local"`` — can
+  # become a campaign's or a round's pin.
+  var pin: WorkspacePin
+  if pinNode == nil:
+    await respondJson(req, Http400, $(%* {
+      "error": "workspace_pin_required",
+      "reason": "campaign start needs the workspace pin of the round " &
+                "(`workspacePin`: {pin, lockToml, lockRecord}); run " &
+                "`isonim-review campaign start`, which pins the workspace"}))
+    return
   try:
-    campaignId = dbStartCampaign(reg, body.docPath, body.docSha,
-      body.briefRefs, body.targetScore, body.hasTargetScore,
-      body.maxIterations, body.manifestHash,
-      $reg.agents.backend, "", body.startedBy)
+    pin = parseWorkspacePinJson(pinNode)
+  except WorkspacePinError as e:
+    await respondJson(req, Http400, $(%* {
+      "error": "invalid_workspace_pin", "reason": e.msg}))
+    return
+
+  # Phase 1: store the pin, ensure the campaign row exists (its start pin
+  # is this pin when the row is new) and begin the round against the pin.
+  # ``start_campaign`` is idempotent on (doc_path, doc_sha) so a repeat
+  # call returns the same id without writing a second 'started' event.
+  var campaignId = ""
+  var round = 0
+  try:
+    let opened = openCampaignRound(reg.db, CampaignStart(
+      docPath: body.docPath, docSha: body.docSha,
+      briefRefs: body.briefRefs,
+      targetScore: body.targetScore, hasTargetScore: body.hasTargetScore,
+      maxIterations: body.maxIterations,
+      agentBackend: $reg.agents.backend, agentModel: "",
+      startedBy: body.startedBy), pin)
+    campaignId = opened.campaignId
+    round = opened.round
   except DbError as e:
     error "campaign start: DB insert failed", reason = e.msg
     await respondJson(req, Http500,
       $(%* {"error": "db_error", "reason": e.msg}))
     return
-  except CampaignSchedulerError as e:
-    error "campaign start: scheduler error", reason = e.msg
+  except ValueError as e:
+    error "campaign start: unreadable round number", reason = e.msg
     await respondJson(req, Http500,
-      $(%* {"error": "scheduler_error", "reason": e.msg}))
+      $(%* {"error": "db_error", "reason": e.msg}))
     return
+  info "campaign round opened", campaignId = campaignId, round = round,
+    workspacePin = pin.pin
 
   # Phase 2: open or re-use the ACP session bound to the campaign.
   var sessionId = reg.lookupSession(campaignId)
@@ -886,13 +898,17 @@ proc handleStart*(reg: CampaignRegistry; req: Request) {.async, gcsafe.} =
     docBody: body.body,
     briefs: body.briefs,
     latestReport: body.latestReport,
+    campaignId: campaignId,
+    round: round,
+    workspacePin: pin.pin,
   )
   let firstPrompt = assembleFirstPrompt(orchestratorPrompt, promptInputs)
   info "campaign start streaming",
     campaignId = campaignId, sessionId = sessionId,
     promptBytes = firstPrompt.len
 
-  let extra = %* {"campaignId": campaignId}
+  let extra = %* {"campaignId": campaignId, "round": round,
+                  "workspacePin": pin.pin}
   let res = await streamPromptToSocket(reg, sessionId, campaignId,
     "round_complete", firstPrompt, extra, req.client)
   try: req.client.close() except CatchableError: discard
@@ -944,7 +960,7 @@ proc handleStop*(reg: CampaignRegistry; req: Request) {.async, gcsafe.} =
       if stateOpt.isSome:
         var state = stateOpt.get
         try:
-          state.client.acp.cancel(sessionId)
+          state.client.cancelSession(state.session)
         except CatchableError as e:
           warn "campaign stop: acp.cancel failed",
             sessionId = sessionId, reason = e.msg
@@ -1033,9 +1049,9 @@ proc handleFetch*(reg: CampaignRegistry; req: Request) {.async, gcsafe.} =
 
 proc sha256OfStringShellOut(s: string): string =
   ## Stream ``s`` through ``shasum -a 256`` / ``sha256sum`` and return
-  ## the lowercase-hex digest.  Mirrors the pattern used by
-  ## :proc:`manifest_hash.sha256Hex` so refreshed doc shas have the same
-  ## format as the doc_sha the CLI's ``campaign start`` writes.
+  ## the lowercase-hex digest.  Same shell-out the CLI's
+  ## ``campaign start`` uses, so refreshed doc shas have the same format
+  ## as the doc_sha it writes.
   let exe = findExe("shasum")
   let cmd =
     if exe.len > 0: "shasum -a 256"

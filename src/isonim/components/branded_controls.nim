@@ -152,7 +152,8 @@ proc createFilterBar*[R, E](r: R; currentFilter: proc(): FilterMode;
   let bar = ui(r):
     tdiv(class = "flex flex-row justify-center items-center gap-2 p-3")
 
-  for filt in [fmAll, fmActive, fmCompleted]:
+  proc appendFilter(filt: FilterMode) =
+    # A proc call gives this item its own callback/effect environment.
     let label = case filt
       of fmAll: "All"
       of fmActive: "Active"
@@ -180,6 +181,9 @@ proc createFilterBar*[R, E](r: R; currentFilter: proc(): FilterMode;
 
     r.addEventListener(btn, "click", proc() = onFilter(filtCapture))
     r.appendChild(bar, btn)
+
+  for filt in [fmAll, fmActive, fmCompleted]:
+    appendFilter(filt)
 
   bar
 

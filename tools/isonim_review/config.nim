@@ -25,6 +25,7 @@
 ##
 ##   [workspace]
 ##   root = "~/metacraft"
+##   project = "isonim"     # reprobuild project capture gates and pins
 ##
 ## We deliberately hand-roll a minimal TOML reader (only the keys above,
 ## only string and integer scalars, only ``[section]`` blocks).  This is
@@ -58,6 +59,9 @@ type
 
   WorkspaceConfig* = object
     root*: string
+    project*: string
+      ## reprobuild project the capture gate and workspace pin cover.
+      ## Empty means the design-review default (``isonim``).
 
   BackendConfig* = object
     binaryDir*: string
@@ -108,6 +112,10 @@ type
     ##     :proc:`claudeExtraArgs` for how they reach the spawned ACP
     ##     binary's argv.
     backend*: string
+    backendExplicit*: bool
+    harborUrl*: string
+    harborToken*: string
+    harborAgent*: string
     command*: string
     args*: seq[string]
     extraArgs*: seq[string]
@@ -150,22 +158,17 @@ type
       ##   * TOML: ``[agent].campaign_hard_deadline_ms = <int>``
       ##   * Env:  ``ISONIM_CAMPAIGN_HARD_DEADLINE_MS=<int>``
     assistantPromptPath*: string
-      ## CMP-M5 — absolute path to the AI Assistant system prompt
-      ## file that the daemon prepends to every chat session via the
-      ## "primer" round-trip on ``POST /api/agent/sessions``.  When
-      ## empty (the default) the daemon resolves it to
-      ## ``<workspace>/isonim/prompts/ai-assistant.md``.  When the
-      ## resolved file doesn't exist the daemon logs a warning and
-      ## falls back to a tiny built-in placeholder — chat sessions
-      ## stay functional even on broken installs.  Operator overrides:
+      ## Path to the complete AI Assistant role instructions. The default uses
+      ## the project framework copy when present, otherwise the installed
+      ## framework's bundled prompt. Explicit missing/empty files fail with an
+      ## actionable error; no small placeholder silently replaces the guidance.
       ##   * TOML: ``[agent].assistant_prompt_path = "<abs path>"``
-      ##   * Env:  ``ISONIM_ASSISTANT_PROMPT_PATH=<abs path>``
+      ##   * Env: ``ISONIM_ASSISTANT_PROMPT_PATH=<abs path>``
     primerEnabled*: bool
-      ## CMP-M5 — when true (default) every chat ACP session created
-      ## via ``POST /api/agent/sessions`` is primed with the AI
-      ## Assistant system prompt + project context before the
-      ## sessionId is returned to the caller.  Set to false to skip
-      ## the primer round-trip — useful for CLI-only callers and
+      ## Legacy option name controlling genuine role instructions (default true).
+      ## Direct ACP installs instructions at session/new; Harbor installs them
+      ## when its reserved provider starts on the first user prompt. False omits
+      ## role instructions — useful for callers with provider-owned guidance and
       ## tests that want to drive a raw agent.  Operator overrides:
       ##   * TOML: ``[agent].primer_enabled = true|false``
       ##   * Env:  ``ISONIM_ASSISTANT_PRIMER_ENABLED=0|1``
@@ -471,6 +474,8 @@ proc applyToml(cfg: var ReviewConfig; content: string) =
       case key
       of "root":
         if v.kind == tvkString: cfg.workspace.root = expandTilde(v.s)
+      of "project":
+        if v.kind == tvkString: cfg.workspace.project = v.s
       else:
         stderr.writeLine("isonim-review config: unknown key [workspace]." & key)
     of "backend":
@@ -481,8 +486,16 @@ proc applyToml(cfg: var ReviewConfig; content: string) =
         stderr.writeLine("isonim-review config: unknown key [backend]." & key)
     of "agent":
       case key
+      of "harbor_url":
+        if v.kind == tvkString: cfg.agent.harborUrl = v.s
+      of "harbor_token":
+        if v.kind == tvkString: cfg.agent.harborToken = v.s
+      of "harbor_agent":
+        if v.kind == tvkString: cfg.agent.harborAgent = v.s
       of "backend":
-        if v.kind == tvkString: cfg.agent.backend = v.s
+        if v.kind == tvkString:
+          cfg.agent.backend = v.s
+          cfg.agent.backendExplicit = true
       of "command":
         if v.kind == tvkString: cfg.agent.command = v.s
       of "args":
@@ -537,17 +550,21 @@ proc agentBackendKind*(cfg: ReviewConfig): AcpAgentKind =
     aakClaude
   of "codex", "codex-acp":
     aakCodex
-  of "custom":
+  of "custom", "harbor":
     aakCustom
   else:
     raise newException(AgentConfigError,
       "isonim-review config: unknown [agent].backend = \"" &
-      cfg.agent.backend & "\" (expected one of: claude, codex, custom)")
+      cfg.agent.backend & "\" (expected one of: claude, codex, custom, harbor)")
 
 proc validateAgentConfig*(cfg: ReviewConfig) =
   ## Cross-check the ``[agent]`` keys for consistency. Called from
   ## :proc:`loadConfig` so the failure surfaces at config load.
   let kind = agentBackendKind(cfg)
+  if cfg.agent.backend == "harbor":
+    if cfg.agent.harborUrl.len == 0:
+      raise newException(AgentConfigError, "Harbor backend requires [agent].harbor_url")
+    return
   if kind == aakCustom and cfg.agent.command.len == 0:
     raise newException(AgentConfigError,
       "isonim-review config: [agent].backend = \"custom\" requires " &
@@ -634,9 +651,16 @@ proc loadConfig*(explicitPath: string = ""): ReviewConfig =
   # smoke targets in this repo's Justfile).  Setting it to a known
   # value here keeps ``agentBackendKind(cfg)`` and the CLI flag in
   # sync.
+  let harborUrl = getEnv("ISONIM_HARBOR_URL")
+  if harborUrl.len > 0: result.agent.harborUrl = harborUrl
+  let harborToken = getEnv("ISONIM_HARBOR_TOKEN")
+  if harborToken.len > 0: result.agent.harborToken = harborToken
+  let harborAgent = getEnv("ISONIM_HARBOR_AGENT")
+  if harborAgent.len > 0: result.agent.harborAgent = harborAgent
   let envBackend = getEnv("ISONIM_AGENT_BACKEND")
   if envBackend.len > 0:
     result.agent.backend = envBackend
+    result.agent.backendExplicit = true
 
   # Follow-up 2 — per-backend model env overrides.  These win over
   # TOML but lose to ``--codex-model=`` / ``--claude-model=`` on the
@@ -729,8 +753,11 @@ proc resolveAssistantPromptPath*(cfg: ReviewConfig): string =
   if cfg.agent.assistantPromptPath.len > 0:
     return cfg.agent.assistantPromptPath
   if cfg.workspace.root.len > 0:
-    return cfg.workspace.root / DefaultAssistantPromptRelPath
-  ""
+    let projectPrompt = cfg.workspace.root / DefaultAssistantPromptRelPath
+    if fileExists(projectPrompt): return projectPrompt
+  # A served project need not contain a copy of the editor framework. The
+  # bundled guidance belongs to this build; an explicit missing path still fails.
+  currentSourcePath().parentDir.parentDir.parentDir / "prompts" / "ai-assistant.md"
 
 proc daemonBaseUrl*(cfg: ReviewConfig): string =
   ## URL the CLI's ``chat`` subcommand defaults to.  Honors an explicit

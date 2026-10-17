@@ -14,7 +14,10 @@
 ## so this test file does not itself contain the literal needle (which
 ## would cause it to flag itself).
 
-import std/[unittest, os, strutils]
+## Tests use real temporary filesystem trees and the same repository scanner.
+## No filesystem, compiler or scanner APIs are mocked.
+
+import std/[unittest, os, strutils, tempfiles, algorithm]
 
 const RepoRoots = [
   currentSourcePath().parentDir().parentDir().parentDir() / "isonim-examples",
@@ -43,7 +46,10 @@ const SkipDirs = [
   "screenshots",
 ]
 
-proc shouldSkip(path: string): bool =
+proc shouldSkip(path, root: string): bool =
+  # config.nims places generated C only at the checkout-root cache boundary.
+  # An authored nested directory with this name remains part of the scan.
+  if path == root / ".nimcache": return true
   let tail = splitPath(path).tail
   for s in SkipDirs:
     if tail == s: return true
@@ -74,27 +80,30 @@ iterator scanFiles(root: string): string =
     for kind, path in walkDir(dir):
       case kind
       of pcDir, pcLinkToDir:
-        if shouldSkip(path): continue
+        if shouldSkip(path, root): continue
         stack.add(path)
       of pcFile, pcLinkToFile:
         if isLikelyBinary(path): continue
         yield path
+
+proc findOffenders(root: string): seq[string] =
+  for path in scanFiles(root):
+    # Read in binary-safe mode — many files are markdown/source but
+    # we don't want to choke on the occasional binary asset.
+    var data = ""
+    try:
+      data = readFile(path)
+    except IOError, OSError:
+      continue
+    if ForbiddenNeedle in data:
+      result.add(path)
 
 suite "REV-M10 dangling-reference scan":
   test "test_no_dangling_references_to_old_brief_path":
     var offenders: seq[string] = @[]
     for root in RepoRoots:
       if not dirExists(root): continue
-      for path in scanFiles(root):
-        # Read in binary-safe mode — many files are markdown/source but
-        # we don't want to choke on the occasional binary asset.
-        var data = ""
-        try:
-          data = readFile(path)
-        except IOError, OSError:
-          continue
-        if ForbiddenNeedle in data:
-          offenders.add(path)
+      offenders.add(findOffenders(root))
 
     if offenders.len > 0:
       echo "REV-M10: dangling references to legacy brief path '",
@@ -102,3 +111,26 @@ suite "REV-M10 dangling-reference scan":
       for o in offenders:
         echo "  ", o
     check offenders.len == 0
+
+  test "generated checkout-root cache references are excluded":
+    let root = createTempDir("isonim-brief-scan-generated-", "")
+    defer: removeDir(root)
+    createDir(root / ".nimcache" / "tests")
+    writeFile(root / ".nimcache" / "tests" / "generated.c", ForbiddenNeedle)
+    writeFile(root / "README.md", "Authored documentation without a legacy reference")
+    check findOffenders(root).len == 0
+
+  test "authored source documents and nested cache-named directories remain scanned":
+    let root = createTempDir("isonim-brief-scan-authored-", "")
+    defer: removeDir(root)
+    let authored = @[
+      root / "src" / "reference.nim",
+      root / "docs" / "reference.md",
+      root / "src" / ".nimcache" / "reference.nim",
+      root / "src" / ".nimcache-authored" / "reference.md"]
+    createDir(root / ".nimcache")
+    writeFile(root / ".nimcache" / "generated.c", ForbiddenNeedle)
+    for path in authored:
+      createDir(path.parentDir)
+      writeFile(path, ForbiddenNeedle)
+    check findOffenders(root).sorted() == authored.sorted()

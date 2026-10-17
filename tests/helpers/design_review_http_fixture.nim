@@ -8,11 +8,13 @@
 ## just call ``startServeAndSeed`` once and shoot HTTP at the URL it
 ## returns.
 
-import std/[json, os, osproc, posix, strtabs, strutils, times]
+import std/[json, os, osproc, posix, strtabs, strutils, times, monotimes, tempfiles]
 import std/httpclient
 
 import ./design_review_pg_fixture
 import ./daemon_ready_handshake
+import ./owned_cli_pg_fixture
+import ./owned_cli_test_capture
 import tools/isonim_review/cmd_init
 import tools/isonim_review/config
 
@@ -25,7 +27,8 @@ const MigDir* = RepoRoot / "db" / "migrations"
 type
   ServeFixture* = ref object
     pg*: PgFixture
-    proc1*: Process
+    proc1*: OwnedChild
+    stdoutLog*: string
     drainer*: DaemonStderrDrainer
     port*: int
     storePath*: string
@@ -58,6 +61,28 @@ proc runInit(cfg: ReviewConfig) =
     raise newException(IOError,
       "design_review_http_fixture: cmdInit failed")
 
+proc finishHttpDaemon(child: OwnedChild; drainer: DaemonStderrDrainer) =
+  # Preserve the initiating failure while independently draining, joining, and
+  # closing. A duplicated stderr reader must join before Process pipe close.
+  let original = getCurrentException()
+  var failure: ref Exception
+  var reaped = false
+  try:
+    discard drainDirectChild(child)
+    reaped = true
+  except Exception: failure = getCurrentException()
+  if reaped:
+    try: drainer.shutdown()
+    except Exception:
+      if failure == nil: failure = getCurrentException()
+    try: child.close()
+    except Exception:
+      if failure == nil: failure = getCurrentException()
+  if failure != nil:
+    if original == nil: raise failure
+    try: stderr.writeLine("Secondary HTTP daemon cleanup: " & failure.msg)
+    except Exception: discard
+
 proc startServeAndSeed*(): ServeFixture =
   ## Boot a fresh Postgres + apply migrations + start the daemon.
   ## Returns the fixture; caller is responsible for ``shutdown``.
@@ -65,83 +90,110 @@ proc startServeAndSeed*(): ServeFixture =
     raise newException(IOError,
       "design_review_http_fixture: build/bin/isonim-review not built — " &
       "run ``just isonim-review-build`` first")
-  let pg = newPgFixture(applyMigrations = false)
-  var cfg = defaults()
-  cfg.db.host = "127.0.0.1"
-  cfg.db.port = pg.port
-  cfg.db.database = "isonim_design_review"
-  runInit(cfg)
-
-  let storeDir = getTempDir() / "isonim_review_store_" &
-                  $((int(epochTime() * 1000)) mod 1_000_000)
-  createDir(storeDir)
-
-  # ISONIM_REVIEW_PORT=0 → daemon picks any free port via Port(0)
-  # and reports the OS-assigned port back via the ``READY <port>``
-  # stderr line (see daemon_ready_handshake.nim).  Replaces the
-  # previous TOCTOU port-probe + curl-poll pattern.
-  var environ = newStringTable(modeCaseSensitive)
-  for kv in envPairs():
-    environ[kv.key] = kv.value
-  environ["ISONIM_REVIEW_PGHOST"] = "127.0.0.1"
-  environ["ISONIM_REVIEW_PGPORT"] = $pg.port
-  environ["ISONIM_REVIEW_PORT"] = "0"
-
-  # Write a config file the daemon reads so cfg.store.path is set to
-  # our ephemeral store dir (env doesn't override it; only the TOML
-  # file does).
-  let cfgPath = getTempDir() / "isonim_review_cfg_" &
-                $((int(epochTime() * 1000)) mod 1_000_000) & ".toml"
-  writeFile(cfgPath, "[store]\npath = \"" & storeDir & "\"\n")
-
-  # ``poUsePath`` only — stderr stays its own pipe for the READY
-  # drainer.
-  let p = startProcess(CliPath,
-    args = @["serve", "--migrations", MigDir, "--config", cfgPath],
-    env = environ,
-    options = {poUsePath})
-
-  let drainer = startStderrDrainer(p)
-  var httpPort: int
+  var pg: PgFixture
+  var p: OwnedChild
+  var drainer: DaemonStderrDrainer
   try:
-    httpPort = waitForReady(drainer, timeoutSecs = 15.0)
-  except IOError as e:
-    drainer.shutdown()
-    try: discard kill(p.processID.Pid, SIGKILL)
-    except: discard
-    p.close()
-    raise newException(IOError, "design_review_http_fixture: " & e.msg)
+    pg = newPgFixture(applyMigrations = false)
+    var cfg = defaults()
+    cfg.db.host = "127.0.0.1"
+    cfg.db.port = pg.port
+    cfg.db.database = "isonim_design_review"
+    cfg.db.url = "postgresql://127.0.0.1:" & $pg.port & "/isonim_design_review?hostaddr=127.0.0.1"
+    runInit(cfg)
 
-  ServeFixture(
-    pg: pg, proc1: p, drainer: drainer, port: httpPort,
-    storePath: storeDir,
-    baseUrl: "http://127.0.0.1:" & $httpPort,
-  )
+    let storeDir = getTempDir() / "isonim_review_store_" &
+                    $((int(epochTime() * 1000)) mod 1_000_000)
+    createDir(storeDir)
+
+    # ISONIM_REVIEW_PORT=0 → daemon picks any free port via Port(0)
+    # and reports the OS-assigned port back via the ``READY <port>``
+    # stderr line (see daemon_ready_handshake.nim).  Replaces the
+    # previous TOCTOU port-probe + curl-poll pattern.
+    let environ = fixtureCliEnvironment(pg.port)
+    environ["ISONIM_REVIEW_PORT"] = "0"
+
+    # Write a config file the daemon reads so cfg.store.path is set to
+    # our ephemeral store dir (env doesn't override it; only the TOML
+    # file does).
+    let cfgPath = getTempDir() / "isonim_review_cfg_" &
+                  $((int(epochTime() * 1000)) mod 1_000_000) & ".toml"
+    writeFile(cfgPath, "[store]\npath = \"" & storeDir & "\"\n")
+
+    # ``poUsePath`` only — stderr stays its own pipe for the READY
+    # drainer.
+    let log = createTempFile("isonim-http-stdout-", ".log")
+    log.cfile.close()
+    let logIdentity = getFileInfo(log.path).id
+    let bash = findExe("bash", followSymlinks = false)
+    if bash.len == 0: raise newException(IOError, "Declared Bash role missing")
+    p = startOwnedChild(bash,
+      args = @["-p", "-c", "stdout=$1; shift; exec \"$@\" > \"$stdout\"",
+        "isonim-owned-http-stdout", log.path, CliPath,
+        "serve", "--migrations", MigDir, "--config", cfgPath],
+      env = environ, options = {poUsePath})
+
+    var httpPort: int
+    drainer = startStderrDrainer(p.borrowedProcessForDrainer())
+    if symlinkExists(log.path) or getFileInfo(log.path).kind != pcFile or
+        getFileInfo(log.path).id != logIdentity:
+      raise newException(IOError, "Owned daemon stdout log identity changed")
+    httpPort = waitForReady(drainer, timeoutSecs = 15.0)
+
+    result = ServeFixture(
+      pg: pg, proc1: p, drainer: drainer, stdoutLog: log.path, port: httpPort,
+      storePath: storeDir,
+      baseUrl: "http://127.0.0.1:" & $httpPort,
+    )
+  except Exception:
+    let original = getCurrentException()
+    if p != nil:
+      try: finishHttpDaemon(p, drainer)
+      except Exception: discard # Initiating object retains precedence.
+    elif drainer != nil:
+      try: drainer.shutdown()
+      except Exception: discard
+    if pg != nil:
+      try: pg.shutdown()
+      except Exception as secondary:
+        try: stderr.writeLine("Secondary Postgres cleanup: " & secondary.msg)
+        except Exception: discard
+    raise original
 
 proc shutdown*(f: ServeFixture) =
   if f == nil: return
+  let original = getCurrentException()
+  var failure: ref Exception
   if f.proc1 != nil:
-    try: discard kill(f.proc1.processID.Pid, SIGTERM)
-    except: discard
-    let deadline = epochTime() + 2.0
-    while epochTime() < deadline:
-      if not f.proc1.running(): break
-      sleep(50)
-    if f.proc1.running():
-      try: discard kill(f.proc1.processID.Pid, SIGKILL)
-      except: discard
-    discard f.proc1.waitForExit()
-    f.proc1.close()
+    try:
+      f.proc1.signalOwnedChild(SIGTERM)
+      let deadline = getMonoTime() + initDuration(seconds = 2)
+      while getMonoTime() < deadline:
+        if not f.proc1.running(): break
+        sleep(50)
+      if f.proc1.running(): f.proc1.signalOwnedChild(SIGKILL)
+    except Exception: failure = getCurrentException()
+    try: finishHttpDaemon(f.proc1, f.drainer)
+    except Exception:
+      if failure == nil: failure = getCurrentException()
     f.proc1 = nil
-  if f.drainer != nil:
-    f.drainer.shutdown()
+    f.drainer = nil
+  elif f.drainer != nil:
+    try: f.drainer.shutdown()
+    except Exception: failure = getCurrentException()
     f.drainer = nil
   if f.pg != nil:
-    f.pg.shutdown()
+    try: f.pg.shutdown()
+    except Exception:
+      if failure == nil: failure = getCurrentException()
     f.pg = nil
   if f.storePath.len > 0:
     try: removeDir(f.storePath)
     except OSError: discard
+  if failure != nil:
+    if original == nil: raise failure
+    try: stderr.writeLine("Secondary HTTP fixture cleanup: " & failure.msg)
+    except Exception: discard
 
 # --- HTTP helpers ----------------------------------------------------------
 

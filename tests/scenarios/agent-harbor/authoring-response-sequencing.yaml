@@ -1,0 +1,43 @@
+# CLI stdout is genuinely offloaded to private files so tool-payload HTML does
+# not accidentally satisfy the unchanged assistant-row response predicate. The
+# host independently queries every actual operation/capture; no output is edited.
+# Official Rust model playback is the only simulated boundary. Real scoped
+# terminal/CLI/RPC/compiler/catalog/mounted browser and explicit close stay real.
+# RESPONSE is a model-behavior fixture, never edited observed output. The fixed
+# nonce tests response collection ordering, NOT native Claude memory.
+name: IsoNim deferred substantive response collection
+acp:
+  capabilities:
+    loadSession: true
+timeline:
+  - sessionStart:
+      sessionId: isonim-authoring-sequencing
+  - userInputs:
+      - relativeTime: 0
+        input: Author the requested Hero example through real editor tools.
+  - agentToolUse:
+      toolName: runCmd
+      args:
+        cwd: "@PROJECT@"
+        cmd: |
+          set -eu
+          phase=$(cat '@ARTIFACTS@/phase')
+          '@PYTHON@' '@BARRIER@' '@PRIVATE@/original-handoff.json'
+          environment=$('@PYTHON@' -c 'import json,sys;print(json.load(open(sys.argv[1]))["environment"])' '@PRIVATE@/original-handoff.json')
+          tool() { '@PYTHON@' '@WRAPPER@' --environment "$environment" -- '@CLI@' editor "$@"; }
+          case "$phase" in
+            first-start) state=1 ;;
+            second-start) state=2 ;;
+            *) exit 71 ;;
+          esac
+          tool create-story 'Hero pane' --variant example --state "$state" --command-id "create-$state" --wait --timeout-ms 60000 > "@PRIVATE@/sequence-result-$state-1.json"
+          tool build --command-id "build-$state" --wait --timeout-ms 60000 > "@PRIVATE@/sequence-result-$state-2.json"
+          tool open-story "Hero pane / example $state" --command-id "open-$state" --wait > "@PRIVATE@/sequence-result-$state-3.json"
+          '@PYTHON@' '@BARRIER@' "@ARTIFACTS@/authoring-capture-ready-$state"
+          tool capture-preview --command-id "capture-$state" --wait > "@PRIVATE@/sequence-result-$state-4.json"
+  - llmResponse:
+      - assistant:
+          - relativeTime: 0
+            content: "@RESPONSE@"
+expect:
+  stopReason: end_turn

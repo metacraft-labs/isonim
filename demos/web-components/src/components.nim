@@ -331,8 +331,8 @@ registerCustomElement(
         discard listContainer.appendChild(emptyMsg.Node)
       else:
         let ul = document.createElement("ul")
-        for t in currentTasks:
-          let task = t
+        # A call gives both event closures their own task environment.
+        proc appendTask(task: TodoItem) =
           let li = document.createElement("li")
           if task.done:
             li.className = "completed"
@@ -376,6 +376,8 @@ registerCustomElement(
           li.appendChild(removeBtn.Node)
 
           ul.appendChild(li.Node)
+        for task in currentTasks:
+          appendTask(task)
         discard listContainer.appendChild(ul.Node)
 
     wrapper.appendChild(listContainer.Node)

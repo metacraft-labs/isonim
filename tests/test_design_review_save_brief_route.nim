@@ -27,10 +27,12 @@
 ##
 ## No mocks — real daemon, real PG, real ``std/httpclient`` POST.
 
-import std/[json, os, osproc, posix, strtabs, strutils, times, unittest]
+import std/[json, os, osproc, posix, strtabs, strutils, times, unittest, monotimes, options]
 import std/httpclient
 
 import helpers/design_review_pg_fixture
+import helpers/owned_cli_pg_fixture
+import helpers/owned_cli_test_capture
 import tools/isonim_review/cmd_init
 import tools/isonim_review/config as review_config
 
@@ -47,7 +49,7 @@ const MigDir = RepoRoot / "db" / "migrations"
 type
   SaveBriefFixture = ref object
     pg: PgFixture
-    proc1: Process
+    proc1: OwnedChild
     port: int
     storePath: string
     workspaceRoot: string
@@ -143,6 +145,15 @@ proc startSaveBriefFixture(workspaceUnderRoot = false;
       "save_brief_route: build/bin/isonim-review missing — " &
       "run ``just isonim-review-build`` first")
   let pg = newPgFixture(applyMigrations = false)
+  var transferred = false
+  defer:
+    if not transferred:
+      let original = getCurrentException()
+      try: pg.shutdown()
+      except Exception:
+        if original == nil: raise
+        try: stderr.writeLine("Secondary failed-start Postgres cleanup: " & getCurrentExceptionMsg())
+        except Exception: discard
 
   let tempRoot = getTempDir() / "isonim_save_brief_" &
                   $((int(epochTime() * 1000)) mod 1_000_000)
@@ -191,11 +202,7 @@ proc startSaveBriefFixture(workspaceUnderRoot = false;
   createDir(storeDir)
 
   let httpPort = pickFreeTcpPort()
-  var environ = newStringTable(modeCaseSensitive)
-  for kv in envPairs():
-    environ[kv.key] = kv.value
-  environ["ISONIM_REVIEW_PGHOST"] = "127.0.0.1"
-  environ["ISONIM_REVIEW_PGPORT"] = $pg.port
+  let environ = fixtureCliEnvironment(pg.port)
   environ["ISONIM_REVIEW_PORT"] = $httpPort
   if extraBriefsDirs.len > 0:
     environ["ISONIM_REVIEW_EXTRA_BRIEFS_DIRS"] = extraBriefsDirs
@@ -215,32 +222,35 @@ proc startSaveBriefFixture(workspaceUnderRoot = false;
   initCfg.db.host = "127.0.0.1"
   initCfg.db.port = pg.port
   initCfg.db.database = "isonim_design_review"
+  initCfg.db.url = "postgresql://127.0.0.1:" & $pg.port & "/isonim_design_review?hostaddr=127.0.0.1"
   let nullOut = open("/dev/null", fmWrite)
   defer: nullOut.close()
   if cmdInit(initCfg, MigDir, nullOut) != 0:
     raise newException(IOError, "save_brief_route: cmdInit failed")
 
-  let p = startProcess(CliPath,
+  let p = startOwnedChild(CliPath,
     args = @["serve", "--migrations", MigDir, "--config", cfgPath],
     env = environ,
-    options = {poUsePath, poStdErrToStdOut})
+    options = {poParentStreams})
+  defer:
+    if not transferred: finishOwnedDaemon(p)
 
   let curl = findExe("curl")
   var ok = false
-  let deadline = epochTime() + 10.0
-  while epochTime() < deadline:
-    let r = execCmdEx(curl & " -s --max-time 1 -w '|%{http_code}' " &
-        "http://127.0.0.1:" & $httpPort & "/health")
-    if r.exitCode == 0 and r.output.contains("|200"):
+  let deadline = getMonoTime() + initDuration(seconds = 10)
+  while getMonoTime() < deadline:
+    let r = runOwnedCapture(curl, workingDir = "", args = @["-s", "--max-time", "1",
+      "-w", "|%{http_code}", "http://127.0.0.1:" & $httpPort & "/health"],
+      deadline = some(deadline))
+    if r.code == 0 and r.output.contains("|200"):
       ok = true
       break
     sleep(150)
   if not ok:
-    discard kill(p.processID.Pid, SIGKILL)
-    p.close()
     raise newException(IOError,
       "save_brief_route: daemon failed to boot on port " & $httpPort)
 
+  transferred = true
   SaveBriefFixture(
     pg: pg, proc1: p, port: httpPort,
     storePath: storeDir,
@@ -252,22 +262,30 @@ proc startSaveBriefFixture(workspaceUnderRoot = false;
 
 proc shutdown(f: SaveBriefFixture) =
   if f == nil: return
+  let original = getCurrentException()
+  var failure: ref Exception
   if f.proc1 != nil:
-    try: discard kill(f.proc1.processID.Pid, SIGTERM)
-    except: discard
-    let deadline = epochTime() + 2.0
-    while epochTime() < deadline:
-      if not f.proc1.running(): break
-      sleep(50)
-    if f.proc1.running():
-      try: discard kill(f.proc1.processID.Pid, SIGKILL)
-      except: discard
-    discard f.proc1.waitForExit()
-    f.proc1.close()
+    try:
+      f.proc1.signalOwnedChild(SIGTERM)
+      let deadline = getMonoTime() + initDuration(seconds = 2)
+      while getMonoTime() < deadline:
+        if not f.proc1.running(): break
+        sleep(50)
+      if f.proc1.running(): f.proc1.signalOwnedChild(SIGKILL)
+    except Exception: failure = getCurrentException()
+    try: finishOwnedDaemon(f.proc1)
+    except Exception:
+      if failure == nil: failure = getCurrentException()
     f.proc1 = nil
   if f.pg != nil:
-    f.pg.shutdown()
+    try: f.pg.shutdown()
+    except Exception:
+      if failure == nil: failure = getCurrentException()
     f.pg = nil
+  if failure != nil:
+    if original == nil: raise failure
+    try: stderr.writeLine("Secondary save-brief cleanup: " & failure.msg)
+    except Exception: discard
 
 proc httpPostFixture(baseUrl, path, body: string):
     tuple[code: int; body: string] =

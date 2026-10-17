@@ -75,7 +75,12 @@ jobs:
         # single Nim. The former `nim-version` matrix (stable/2.0.0 via
         # jiro4989/setup-nim-action) does not apply here — Nim is fixed
         # by the flake, so we matrix only over the runner classes.
-        runner: [[self-hosted, linux, x64], [self-hosted, linux, arm64], [self-hosted, macos, arm64]]
+        runner:
+          [
+            [self-hosted, linux, x64],
+            [self-hosted, linux, arm64],
+            [self-hosted, macos, arm64],
+          ]
     runs-on: ${{ matrix.runner }}
     steps:
       # The manifest repo holding the workspace locks (metacraft-manifests) is
@@ -105,6 +110,16 @@ jobs:
       - uses: actions/checkout@v4
         with:
           submodules: recursive
+
+      - name: Bind the checkout Git templates before entering the owning shell
+        if: runner.os == 'Linux' || runner.os == 'macOS'
+        run: |
+          checkout_git="$(command -v git)" || exit $?
+          case "$checkout_git" in /*) ;; *) exit 1 ;; esac
+          nix shell --inputs-from . nixpkgs#python3 --command "$BASH" -c '
+            test "$(command -v git)" = "$1" || exit 1
+            exec python3 nix/checkout-git-templates.py capture
+          ' isonim-checkout-capture "$checkout_git"
 
       # Replaces the bare `nixos-modules/.github/setup-nix` this job used to
       # run. `env-flavor: nix` gets the same Nix install and substituter trust

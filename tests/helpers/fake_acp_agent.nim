@@ -210,6 +210,16 @@ proc main() =
       inc sessionCounter
       nextSessionId = getEnv("FAKE_ACP_SESSION_ID",
         "fake-session-" & $sessionCounter)
+      let log = getEnv("FAKE_ACP_CONTENT_LOG")
+      if log.len > 0:
+        let file = open(log, fmAppend)
+        # Absence is recorded as JSON null; the actual session/new request stays
+        # untouched. Serializing a nil JsonNode would crash disabled-role tests.
+        let metadata = node{"params", "_meta"}
+        let recordedMetadata = if metadata == nil: newJNull() else: metadata
+        file.write($( %* {"source": "role_instructions", "sessionId": nextSessionId,
+          "metadata": recordedMetadata}) & "\n")
+        file.close()
       emitResponse(idNode, %*{"sessionId": nextSessionId})
     of "session/prompt":
       let params = node{"params"}

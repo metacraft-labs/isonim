@@ -1,0 +1,31 @@
+name: IsoNim persistent REST conversation
+description: Two turns in one running ACP scenario process behind the real Harbor REST service.
+tags: [isonim, persistent-session, rest]
+acp:
+  capabilities:
+    loadSession: true
+timeline:
+  - sessionStart:
+      sessionId: isonim-persistent-session
+  - userInputs:
+      - relativeTime: 0
+        input: "Remember the token ISONIM_CONTEXT_7309 for this conversation. Reply only with that token."
+        expectedResponse:
+          sessionId: isonim-persistent-session
+          stopReason: end_turn
+  - llmResponse:
+      - assistant:
+          - relativeTime: 10
+            content: ISONIM_CONTEXT_7309
+  - userInputs:
+      - relativeTime: 0
+        input: "What token did I ask you to remember? Reply with that token and the instruction sentinel from your system instructions. Do not read files or use tools."
+        expectedResponse:
+          sessionId: isonim-persistent-session
+          stopReason: end_turn
+  - llmResponse:
+      - assistant:
+          - relativeTime: 10
+            content: ISONIM_CONTEXT_7309 ISONIM_SYSTEM_9182
+expect:
+  stopReason: end_turn

@@ -1,0 +1,239 @@
+#!/usr/bin/env python3
+"""Real process/file boundary for instance-scoped provider environment delivery.
+
+No mocks: invoke the production wrapper, real Python child and actual private
+files. Verify exact args/ordinary credentials, scoped control vars, CLI PATH,
+browser-authority stripping and refusal of broad permissions or unknown values.
+Route text fixtures exercise the pure recognizer without replacing OS APIs;
+official Harbor scenarios separately prove the actual isolated network callback.
+This proves launch delivery; model tool use is covered by the scenario suites.
+"""
+import json
+import http.client
+import os
+from pathlib import Path
+import subprocess
+import sys
+import tempfile
+import queue
+import threading
+import time
+import unittest
+import importlib.util
+
+REPO = Path(__file__).resolve().parents[1]
+WRAPPER = REPO / "tools/editor_agent_env.py"
+module_spec = importlib.util.spec_from_file_location("editor_agent_env", WRAPPER)
+wrapper_module = importlib.util.module_from_spec(module_spec)
+module_spec.loader.exec_module(wrapper_module)
+def application_data(home):
+    home = Path(home).resolve()
+    return (home/'Library/Application Support' if sys.platform == 'darwin'
+            else home/'.local/share')
+
+SLIRP_ROUTES = ("Iface Destination Gateway Flags RefCnt Use Metric Mask MTU Window IRTT\n"
+    "tap0 00000000 0202000A 0003 0 0 0 00000000 0 0 0\n"
+    "tap0 0002000A 00000000 0001 0 0 0 00FFFFFF 0 0 0\n")
+
+class ControlEnvironmentTests(unittest.TestCase):
+    def test_only_observed_supported_slirp_loopback_is_translated(self):
+        for host in ('127.0.0.1','localhost','[::1]'):
+            endpoint='https://'+host+':4321/callback/path?preserve=yes#fragment'
+            self.assertEqual(wrapper_module.endpoint_for_routes(endpoint,SLIRP_ROUTES,'linux'),
+                'https://10.0.2.2:4321/callback/path?preserve=yes#fragment')
+        literal='http://127.0.0.1:4321/path'
+        for routes in ('', 'malformed', SLIRP_ROUTES.replace('Iface','invalid'),
+                        SLIRP_ROUTES.replace('0202000A','0102000A'),
+                        SLIRP_ROUTES.replace('tap0','eth0'), SLIRP_ROUTES.replace('0003','0001'),
+                        SLIRP_ROUTES.replace('00FFFFFF','0000FFFF'),
+                        SLIRP_ROUTES+SLIRP_ROUTES.splitlines()[1]+'\n'):
+            self.assertEqual(wrapper_module.endpoint_for_routes(literal,routes,'linux'),literal)
+        for endpoint in ('http://editor.example:4321/path', 'http://192.168.1.2:4321',
+                          'http://10.0.2.2:4321', 'http://localhost:invalid',
+                          'http://localhost', 'http://user@localhost:4321', 'broken['):
+            self.assertEqual(wrapper_module.endpoint_for_routes(endpoint,SLIRP_ROUTES,'linux'),endpoint)
+        self.assertEqual(wrapper_module.endpoint_for_routes(literal,SLIRP_ROUTES,'darwin'),literal)
+
+    def test_production_preparation_is_private_atomic_and_refuses_symlink_ancestors(self):
+        with tempfile.TemporaryDirectory() as home:
+            home = str(Path(home).resolve())
+            base = application_data(home)/'isonim/editor-control'
+            path = base/'isonim-control-test-session/environment.json'
+            values = {key: 'scope-' + key for key in wrapper_module.ALLOWED}
+            values['ISONIM_EDITOR_ENDPOINT'] = 'http://127.0.0.1:4321'
+            command = [sys.executable, str(WRAPPER), '--prepare', str(path)]
+            def prepare():
+                return subprocess.run(command, input=json.dumps(values), env={**os.environ,'HOME':home},
+                    text=True, capture_output=True, timeout=5)
+            result = prepare()
+            self.assertEqual(result.returncode, 0, result.stderr)
+            self.assertEqual(json.loads(path.read_text()), values)
+            self.assertEqual(path.stat().st_mode & 0o777, 0o600)
+            for directory in (base.parent,base,path.parent):
+                self.assertEqual(directory.stat().st_mode & 0o777, 0o700)
+            self.assertEqual(prepare().returncode, 0, 'Real same-session retry must publish safely')
+            self.assertEqual(list(path.parent.glob('.environment-*')), [])
+            outside = Path(home)/'outside';outside.mkdir()
+            path.unlink();path.parent.rmdir();path.parent.symlink_to(outside, target_is_directory=True)
+            self.assertEqual(prepare().returncode, 2)
+            self.assertEqual(list(outside.iterdir()), [], 'Preparation must not follow the session symlink')
+            path.parent.unlink();path.parent.mkdir(mode=0o755)
+            self.assertEqual(prepare().returncode, 2, 'Broad private directory must fail closed')
+            self.assertEqual(list(path.parent.iterdir()), [])
+
+    def test_launch_refuses_symlink_file_and_directory_before_child_execution(self):
+        with tempfile.TemporaryDirectory() as temp:
+            temp = str(Path(temp).resolve())
+            root = Path(temp);real = root/'real';real.mkdir(mode=0o700)
+            path = real/'environment.json'
+            path.write_text(json.dumps({key:'private-value' for key in wrapper_module.ALLOWED}));path.chmod(0o600)
+            link = real/'link.json';link.symlink_to(path)
+            ancestor = root/'linked';ancestor.symlink_to(real, target_is_directory=True)
+            for candidate in (link, ancestor/'environment.json'):
+                result = subprocess.run([sys.executable,str(WRAPPER),'--environment',str(candidate),'--',
+                    sys.executable,'-c','raise SystemExit(37)'],capture_output=True,text=True,timeout=5)
+                self.assertEqual(result.returncode, 2)
+                self.assertNotIn('private-value', result.stderr)
+
+    def test_cleanup_preserves_sibling_and_refuses_redirected_directory(self):
+        with tempfile.TemporaryDirectory() as home:
+            home = str(Path(home).resolve())
+            base = application_data(home)/'isonim/editor-control'
+            paths = [base/('isonim-control-'+name)/'environment.json' for name in ('one','two')]
+            values = {key:'private-scope' for key in wrapper_module.ALLOWED}
+            for path in paths:
+                result = subprocess.run([sys.executable,str(WRAPPER),'--prepare',str(path)],
+                    input=json.dumps(values),env={**os.environ,'HOME':home},capture_output=True,text=True,timeout=5)
+                self.assertEqual(result.returncode,0,result.stderr)
+            result = subprocess.run([sys.executable,str(WRAPPER),'--cleanup',str(paths[0])],
+                capture_output=True,text=True,timeout=5)
+            self.assertEqual(result.returncode,0,result.stderr)
+            self.assertFalse(paths[0].parent.exists())
+            self.assertEqual(json.loads(paths[1].read_text()),values)
+            paths[0].parent.symlink_to(paths[1].parent,target_is_directory=True)
+            result = subprocess.run([sys.executable,str(WRAPPER),'--cleanup',str(paths[0])],
+                capture_output=True,text=True,timeout=5)
+            self.assertEqual(result.returncode,2)
+            self.assertEqual(json.loads(paths[1].read_text()),values,'Cleanup must never follow a session link')
+
+    def test_private_fifo_is_refused_promptly_before_child_execution(self):
+        # Real POSIX FIFO, not a mocked file API. Both supported workstation
+        # platforms must refuse nonregular handoffs before any blocking read.
+        with tempfile.TemporaryDirectory() as temp:
+            root = Path(temp).resolve()
+            path = root/'environment.json'
+            os.mkfifo(path, 0o600)
+            marker = root/'child-executed'
+            started = time.monotonic()
+            result = subprocess.run([sys.executable,str(WRAPPER),'--environment',str(path),'--',
+                sys.executable,'-c','from pathlib import Path; import sys; Path(sys.argv[1]).touch()',str(marker)],
+                capture_output=True,text=True,timeout=5)
+            self.assertEqual(result.returncode,2)
+            self.assertLess(time.monotonic()-started,2.5,'Invalid handoff must refuse promptly')
+            self.assertFalse(marker.exists(),'Invalid handoff must not execute the child')
+            self.assertEqual(result.stdout,'')
+            self.assertNotIn('ISONIM_EDITOR_TOKEN',result.stderr)
+
+    def test_failed_scoped_provider_creation_removes_private_handoff(self):
+        with tempfile.TemporaryDirectory() as temp:
+            temp = str(Path(temp).resolve())
+            config = Path(temp) / 'editor.toml'
+            config.write_text('[agent]\nbackend="custom"\ncommand="/definitely-missing-isonim-test-provider"\nprimer_enabled=false\n')
+            env = {**os.environ, 'TMPDIR': temp, 'HOME': temp, 'ISONIM_REVIEW_PORT': '0',
+                    'ISONIM_EDITOR_BROWSER_BOOTSTRAP': 'test-browser-bootstrap'}
+            env.pop('ISONIM_ACP_AGENT_CMD', None)
+            daemon = subprocess.Popen([str(REPO / 'build/bin/isonim-review'), 'serve',
+                '--agent-routes-only', '--config', str(config)], env=env,
+                stdout=subprocess.DEVNULL, stderr=subprocess.PIPE, text=True)
+            ready = queue.Queue()
+            reader_errors = queue.Queue()
+            def drain():
+                try:
+                    for line in daemon.stderr:
+                        if line.startswith('READY '): ready.put(int(line.split()[1]))
+                except Exception as error:
+                    reader_errors.put(error)
+            reader = threading.Thread(target=drain)
+            reader.start()
+            try:
+                port = ready.get(timeout=10)
+                def post(path, body, token):
+                    connection = http.client.HTTPConnection('127.0.0.1', port, timeout=5)
+                    try:
+                        connection.request('POST', path, json.dumps(body),
+                            {'Content-Type':'application/json','X-IsoNim-Control':token})
+                        response = connection.getresponse()
+                        return response.status, json.loads(response.read())
+                    finally: connection.close()
+                _, registration = post('/api/editor/rpc', {'jsonrpc':'2.0','id':1,
+                    'method':'editor.register','params':{'workspace':'failure','state':{'revision':0}}},
+                    'test-browser-bootstrap')
+                browser = registration['result']
+                scope = {key:browser[key] for key in ['workspace','instance','epoch']}
+                status, failure = post('/api/agent/sessions', {'editor':scope}, browser['browserToken'])
+                # The wrapper process starts, but its provider exec fails before
+                # initialize. The existing handler classifies this as init failure.
+                self.assertEqual(status, 500)
+                self.assertEqual(failure['error'], 'agent_init_failed')
+                self.assertEqual(list((application_data(temp)/'isonim/editor-control').glob('isonim-control-*')), [])
+                _, response = post('/api/editor/rpc', {'jsonrpc':'2.0','id':2,
+                    'method':'editor.state','params':scope}, browser['controlToken'])
+                self.assertIn('result', response, 'Failed provider must not crash the daemon')
+            finally:
+                daemon.terminate()
+                daemon.wait(timeout=10)
+                reader.join(timeout=5)
+                self.assertFalse(reader.is_alive(), 'Daemon stderr reader must drain and exit')
+                daemon.stderr.close()
+                self.assertTrue(reader_errors.empty(), 'Background reader failed: ' + repr(list(reader_errors.queue)))
+                self.assertIsNotNone(daemon.returncode)
+
+    def test_real_child_has_only_agent_scope_and_preserves_provider_arguments(self):
+        with tempfile.TemporaryDirectory() as temp:
+            temp = str(Path(temp).resolve())
+            path = Path(temp) / "private.json"
+            values = {
+                "ISONIM_EDITOR_ENDPOINT": "http://127.0.0.1:1234",
+                "ISONIM_EDITOR_WORKSPACE": "workspace", "ISONIM_EDITOR_INSTANCE": "tab-one",
+                "ISONIM_EDITOR_EPOCH": "epoch-one", "ISONIM_EDITOR_TOKEN": "scoped-agent-value",
+                "ISONIM_EDITOR_CLI_DIR": str(REPO / "build/bin"),
+            }
+            path.write_text(json.dumps(values)); path.chmod(0o600)
+            code = "import json,os,sys; print(json.dumps({'args':sys.argv[1:], 'env':dict(os.environ)}))"
+            args = ["", "spaces and punctuation: ' \" $()", "unicode α", "line\nbreak"]
+            env = {**os.environ, "ISONIM_EDITOR_BROWSER_BOOTSTRAP": "browser-only-marker",
+                    "AH_HOME": str(Path(temp) / "real-ah-home"), "UNRELATED_PROVIDER_SETTING": "kept"}
+            result = subprocess.run([sys.executable, str(WRAPPER), "--environment", str(path), "--",
+                sys.executable, "-c", code, *args], env=env, capture_output=True, text=True, timeout=5)
+            self.assertEqual(result.returncode, 0, result.stderr)
+            data = json.loads(result.stdout)
+            self.assertEqual(data["args"], args)
+            for key, value in values.items(): self.assertEqual(data["env"][key], value)
+            self.assertNotIn("ISONIM_EDITOR_BROWSER_BOOTSTRAP", data["env"])
+            self.assertEqual(data["env"]["AH_HOME"], env["AH_HOME"])
+            self.assertEqual(data["env"]["UNRELATED_PROVIDER_SETTING"], "kept")
+            self.assertTrue(data["env"]["PATH"].startswith(values["ISONIM_EDITOR_CLI_DIR"] + os.pathsep))
+            self.assertNotIn(values["ISONIM_EDITOR_TOKEN"], result.stderr)
+
+    def test_broad_permissions_fail_before_child_execution(self):
+        with tempfile.TemporaryDirectory() as temp:
+            temp = str(Path(temp).resolve())
+            path = Path(temp) / "public.json"
+            path.write_text("{}"); path.chmod(0o644)
+            result = subprocess.run([sys.executable, str(WRAPPER), "--environment", str(path), "--",
+                sys.executable, "-c", "raise SystemExit(37)"], capture_output=True, text=True, timeout=5)
+            self.assertEqual(result.returncode, 2)
+            self.assertIn("mode 0600", result.stderr)
+
+    def test_unknown_environment_is_rejected(self):
+        with tempfile.TemporaryDirectory() as temp:
+            temp = str(Path(temp).resolve())
+            path = Path(temp) / "private.json"
+            path.write_text('{"ISONIM_EDITOR_BROWSER_BOOTSTRAP":"must-not-copy"}'); path.chmod(0o600)
+            result = subprocess.run([sys.executable, str(WRAPPER), "--environment", str(path), "--",
+                sys.executable, "-c", "raise SystemExit(37)"], capture_output=True, text=True, timeout=5)
+            self.assertEqual(result.returncode, 2)
+            self.assertIn("invalid scoped environment", result.stderr)
+            self.assertNotIn("must-not-copy", result.stderr)
+
+if __name__ == "__main__": unittest.main()
