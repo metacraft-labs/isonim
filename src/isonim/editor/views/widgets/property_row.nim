@@ -55,9 +55,16 @@ import std/[math, options, strutils]
 
 import isonim/core/signals
 import isonim/core/computation
+import isonim/core/owner
+import isonim/core/batch
 import isonim/dsl/ui
 import isonim/editor/types
+import isonim/editor/viewmodels
+import isonim/editor/views/choice_row
 import isonim/editor/views/widgets/choice_group
+import isonim/editor/views/widgets/property_commit
+import isonim/editor/views/widgets/anchored_popover
+import isonim/editor/views/widgets/color_popover
 import isonim/editor/views/widgets/variable_chip
 
 # --------------------------------------------------------------------------- #
@@ -143,6 +150,54 @@ type
       ## variable name is clicked. Parents route this to the inline
       ## variable editor (Phase E.4). Nil is a no-op.
 
+    # --- Phase G+1: source-edit writeback ------------------------- #
+    #
+    # Everything below is optional. A config that leaves these zeroed
+    # renders and behaves exactly as it did before Phase G+1 — which
+    # is what ``tests/test_editor_widget_property_row.nim`` and any
+    # non-inspector caller get. The inspector sections fill them from
+    # ``property_commit.inspectorRowWiring``.
+    authoredValue*: proc(): string {.closure.}
+    numericCssValue*: proc(value: string): string {.closure.}
+    numericFormat*: proc(value: float): string {.closure.}
+    readOnlyReason*: proc(): string {.closure.}
+    cssProperty*: string
+      ## The CSS property this row edits (``"padding-top"``,
+      ## ``"font-size"``, …). The row had no representation for this
+      ## at all: the property name existed only inside the three
+      ## strings a section passed to the binding helpers, so the row
+      ## could scrub and format a value but could not name what to
+      ## commit it as. Empty means "not an inspector row".
+    scopeOptions*: proc(): seq[CompactChoiceOption]
+      ## Thunk of source-scope chips for the bind/scope slot. The spec
+      ## (``isonim-specs/isonim-editor.md`` §"Property row pattern",
+      ## ~1010) defines slot 3 as **Bind/scope** — "the source-scope
+      ## mini-picker (Local / Shared / Component schema / Theme
+      ## token)". Phases D–H shipped the bind half (the ``◇``) and not
+      ## the scope half, which is why the sections had nowhere to say
+      ## which source an edit should modify. Nil keeps the slot
+      ## bind-only.
+    sourceScopeChoices*: proc(): seq[SourceScopeChoice]
+      ## Available destinations, visible before a scope choice also commits.
+    selectedSourceScope*: proc(): Option[SourceScopeChoice]
+      ## Read-only metadata from the exact scope that commits this row.
+    commitMessage*: Signal[string]
+    commitRejected*: Signal[int]
+      ## See `InspectorRowWiring.commitRejected`: a refused commit must put
+      ## the control back, or the panel keeps showing a value the document
+      ## does not have.
+      ## Refusal / diagnostic text for the last commit attempt,
+      ## rendered inline under the row. Nil means the row has no
+      ## message surface — acceptable only for rows that cannot
+      ## commit at all.
+    onAsyncCommitValue*: proc(value: string; done: proc(ok: bool) {.closure.}) {.closure.}
+    onCommitValue*: proc(value: string)
+      ## Called with the row's value rendered as the CSS string that
+      ## should reach the source-edit pipeline (``"24px"``,
+      ## ``"#F8FAFC"``, ``"flex"``, …). Distinct from ``onChange``,
+      ## which stays a bare notification so existing callers are
+      ## unaffected: both fire, ``onCommitValue`` first.
+
 # --------------------------------------------------------------------------- #
 #  Visual contract — pulled from the spec's editing-control reference.
 # --------------------------------------------------------------------------- #
@@ -158,6 +213,14 @@ const
   # column is now a 22px-wide gutter that holds the (short) property
   # name in textMuted, and the longer property names just truncate.
   prLabelWidth   = "22px"
+  # The label lives INSIDE the field well now, as Figma's does: `X 0`,
+  # `W 600`, `Opacity 100%`. The outside gutter it replaced was the source
+  # of two problems at once -- it was 22px, too narrow for any real word, so
+  # most rows rendered anonymous; and widening it to 88px ate the value
+  # column and pushed every segmented control into a popup.
+  #
+  # A well that carries its own label needs neither.
+  prFieldLabelWidth = "auto"
   prBindWidth    = "20px"
   prMoreWidth    = "18px"
 
@@ -165,9 +228,9 @@ const
   # reference (was 26px). The wrapper carries a 2px vertical gutter
   # (was 4px) so adjacent rows pack tighter — the reference looks
   # 1.5x denser than the prior Phase D contract.
-  prRowMinHeight = "24px"
+  prRowMinHeight = "28px"
   prRowGap       = "6px"
-  prRowVPad      = "2px"
+  prRowVPad      = "3px"
 
   # Input visual contract. Phase H: drop the visible border so the
   # input reads as a quiet rounded pill (Figma's pattern); the input
@@ -176,9 +239,9 @@ const
   prInputBg      = "#1A1B22"
   prInputColor   = "#F1F5F9"
   prInputBorder  = "1px solid transparent"
-  prInputRadius  = "4px"
-  prInputPadding = "3px 8px"
-  prInputHeight  = "24px"
+  prInputRadius  = "6px"
+  prInputPadding = "0 8px"
+  prInputHeight  = "28px"
   prInputFont    = "12px"
 
   # Inline prefix glyph (the "X" / "Y" / "W" / "H" letter sitting
@@ -195,6 +258,11 @@ const
 
   # Unit chip. Phase H: dropped background — the chip reads as plain
   # muted text right-aligned inside the input. Figma's pattern.
+  # Refusal line. Amber rather than red: a refused edit is a
+  # correctable condition (wrong scope, read-only workspace), not a
+  # crash, and the palette reserves red for review errors.
+  prMessageColor = "#FBBF24"
+
   prUnitBg       = "transparent"
   prUnitColor    = "#6B6F80"
   prUnitPadding  = "0 2px"
@@ -232,10 +300,21 @@ proc formatNumber*(value: float): string =
   ## without a trailing ``.0`` (so the user sees ``150`` not
   ## ``150.0``); otherwise we round to 2 decimal places to keep the
   ## input box compact.
+  if abs(value) > 9.0e15:
+    return $value
   if abs(value - float(int(value))) < 1e-6:
     return $int(value)
   let rounded = round(value * 100.0) / 100.0
   result = $rounded
+
+proc formatExactNumber*(value: float): string =
+  ## Roundtrip representation for numeric rows whose precision is authored data.
+  ## Nim's native/JS float conversion retains every significant binary64 digit.
+  result = $value
+  if result.endsWith(".0"): result.setLen(result.len - 2)
+
+proc formatNumeric(cfg: PropertyRowConfig; value: float): string =
+  if cfg.numericFormat != nil: cfg.numericFormat(value) else: formatExactNumber(value)
 
 # ----- Tiny math expression evaluator ------------------------------------ #
 #
@@ -262,6 +341,7 @@ proc skipSpaces(p: var MathParser) =
     inc p.pos
 
 proc parseExpr(p: var MathParser): Option[float]
+proc parsePower(p: var MathParser): Option[float]
 
 proc parseNumber(p: var MathParser): Option[float] =
   skipSpaces(p)
@@ -279,6 +359,13 @@ proc parseNumber(p: var MathParser): Option[float] =
       sawDigit = true
   if not sawDigit:
     return none(float)
+  if p.peek in {'e', 'E'} and p.pos + 1 < p.src.len and
+      p.src[p.pos + 1] in {'0'..'9', '+', '-'}:
+    inc p.pos
+    if p.peek in {'+', '-'}: inc p.pos
+    let exponentStart = p.pos
+    while p.peek in {'0'..'9'}: inc p.pos
+    if exponentStart == p.pos: return none(float)
   try:
     return some(parseFloat(p.src[start ..< p.pos]))
   except ValueError:
@@ -290,19 +377,43 @@ proc parsePrimary(p: var MathParser): Option[float] =
     inc p.pos
     let inner = parseExpr(p)
     skipSpaces(p)
-    if p.peek == ')': inc p.pos
+    if p.peek != ')': return none(float)
+    inc p.pos
     return inner
   parseNumber(p)
 
+proc parsePower(p: var MathParser): Option[float] =
+  ## `^`, right-associative, binding tighter than `*` and `/`.
+  ##
+  ## Figma's fields accept it (help.figma.com, "Adjust alignment, rotation,
+  ## position and dimensions": the operators are `+ - * / ^` and
+  ## parentheses), and a designer typing `2^4` for a spacing step is doing
+  ## something the field should understand rather than reject.
+  let base = parsePrimary(p)
+  if base.isNone: return base
+  skipSpaces(p)
+  if p.peek != '^': return base
+  inc p.pos
+  # Right-associative: `2^3^2` is 2^(3^2), which is what every other
+  # calculator does.
+  let exponent = parsePower(p)
+  if exponent.isNone: return none(float)
+  try:
+    let value = pow(base.get, exponent.get)
+    if value != value: return none(float)  # NaN, e.g. (-8) ^ 0.5
+    some(value)
+  except CatchableError:
+    none(float)
+
 proc parseMulDiv(p: var MathParser): Option[float] =
-  var left = parsePrimary(p)
+  var left = parsePower(p)
   if left.isNone: return left
   while true:
     skipSpaces(p)
     let op = p.peek
     if op != '*' and op != '/': break
     inc p.pos
-    let right = parsePrimary(p)
+    let right = parsePower(p)
     if right.isNone: return none(float)
     case op
     of '*': left = some(left.get * right.get)
@@ -328,22 +439,59 @@ proc parseExpr(p: var MathParser): Option[float] =
     else: discard
   left
 
-proc evalMathExpr*(raw: string): Option[float] =
-  ## Evaluate ``raw`` as a tiny arithmetic expression. Returns
-  ## ``some(value)`` on success; ``none`` when the input is empty or
-  ## malformed. The parser drops a trailing unit suffix
-  ## (``"100+50px"`` → ``150``) so the value input can carry the
-  ## currently-active unit on the chip without the user having to
-  ## strip it before editing.
+func scrubSpeed*(dy: float): float =
+  ## Figma's four scrub speeds, chosen by how far the pointer has moved
+  ## VERTICALLY from where the drag began:
   ##
-  ## A bare number (``"150"``) is the trivial case. The exposed
-  ## visibility lets the test fixture exercise the parser directly
-  ## without round-tripping through a DOM event.
-  if raw.len == 0:
-    return none(float)
-  var p = MathParser(src: raw, pos: 0)
+  ##   near the row   2x     coarse, for getting somewhere
+  ##   a little below 1x     the default
+  ##   further        1/2    fine
+  ##   furthest       1/4    finest
+  ##
+  ## Vertical distance rather than a modifier because a drag is already
+  ## holding the mouse button: the hand is committed, and reaching for a
+  ## key mid-drag is the thing this replaces. Documented at
+  ## help.figma.com "Adjust alignment, rotation, position and dimensions".
+  let d = abs(dy)
+  if d < 16.0: 2.0
+  elif d < 48.0: 1.0
+  elif d < 96.0: 0.5
+  else: 0.25
+
+func scrubbedValue*(startValue, dx, dy, step: float; shift, alt: bool;
+                    minValue, maxValue: Option[float]): float =
+  ## Where a scrub drag has taken the value. Pure, so the arithmetic is
+  ## testable without a pointer.
+  ##
+  ## Right increases and left decreases, which is the direction every
+  ## design tool uses and the direction the previous implementation did not
+  ## have at all -- it added one step per `mousemove` whichever way the
+  ## pointer went.
+  var unit = step
+  if unit <= 0.0: unit = 1.0
+  # Shift is Figma's "big nudge"; Alt is this editor's own fine step, kept
+  # because the arrow keys already spell it that way.
+  if shift: unit *= 10.0
+  if alt: unit /= 10.0
+  result = startValue + dx * unit * scrubSpeed(dy)
+  if minValue.isSome and result < minValue.get: result = minValue.get
+  if maxValue.isSome and result > maxValue.get: result = maxValue.get
+
+proc parseNumericInput*(raw: string): tuple[value: Option[float], unit: string] =
+  ## Parse the entire expression, retaining an explicit CSS unit for validation
+  ## by the row. Arbitrary suffixes, unmatched syntax and infinities are refused.
+  var p = MathParser(src: raw.strip(), pos: 0)
   let value = parseExpr(p)
-  value
+  if value.isNone: return
+  skipSpaces(p)
+  let suffix = p.src[p.pos ..< p.src.len]
+  if suffix notin ["", "px", "em", "rem", "%", "vw", "vh", "vmin", "vmax", "deg", "rad", "grad", "turn", "s", "ms", "fr", "ch", "ex"]:
+    return
+  if classify(value.get) in {fcNan, fcInf, fcNegInf}: return
+  result = (value, suffix)
+
+proc evalMathExpr*(raw: string): Option[float] =
+  parseNumericInput(raw).value
 
 # --------------------------------------------------------------------------- #
 #  PropertyRowConfig constructors — keeps the call sites in
@@ -363,16 +511,42 @@ proc propertyRowNumeric*(name: string;
                          onBindRequest: proc(x, y, w, h: float) = nil;
                          onMore: proc() = nil;
                          onDetachRequest: proc() = nil;
-                         onVariableNameClick: proc() = nil): PropertyRowConfig =
+                         onVariableNameClick: proc() = nil;
+                         wiring = InspectorRowWiring()): PropertyRowConfig =
+  var supportedUnits = units
+  if wiring.cssProperty.len > 0:
+    var codes = @["px", "em", "rem", "%", "vw", "vh", "ch", "deg", "ms", "s", ""]
+    if wiring.numericCssValue != nil:
+      codes = @[]
+      for option in units: codes.add option.code
+    for code in codes:
+      if wiring.cssProperty == "opacity" and code != "%": continue
+      let displayed = "1" & code
+      let raw = if wiring.numericCssValue != nil: wiring.numericCssValue(displayed) else: displayed
+      let prop = PropertyInfo(name: wiring.cssProperty, directStyleAllowed: true)
+      let parsed = parseCssPropertyValue(wiring.cssProperty, raw)
+      if validateCssPropertyValue(prop, PropertyEditRequest(property: wiring.cssProperty,
+          newValue: raw, kind: pekCss), parsed).len > 0: continue
+      var present = false
+      for available in supportedUnits:
+        if available.code == code: present = true
+      if not present: supportedUnits.add PropertyUnitOption(label: (if code.len == 0: "number" else: code), code: code)
   PropertyRowConfig(
     name: name, kind: prkNumeric,
-    numericValue: value, numericUnit: unit, availableUnits: units,
+    numericValue: value, numericUnit: unit, availableUnits: supportedUnits,
     numericMin: minValue, numericMax: maxValue, numericStep: step,
     binding: binding,
     bindingReactive: bindingReactive,
     onChange: onChange, onBindRequest: onBindRequest, onMore: onMore,
     onDetachRequest: onDetachRequest,
-    onVariableNameClick: onVariableNameClick)
+    onVariableNameClick: onVariableNameClick,
+    numericCssValue: wiring.numericCssValue, numericFormat: wiring.numericFormat,
+    cssProperty: wiring.cssProperty, authoredValue: wiring.authoredValue, readOnlyReason: wiring.readOnlyReason,
+    scopeOptions: wiring.scopeOptions, sourceScopeChoices: wiring.sourceScopeChoices,
+    selectedSourceScope: wiring.selectedSourceScope,
+    commitMessage: wiring.commitMessage,
+    commitRejected: wiring.commitRejected,
+    onCommitValue: wiring.commit, onAsyncCommitValue: wiring.commitAsync)
 
 proc propertyRowColor*(name: string;
                        value: Signal[string];
@@ -383,7 +557,8 @@ proc propertyRowColor*(name: string;
                        onBindRequest: proc(x, y, w, h: float) = nil;
                        onMore: proc() = nil;
                        onDetachRequest: proc() = nil;
-                       onVariableNameClick: proc() = nil): PropertyRowConfig =
+                       onVariableNameClick: proc() = nil;
+                       wiring = InspectorRowWiring()): PropertyRowConfig =
   PropertyRowConfig(
     name: name, kind: prkColor,
     colorValue: value, alphaValue: alpha,
@@ -391,7 +566,13 @@ proc propertyRowColor*(name: string;
     bindingReactive: bindingReactive,
     onChange: onChange, onBindRequest: onBindRequest, onMore: onMore,
     onDetachRequest: onDetachRequest,
-    onVariableNameClick: onVariableNameClick)
+    onVariableNameClick: onVariableNameClick,
+    cssProperty: wiring.cssProperty, authoredValue: wiring.authoredValue, readOnlyReason: wiring.readOnlyReason,
+    scopeOptions: wiring.scopeOptions, sourceScopeChoices: wiring.sourceScopeChoices,
+    selectedSourceScope: wiring.selectedSourceScope,
+    commitMessage: wiring.commitMessage,
+    commitRejected: wiring.commitRejected,
+    onCommitValue: wiring.commit, onAsyncCommitValue: wiring.commitAsync)
 
 proc propertyRowChoice*(name: string;
                         value: Signal[string];
@@ -402,7 +583,8 @@ proc propertyRowChoice*(name: string;
                         onBindRequest: proc(x, y, w, h: float) = nil;
                         onMore: proc() = nil;
                         onDetachRequest: proc() = nil;
-                        onVariableNameClick: proc() = nil): PropertyRowConfig =
+                        onVariableNameClick: proc() = nil;
+                       wiring = InspectorRowWiring()): PropertyRowConfig =
   PropertyRowConfig(
     name: name, kind: prkChoice,
     choiceValue: value, choiceOptions: options,
@@ -410,7 +592,13 @@ proc propertyRowChoice*(name: string;
     bindingReactive: bindingReactive,
     onChange: onChange, onBindRequest: onBindRequest, onMore: onMore,
     onDetachRequest: onDetachRequest,
-    onVariableNameClick: onVariableNameClick)
+    onVariableNameClick: onVariableNameClick,
+    cssProperty: wiring.cssProperty, authoredValue: wiring.authoredValue, readOnlyReason: wiring.readOnlyReason,
+    scopeOptions: wiring.scopeOptions, sourceScopeChoices: wiring.sourceScopeChoices,
+    selectedSourceScope: wiring.selectedSourceScope,
+    commitMessage: wiring.commitMessage,
+    commitRejected: wiring.commitRejected,
+    onCommitValue: wiring.commit, onAsyncCommitValue: wiring.commitAsync)
 
 proc propertyRowText*(name: string;
                       value: Signal[string];
@@ -420,7 +608,8 @@ proc propertyRowText*(name: string;
                       onBindRequest: proc(x, y, w, h: float) = nil;
                       onMore: proc() = nil;
                       onDetachRequest: proc() = nil;
-                      onVariableNameClick: proc() = nil): PropertyRowConfig =
+                      onVariableNameClick: proc() = nil;
+                      wiring = InspectorRowWiring()): PropertyRowConfig =
   PropertyRowConfig(
     name: name, kind: prkText,
     textValue: value,
@@ -428,7 +617,13 @@ proc propertyRowText*(name: string;
     bindingReactive: bindingReactive,
     onChange: onChange, onBindRequest: onBindRequest, onMore: onMore,
     onDetachRequest: onDetachRequest,
-    onVariableNameClick: onVariableNameClick)
+    onVariableNameClick: onVariableNameClick,
+    cssProperty: wiring.cssProperty, authoredValue: wiring.authoredValue, readOnlyReason: wiring.readOnlyReason,
+    scopeOptions: wiring.scopeOptions, sourceScopeChoices: wiring.sourceScopeChoices,
+    selectedSourceScope: wiring.selectedSourceScope,
+    commitMessage: wiring.commitMessage,
+    commitRejected: wiring.commitRejected,
+    onCommitValue: wiring.commit, onAsyncCommitValue: wiring.commitAsync)
 
 proc propertyRowBoolean*(name: string;
                          value: Signal[bool];
@@ -438,7 +633,8 @@ proc propertyRowBoolean*(name: string;
                          onBindRequest: proc(x, y, w, h: float) = nil;
                          onMore: proc() = nil;
                          onDetachRequest: proc() = nil;
-                         onVariableNameClick: proc() = nil): PropertyRowConfig =
+                         onVariableNameClick: proc() = nil;
+                         wiring = InspectorRowWiring()): PropertyRowConfig =
   PropertyRowConfig(
     name: name, kind: prkBoolean,
     booleanValue: value,
@@ -446,7 +642,13 @@ proc propertyRowBoolean*(name: string;
     bindingReactive: bindingReactive,
     onChange: onChange, onBindRequest: onBindRequest, onMore: onMore,
     onDetachRequest: onDetachRequest,
-    onVariableNameClick: onVariableNameClick)
+    onVariableNameClick: onVariableNameClick,
+    cssProperty: wiring.cssProperty, authoredValue: wiring.authoredValue, readOnlyReason: wiring.readOnlyReason,
+    scopeOptions: wiring.scopeOptions, sourceScopeChoices: wiring.sourceScopeChoices,
+    selectedSourceScope: wiring.selectedSourceScope,
+    commitMessage: wiring.commitMessage,
+    commitRejected: wiring.commitRejected,
+    onCommitValue: wiring.commit, onAsyncCommitValue: wiring.commitAsync)
 
 # --------------------------------------------------------------------------- #
 #  Mount.
@@ -486,8 +688,10 @@ proc inlinePrefixGlyph*(name: string): string =
   of "pad bottom": return "B"
   of "pad left": return "L"
   of "rotation": return "\xE2\x86\xBB" # U+21BB CLOCKWISE OPEN CIRCLE ARROW
-  of "opacity": return "%"
-  of "corner radius": return "\xE2\x97\x90" # U+25D0 CIRCLE WITH LEFT HALF BLACK
+  # `opacity` and `corner radius` used to return "%" and a half-filled
+  # circle. The first put a per-cent sign next to a per-cent unit and the
+  # second was unreadable; both now fall through to their names, which the
+  # field has room for.
   else:
     return ""
 
@@ -501,6 +705,20 @@ proc currentUnitLabel(config: PropertyRowConfig): string =
   let active = config.numericUnit.val
   if active.label.len > 0: return active.label
   if config.availableUnits.len > 0: return config.availableUnits[0].label
+  ""
+
+proc currentUnitCode*(config: PropertyRowConfig): string =
+  ## The CSS unit token for the active unit chip — the ``code`` side
+  ## of ``PropertyUnitOption``, as opposed to ``currentUnitLabel``'s
+  ## display side. ``"deg"`` vs. ``"°"``, and ``""`` for the ``auto``
+  ## sentinel. Phase G+1 needs the code: the chip may read ``°`` but
+  ## the source-edit pipeline must receive ``deg``.
+  if config.kind != prkNumeric:
+    return ""
+  let active = config.numericUnit.val
+  if active.label.len > 0 or active.code.len > 0:
+    return active.code
+  if config.availableUnits.len > 0: return config.availableUnits[0].code
   ""
 
 proc nextUnit(config: PropertyRowConfig): PropertyUnitOption =
@@ -537,11 +755,12 @@ proc measureAnchorRect*[E](node: E): tuple[x, y, w, h: float] =
     {.emit: ["""
       (function (el) {
         if (!el || !el.getBoundingClientRect) return;
+        el.focus({preventScroll: true});
         var rc = el.getBoundingClientRect();
         var sx = window.scrollX || 0;
         var sy = window.scrollY || 0;
-        """, rx, """ = rc.left + sx;
-        """, ry, """ = rc.top + sy;
+        """, rx, """ = rc.left;
+        """, ry, """ = rc.top;
         """, rw, """ = rc.width;
         """, rh, """ = rc.height;
       })(""", node, """);
@@ -549,6 +768,66 @@ proc measureAnchorRect*[E](node: E): tuple[x, y, w, h: float] =
     result = (rx, ry, rw, rh)
   else:
     discard node
+
+proc attachNumericKeySteps*[R, E](r: R; inputNode: E; step: float) =
+  ## Arrow-key stepping on a numeric input.
+  ##
+  ## The old inspector had this (``component_edit.nim``'s
+  ## ``attachPrimitiveInputKeys``); the section rows did not, so
+  ## ArrowUp on a property row did nothing at all. Same contract as
+  ## the old one: ArrowUp / ArrowDown move the value by one step,
+  ## Shift multiplies the step by 10, Alt divides it by 10, and the
+  ## unit suffix (if the user typed one) is preserved.
+  ##
+  ## It is a ``{.emit.}`` block for the same reason the old one was:
+  ## the renderer's ``addEventListener`` hands Nim a ``proc()`` with
+  ## no event object, so there is no way to read ``event.key`` or the
+  ## modifier flags from the Nim side. Rather than invent a callback
+  ## shape for it, the handler rewrites ``input.value`` and dispatches
+  ## a ``change`` event — which the Nim-side commit handler above is
+  ## already listening for. The parse, the clamp, the signal write and
+  ## the source-edit commit all stay in Nim; only the key decoding is
+  ## in JS.
+  ##
+  ## Headless builds get nothing, which is correct: there is no key
+  ## event to decode and the headless tests drive the value signal and
+  ## the commit path directly.
+  when defined(js):
+    {.emit: ["""
+      (function () {
+        const input = """, inputNode, """;
+        if (!input || typeof input.addEventListener !== 'function' || input.__isonimRowKeyStepsInstalled) return;
+        input.__isonimRowKeyStepsInstalled = true;
+        input.addEventListener('focus', function () { if (typeof input.select === 'function') input.select(); });
+        const baseStep = Number(""", step, """) || 1;
+        function split(raw) {
+          const text = String(raw || '').trim();
+          const match = text.match(/^([+-]?(?:\d+\.?\d*|\.\d+)(?:[eE][+-]?\d+)?)(px|em|rem|%|vw|vh|vmin|vmax|deg|rad|grad|turn|s|ms|fr|ch|ex)?$/);
+          if (!match) return null;
+          return { number: Number(match[1]), unit: match[2] || '' };
+        }
+        function format(number, unit) {
+          return String(number) + unit;
+        }
+        input.addEventListener('keydown', (event) => {
+          if (event.key !== 'ArrowUp' && event.key !== 'ArrowDown') return;
+          const parsed = split(input.value);
+          if (!parsed) return;
+          let magnitude = baseStep;
+          if (event.shiftKey) magnitude = baseStep * 10;
+          else if (event.altKey) magnitude = baseStep / 10;
+          const delta = event.key === 'ArrowUp' ? magnitude : -magnitude;
+          input.value = format(parsed.number + delta, parsed.unit);
+          input.dispatchEvent(new Event('input', { bubbles: true }));
+          input.dispatchEvent(new Event('change', { bubbles: true }));
+          event.preventDefault();
+        });
+      })();
+    """].}
+  else:
+    discard r
+    discard inputNode
+    discard step
 
 proc mountPropertyRow*[R, E](r: R; parent: E;
                               config: PropertyRowConfig): E =
@@ -570,16 +849,52 @@ proc mountPropertyRow*[R, E](r: R; parent: E;
   let isLinked = cfg.binding.isSome
 
   var labelNode: E
+  var fieldLabelNode: E
   var valueSlot: E
+  var scopeSlot: E
   var bindNode: E
   var moreNode: E
+  var messageNode: E
 
+  # Phase G+1: the root is now a column — the 4-slot line, plus a
+  # refusal line beneath it. The root keeps every
+  # ``data-property-row*`` attribute it carried before, and the slot
+  # elements keep theirs, so the widget's attribute contract is
+  # unchanged; the headless fixture resolves them with a recursive
+  # ``findByAttr`` and does not care about nesting depth.
+  #
+  # A refusal needs somewhere to land. Without it the only honest
+  # option is to drop the message, and a property row that swallows
+  # "this workspace is read-only" is the exact defect this phase
+  # exists to remove.
+  # A row is ANONYMOUS when nothing on it says what it edits. Typography was
+  # the proof: font size, line height, letter spacing and paragraph spacing
+  # rendered as four unlabelled numbers in a column (19, 30.4, -0.01, 0),
+  # identifiable only by hovering each one for its `title`.
+  #
+  # Choice rows were exempted at first, on the theory that the value names
+  # the row -- "Visible", "Normal". It does not hold: decoration, transform
+  # and list style all read **None**, so three consecutive rows said the
+  # same word and named nothing. The value only identifies a row when its
+  # vocabulary happens to be unique, which is not a property anything
+  # enforces.
+  #
+  # So every kind writes its name except where a glyph already carries it.
+  # Figma gets away without labels here because it has an icon for each of
+  # these; we do not, and an unlabelled control is worse than a wider one.
+  let writesOwnLabel = inlinePrefixGlyph(cfg.name).len == 0
   let root = ui(r):
     tdiv(
       `data-property-row` = slug,
       `data-property-row-kind` = kindStr,
       `data-property-row-name` = cfg.name,
       `data-property-row-linked` = (if isLinked: "true" else: "false"),
+      `data-property-row-css-property` = cfg.cssProperty,
+      display = "flex",
+      flex_direction = "column",
+      width = "100%"):
+     tdiv(
+      `data-property-row-line` = "true",
       display = "flex",
       flex_direction = "row",
       align_items = "center",
@@ -595,19 +910,19 @@ proc mountPropertyRow*[R, E](r: R; parent: E;
       # so headless scrub-drag tests remain green. We render the
       # name as the slot's accessible title (hover tooltip) for long
       # labels that don't fit in the inline prefix.
+      # The scrub handle. It carries no text and takes no width: the label
+      # it used to hold now sits inside the field well, and the drag target
+      # moved with it (the well's own label is `cursor: col-resize`).
+      #
+      # The element stays because `data-property-row-slot="label-scrubber"`
+      # is the contract the scrub tests and the headless fixture resolve,
+      # and because a zero-width span is a cheaper thing to keep than a
+      # rename is to land across every probe.
       span(
         ref = labelNode,
         `data-property-row-slot` = "label-scrubber",
         title = cfg.name,
-        font_size = prLabelFont,
-        color = prLabelColor,
-        white_space = "nowrap",
-        overflow = "hidden",
-        text_overflow = "ellipsis",
-        min_width = prLabelWidth,
-        max_width = prLabelWidth,
-        cursor = (if cfg.kind == prkNumeric: "col-resize" else: "default"),
-        user_select = "none")
+        display = "none")
       tdiv(
         ref = valueSlot,
         `data-property-row-slot` = "value",
@@ -617,6 +932,17 @@ proc mountPropertyRow*[R, E](r: R; parent: E;
         gap = "4px",
         min_width = "0",
         overflow = "hidden")
+      # Bind/scope slot, left half: the source-scope mini-picker the
+      # spec prescribes (isonim-editor.md ~1010). Empty and
+      # zero-width when the row has no ``scopeOptions`` thunk, so a
+      # non-inspector row lays out exactly as before.
+      tdiv(
+        ref = scopeSlot,
+        `data-property-row-slot` = "scope",
+        display = "flex",
+        align_items = "center",
+        min_width = "0",
+        overflow = "visible")
       tdiv(
         ref = bindNode,
         role = "button",
@@ -657,12 +983,89 @@ proc mountPropertyRow*[R, E](r: R; parent: E;
         text "\xE2\x8B\xAE"
 
   # ------------------------------------------------------------------------- #
+  #  Phase G+1: the commit path.
+  #
+  #  ``commitValue`` is what makes a keystroke reach the source-edit
+  #  pipeline. Every kind renders its current state as the CSS string
+  #  the property should take and hands it to ``cfg.onCommitValue``;
+  #  the section built that closure from
+  #  ``property_commit.inspectorRowWiring``, which resolves the scope
+  #  and dispatches to ``editCssProperty`` or
+  #  ``editSharedDesignProperty``.
+  #
+  #  ``onChange`` still fires, unchanged, after it. The two are
+  #  separate because ``onChange`` is a bare notification with no
+  #  value and 37 existing call sites; making it carry the commit
+  #  would have changed its meaning under every one of them.
+  # ------------------------------------------------------------------------- #
+
+  proc currentCssValue(): string =
+    ## The row's value as CSS text. For a numeric row that is the
+    ## number plus the active unit chip's code — the unit lives in a
+    ## separate signal from the magnitude, so ``24`` and ``px`` have
+    ## to be rejoined here or the pipeline receives a unitless length.
+    case cfg.kind
+    of prkNumeric:
+      let displayed = formatNumeric(cfg, cfg.numericValue.val) & currentUnitCode(cfg)
+      if cfg.numericCssValue != nil: cfg.numericCssValue(displayed) else: displayed
+    of prkColor:
+      cfg.colorValue.val
+    of prkChoice:
+      cfg.choiceValue.val
+    of prkText:
+      cfg.textValue.val
+    of prkBoolean:
+      if cfg.booleanValue.val: "true" else: "false"
+
+  var rowAlive = true
+  var valueSlotGeneration = 0
+  onCleanup(proc() = rowAlive = false)
+  proc commitValue(restore: proc() {.closure.} = nil) =
+    ## Commit the row's current value, and put the control back if the
+    ## pipeline refuses it.
+    ##
+    ## `restore` is supplied by the caller because only the caller still
+    ## holds the previous value: every kind's input handler writes the new
+    ## value into its signal BEFORE committing, so by the time we are here
+    ## the old one is gone. A refused edit that leaves the typed value in
+    ## the field makes the panel disagree with the document -- grip showed
+    ## `42` in Font size while the element stayed at `34`, with a one-line
+    ## message the eye slides past as the only correction.
+    if not rowAlive: return
+    if cfg.readOnlyReason != nil and cfg.readOnlyReason().len > 0:
+      if restore != nil: restore()
+      return
+    if cfg.onAsyncCommitValue != nil:
+      let submittedGeneration = valueSlotGeneration
+      cfg.onAsyncCommitValue(currentCssValue(), proc(ok: bool) =
+        # A native result belongs to the submitted target. Rebuilt selection
+        # controls must not receive an old draft's rollback or notification.
+        if not rowAlive or submittedGeneration != valueSlotGeneration: return
+        if not ok:
+          if restore != nil: restore()
+        elif cfg.onChange != nil: cfg.onChange())
+      return
+    let hadRejections =
+      if cfg.commitRejected != nil: cfg.commitRejected.val else: 0
+    if cfg.onCommitValue != nil:
+      cfg.onCommitValue(currentCssValue())
+    if cfg.commitRejected != nil and
+       cfg.commitRejected.val != hadRejections:
+      if restore != nil:
+        restore()
+      return
+    if cfg.onChange != nil:
+      cfg.onChange()
+
+  # ------------------------------------------------------------------------- #
   #  Value-slot content per kind. When ``binding.isSome`` we render a
   #  "linked chip" placeholder instead of the kind-specific control
   #  so Phase E.2 can upgrade the visual without touching this widget.
   # ------------------------------------------------------------------------- #
 
   proc buildValueSlot(activeBinding: Option[VariableBinding]) =
+    inc valueSlotGeneration
+    var literalInput: E
     ## VBIND-M2: (re)build the value slot for the current binding
     ## state. Called once for the static path, or from a render
     ## effect for the reactive (hot-swap) path so the chip vs.
@@ -725,17 +1128,29 @@ proc mountPropertyRow*[R, E](r: R; parent: E;
             # mirroring the Figma reference. Hidden when no prefix is
             # configured for this property name (long names like
             # "Overflow" render without a glyph).
-            if prefix.len > 0:
-              span(
-                `data-property-row-prefix` = "true",
-                `aria-hidden` = "true",
-                min_width = prPrefixWidth,
-                color = prPrefixColor,
-                font_size = prPrefixFont,
-                user_select = "none",
-                flex_shrink = "0",
-                white_space = "nowrap"):
-                text prefix
+            # The field's own label, inside the well, as Figma's are: `X 0`,
+            # `W 600`, `Opacity 100%`. It is also the SCRUB TARGET -- the
+            # drag handle now sits where the name is, which is where a hand
+            # reaches for it, rather than in a gutter outside the control.
+            span(
+              ref = fieldLabelNode,
+              `data-property-row-prefix` = "true",
+              `data-property-row-field-label` = "true",
+              title = cfg.name,
+              color = prPrefixColor,
+              font_size = prPrefixFont,
+              user_select = "none",
+              flex_shrink = "0",
+              white_space = "nowrap",
+              overflow = "hidden",
+              text_overflow = "ellipsis",
+              max_width = "58%",
+              cursor = (if cfg.kind == prkNumeric: "col-resize"
+                        else: "default")):
+              # A one- or two-letter glyph where the catalogue has one (X, Y,
+              # W, H) because Figma uses those too and they read faster than
+              # the word; the full name otherwise.
+              text (if prefix.len > 0: prefix else: cfg.name)
             input(
               ref = inputNode,
               `data-property-row-input` = "true",
@@ -771,7 +1186,29 @@ proc mountPropertyRow*[R, E](r: R; parent: E;
               flex_shrink = "0"):
               text currentUnitLabel(cfg)
         r.appendChild(valueSlot, row)
-        r.setInputValue(inputNode, formatNumber(cfg.numericValue.val))
+        literalInput = inputNode
+        let unparsedSource = createSignal("")
+        if cfg.authoredValue != nil:
+          createRenderEffect proc() =
+            let source = cfg.authoredValue()
+            if source.len == 0: return
+            let parsed = parseNumericInput(source)
+            if parsed.value.isSome:
+              # Unitless zero is a valid CSS length; retain the field's current
+              # length unit for its next real gesture instead of treating it as
+              # an unsupported expression.
+              var supported = parsed.unit.len == 0 and parsed.value.get == 0
+              for unit in cfg.availableUnits:
+                if unit.code == parsed.unit:
+                  cfg.numericUnit.val = unit
+                  supported = true
+                  break
+              if supported:
+                unparsedSource.val = ""
+                cfg.numericValue.val = parsed.value.get
+              else: unparsedSource.val = source
+            else: unparsedSource.val = source
+        r.setInputValue(inputNode, formatNumeric(cfg, cfg.numericValue.val))
 
         # Reactive bind — when ``numericValue`` mutates externally the
         # input mirrors it (e.g. variable updates, undo). When the user
@@ -779,36 +1216,63 @@ proc mountPropertyRow*[R, E](r: R; parent: E;
         # math expression back through ``numericValue.val``.
         createRenderEffect proc() =
           let v = cfg.numericValue.val
-          r.setInputValue(inputNode, formatNumber(v))
+          let displayed = if unparsedSource.val.len > 0: unparsedSource.val else: formatNumeric(cfg, v)
+          r.setInputValue(inputNode, displayed)
+          r.setAttribute(inputNode, "data-committed-value", displayed)
 
         createRenderEffect proc() =
           r.setTextContent(unitNode, currentUnitLabel(cfg))
 
+        var valueSlotActive = true
+        onCleanup(proc() = valueSlotActive = false)
         let commit = proc() =
+          if not valueSlotActive: return
           let raw = r.inputValue(inputNode)
-          let parsed = evalMathExpr(raw)
-          if parsed.isSome:
-            var v = parsed.get
+          let parsed = parseNumericInput(raw)
+          var nextUnit = cfg.numericUnit.val
+          var supported = parsed.unit.len == 0
+          for unit in cfg.availableUnits:
+            if parsed.unit.len > 0 and unit.code == parsed.unit:
+              nextUnit = unit
+              supported = true
+          if parsed.value.isSome and supported:
+            var v = parsed.value.get
             if cfg.numericMin.isSome and v < cfg.numericMin.get:
               v = cfg.numericMin.get
             if cfg.numericMax.isSome and v > cfg.numericMax.get:
               v = cfg.numericMax.get
+            let priorValue = cfg.numericValue.val
+            let priorUnit = cfg.numericUnit.val
+            let priorRaw = unparsedSource.val
+            if v == priorValue and nextUnit.code == priorUnit.code:
+              r.setInputValue(inputNode, formatNumeric(cfg, v))
+              return
+            unparsedSource.val = ""
+            cfg.numericUnit.val = nextUnit
             cfg.numericValue.val = v
-            r.setInputValue(inputNode, formatNumber(v))
-            if cfg.onChange != nil: cfg.onChange()
+            r.setInputValue(inputNode, formatNumeric(cfg, v))
+            commitValue(proc() =
+              cfg.numericValue.val = priorValue
+              cfg.numericUnit.val = priorUnit
+              unparsedSource.val = priorRaw
+              r.setInputValue(inputNode, formatNumeric(cfg, priorValue)))
           else:
             # Reject garbage — restore the previous value so the input
             # never displays an unparseable string after losing focus.
-            r.setInputValue(inputNode, formatNumber(cfg.numericValue.val))
+            r.setInputValue(inputNode, formatNumeric(cfg, cfg.numericValue.val))
         r.addEventListener(inputNode, "change", commit)
         r.addEventListener(inputNode, "blur", commit)
+        attachNumericKeySteps(r, inputNode, cfg.numericStep)
 
         let cycleUnit = proc() =
+          if not valueSlotActive: return
           let nxt = nextUnit(cfg)
+          let priorUnit = cfg.numericUnit.val
+          if nxt.code == priorUnit.code: return
           cfg.numericUnit.val = nxt
-          if cfg.onChange != nil: cfg.onChange()
+          commitValue(proc() = cfg.numericUnit.val = priorUnit)
         r.addEventListener(unitNode, "click", cycleUnit)
-        r.addEventListener(unitNode, "keydown", cycleUnit)
+        installPopoverTrigger(unitNode)
 
         # ---- Scrub-drag on the label -------------------------------- #
         #
@@ -818,26 +1282,130 @@ proc mountPropertyRow*[R, E](r: R; parent: E;
         # ``mouseup`` disarms. The Nim-side handlers update the signal
         # on every move so callers can observe the value transition
         # without leaving the test process.
+        # Scrub-drag on the label. Figma's model: drag right to increase,
+        # left to decrease, with four speeds chosen by how far the pointer
+        # has strayed vertically.
+        var active = true
         var dragArmed = false
-        let scrubStart = proc() =
-          dragArmed = true
-        let scrubMove = proc() =
+        var dragStartX = 0.0
+        var dragStartY = 0.0
+        var dragStartValue = 0.0
+        var dragMoved = false
+
+        let applyScrub = proc(x, y: float; shift, alt: bool) =
           if not dragArmed: return
-          var step = cfg.numericStep
-          if step <= 0.0: step = 1.0
-          var v = cfg.numericValue.val + step
-          if cfg.numericMin.isSome and v < cfg.numericMin.get:
-            v = cfg.numericMin.get
-          if cfg.numericMax.isSome and v > cfg.numericMax.get:
-            v = cfg.numericMax.get
+          let v = scrubbedValue(dragStartValue,
+            x - dragStartX, y - dragStartY,
+            cfg.numericStep, shift, alt,
+            cfg.numericMin, cfg.numericMax)
+          dragMoved = v != dragStartValue
           cfg.numericValue.val = v
-          r.setInputValue(inputNode, formatNumber(v))
-          if cfg.onChange != nil: cfg.onChange()
-        let scrubEnd = proc() =
+          r.setInputValue(inputNode, formatNumeric(cfg, v))
+
+        let scrubStart = proc(x, y: float; shift, alt: bool) =
+          if not active or unparsedSource.val.len > 0:
+            if cfg.commitMessage != nil: cfg.commitMessage.val = "Type a numeric value to replace this expression."
+            return
+          dragArmed = true
+          dragMoved = false
+          dragStartX = x
+          dragStartY = y
+          dragStartValue = cfg.numericValue.val
+        let scrubEnd = proc(x, y: float; shift, alt: bool) =
+          if not dragArmed: return
           dragArmed = false
-        r.addEventListener(labelNode, "mousedown", scrubStart)
-        r.addEventListener(labelNode, "mousemove", scrubMove)
-        r.addEventListener(labelNode, "mouseup", scrubEnd)
+          # ONE commit, at the end.
+          #
+          # The previous version committed on every `mousemove`, which was
+          # survivable while saving was manual and is not now: a scrub
+          # across a 400px panel would stage and write several hundred
+          # edits. The signal updates live so the preview follows the
+          # pointer; the source is written once, when the hand stops.
+          if dragMoved:
+            commitValue(proc() =
+              cfg.numericValue.val = dragStartValue
+              r.setInputValue(inputNode, formatNumeric(cfg, dragStartValue)))
+        # On the in-field label, and on the legacy gutter node too: the
+        # gutter is display:none now, but the headless scrub tests resolve
+        # `label-scrubber` and firing at it must still drive the drag.
+        let cancelScrub = proc() =
+          if not dragArmed: return
+          dragArmed = false
+          cfg.numericValue.val = dragStartValue
+          r.setInputValue(inputNode, formatNumeric(cfg, dragStartValue))
+        onCleanup(proc() =
+          cancelScrub()
+          active = false)
+        when defined(js):
+          let startCallback = scrubStart
+          let moveCallback = applyScrub
+          let endCallback = scrubEnd
+          let cancelCallback = cancelScrub
+          var cleanup: proc()
+          {.emit: ["""
+            """, cleanup, """ = (function(handle, input, start, move, end, cancel) {
+              if(!handle || typeof handle.addEventListener !== 'function') return function() {};
+              let pointer = null;
+              function stop(e, abort) {
+                if(pointer === null || (e.pointerId != null && e.pointerId !== pointer)) return;
+                const id = pointer; pointer = null;
+                if(abort) cancel(); else end(e.clientX, e.clientY, e.shiftKey, e.altKey);
+                if(handle.hasPointerCapture(id)) handle.releasePointerCapture(id);
+              }
+              function down(e) {
+                if(e.button !== 0 || pointer !== null) return;
+                pointer = e.pointerId;
+                handle.setPointerCapture(pointer);
+                start(e.clientX, e.clientY, e.shiftKey, e.altKey);
+                e.preventDefault();
+              }
+              function moving(e) {
+                if(e.pointerId === pointer) move(e.clientX,e.clientY,e.shiftKey,e.altKey);
+              }
+              const up = e => stop(e,false), aborted = e => stop(e,true);
+              function key(e) {
+                if(pointer === null && e.target !== input) return;
+                if(e.key === 'Escape') { aborted(e); input.value = input.getAttribute('data-committed-value') || input.value; e.preventDefault(); }
+                if(e.key === 'Enter' && e.target === input) { input.dispatchEvent(new Event('change',{bubbles:true})); e.preventDefault(); }
+              }
+              // A section header may retain focus during pointer capture and
+              // contain its keyboard events. An active drag still owns Escape.
+              function capturedKey(e) {
+                if(pointer !== null && e.key === 'Escape') key(e);
+              }
+              function blurred() { if(pointer !== null) aborted({}); }
+              handle.addEventListener('pointerdown',down);
+              handle.addEventListener('pointermove',moving);
+              handle.addEventListener('pointerup',up);
+              handle.addEventListener('pointercancel',aborted);
+              handle.addEventListener('lostpointercapture',aborted);
+              window.addEventListener('blur',blurred);
+              document.addEventListener('keydown',key);
+              document.addEventListener('keydown',capturedKey,true);
+              return function() {
+                blurred();
+                handle.removeEventListener('pointerdown',down);
+                handle.removeEventListener('pointermove',moving);
+                handle.removeEventListener('pointerup',up);
+                handle.removeEventListener('pointercancel',aborted);
+                handle.removeEventListener('lostpointercapture',aborted);
+                window.removeEventListener('blur',blurred);
+                document.removeEventListener('keydown',key);
+                document.removeEventListener('keydown',capturedKey,true);
+              };
+            })(""", fieldLabelNode, ",", inputNode, ",", startCallback, ",", moveCallback, ",", endCallback, ",", cancelCallback, ");"].}
+          onCleanup(proc() = cleanup())
+        var fallbackHandles = @[labelNode]
+        when defined(js):
+          var browserHandle = false
+          {.emit: [browserHandle, " = typeof ", fieldLabelNode, ".addEventListener === 'function';"].}
+          if not browserHandle: fallbackHandles.add fieldLabelNode
+        else: fallbackHandles.add fieldLabelNode
+        for handle in fallbackHandles:
+            r.addPointerListener(handle, "mousedown", scrubStart)
+            r.addPointerListener(handle, "mousemove", applyScrub)
+            r.addPointerListener(handle, "mouseup", scrubEnd)
+            r.addEventListener(handle, "pointercancel", cancelScrub)
 
       of prkColor:
         var swatchNode: E
@@ -852,6 +1420,17 @@ proc mountPropertyRow*[R, E](r: R; parent: E;
                 border = prInputBorder,
                 border_radius = prInputRadius,
                 overflow = "hidden"):
+            # Its name, like every other field. The swatch says "a colour";
+            # it does not say WHICH colour -- a Stroke section with two of
+            # them had one row reading `Color` in the old outside gutter and
+            # nothing at all once the gutter went.
+            span(`data-property-row-field-label` = "true",
+                  title = cfg.name,
+                  color = prPrefixColor, font_size = prPrefixFont,
+                  user_select = "none", flex_shrink = "0",
+                  white_space = "nowrap", overflow = "hidden",
+                  text_overflow = "ellipsis", max_width = "40%"):
+              text cfg.name
             tdiv(
               ref = swatchNode,
               role = "button",
@@ -898,18 +1477,51 @@ proc mountPropertyRow*[R, E](r: R; parent: E;
 
         let commit = proc() =
           let raw = r.inputValue(hexInput).strip()
-          if raw.len > 0:
-            cfg.colorValue.val = raw
-            if cfg.onChange != nil: cfg.onChange()
+          let normalized = normalizedHexColor(raw)
+          if normalized.len == 0:
+            r.setInputValue(hexInput, cfg.colorValue.val)
+            return
+          let previous = cfg.colorValue.val
+          if normalized == normalizedHexColor(previous): return
+          cfg.colorValue.val = normalized
+          commitValue(proc() =
+            cfg.colorValue.val = previous
+            r.setInputValue(hexInput, previous))
         r.addEventListener(hexInput, "change", commit)
         r.addEventListener(hexInput, "blur", commit)
 
-        let openPicker = proc() =
-          # Phase G wires the real picker — Phase D leaves a no-op
-          # marker so behaviour tests can confirm the click reached
-          # the swatch.
-          r.setAttribute(swatchNode, "data-property-row-picker-requested", "true")
-        r.addEventListener(swatchNode, "click", openPicker)
+        literalInput = hexInput
+        let colorState = createColorPopoverState()
+        discard mountColorPopover(r, valueSlot, swatchNode, colorState,
+          proc(): string = cfg.colorValue.val,
+          proc(value: string): bool =
+            if not rowAlive: return false
+            let reason = if cfg.readOnlyReason != nil: cfg.readOnlyReason() else: ""
+            if reason.len > 0:
+              colorState.diagnostic.val = "The color edit was refused. " & reason
+              return false
+            if cfg.onAsyncCommitValue != nil:
+              let submittedGeneration = valueSlotGeneration
+              colorState.pending.val = true
+              cfg.onAsyncCommitValue(value, proc(ok: bool) =
+                if not rowAlive or submittedGeneration != valueSlotGeneration: return
+                colorState.pending.val = false
+                if ok:
+                  cfg.colorValue.val = value
+                  colorState.open.val = false
+                  if cfg.onChange != nil: cfg.onChange()
+                else:
+                  colorState.diagnostic.val = "The source color edit was refused.")
+              return false
+            let rejected = if cfg.commitRejected != nil: cfg.commitRejected.val else: 0
+            # Refusal must not transiently mutate the reactive value: that
+            # rebuilds this slot and disposes the still-open error/draft UI.
+            if cfg.onCommitValue != nil: cfg.onCommitValue(value)
+            if cfg.commitRejected != nil and cfg.commitRejected.val != rejected:
+              return false
+            cfg.colorValue.val = value
+            if cfg.onChange != nil: cfg.onChange()
+            true)
 
       of prkChoice:
         var labels: seq[string] = @[]
@@ -917,42 +1529,113 @@ proc mountPropertyRow*[R, E](r: R; parent: E;
         for opt in cfg.choiceOptions:
           labels.add opt.label
           values.add opt.value
-        var initialIdx = 0
+        var initialIdx = -1
         let current = cfg.choiceValue.val
         for i in 0 ..< values.len:
           if values[i] == current:
             initialIdx = i
             break
         let vm = createSegmentedChoiceVM(labels, initialIndex = initialIdx)
+        vm.currentUnlistedLabel = createSignal("")
+        if initialIdx < 0:
+          vm.currentUnlistedLabel.val = current
+          vm.activeIndex.val = -1
+        # A choice row gets the same in-well label as a numeric one. Without
+        # it, decoration / transform / list style all read "None" and named
+        # nothing -- three consecutive rows saying the same word.
+        var choiceWrap: E
+        let wrapped = ui(r):
+          tdiv(ref = choiceWrap,
+                display = "flex", flex = "1", align_items = "center",
+                gap = "6px", min_width = "0",
+                height = prInputHeight,
+                padding = prInputPadding,
+                background_color = prInputBg,
+                border_radius = prInputRadius,
+                overflow = "hidden"):
+            span(`data-property-row-field-label` = "true",
+                  title = cfg.name,
+                  color = prPrefixColor, font_size = prPrefixFont,
+                  user_select = "none", flex_shrink = "0",
+                  white_space = "nowrap", overflow = "hidden",
+                  text_overflow = "ellipsis", max_width = "52%"):
+              text cfg.name
+        r.appendChild(valueSlot, wrapped)
         let host = ui(r):
           tdiv(
             `data-property-row-choice-host` = "true",
             display = "flex",
             flex = "1",
             align_items = "center",
+            justify_content = "flex-end",
             min_width = "0")
-        r.appendChild(valueSlot, host)
+        r.appendChild(choiceWrap, host)
         let onPick = proc(i: int) {.closure.} =
-          if i >= 0 and i < values.len:
+          if rowAlive and i >= 0 and i < values.len and values[i] != cfg.choiceValue.val:
+            let previous = cfg.choiceValue.val
             cfg.choiceValue.val = values[i]
-            if cfg.onChange != nil: cfg.onChange()
-        r.mountSegmentedChoice(host, vm, onPick, variant = cgvTransparent)
+            commitValue(proc() = cfg.choiceValue.val = previous)
+        # Segmented strips only fit while their labels do. The container
+        # clips rather than scrolls, so an overlong strip does not compress
+        # -- it slices the last option mid-word. The grip pilot showed
+        # "Auto" as "Au", "Overlay" as "O" and "Line-through" as
+        # "Line-thro". A truncated option reads as a rendering fault, and it
+        # is not clickable either.
+        #
+        # Counting options is not enough: None / Underline / Line-through is
+        # only three and still overflows, while None / Disc / Decimal fits.
+        # So estimate the width the pills need and compare it with the room
+        # the row has.
+        #
+        # The constants are CALIBRATED, not guessed. Measured in the grip
+        # pilot at the default 320px panel, where the choice host is 196px:
+        #
+        #   Visible/Hidden/Scroll/Auto      23 chars, 4 pills -> 230px
+        #   Left/Center/Right/Justify       22 chars, 4 pills -> 229px
+        #   None/Underline/Line-through     25 chars, 3 pills -> 222px
+        #   None/Disc/Decimal               15 chars, 3 pills -> 177px
+        #
+        # which fit `5.0 * chars + 34 * pills` closely, rounded UP at every
+        # step. Rounding up is the point: being wrong toward the popup costs
+        # one click, being wrong toward the strip cuts a label in half.
+        #
+        # The panel is resizable down to 200px, so a strip that just fits
+        # here will not fit there. That is the remaining gap, and it argues
+        # for the bias rather than against it.
+        var pillWidth = 0.0
+        for opt in cfg.choiceOptions:
+          pillWidth += float(opt.label.len) * 5.0 + 34.0
+        # The well holds the label now, so the pills share the field rather
+        # than the row. Measured at the default 320px panel: the choice host
+        # inside the well is ~118px once the label and the bind/more
+        # affordances have taken theirs.
+        let roomForPills = 118.0
+        if pillWidth > roomForPills:
+          r.mountChevronChoice(host, vm, onPick, variant = cgvTransparent)
+        else:
+          r.mountSegmentedChoice(host, vm, onPick, variant = cgvTransparent)
 
         # When the bound signal is updated externally, mirror the
         # selection into the VM so the segmented control stays in
         # sync.
         createRenderEffect proc() =
           let v = cfg.choiceValue.val
+          var matched = false
           for i in 0 ..< values.len:
             if values[i] == v:
+              vm.currentUnlistedLabel.val = ""
               vm.activate(i)
+              matched = true
               break
+          if not matched:
+            vm.currentUnlistedLabel.val = v
+            vm.activeIndex.val = -1
 
       of prkText:
         var inputNode: E
         let row = ui(r):
           tdiv(display = "flex", flex = "1",
-                align_items = "center",
+                align_items = "center", gap = "6px",
                 min_width = "0",
                 height = prInputHeight,
                 padding = prInputPadding,
@@ -960,6 +1643,17 @@ proc mountPropertyRow*[R, E](r: R; parent: E;
                 border = prInputBorder,
                 border_radius = prInputRadius,
                 overflow = "hidden"):
+            # Its name, like every other field. Without it Font family
+            # rendered as a bare font stack -- `-apple-system, "Segoe UI",
+            # system-u` -- overflowing a well that said nothing about what
+            # it was.
+            span(`data-property-row-field-label` = "true",
+                  title = cfg.name,
+                  color = prPrefixColor, font_size = prPrefixFont,
+                  user_select = "none", flex_shrink = "0",
+                  white_space = "nowrap", overflow = "hidden",
+                  text_overflow = "ellipsis", max_width = "46%"):
+              text cfg.name
             input(
               ref = inputNode,
               `data-property-row-input` = "true",
@@ -972,9 +1666,12 @@ proc mountPropertyRow*[R, E](r: R; parent: E;
               color = prInputColor,
               font_size = prInputFont,
               font_family = "inherit",
+              text_align = "right",
+              text_overflow = "ellipsis",
               padding = "0",
               height = "100%")
         r.appendChild(valueSlot, row)
+        literalInput = inputNode
         r.setInputValue(inputNode, cfg.textValue.val)
 
         createRenderEffect proc() =
@@ -982,10 +1679,17 @@ proc mountPropertyRow*[R, E](r: R; parent: E;
           r.setInputValue(inputNode, v)
 
         let commit = proc() =
-          cfg.textValue.val = r.inputValue(inputNode)
-          if cfg.onChange != nil: cfg.onChange()
+          if not rowAlive: return
+          let value = r.inputValue(inputNode)
+          let previous = cfg.textValue.val
+          if value == previous: return
+          cfg.textValue.val = value
+          commitValue(proc() = cfg.textValue.val = previous)
         r.addEventListener(inputNode, "change", commit)
         r.addEventListener(inputNode, "blur", commit)
+        when defined(js):
+          let textSignal = cfg.textValue
+          {.emit: ["if (typeof ", inputNode, ".addEventListener === 'function') ", inputNode, ".addEventListener('keydown', function(e) { if(e.key === 'Enter') { e.preventDefault(); ", inputNode, ".dispatchEvent(new Event('change', {bubbles:true})); } else if(e.key === 'Escape') { e.preventDefault(); e.stopPropagation(); ", inputNode, ".value = ", textSignal, ".val; } });"].}
 
       of prkBoolean:
         var checkboxNode: E
@@ -1021,45 +1725,65 @@ proc mountPropertyRow*[R, E](r: R; parent: E;
         # could collide with the Nim ``type`` keyword). Apply it via
         # ``setAttribute`` so the rendered DOM is a real checkbox.
         r.setAttribute(checkboxNode, "type", "checkbox")
-        r.setAttribute(checkboxNode, "checked",
-          if cfg.booleanValue.val: "true" else: "false")
-
         createRenderEffect proc() =
           let v = cfg.booleanValue.val
-          r.setAttribute(checkboxNode, "checked",
-            if v: "true" else: "false")
+          if v: r.setAttribute(checkboxNode, "checked", "")
+          else: r.removeAttribute(checkboxNode, "checked")
+          when defined(js):
+            {.emit: [checkboxNode, ".checked = ", v, ";"].}
           r.setAttribute(checkboxNode, "data-property-row-boolean-value",
             if v: "true" else: "false")
 
         let toggle = proc() =
           cfg.booleanValue.val = not cfg.booleanValue.val
-          if cfg.onChange != nil: cfg.onChange()
+          commitValue()
         r.addEventListener(checkboxNode, "click", toggle)
-        r.addEventListener(checkboxNode, "change", toggle)
+
+    # This watcher belongs to the current value-slot subtree. A binding or
+    # selection refresh replaces its inputs even when the readonly reason
+    # stays equal, so a row-level watcher cannot initialize the new controls.
+    if cfg.readOnlyReason != nil and literalInput != nil:
+      createRenderEffect proc() =
+        let readonly = cfg.readOnlyReason().len > 0
+        if readonly: r.setAttribute(literalInput, "readonly", "")
+        else: r.removeAttribute(literalInput, "readonly")
+        when defined(js):
+          {.emit: [literalInput, ".readOnly = ", readonly, ";"].}
 
   # ------------------------------------------------------------------------- #
   #  Build the value slot. When ``bindingReactive`` is supplied the build
   #  runs inside a render effect (VBIND-M2 hot-swap) so linking/unlinking a
   #  variable — or moving the selection to/from a bound element — swaps the
   #  chip and the literal control live, without the section re-mounting the
-  #  row. A change guard skips rebuilds when this row's binding is unchanged
-  #  (e.g. an unrelated selection change), so the literal control's listeners
-  #  are not needlessly re-wired. With no ``bindingReactive`` the slot is
-  #  built once from the static ``binding`` — byte-identical to before.
+  #  row. With no ``bindingReactive`` the slot is built once from the static
+  #  ``binding`` — byte-identical to before.
+  #
+  #  The build must run on EVERY pass of this effect, unconditionally.
+  #  ``buildValueSlot`` creates nested computations — the numeric/text
+  #  input's value bind, the unit-chip label bind, the colour swatch bind
+  #  — and those are owned by this effect. ``updateComputation`` calls
+  #  ``cleanNode`` before each re-run, which recursively disposes owned
+  #  computations and unlinks them from their sources. So by the time this
+  #  body runs, the previous pass's value binds are already dead. An
+  #  earlier "skip the rebuild when the binding signature is unchanged"
+  #  guard therefore did not save work — it permanently severed the row
+  #  from its value signal. Every numeric row in the inspector froze at
+  #  its mount-time value on the first selection change, which is why
+  #  X / Y / W / H / opacity / font-size all read 0 (or their fallback)
+  #  no matter what was selected. The guard is unsound by construction in
+  #  this ownership model; if the DOM churn ever matters, the fix is to
+  #  own the value-slot computations outside this effect, not to skip the
+  #  rebuild.
   # ------------------------------------------------------------------------- #
   if cfg.bindingReactive != nil:
     let bindingReactive = cfg.bindingReactive
-    var lastBindingSig = "\x00uninitialised"
     createRenderEffect proc() =
       let active = bindingReactive()
-      let sig =
-        if active.isSome: "b|" & active.get.variableKey & "|" &
-          $ord(active.get.state)
-        else: "-"
-      if sig == lastBindingSig: return
-      lastBindingSig = sig
       r.clearChildren(valueSlot)
-      buildValueSlot(active)
+      # Initial reads inside control construction belong to each control's
+      # value effects, not to the binding decision. Tracking a numeric draft
+      # here destroys its own captured pointer handle on the first move.
+      untrack(proc() = buildValueSlot(active))
   else:
     buildValueSlot(cfg.binding)
 
@@ -1073,12 +1797,197 @@ proc mountPropertyRow*[R, E](r: R; parent: E;
       let rc = measureAnchorRect(bindNode)
       cfg.onBindRequest(rc.x, rc.y, rc.w, rc.h)
   r.addEventListener(bindNode, "click", bindHandler)
-  r.addEventListener(bindNode, "keydown", bindHandler)
+  installPopoverTrigger(bindNode)
 
   let moreHandler = proc() =
     if cfg.onMore != nil: cfg.onMore()
   r.addEventListener(moreNode, "click", moreHandler)
   r.addEventListener(moreNode, "keydown", moreHandler)
 
+  # ------------------------------------------------------------------------- #
+  #  Phase G+1: the bind/scope slot's scope half.
+  #
+  #  The spec's slot 3 is "Bind/scope — the source-scope mini-picker
+  #  (Local / Shared / Component schema / Theme token)". Phases D-H
+  #  built the bind side and left the scope side out, which is why the
+  #  sections had no way to express which source an edit modifies.
+  #
+  #  Rendered with ``renderCompactChoiceRow`` at ``visibleLimit = 1``,
+  #  the same call shape the old inspector's row used — the head of
+  #  the ordered scope list is visible and the rest is in the overflow
+  #  popup, which is the spec's "common scopes remain visible, overflow
+  #  lists less common or read-only scopes".
+  #
+  #  Choosing a scope also RE-COMMITS at the new scope. The old row did
+  #  this (its ``scopeChoiceHandler`` called ``commitScope``, which
+  #  wrote the value), and it is the behaviour
+  #  ``e2e_style_manager_scope_choices_update_real_preview`` describes:
+  #  clicking "Apply shared class scope for padding" changes the
+  #  rendered padding. A picker that only records a preference and
+  #  waits for the next keystroke would look inert.
+  # ------------------------------------------------------------------------- #
+  if cfg.scopeOptions != nil:
+    # Compound rows may occupy half an inspector column. Keep native source
+    # choices on their own line so their labels/counts cannot squeeze a real
+    # typing/scrubbing control to zero width.
+    r.appendChild(root, scopeSlot)
+    r.setStyle(scopeSlot, "justify-content", "flex-end")
+    r.setStyle(scopeSlot, "width", "100%")
+    let scopeOptionsThunk = cfg.scopeOptions
+    let rowName = cfg.name
+    proc thenCommit(inner: proc()): proc() =
+      ## Its own proc so each chip keeps its own ``inner``: a closure
+      ## made in the loop below would share one environment across the
+      ## iterations and every chip would run the last chip's callback.
+      result = proc() =
+        if inner != nil: inner()
+        commitValue()
+    proc wrappedScopeOptions(): seq[CompactChoiceOption] =
+      result = scopeOptionsThunk()
+      for option in result.mitems:
+        option.onChoose = thenCommit(option.onChoose)
+    let strip = renderCompactChoiceRow[R, E](r, "",
+      "Choose source scope for " & rowName, wrappedScopeOptions,
+      visibleLimit = 1, labelWidth = "0", minHeight = prInputHeight)
+    r.setAttribute(strip.root, "data-property-row-scope-selector", "true")
+    # Kept from the old row so a selector that knows the legacy
+    # inspector still resolves the control in the new one.
+    r.setAttribute(strip.root, "data-inspector-scope-selector", "true")
+    r.setAttribute(strip.root, "data-compact-choice-strip", "true")
+    r.setAttribute(strip.root, "data-source-scope-count",
+      $scopeOptionsThunk().len)
+    r.appendChild(scopeSlot, strip.root)
+
+  # Shared edits expose their actual destination and mapped impact before the
+  # next value commit. This projection never plans or writes source itself.
+  if cfg.sourceScopeChoices != nil:
+    var impactText: E
+    let impact = ui(r):
+      tdiv(`data-property-source-impact` = cfg.cssProperty,
+           display = "none", width = "100%", min_width = "0",
+           box_sizing = "border-box",
+           padding = "4px 6px", border_radius = "4px",
+           background_color = "#171923", font_size = "10px",
+           line_height = "1.4", overflow_wrap = "anywhere"):
+        span(ref = impactText, white_space = "pre-line"): text ""
+    r.appendChild(root, impact)
+    let sourceScopes = cfg.sourceScopeChoices
+    let selectedScope = cfg.selectedSourceScope
+    createRenderEffect proc() =
+      let selected = if selectedScope != nil: selectedScope() else: none(SourceScopeChoice)
+      var descriptions: seq[string]
+      for choice in sourceScopes():
+        if choice.kind in {sskLocalInstance, sskStoryFixture}: continue
+        let active = selected.isSome and selected.get.kind == choice.kind
+        if not choice.editable and not active: continue
+        let owner = if choice.ownerLabel.len > 0: choice.ownerLabel else: choice.label
+        var location = choice.sourceFile
+        if location.len > 0 and choice.sourceLine > 0:
+          location.add ":" & $choice.sourceLine
+        if choice.schemaKey.len > 0:
+          if location.len > 0: location.add " · "
+          location.add choice.schemaKey
+        if location.len == 0: location = "Source mapping unavailable"
+        var uses = choice.affectedComponents
+        for story in choice.affectedStories:
+          let label = story.group & " / " & story.name
+          if label notin uses: uses.add label
+        let count = if choice.usageCount > 0: $choice.usageCount & " mapped uses"
+          else: "Usage count unavailable"
+        let mapped = if uses.len > 0: uses.join(", ") else: "Mapped uses unavailable"
+        descriptions.add choice.label & (if active: " (selected)" else: " (available)") &
+          " — " & owner & "\n" & location & "\n" & count & ": " & mapped &
+          "\nOther uses of this shared source may change."
+      r.setTextContent(impactText, descriptions.join("\n\n"))
+      r.setStyle(impact, "display", if descriptions.len > 0: "block" else: "none")
+
+  # ------------------------------------------------------------------------- #
+  #  Phase G+1: the refusal line.
+  #
+  #  ``commitMessage`` is non-empty exactly when the last commit was
+  #  refused — read-only workspace, no adapter, a non-editable scope, a
+  #  rejected value. The line is ``display: none`` while it is empty,
+  #  so an accepted edit leaves the row looking as it did.
+  #
+  #  This is the whole point of the phase. The founder's report was
+  #  "nothing happens"; a row that refuses in silence and a row that
+  #  does nothing are the same row from the outside.
+  # ------------------------------------------------------------------------- #
+  if cfg.commitMessage != nil:
+    let messageSignal = cfg.commitMessage
+    let messageEl = ui(r):
+      tdiv(
+        ref = messageNode,
+        `data-property-row-message` = "true",
+        role = "status",
+        `aria-live` = "polite",
+        padding = "0 0 2px " & prLabelWidth,
+        font_size = "10px",
+        line_height = "1.35",
+        color = prMessageColor):
+        text ""
+    r.appendChild(root, messageEl)
+    createRenderEffect proc() =
+      let refusal = messageSignal.val
+      let reason = if cfg.readOnlyReason != nil: cfg.readOnlyReason() else: ""
+      let text = if refusal.len > 0: refusal else: reason
+      r.setTextContent(messageNode, text)
+      r.setAttribute(messageNode, "data-property-row-message-visible",
+        if text.len > 0: "true" else: "false")
+      r.setStyle(messageNode, "display", if text.len > 0: "block" else: "none")
+
+  if cfg.readOnlyReason != nil:
+    createRenderEffect proc() =
+      let reason = cfg.readOnlyReason()
+      r.setAttribute(root, "data-property-row-readonly", if reason.len > 0: "true" else: "false")
+      r.setAttribute(root, "data-property-row-readonly-reason", reason)
+    when defined(js):
+      {.emit: ["""(function(root,slot) {
+        if(!slot || !slot.addEventListener) return;
+        function guard(event) {
+          if(root.getAttribute('data-property-row-readonly') !== 'true') return;
+          const target=event.target,closest=selector=>target && target.closest && target.closest(selector);
+          // Disclosure and uncommitted inspection drafts do not edit source.
+          // Their Apply callback independently checks the current owner/reason.
+          if(closest('[data-property-row-swatch]') || closest('[data-color-popover]')) return;
+          if(closest('[data-choice-group-trigger]')) return;
+          if(closest('[data-choice-group-popup]') && event.type==='keydown' && ['ArrowUp','ArrowDown','Home','End','Tab','Escape'].includes(event.key)) return;
+          const input=closest('input,textarea');
+          if(input && input.readOnly) {
+            if(event.type==='pointerdown' || event.type==='click') return;
+            if(event.type==='keydown' && (['ArrowLeft','ArrowRight','Home','End'].includes(event.key) ||
+                ((event.ctrlKey || event.metaKey) && ['a','c'].includes(event.key.toLowerCase())))) return;
+          }
+          if(event.type==='keydown' && ['Tab','Escape'].includes(event.key)) return;
+          event.preventDefault();event.stopImmediatePropagation();
+        }
+        slot.addEventListener('pointerdown',guard,true);slot.addEventListener('click',guard,true);slot.addEventListener('keydown',guard,true);
+        slot.__isonimReadOnlyCleanup=()=>{slot.removeEventListener('pointerdown',guard,true);slot.removeEventListener('click',guard,true);slot.removeEventListener('keydown',guard,true);};
+      })(""",root,",",valueSlot,");"].}
+      onCleanup(proc() = {.emit: ["if (",valueSlot,".__isonimReadOnlyCleanup) ",valueSlot,".__isonimReadOnlyCleanup();"].})
+
   r.appendChild(parent, root)
   result = root
+
+proc mountPropertyRowPair*[R, E](r: R; parent: E;
+    left, right: PropertyRowConfig): tuple[left: E, right: E] =
+  ## Two fields side by side, as Figma pairs X|Y, W|H and opacity|radius.
+  ##
+  ## Pairing is not decoration. A 320px panel showing one full-width field
+  ## per line spends most of its width on empty space and most of its height
+  ## on rows -- the Typography section alone ran to eleven of them, so the
+  ## sections below it were off screen. Two columns halves that, and the
+  ## pairs are the ones a designer reads together anyway: a width without
+  ## its height is half a question.
+  var leftHost, rightHost: E
+  let row = ui(r):
+    tdiv(`data-property-row-pair` = "true",
+          display = "flex", flex_direction = "row",
+          align_items = "flex-start", gap = "6px",
+          width = "100%"):
+      tdiv(ref = leftHost, display = "flex", flex = "1 1 0",
+            min_width = "0", flex_direction = "column")
+      tdiv(ref = rightHost, display = "flex", flex = "1 1 0",
+            min_width = "0", flex_direction = "column")
+  r.appendChild(parent, row)
+  (r.mountPropertyRow(leftHost, left), r.mountPropertyRow(rightHost, right))

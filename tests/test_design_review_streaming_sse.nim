@@ -65,11 +65,13 @@ proc connectSse(baseUrl, path, body: string;
   return sock
 
 proc readFrames(sock: Socket; timeoutMs = 30_000;
-                maxFrames = 0): seq[StreamFrame] =
+                maxFrames = 0; countedEvent = ""): seq[StreamFrame] =
   ## Read SSE frames until the connection closes or ``maxFrames`` have
-  ## arrived.  Each frame is timestamped at the moment its terminating
+  ## arrived (of countedEvent when specified). All control frames are retained.
+  ## Each frame is timestamped at the moment its terminating
   ## ``\n\n`` lands on the socket.
   var buf = ""
+  var counted = 0
   while true:
     var byte: char
     let n =
@@ -89,8 +91,10 @@ proc readFrames(sock: Socket; timeoutMs = 30_000;
           ev.data.add line[5 .. ^1].strip(leading = true, trailing = false)
       if ev.eventType.len > 0 or ev.data.len > 0:
         result.add ev
+        if countedEvent.len == 0 or ev.eventType == countedEvent:
+          inc counted
       buf.setLen(0)
-      if maxFrames > 0 and result.len >= maxFrames:
+      if maxFrames > 0 and counted >= maxFrames:
         break
 
 proc countUpdateFrames(frames: seq[StreamFrame]): int =
@@ -198,6 +202,7 @@ test "test_sse_cancel_mid_stream_stops_events":
   # records the session id.
   let f = startAgentDaemon(@[
     ("FAKE_ACP_STREAM_CHUNKS", "10"),
+    ("FAKE_ACP_REPLY", "ABCDEFGHIJ"),
     ("FAKE_ACP_STREAM_DELAY_MS", "200"),
   ])
   defer: f.shutdown()
@@ -215,8 +220,32 @@ test "test_sse_cancel_mid_stream_stops_events":
   defer:
     try: sock.close() except CatchableError: discard
   # Read the first two update frames.
-  let earlyFrames = readFrames(sock, timeoutMs = 5_000, maxFrames = 2)
+  let earlyFrames = readFrames(sock, timeoutMs = 5_000, maxFrames = 2,
+    countedEvent = "session/update")
   check countUpdateFrames(earlyFrames) == 2
+  # The admission control frame must correspond to this initialized provider's
+  # actual first output, never consume one of the two provider chunk slots.
+  var admittedCount = 0
+  var providerSession = ""
+  for line in readFile(f.contentLog).splitLines:
+    if line.len > 0:
+      let recorded = parseJson(line)
+      if recorded{"source"}.getStr("") == "role_instructions":
+        providerSession = recorded{"sessionId"}.getStr("")
+  check providerSession.len > 0
+  var receivedText = ""
+  for frame in earlyFrames:
+    if frame.eventType == "admitted":
+      inc admittedCount
+      check parseJson(frame.data) == %* {"accepted": true}
+    elif frame.eventType == "session/update":
+      let actual = parseJson(frame.data)
+      check actual{"sessionId"}.getStr("") == providerSession
+      check actual{"update", "sessionUpdate"}.getStr("") ==
+        "agent_message_chunk"
+      receivedText.add actual{"update", "content", "text"}.getStr("")
+  check admittedCount == 1
+  check receivedText == "AB"
 
   # Fire cancel.
   let cancelStart = epochTime()

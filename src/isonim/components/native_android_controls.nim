@@ -95,7 +95,8 @@ proc createFilterBar*[R, E](r: R; currentFilter: proc(): FilterMode;
     segmented(flex_direction = "row", justify_content = "center",
               align_items = "center", gap = "8", height = "68", padding = "12")
 
-  for filt in [fmAll, fmActive, fmCompleted]:
+  proc appendFilter(filt: FilterMode) =
+    # A proc call gives this item its own callback/effect environment.
     let label = case filt
       of fmAll: "All"
       of fmActive: "Active"
@@ -112,6 +113,9 @@ proc createFilterBar*[R, E](r: R; currentFilter: proc(): FilterMode;
 
     r.addEventListener(segment, "click", proc() = onFilter(filtCapture))
     r.appendChild(bar, segment)
+
+  for filt in [fmAll, fmActive, fmCompleted]:
+    appendFilter(filt)
 
   bar
 

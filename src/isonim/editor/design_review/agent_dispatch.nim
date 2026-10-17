@@ -3,7 +3,7 @@
 ## Glues the reviewer pipeline together end-to-end:
 ##
 ##   1. Load the run + captures + brief content from the DB / git.
-##   2. Resolve the brief markdown body at the run's manifest pin
+##   2. Resolve the brief markdown body at the run's workspace pin
 ##      (``brief_at_revision.nim``).
 ##   3. Assemble a prompt from the
 ##      ``prompts/design_review/reviewer_prompt.template`` file (with
@@ -30,6 +30,8 @@ import db_connector/db_postgres
 
 import ./brief_format
 import ./brief_at_revision
+import ./pin_db
+import ./workspace_pin
 import ./log_setup
 import ./reviewer_output
 import ./db
@@ -462,9 +464,20 @@ proc dispatchReview*(runId: string; cfg: ReviewConfigLite; brief: Brief;
     raise newException(AgentDispatchError,
       "dispatchReview: run " & runId & " has no captures recorded")
 
-  # Brief content at the manifest pin.
+  # Brief content at the run's workspace pin.  A ``wslock-v1:`` pin's
+  # lock record lives in ``design_review.workspace_pins``; other pin
+  # kinds (seeded runs, retired ``repo`` hashes) need no record —
+  # ``briefAtRevision`` handles or refuses them.
+  let pinLock =
+    if classifyPin(header.manifestHash) == pkWorkspaceLock:
+      try:
+        fetchWorkspacePinLock(db, header.manifestHash)
+      except WorkspacePinError as e:
+        raise newException(AgentDispatchError,
+          "dispatchReview: run " & runId & ": " & e.msg)
+    else: ""
   let briefBody = briefAtRevision(
-    cfg.workspaceRoot, header.manifestHash, header.briefId)
+    cfg.workspaceRoot, header.manifestHash, header.briefId, pinLock)
 
   let tpl = loadPromptTemplate(cfg)
   let capturesIdx = renderCapturesIndex(

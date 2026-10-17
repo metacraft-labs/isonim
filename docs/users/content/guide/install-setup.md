@@ -4,6 +4,7 @@ description: How to get a clean checkout of isonim-docs building and testing.
 section: guide
 order: 1
 ---
+
 # Install & Setup
 
 isonim-docs is developed as a sibling checkout inside the IsoNim monorepo
@@ -39,13 +40,13 @@ still compile against the real `content/` directory."
 
 ## Task entry points
 
-| Command | What it does |
-| --- | --- |
-| `just docs-test-c` | Runs every docs suite on the C (SSR) target. |
-| `just docs-test-js` | Runs every docs suite on the JS (browser) target. |
-| `just docs-test` | Both of the above. |
-| `just docs-smoke` | Compile-only pass over the SSR and browser-mount entry points, plus the real broken-link build gate over `content/`. |
-| `just ci-docs` | `docs-test` followed by `docs-smoke` -- the single entry point CI runs. |
+| Command             | What it does                                                                                                         |
+| ------------------- | -------------------------------------------------------------------------------------------------------------------- |
+| `just docs-test-c`  | Runs every docs suite on the C (SSR) target.                                                                         |
+| `just docs-test-js` | Runs every docs suite on the JS (browser) target.                                                                    |
+| `just docs-test`    | Both of the above.                                                                                                   |
+| `just docs-smoke`   | Compile-only pass over the SSR and browser-mount entry points, plus the real broken-link build gate over `content/`. |
+| `just ci-docs`      | `docs-test` followed by `docs-smoke` -- the single entry point CI runs.                                              |
 
 :::note
 `docs-test-js` depends on a `tailwind-bootstrap` step that shells out to

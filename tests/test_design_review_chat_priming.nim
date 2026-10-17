@@ -1,20 +1,19 @@
-## CMP-M5 — chat-session priming tests.
+## EAC-M6 — real daemon ACP role-instruction and project-context tests.
 ##
-## The daemon's ``POST /api/agent/sessions`` handler primes every
-## freshly-opened chat ACP session with the AI Assistant system prompt
-## + a project-context block.  These tests boot the real
-## ``isonim-review`` daemon with the fake ACP agent and inspect the
-## ``$FAKE_ACP_CONTENT_LOG`` to assert the primer prompt body shape.
-##
-## The fixture's content log is the cleanest hook: every
-## ``session/prompt`` the daemon ships to the ACP agent is appended as
-## a JSON-summary line; primer prompts carry ``"source": "primer"`` so
-## the tests can dedupe primer-vs-user prompts without inspecting wire
-## bytes.
+## Tests exercise actual HTTP, native stdio JSON-RPC and project files, plus
+## real Postgres for campaign isolation/context. A deterministic ACP provider
+## records the exact session/new metadata and actual user turn; it replaces only
+## model inference to make role separation, truncation and failures repeatable.
+## It does not prove a real Claude model honors metadata; the separately registered
+## authoring workflow supplies that proof. No hidden user primer is permitted.
 
-import std/[json, os, strutils, times, unittest]
+import std/[sequtils,sha1,json, options, os, strutils, times, unittest]
+from std/unicode import runeLen
+import isonim/editor/design_review/context_budget
 
 import db_connector/db_postgres
+
+import isonim/editor/design_review/campaign_pin
 
 import helpers/agent_routes_fixture
 import helpers/campaign_routes_fixture
@@ -112,15 +111,23 @@ proc createSessionWithProjectRoot(f: AgentRoutesFixture;
     return (code: code, sessionId: "")
   return (code: code, sessionId: parseJson(raw){"sessionId"}.getStr(""))
 
-proc waitForPrimerEntry(f: AgentRoutesFixture; needle: string;
-                       timeoutSec: float = 4.0): bool =
-  let deadline = epochTime() + timeoutSec
-  while epochTime() < deadline:
-    let txt = latestPrimerPromptText(f)
-    if txt.len > 0 and needle in txt:
-      return true
-    sleep(80)
-  false
+proc roleText(f: AgentRoutesFixture): string =
+  for entry in readContentLogEntries(f):
+    if entry{"source"}.getStr == "role_instructions":
+      result.add entry{"metadata", "systemPrompt", "append"}.getStr
+
+proc userText(f: AgentRoutesFixture): string =
+  for entry in readContentLogEntries(f):
+    if entry{"source"}.getStr == "fake_acp":
+      result.add entry{"promptText"}.getStr
+
+proc submitUser(f: AgentRoutesFixture; sid: string; text = "Inspect this project") =
+  let (code, body) = f.agentPost("/api/agent/prompts", $(%* {
+    "sessionId": sid, "messages": [{"role": "user", "content": [
+      {"type": "text", "text": text}]}]}), timeoutMs = 15_000)
+  check code == 200
+  check "event: admitted" in body
+  check "end_turn" in body
 
 # --------------------------------------------------------------------------- #
 #  1. The primer carries the AI Assistant system prompt.                      #
@@ -134,10 +141,13 @@ test "test_chat_session_receives_assistant_prompt_at_creation":
   let (code, sessionId) = createSessionWithProjectRoot(f, fx.projectRoot)
   check code == 200
   check sessionId.len > 0
-  check waitForPrimerEntry(f, ProbeAssistantSentinel)
-  let primer = latestPrimerPromptText(f)
-  check ProbeAssistantSentinel in primer
-  check "SYSTEM CONTEXT — IsoNim AI Assistant prompt" in primer
+  check ProbeAssistantSentinel in roleText(f)
+  check countPrompts(f, sessionId) == 0
+  check ProbeAssistantSentinel in roleText(f)
+  submitUser(f, sessionId)
+  let primer = userText(f)
+  check ProbeAssistantSentinel notin primer
+  check "SYSTEM CONTEXT — IsoNim AI Assistant prompt" notin primer
   check "PROJECT CONTEXT" in primer
   check "Project root: " & fx.projectRoot in primer
 
@@ -153,8 +163,9 @@ test "test_chat_session_primer_includes_brief_index":
   let (code, sessionId) = createSessionWithProjectRoot(f, fx.projectRoot)
   check code == 200
   check sessionId.len > 0
-  check waitForPrimerEntry(f, "render.probe")
-  let primer = latestPrimerPromptText(f)
+  submitUser(f, sessionId)
+  check "render.probe" in userText(f)
+  let primer = userText(f)
   check "render.probe" in primer
   check "Probe Brief" in primer
   check "Brief index" in primer
@@ -183,13 +194,19 @@ test "test_chat_session_primer_includes_active_campaigns":
   let docBody = "---\ncampaignId: cmp-m5-chat\n---\n# Probe campaign\n"
   writeFile(docPath, docBody)
   # Seed directly via the SQL routine to leave the campaign ``active``.
+  # Since migration 012 a campaign's start pin must be a recorded
+  # workspace pin, so record one first.
   let db = connectMigrator(f)
   defer: db.close()
+  let pin = fixtureWorkspacePin()
+  discard db.getValue(sql(
+    "SELECT design_review.record_workspace_pin(?, ?, '', 'test')"),
+    pin.pin, pin.lockToml)
   let stmt = "SELECT design_review.start_campaign(" &
     "'" & docPath.replace("'", "''") & "', " &
     "'fakesha', " &
     "ARRAY['render.probe']::text[], " &
-    "NULL, 3, 'local', 'claude', NULL, 'test')::text"
+    "NULL, 3, '" & pin.pin & "', 'claude', NULL, 'test')::text"
   let campaignId = db.getValue(sql(stmt))
   check campaignId.len > 0
   check countCampaigns(f) >= 1
@@ -200,13 +217,17 @@ test "test_chat_session_primer_includes_active_campaigns":
   check cCode == 200
   let sessionId = parseJson(cBody){"sessionId"}.getStr("")
   check sessionId.len > 0
-  # Poll the content log for the primer entry.
+  let (pCode, _) = f.campaignPost("/api/agent/prompts", $(%* {
+    "sessionId": sessionId, "messages": [{"role": "user", "content": [
+      {"type": "text", "text": "Inspect active campaigns"}]}]}))
+  check pCode == 200
+  # Observe project context in the actual user turn, not role metadata.
   let deadline = epochTime() + 4.0
   var sawCampaign = false
   while epochTime() < deadline:
     for e in readContentLogEntries(f):
       if e == nil: continue
-      if e{"source"}.getStr("") != "primer": continue
+      if e{"source"}.getStr("") != "fake_acp": continue
       let body = e{"promptText"}.getStr("")
       if campaignId in body and "Active campaigns" in body:
         sawCampaign = true
@@ -228,8 +249,9 @@ test "test_chat_session_primer_includes_agents_md_when_present":
   let (code, sessionId) = createSessionWithProjectRoot(f, fx.projectRoot)
   check code == 200
   check sessionId.len > 0
-  check waitForPrimerEntry(f, Marker)
-  let primer = latestPrimerPromptText(f)
+  submitUser(f, sessionId)
+  check Marker in userText(f)
+  let primer = userText(f)
   check Marker in primer
   check "AGENTS.md" in primer
 
@@ -252,8 +274,9 @@ test "test_chat_session_primer_truncates_long_agents_md":
   let (code, sessionId) = createSessionWithProjectRoot(f, fx.projectRoot)
   check code == 200
   check sessionId.len > 0
-  check waitForPrimerEntry(f, HeadMarker)
-  let primer = latestPrimerPromptText(f)
+  submitUser(f, sessionId)
+  check HeadMarker in userText(f)
+  let primer = userText(f)
   check HeadMarker in primer
   check TailMarker in primer
   check "…truncated…" in primer
@@ -277,45 +300,56 @@ test "test_chat_session_primer_disabled_via_config":
   check sessionId.len > 0
   # Give the daemon a beat in case it did issue a primer (it shouldn't).
   sleep(300)
-  let primers = primerEntries(f)
-  check primers.len == 0
+  check roleText(f).len == 0
   # And the fake-ACP must not have received any prompt yet — the
   # caller hasn't sent a user prompt, and the primer was disabled.
   check countPrompts(f, sessionId) == 0
+  let first = "  Human turn with instructions disabled 保持😀  "
+  let followup = "  Follow up with instructions still disabled 保持😀  "
+  submitUser(f, sessionId, first)
+  check countPrompts(f, sessionId) == 1
+  submitUser(f, sessionId, followup)
+  check countPrompts(f, sessionId) == 2
+  check roleText(f).len == 0
+  check ProbeAssistantSentinel notin userText(f)
+  var roleRecords = 0
+  var prompts: seq[string]
+  for entry in readContentLogEntries(f):
+    if entry{"source"}.getStr == "role_instructions":
+      inc roleRecords
+      check entry{"sessionId"}.getStr == sessionId
+      check entry{"metadata"} != nil and entry["metadata"].kind == JNull
+    elif entry{"source"}.getStr == "fake_acp":
+      check entry{"sessionId"}.getStr == sessionId
+      check entry{"textBlocks"}.getInt == 2
+      prompts.add entry{"promptText"}.getStr
+  check roleRecords == 1
+  check prompts.len == 2
+  if prompts.len == 2:
+    check prompts[0].startsWith(first & "PROJECT CONTEXT:")
+    check prompts[1].startsWith(followup & "PROJECT CONTEXT:")
 
 # --------------------------------------------------------------------------- #
 #  7. Missing assistant prompt path falls back to placeholder; session works. #
 # --------------------------------------------------------------------------- #
 
-test "test_chat_session_falls_back_when_prompt_file_missing":
+test "test_chat_session_reports_missing_role_instructions":
   let fx = setupFixture(bogusAssistantPath = true)
   defer: teardownFixture(fx)
   let f = startAgentDaemon(configPath = fx.configPath)
   defer: f.shutdown()
-  let (code, sessionId) = createSessionWithProjectRoot(f, fx.projectRoot)
-  check code == 200
-  check sessionId.len > 0
-  # The primer must still fire — just with the built-in fallback body.
-  check waitForPrimerEntry(f, "You are a coding assistant")
-  let primer = latestPrimerPromptText(f)
-  check "PROJECT CONTEXT" in primer
-  # Subsequent user prompts must still work.
-  let promptBody = $(%* {
-    "sessionId": sessionId,
-    "messages": [{
-      "role": "user",
-      "content": [{"type": "text", "text": "hello"}],
-    }],
-  })
-  let (pCode, _) = f.agentPost("/api/agent/prompts", promptBody,
-                                timeoutMs = 15_000)
-  check pCode == 200
+  let (code, body) = f.agentPost("/api/agent/sessions",
+    $(%* {"projectRoot": fx.projectRoot}))
+  check code == 503
+  check "instruction file is missing" in body
+  check roleText(f).len == 0
+  check countPrompts(f) == 0
 
 # --------------------------------------------------------------------------- #
 #  8. The primer is exactly one turn — subsequent user prompts increment.    #
 # --------------------------------------------------------------------------- #
 
-test "test_chat_session_primer_is_one_turn":
+test "test_role_instructions_add_no_hidden_turn_and_persist_across_users":
   let fx = setupFixture()
   defer: teardownFixture(fx)
   let f = startAgentDaemon(configPath = fx.configPath)
@@ -323,9 +357,9 @@ test "test_chat_session_primer_is_one_turn":
   let (code, sessionId) = createSessionWithProjectRoot(f, fx.projectRoot)
   check code == 200
   check sessionId.len > 0
-  check waitForPrimerEntry(f, ProbeAssistantSentinel)
+  check ProbeAssistantSentinel in roleText(f)
   # The fake-ACP recorded the primer prompt as one ``session/prompt``.
-  check countPrompts(f, sessionId) == 1
+  check countPrompts(f, sessionId) == 0
   # Now POST a normal user prompt; the fake-ACP entry count must
   # increment by exactly 1.
   let promptBody = $(%* {
@@ -342,11 +376,19 @@ test "test_chat_session_primer_is_one_turn":
   let deadline = epochTime() + 2.0
   var saw2 = false
   while epochTime() < deadline:
-    if countPrompts(f, sessionId) >= 2:
+    if countPrompts(f, sessionId) == 1:
       saw2 = true
       break
     sleep(60)
   check saw2
+  submitUser(f, sessionId, "Follow up in this same session")
+  check countPrompts(f, sessionId) == 2
+  var roles = 0
+  for entry in readContentLogEntries(f):
+    if entry{"source"}.getStr == "role_instructions": inc roles
+  check roles == 1
+  check ProbeAssistantSentinel in roleText(f)
+  check ProbeAssistantSentinel notin userText(f)
 
 # --------------------------------------------------------------------------- #
 #  9. Campaign sessions do NOT receive the AI Assistant primer.               #
@@ -367,7 +409,7 @@ test "test_campaign_session_does_not_receive_assistant_primer":
     "docSha": "regsha",
     "briefRefs": ["render.probe"],
     "body": docBody,
-    "manifestHash": "local",
+    "workspacePin": workspacePinJson(fixtureWorkspacePin()),
     "startedBy": "test",
   })
   discard f.campaignPost("/api/campaign/start", startBody)
@@ -384,3 +426,351 @@ test "test_campaign_session_does_not_receive_assistant_primer":
     # orchestrator system prompt" header; ensure we don't see the
     # AI Assistant header there.
     check "SYSTEM CONTEXT — IsoNim AI Assistant prompt" notin body
+    check e{"metadata", "systemPrompt", "append"}.getStr.len == 0
+
+
+suite "Actual remaining-quota optional context policy":
+  test "large hierarchy compaction preserves exact pre-optimization bytes and Unicode cap":
+    # This semantic/wire baseline was recorded from the original compactor in
+    # owning Nim debug (7.832 CPU seconds, 7,445 repeated size calculations).
+    # The HTTP test independently retains its original ten-second deadline.
+    var rows = newJArray()
+    rows.add(%* {"id":"root","parentId":"","depth":0})
+    for i in 0 ..< 600:
+      rows.add(%* {"id":"unrelated." & $i,"parentId":"root","depth":1})
+    rows.add(%* {"id":"late-parent","parentId":"root","depth":1})
+    rows.add(%* {"id":"late-selected","parentId":"late-parent","depth":2,"schemaKey":"actual.label"})
+    let original = %* {"renderedComponentTree":rows,
+      "selectedElement":{"id":"late-selected","ancestorIds":["root","late-parent"]},
+      "pendingSourceEdits":[{"schemaKey":"actual.label","newValue":"  exact 保持😀  "}],
+      "contextAvailability":[]}
+    let snapshot = $original
+    let compacted = compactEditorContext(original,1783)
+    check compacted.isSome
+    var expected = parseJson(snapshot)
+    var expectedRows = newJArray()
+    for i in 0 .. 27: expectedRows.add rows[i]
+    expectedRows.add rows[601]
+    expectedRows.add rows[602]
+    expected["renderedComponentTree"] = expectedRows
+    expected["contextAvailability"] = %* ["renderedComponentTree: 30/603 records; quota truncated"]
+    check compacted.get == expected
+    check $compacted.get == $expected
+    check $secureHash($compacted.get) == "8742FF712B919B70F8BFAFA1934CEA36E24D8F43"
+    check runeLen($compacted.get) <= 1783
+    check compacted.get["pendingSourceEdits"] == original["pendingSourceEdits"]
+    check $original == snapshot
+  test "quota retry preserves current small hierarchy and selected late descendant ancestor closure":
+    var context = %* {"renderedComponentTree":[],"selectedElement":{"id":"late-selected","ancestorIds":["root","late-parent"]},
+      "pendingSourceEdits":[{"schemaKey":"actual.label","newValue":"exact"}],"contextAvailability":[]}
+    context["renderedComponentTree"].add(%* {"id":"root","parentId":"","depth":0})
+    for i in 0 ..< 600:
+      context["renderedComponentTree"].add(%* {"id":"other." & $i,"parentId":"root","depth":1})
+    context["renderedComponentTree"].add(%* {"id":"late-parent","parentId":"root","depth":1})
+    context["renderedComponentTree"].add(%* {"id":"late-selected","parentId":"late-parent","depth":2,"schemaKey":"actual.label"})
+    let compacted = compactEditorContext(context,1600)
+    check compacted.isSome
+    check compacted.get["renderedComponentTree"].elems.anyIt(it{"id"}.getStr()=="late-parent")
+    check compacted.get["renderedComponentTree"].elems.anyIt(it{"id"}.getStr()=="late-selected" and it{"parentId"}.getStr()=="late-parent" and it{"depth"}.getInt()==2)
+    check compacted.get["pendingSourceEdits"] == context["pendingSourceEdits"]
+    let small = %* {"renderedComponentTree":[{"id":"root","parentId":"","depth":0},
+      {"id":"branch","parentId":"root","depth":1},{"id":"leaf","parentId":"branch","depth":2}],"contextAvailability":[]}
+    check compactEditorContext(small,1200).get == small
+    check compactEditorContext(small,50).isNone
+  test "Unicode optional records compact without altering protected edits or field availability":
+    var context = %* {"selectedStory":{"group":"Hero", "name":"пример😀"},
+      "accumulatedEdits":["exact😀保持"], "pendingSourceEdits":[{"value":"  exact 😀  "}],
+      "designSystemConstraints":["keep all"], "currentFileDiffs":["exact diff"],
+      "contextAvailability":["sourceMap: unavailable", "diagnostics: truncated to 100 records (editor context budget)"],
+      "diagnostics":[], "renderedComponentTree":[], "availableTailwindClasses":["text-primary"]}
+    for i in 0 ..< 100:
+      context["diagnostics"].add(%* {"message":"Unicode😀保持" & $i,"file":"src/catalog.nim","line":i})
+      context["renderedComponentTree"].add(%* {"id": $i,"parentId":"root","depth":1})
+    let original = $context
+    let bounded = compactEditorContext(context, 1500)
+    check bounded.isSome
+    check runeLen($bounded.get) <= 1500
+    check $context == original
+    for key in ["selectedStory", "accumulatedEdits", "pendingSourceEdits", "designSystemConstraints", "currentFileDiffs"]:
+      check bounded.get[key] == context[key]
+    check bounded.get.len == context.len
+    check bounded.get["diagnostics"].len >= 1
+    check bounded.get["renderedComponentTree"].len >= 1
+    check ($bounded.get["contextAvailability"]).contains("quota truncated")
+    check ($bounded.get["contextAvailability"]).contains("sourceMap: unavailable")
+  test "protected or minimum meaningful snapshot exhaustion never loses data":
+    let context = %* {"accumulatedEdits":["保持😀".repeat(3000)],
+      "diagnostics":[{"message":"actual diagnostic", "file":"catalog.nim"}],"contextAvailability":[]}
+    let original = $context
+    check compactEditorContext(context, 1000).isNone
+    check $context == original
+    check compactEditorContext(%* {"diagnostics":[{"message":"actual complete record"}]}, 5).isNone
+
+  test "sparse and malformed public context shapes cannot crash compaction":
+    check compactEditorContext(newJNull(), 1000).isNone
+    check compactEditorContext(newJArray(), 1000).isNone
+    check compactEditorContext(newJObject(), 1000).isSome
+    check compactEditorContext(newJObject(), -1).isNone
+    check compactEditorContext(newJObject(), 0).isNone
+    for invalid in [newJNull(), %"wrong type", %42, %* {"unexpected":"object"}]:
+      check compactEditorContext(%* {"contextAvailability":invalid}, 1000).isNone
+      check compactEditorContext(%* {"diagnostics":invalid}, 1000).isNone
+    check compactEditorContext(%* {"contextAvailability":[newJNull()]}, 1000).isNone
+    let nested = %* {"diagnostics":[newJNull(), "opaque record", {"message":newJNull()}],
+      "accumulatedEdits":["保持😀 exact"], "contextAvailability":[]}
+    let bounded = compactEditorContext(nested, 1000)
+    check bounded.isSome
+    check bounded.get["diagnostics"] == nested["diagnostics"]
+    check bounded.get["accumulatedEdits"] == nested["accumulatedEdits"]
+
+  test "source identity references only successful admitted representations including bounded subsets":
+    let first = %* {"diagnostics":[{"message":"first"},{"message":"second"}],
+      "accumulatedEdits":["exact edit"],"contextAvailability":[]}
+    let sources = contextSourceIdentities(first)
+    let bounded = %* {"diagnostics":[{"message":"first"}],
+      "accumulatedEdits":["exact edit"],"contextAvailability":["diagnostics: quota truncated"]}
+    let wire = referenceContext(first,bounded,sources)
+    # Tiny records may be cheaper to repeat, so use a substantial unchanged field.
+    var current = parseJson($first)
+    current["diagnostics"][0]["message"] = %"actual current diagnostic 保持😀".repeat(30)
+    let fullSources = contextSourceIdentities(current)
+    var admitted = parseJson($current)
+    admitted["diagnostics"] = %* [{"message":"actual bounded subset"}]
+    let reference = referenceContext(current,admitted,fullSources)
+    check reference["fromContext"].getStr() == $secureHash($admitted)
+    check reference["boundedInherited"] == %*["diagnostics"]
+    check deliveredContext(reference,admitted)["diagnostics"] == admitted["diagnostics"]
+    check reference["current"]["accumulatedEdits"] == current["accumulatedEdits"]
+    check deliveredContext(referenceContext(current,admitted,newJObject()),admitted) == current
+    current["diagnostics"][0]["message"] = %"Changed actual diagnostic"
+    check deliveredContext(referenceContext(current,admitted,fullSources),admitted) == current
+    var forged = parseJson($reference)
+    forged["fromContext"] = %"not an actual admitted representation"
+    expect ValueError: discard deliveredContext(forged,admitted)
+    expect ValueError: discard deliveredContext(reference,nil)
+    forged = parseJson($reference)
+    forged["current"].delete("accumulatedEdits")
+    expect ValueError: discard deliveredContext(forged,admitted)
+
+  test "reserved envelope keys remain exact submitted data and forged bases fail safely":
+    let raw = %* {"fromContext":"user-authored identity", "current":{"diagnostics":["user data"]},
+      "boundedInherited":["user data"]}
+    check deliveredContext(raw,newJObject(),raw) == raw
+    let next = referenceContext(raw,raw,contextSourceIdentities(raw))
+    check deliveredContext(next,raw,raw) == raw
+    let prior = %* {"diagnostics":["actual admitted diagnostic"], "contextAvailability":[],
+      "accumulatedEdits":["exact protected edit"]}
+    for malformed in [%* {"fromContext":"forged", "current":{}},
+        %* {"fromContext": $secureHash($prior), "current":newJNull()},
+        %* {"fromContext": $secureHash($prior), "current":{}, "unexpected":true}]:
+      expect ValueError: discard deliveredContext(malformed,prior)
+
+  test "versioned protected tuples retain exact target and edit values and reject malformed encodings":
+    let context = %* {"accumulatedEdits":[{"oldValue":"  保持😀 exact  ","newValue":"new"}],
+      "pendingSourceEdits":[{"unknownRecordField":"exact"}], "designSystemConstraints":["exact 保持😀"],
+      "currentFileDiffs":[{"before":"old", "after":"  exact  "}],
+      "selectedStory":{"group":"Hero", "name":"example", "kind":0, "index":2},
+      "selectedElement":{"id":"actual", "sourceKey":"source", "domPath":"main > button",
+        "schemaKey":"schema", "tag":"button", "sourceFile":"src/real.nim", "sourceLine":42,
+        "sourceColumn":7, "properties":[{"unknownProperty":"exact"}], "children":["child"],
+        "ancestors":["main"], "ancestorIds":["root"], "depth":2},
+      "diagnostics":[{"message":"meaningful diagnostic 保持😀".repeat(30)}], "contextAvailability":[]}
+    let raw = $context
+    let wire = referenceContext(context,context,contextSourceIdentities(context))
+    check wire.hasKey("protectedV1")
+    check deliveredContext(wire,context,context) == context
+    check $context == raw
+    var malformed = parseJson($wire)
+    malformed["protectedV1"].elems[5].elems[6] = %"42"
+    expect ValueError: discard deliveredContext(malformed,context)
+    malformed = parseJson($wire)
+    malformed["protectedV1"].elems[4] = %*["wrong arity"]
+    expect ValueError: discard deliveredContext(malformed,context)
+    malformed = parseJson($wire)
+    malformed["current"]["accumulatedEdits"] = %* {"fromPreviousItems":[{"reuse":0}]}
+    expect ValueError: discard deliveredContext(malformed,context)
+    var changed = parseJson($context)
+    changed["selectedElement"]["unknownIdentityField"] = %"must survive"
+    let fallback = referenceContext(changed,context,contextSourceIdentities(context))
+    check not fallback.hasKey("protectedV1")
+    check deliveredContext(fallback,context,changed) == changed
+    changed.delete("diagnostics")
+    check referenceContext(changed,context,contextSourceIdentities(context)) == changed
+    check deliveredContext(changed,context,changed) == changed
+
+  test "V2 protected tuples preserve current source style bindings and reject malformed or duplicate versions":
+    let context = %* {"accumulatedEdits":[{"newValue":" exact 保持😀 "}],
+      "pendingSourceEdits":[{"schemaKey":"current.key"}], "designSystemConstraints":["exact scope"],
+      "currentFileDiffs":[{"afterText":" exact source "}],
+      "selectedStory":{"group":"Hero", "name":"example", "kind":0, "index":2},
+      "selectedElement":{"id":"actual", "sourceKey":"source", "domPath":"main > button",
+        "schemaKey":"schema", "tag":"button", "sourceFile":"src/real.nim", "sourceLine":42,
+        "sourceColumn":7, "properties":[{"value":"exact"}], "children":["child"],
+        "ancestors":["main"], "ancestorIds":["root"], "depth":2,
+        "styleBindings":"  background: token(保持😀); opacity: 0.75  "},
+      "diagnostics":[{"message":"actual diagnostic".repeat(30)}], "contextAvailability":[]}
+    let before = $context
+    let wire = referenceContext(context,context,contextSourceIdentities(context))
+    check wire.hasKey("protectedV2")
+    check not wire.hasKey("protectedV1")
+    check wire["protectedV2"][5][13] == context["selectedElement"]["styleBindings"]
+    check deliveredContext(wire,context,context) == context
+    check runeLen($wire) < runeLen($context)
+    check $context == before
+    var changed = parseJson($context)
+    changed["selectedElement"]["styleBindings"] = %"  color: token(new 保持😀)  "
+    let next = referenceContext(changed,context,contextSourceIdentities(context))
+    check next.hasKey("protectedV2")
+    check deliveredContext(next,context,changed) == changed
+    for invalid in [newJNull(), %42, newJArray()]:
+      var malformed = parseJson($wire)
+      malformed["protectedV2"].elems[5].elems[13] = invalid
+      expect ValueError: discard deliveredContext(malformed,context)
+    var malformed = parseJson($wire)
+    malformed["protectedV2"].elems[5].elems.setLen(13)
+    expect ValueError: discard deliveredContext(malformed,context)
+    malformed = parseJson($wire)
+    malformed["protectedV1"] = parseJson($wire["protectedV2"])
+    expect ValueError: discard deliveredContext(malformed,context)
+    malformed = parseJson($wire)
+    malformed["current"]["selectedElement"] = parseJson($context["selectedElement"])
+    expect ValueError: discard deliveredContext(malformed,context)
+    changed["selectedElement"]["unknownIdentityField"] = %" preserve future scope "
+    let fallback = referenceContext(changed,context,contextSourceIdentities(context))
+    check not fallback.hasKey("protectedV1")
+    check not fallback.hasKey("protectedV2")
+    check deliveredContext(fallback,context,changed) == changed
+    changed = parseJson($context)
+    changed["selectedElement"]["styleBindings"] = %42
+    let typedFallback = referenceContext(changed,context,contextSourceIdentities(context))
+    check not typedFallback.hasKey("protectedV2")
+    check deliveredContext(typedFallback,context,changed) == changed
+
+  test "quota compaction resolves inherited ownership before measuring re-encoded current data":
+    var prior = %* {"designSystemSchema":[], "diagnostics":[], "contextAvailability":[],
+      "accumulatedEdits":[{"property":"ariaLabel", "newValue":"exact"}],
+      "pendingSourceEdits":[{"schemaKey":"current.key"}]}
+    for i in 0 ..< 60:
+      prior["designSystemSchema"].add(%* {"key":"other." & $i,"property":"other", "value":"actual " & $i})
+      prior["diagnostics"].add(%* {"source":"compiler", "category":"generic", "message":"actual " & $i})
+    prior["designSystemSchema"].add(%* {"key":"current.key", "property":"ariaLabel", "value":"old"})
+    var current = parseJson($prior)
+    current["designSystemSchema"].elems[^1]["value"] = %"current meaningful 保持😀"
+    current["diagnostics"].add(%* {"source":"review", "category":"accessibility", "message":"actual warning"})
+    let before = $current
+    let bounded = compactEditorContext(current,850,prior)
+    check bounded.isSome
+    let wire = referenceContext(bounded.get,prior,nil)
+    check runeLen($wire) <= 850
+    check deliveredContext(wire,prior) == bounded.get
+    check $current == before
+    check bounded.get["accumulatedEdits"] == current["accumulatedEdits"]
+    check bounded.get["pendingSourceEdits"] == current["pendingSourceEdits"]
+    check bounded.get["designSystemSchema"].elems.anyIt(it{"key"}.getStr() == "current.key" and it{"value"}.getStr() == "current meaningful 保持😀")
+    check bounded.get["diagnostics"].elems.anyIt(it{"source"}.getStr() == "review")
+
+  test "quota retry retains selected and edited ownership and distinct actionable diagnostic categories":
+    var context = %* {"designSystemSchema":[],"selectedSchemaNodes":[],"sourceMap":[],"diagnostics":[],
+      "pendingSourceEdits":[{"schemaKey":"current.key","property":"ariaLabel"}],
+      "accumulatedEdits":[{"property":"ariaLabel","newValue":"exact current"}],"contextAvailability":[]}
+    for i in 0 ..< 100:
+      context["designSystemSchema"].add(%* {"key":"unrelated." & $i,"property":"other"})
+      context["diagnostics"].add(%* {"source":"compiler","category":"generic","message":"unrelated " & $i})
+    context["designSystemSchema"].add(%* {"key":"current.key","property":"ariaLabel"})
+    context["diagnostics"].add(%* {"source":"review","category":"accessibility","message":"actual warning"})
+    let result=compactEditorContext(context,1600)
+    check result.isSome
+    check ($result.get["designSystemSchema"]).contains("current.key")
+    check ($result.get["diagnostics"]).contains("actual warning")
+    check result.get["pendingSourceEdits"]==context["pendingSourceEdits"]
+
+suite "Lossless admitted changed-record context":
+  test "complete current objects including unknown and reserved fields reconstruct exactly":
+    let base = %* {"renderedComponentTree":[
+      {"id":"heading", "label":"Original card", "sourceFile":"src/card.nim",
+       "sourceLine":18, "styleBindings":[{"property":"color", "value":"#2563EB"}],
+       "futureField":{"reuse":5,"set":{"unicode":"保持😀"},"remove":["literal"]},
+       "largeUnchangedValue":"meaningful complete source identity ".repeat(24)},
+      {"id":"other", "label":"Other", "futureData":"exact ".repeat(50)}],
+      "selectedElement":{"id":"heading","unknownProtected":"exact 保持😀"},
+      "accumulatedEdits":[{"oldValue":"  old  ","newValue":"保持😀"}],
+      "pendingSourceEdits":[], "designSystemConstraints":["exact constraint"],
+      "currentFileDiffs":[{"diff":"exact source diff"}], "selectedStory":{"unknown":"exact"}}
+    var current = parseJson($base)
+    current["renderedComponentTree"][0]["label"] = %"Followup card"
+    current["renderedComponentTree"][0]["sourceLine"] = %19
+    current["renderedComponentTree"][0]["styleBindings"][0]["value"] = %"#22C55E"
+    current["renderedComponentTree"][0].delete("sourceFile")
+    current["renderedComponentTree"][0]["newUnknown"] = %* {"fromPreviousItems":[{"reuse":0}], "value":"literal 保持😀"}
+    current["renderedComponentTree"][0]["__proto__"] = %* {"exact":"own JSON field"}
+    current["renderedComponentTree"][0]["constructor"] = %"exact constructor field"
+    current["renderedComponentTree"][0]["toString"] = %"exact toString field"
+    let changed = parseJson($current["renderedComponentTree"][0])
+    current["renderedComponentTree"] = %* [base["renderedComponentTree"][1], changed, changed,
+      {"id":"added","label":"追加😀","reuse":4,"set":{},"remove":[]}]
+    let wire = referenceContext(current,base,nil)
+    check wire.hasKey("fromContext")
+    check runeLen($wire) < runeLen($current)
+    check deliveredContext(wire,base,current) == current
+    check wire["current"]["selectedElement"] == current["selectedElement"]
+    check wire["current"]["renderedComponentTree"]["fromPreviousItems"][1].hasKey("set")
+    check $base["renderedComponentTree"][0]["label"] == "\"Original card\""
+    var stale = parseJson($wire)
+    stale["fromContext"] = %"stale admitted base"
+    expect ValueError: discard deliveredContext(stale,base)
+    let patch = wire["current"]["renderedComponentTree"]["fromPreviousItems"][1]
+    for malformed in [%* {"reuse": -1,"set":{},"remove":[]},
+        %* {"reuse":99,"set":{},"remove":[]},
+        %* {"reuse":0,"set":[],"remove":[]},
+        %* {"reuse":0,"set":{},"remove":["absent"]},
+        %* {"reuse":0,"set":{},"remove":["label","label"]},
+        %* {"reuse":0,"set":{"label":"conflict"},"remove":["label"]},
+        %* {"reuse":0,"set":{},"remove":[],"extra":true}]:
+      var broken = parseJson($wire)
+      broken["current"]["renderedComponentTree"]["fromPreviousItems"].elems[1] = malformed
+      expect ValueError: discard deliveredContext(broken,base)
+    var protectedAttack = parseJson($wire)
+    protectedAttack["current"]["selectedElement"] = %* {"fromPreviousItems":[patch]}
+    expect ValueError: discard deliveredContext(protectedAttack,base)
+
+  test "smaller-only selection and literal descriptor collisions remain complete":
+    let prior = %* {"records":[{"label":"a"}]}
+    let current = %* {"records":[{"label":"b"}]}
+    check referenceContext(current,prior,nil) == current
+    check deliveredContext(current,prior,current) == current
+    let literal = %* {"records":{"fromPreviousItems":[{"reuse":0,"set":{},"remove":[]}]}}
+    check deliveredContext(literal,prior,literal) == literal
+    for count in 0 .. 20:
+      let base = %* {"rows":[{"label":"😀保持".repeat(count), "future":"stable ".repeat(60)}]}
+      let next = %* {"rows":[{"label":"更新😀".repeat(count), "future":"stable ".repeat(60)}]}
+      let wire = referenceContext(next,base,nil)
+      check runeLen($wire) <= runeLen($next)
+      check deliveredContext(wire,base,next) == next
+
+  test "complete representations disambiguate future envelope and field markers":
+    let base = %* {"diagnostics":[{"message":"real complete diagnostic ".repeat(80)}],
+      "accumulatedEdits":["保持😀 exact edit"], "selectedElement":{"id":"actual"},
+      "selectedStory":{"name":"actual"}, "pendingSourceEdits":[],
+      "designSystemConstraints":["exact"], "currentFileDiffs":["exact"], "contextAvailability":[]}
+    for key in ["fromContext", "completeContext", "current", "boundedInherited", "protectedV1", "protectedV2"]:
+      var literal = parseJson($base)
+      literal[key] = %* {"unknown":"exact 保持😀"}
+      let wire = referenceContext(literal,base,nil)
+      check wire.len == 1
+      check wire["completeContext"] == literal
+      check deliveredContext(wire,base,literal) == literal
+      check deliveredContext(referenceContext(literal,nil,nil),nil) == literal
+    for marker in ["fromPreviousItems", "previouslyDelivered", "fromDelivered"]:
+      for extra in [false,true]:
+        var literal = parseJson($base)
+        literal["futureContext"] = newJObject()
+        literal["futureContext"][marker] = %* [{"reuse":0,"set":{"__proto__":"literal"},"remove":[]}]
+        if extra: literal["futureContext"]["unknown"] = %"exact extra field"
+        let wire = referenceContext(literal,base,nil)
+        check wire["completeContext"] == literal
+        check deliveredContext(wire,base,literal) == literal
+        let exactChars = runeLen($wire)
+        check compactEditorContext(literal,exactChars).isSome
+        check compactEditorContext(literal,exactChars-1).isNone
+    for malformed in [%* {"completeContext":[]}, %* {"completeContext":{},"extra":true}]:
+      expect ValueError: discard deliveredContext(malformed,base)

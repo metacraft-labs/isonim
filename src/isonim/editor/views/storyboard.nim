@@ -1,3 +1,4 @@
+import isonim/editor/views/view_lifecycle
 ## IsoNim Editor — Storyboard canvas View.
 ##
 ## Default landing view: shows user flows as connected screen sequences.
@@ -245,7 +246,8 @@ proc installFigmaCanvasNavigation[R, E](r: R; viewport, content: E;
   r.setAttribute(viewport, "data-figma-canvas", "true")
   r.setAttribute(content, "data-figma-canvas-content", "true")
 
-  when defined(js):
+  when isDomViewHost(E):
+    ownViewResources(viewport)
     let panBy = proc(dx, dy: float) =
       vm.panStoryboard(dx, dy)
     let zoomBy = proc(factor, localX, localY: float) =
@@ -293,18 +295,24 @@ proc installFigmaCanvasNavigation[R, E](r: R; viewport, content: E;
           host.style.cursor = 'grabbing';
           event.preventDefault();
         });
-        window.addEventListener('mousemove', (event) => {
+        const move = (event) => {
           if (!dragging) return;
           """, panBy,
         """(event.clientX - lastX, event.clientY - lastY);
           lastX = event.clientX;
           lastY = event.clientY;
           event.preventDefault();
-        });
-        window.addEventListener('mouseup', () => {
+        };
+        const stop = () => {
           if (!dragging) return;
           dragging = false;
           host.style.cursor = 'grab';
+        };
+        window.addEventListener('mousemove', move);
+        window.addEventListener('mouseup', stop);
+        globalThis.__isonimViewCleanup(host, () => {
+          stop(); window.removeEventListener('mousemove', move);
+          window.removeEventListener('mouseup', stop);
         });
       }
     """].}

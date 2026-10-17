@@ -4,6 +4,7 @@ description: How IsoNim's reactive core tracks state and reacts to changes.
 section: guide
 order: 2
 ---
+
 # Signals & Effects
 
 IsoNim's reactive core is built on two primitives: **signals**, which hold a
@@ -53,10 +54,10 @@ it will re-trigger the effect and can loop forever.
 
 ## Primitive cheat sheet
 
-| Primitive | Purpose |
-| --- | --- |
-| `createSignal` | Holds one piece of reactive state. |
-| `effect` | Re-runs a side effect when its dependencies change. |
+| Primitive            | Purpose                                                        |
+| -------------------- | -------------------------------------------------------------- |
+| `createSignal`       | Holds one piece of reactive state.                             |
+| `effect`             | Re-runs a side effect when its dependencies change.            |
 | `createRenderEffect` | The render-focused effect the `ui` DSL wires up automatically. |
 
 See the [DSL guide](./dsl.md) for how `ui(r): ...` blocks turn signal reads

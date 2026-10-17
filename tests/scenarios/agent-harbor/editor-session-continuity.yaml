@@ -1,0 +1,24 @@
+name: IsoNim production editor session continuity
+description: >-
+  The official ACP playback provider replays its live transcript on each prompt.
+  This single-response fixture proves repeated delivery and process continuity,
+  not model memory. The test derives distinct per-chat token and session variants.
+tags: [isonim, editor, persistent-session, rest]
+acp:
+  capabilities:
+    loadSession: true
+timeline:
+  - sessionStart:
+      sessionId: isonim-persistent-session
+  - userInputs:
+      - relativeTime: 0
+        input: "Remember the token ISONIM_CONTEXT_7309 for this conversation. Reply only with that token."
+        expectedResponse:
+          sessionId: isonim-persistent-session
+          stopReason: end_turn
+  - llmResponse:
+      - assistant:
+          - relativeTime: 10
+            content: ISONIM_CONTEXT_7309
+expect:
+  stopReason: end_turn

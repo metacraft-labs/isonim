@@ -75,7 +75,12 @@ jobs:
         # single Nim. The former `nim-version` matrix (stable/2.0.0 via
         # jiro4989/setup-nim-action) does not apply here — Nim is fixed
         # by the flake, so we matrix only over the runner classes.
-        runner: [[self-hosted, linux, x64], [self-hosted, linux, arm64], [self-hosted, macos, arm64]]
+        runner:
+          [
+            [self-hosted, linux, x64],
+            [self-hosted, linux, arm64],
+            [self-hosted, macos, arm64],
+          ]
     runs-on: ${{ matrix.runner }}
     steps:
       # The manifest repo holding the workspace locks (metacraft-manifests) is
@@ -105,6 +110,39 @@ jobs:
       - uses: actions/checkout@v4
         with:
           submodules: recursive
+
+      - name: Retain the original checkout Git before bootstrap setup
+        if: runner.os == 'Linux' || runner.os == 'macOS'
+        shell: bash
+        run: |
+          checkout_git="$(command -v git)" || exit $?
+          case "$checkout_git" in /*) ;; *) exit 1 ;; esac
+          case "$checkout_git" in *$'\r'*|*$'\n'*) exit 1 ;; esac
+          test "${#checkout_git}" -le 4096 || exit 1
+          test -z "${ISONIM_CHECKOUT_GIT_PATH+x}" || exit 1
+          test -f "$GITHUB_ENV" && test ! -L "$GITHUB_ENV" && test -O "$GITHUB_ENV" || exit 1
+          printf 'ISONIM_CHECKOUT_GIT_PATH=%s\n' "$checkout_git" >> "$GITHUB_ENV"
+
+      # Bootstrap only the locked Python prerequisite; product roles stay below.
+      - name: Materialise Nix for the locked Python capture prerequisite
+        if: runner.os == 'Linux' || runner.os == 'macOS'
+        uses: metacraft-labs/metacraft-github-actions/setup-nix@dev
+        with:
+          gh-token: ${{ steps.app-token.outputs.token }}
+          token-owner: metacraft-labs
+          substituters: ${{ vars.SUBSTITUTERS }}
+          trusted-public-keys: ${{ vars.TRUSTED_PUBLIC_KEYS }}
+
+      - name: Bind the checkout Git templates before entering the owning shell
+        if: runner.os == 'Linux' || runner.os == 'macOS'
+        run: |
+          checkout_git="${ISONIM_CHECKOUT_GIT_PATH:?Original checkout Git was not retained}"
+          case "$checkout_git" in /*) ;; *) exit 1 ;; esac
+          test "$(command -v git)" = "$checkout_git" || exit 1
+          nix shell --inputs-from . nixpkgs#python3 --command "$BASH" -c '
+            test "$(command -v git)" = "$1" || exit 1
+            exec python3 nix/checkout-git-templates.py capture
+          ' isonim-checkout-capture "$checkout_git"
 
       # Replaces the bare `nixos-modules/.github/setup-nix` this job used to
       # run. `env-flavor: nix` gets the same Nix install and substituter trust

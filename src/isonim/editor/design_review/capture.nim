@@ -2,9 +2,14 @@
 ##
 ## Walks the milestone-defined sequence:
 ##
-##   1. ``checkCleanTree`` — fail if any repo is dirty / unpinned.
-##   2. ``captureManifestHash`` — compute the workspace pin hash.
-##   3. ``design_review.start_run`` via the DB routine.
+##   1. ``checkCleanTree`` — observe the design review's reprobuild
+##      project (``isonim`` unless ``CaptureOptions.workspaceProject``
+##      says otherwise); fail if any of its repos is dirty, has
+##      untracked files, or has an unpublished HEAD.
+##   2. ``captureWorkspacePin`` — the workspace lock for that same
+##      observation; ``record_workspace_pin`` stores it.  Steps 1 and 2
+##      are ``workspace_gate.pinCleanWorkspace``, shared with campaigns.
+##   3. ``design_review.start_run`` with the pin via the DB routine.
 ##   4. For each (preview, viewport) in
 ##      ``brief.coversPreviews × brief.captureViewports``:
 ##         a. ``captureViaBridge`` → RGBA → PNG bytes.
@@ -29,8 +34,8 @@ import std/[os, options, strformat, strutils]
 import db_connector/db_postgres
 
 import ./brief_format
-import ./clean_tree
-import ./manifest_hash
+import ./workspace_gate
+import ./pin_db
 import ./capture_store
 import ./bridge_client
 import ./backend_launcher
@@ -39,7 +44,7 @@ import isonim/editor/types
 
 type
   CaptureEventKind* = enum
-    cekStartingRun        ## right after clean-tree + manifest-hash
+    cekStartingRun        ## right after clean-tree gate + workspace pin
     cekCapturingPreview   ## about to call captureViaBridge
     cekCaptureRecorded    ## DB row + store file persisted
     cekFinishingRun       ## right before finish_captures
@@ -84,6 +89,9 @@ type
     backendFilter*: seq[PreviewBackend]
       ## When non-empty: capture only previews whose backend is in
       ## this list.  Otherwise every backend in the brief is captured.
+    workspaceProject*: string
+      ## The reprobuild project the clean-tree gate and the workspace
+      ## pin cover.  Empty means ``DesignReviewProject`` (``isonim``).
 
 # ---------------------------------------------------------------------------
 # Reporter helper
@@ -113,6 +121,8 @@ proc dbScalar(db: ReviewDb; q: string): string =
 
 proc startRun*(db: ReviewDb; briefId, manifestHash, startedBy: string): string =
   ## Open a capturing run.  Returns the new ``runs.run_id`` UUID.
+  ## ``manifestHash`` is the run's pin (a ``wslock-v1:`` workspace pin
+  ## must already be recorded via ``recordWorkspacePin``).
   ## Uses the app role (REV-M3 routines are SECURITY DEFINER).
   let escBrief = briefId.replace("'", "''")
   let escHash  = manifestHash.replace("'", "''")
@@ -169,18 +179,26 @@ proc runCapture*(briefId: string; workspaceRoot, bridgeUrl, storePath: string;
   ## the newly created run.  See module doc for the sequence.
   let brief = requireBrief(opts, briefId)
 
-  let cleanStatus = checkCleanTree(workspaceRoot)
-  if not cleanStatus.ok:
-    var err = WorkspaceDirtyError.newException("workspace is not clean")
-    err.dirty = cleanStatus.dirty
-    raise err
-
-  let manifestHash = captureManifestHash(workspaceRoot)
+  let project =
+    if opts.workspaceProject.len > 0: opts.workspaceProject
+    else: DesignReviewProject
+  # Gate + pin in one step (``workspace_gate.pinCleanWorkspace``), the
+  # same step a campaign takes for its start and for every round.
+  let pin =
+    try:
+      pinCleanWorkspace(workspaceRoot, project)
+    except WorkspaceNotPinnableError as e:
+      if e.dirty.len > 0:
+        var err = WorkspaceDirtyError.newException("workspace is not clean")
+        err.dirty = e.dirty
+        raise err
+      raise newException(CaptureError, e.msg)
 
   let store = newCaptureStore(storePath)
 
-  let runId = startRun(db, briefId, manifestHash,
-                       getEnv("USER", "anonymous"))
+  let startedBy = getEnv("USER", "anonymous")
+  recordWorkspacePin(db, pin, startedBy)
+  let runId = startRun(db, briefId, pin.pin, startedBy)
   fire(reporter, CaptureProgressEvent(
     kind: cekStartingRun, runId: runId))
 

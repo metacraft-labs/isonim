@@ -159,7 +159,8 @@ proc createFilterBar*[R, E](r: R; current: FilterMode;
     "height": "60",
     "padding": "12"})
 
-  for filt in [fmAll, fmActive, fmCompleted]:
+  proc appendFilter(filt: FilterMode) =
+    # A proc call gives this item its own callback/effect environment.
     let label = case filt
       of fmAll: "All"
       of fmActive: "Active"
@@ -177,6 +178,9 @@ proc createFilterBar*[R, E](r: R; current: FilterMode;
     let filtCapture = filt
     r.addEventListener(segment, "click", proc() = onFilter(filtCapture))
     mkAppend[R, E](r, bar, segment, engine)
+
+  for filt in [fmAll, fmActive, fmCompleted]:
+    appendFilter(filt)
 
   bar
 

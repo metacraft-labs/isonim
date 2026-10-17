@@ -128,6 +128,20 @@ type
     eckOpenCommandPalette
     eckNavigateLayersUp
     eckNavigateLayersDown
+    eckOpenStory
+    eckSetViewport
+    eckOpenPanel
+    eckSelectItem
+    eckFocusTarget
+    eckHighlightItem
+    eckBuildProject
+    eckCapturePreview
+
+  EditorCommandRequest* = object
+    kind*: EditorCommandKind
+    storyId*, target*, viewportSlug*: string
+    component*, variantKey*, stateKey*: string
+    select*, focus*, highlight*: bool
 
   EditorCommandStatus* = enum
     ecsAvailable
@@ -560,6 +574,13 @@ type
     beforeDocument*: VectorDocument
     afterDocument*: VectorDocument
     sourceEdit*: SourceEditPlan
+    lastWrite*: SourceWriteReceipt
+      ## The most recent completed write of this entry's plan, or of the plan
+      ## that undid it; see ``CSSPropertyEditTransaction.lastWrite``. Kept so
+      ## that undo after an automatic save restores exactly the lines the
+      ## write replaced instead of being lost with the save.
+    lastWriteApplied*: bool
+      ## ``lastWrite`` applied this entry's edit rather than undoing it.
 
   VectorSymbol* = object
     ## A reusable vector symbol in the design system.
@@ -588,7 +609,10 @@ type
   PropertyInfo* = object
     ## A single CSS property with its value and source origin.
     name*: string         ## CSS property name (e.g. "padding")
-    value*: string        ## Resolved value (e.g. "16")
+    value*: string        ## Resolved/computed value (e.g. "16px")
+    authoredValue*: string ## Optional exact declared value, kept distinct from geometry.
+    nativeSourceShared*: bool ## Compiler binding owns a shared CSS rule, never a local override.
+    nativeSourceToken*: bool ## Verified direct reference edits its declared literal token owner.
     origin*: PropertyOrigin
     originDetail*: string ## e.g. "class:p-4" or "themeColor(\"primary\")"
     sourceLine*: int      ## Line in source file
@@ -963,6 +987,12 @@ type
     pedInvalidPropertyCombination
     pedSchemaViolation
     pedSourceConflict
+    pedUnresolvedStyleBinding
+      ## A styling construct the DSL captured but could not resolve to any
+      ## CSS property -- a class that is in no class index, or an attribute
+      ## whose value is computed at runtime. Carried so the inspector can say
+      ## so: a construct that silently does nothing is the defect
+      ## ``Styling-Substrate-Evaluation.md`` ranks worst, not a non-event.
 
   PropertyEditDiagnostic* = object
     kind*: PropertyEditDiagnosticKind
@@ -977,6 +1007,20 @@ type
     kind*: PropertyEditKind
     scope*: PropertyEditScope
     origin*: PropertyEditOrigin
+
+  ResponsiveBreakpoint* = object
+    ## One width-based `@media` block the PROJECT's stylesheet defines.
+    ##
+    ## Supplied by the workspace rather than configured in the editor, because
+    ## the stylesheet is the only place this is actually true. A configured
+    ## list is a second home for the same fact and the two drift the first
+    ## time somebody adds a query -- and the editor shows these to tell the
+    ## user which breakpoint an edit will land in, so a stale list is a wrong
+    ## promise rather than a cosmetic bug.
+    label*: string       ## For the UI: "≤ 1080px".
+    condition*: string   ## Verbatim prelude: "@media (max-width:1080px)".
+    minWidth*: int       ## -1 when unbounded below.
+    maxWidth*: int       ## -1 when unbounded above.
 
   SourceEditPlan* = object
     ## Source patch description produced by headless editing.
@@ -1000,6 +1044,53 @@ type
     regeneratorHook*: string
     conflictKey*: string
     expectedOldValue*: string
+    viewportWidth*: int
+      ## The preview width, in CSS pixels, the edit was made at.
+      ##
+      ## Carried on the plan because a responsive stylesheet has no single
+      ## answer to "which rule owns this property" -- it has one answer per
+      ## width. `.tagline` takes its size from the base rule above 1080px and
+      ## from a `@media` block below it, so an adapter handed only the
+      ## selector and the property has to guess, and guessing wrong writes a
+      ## declaration the cascade discards. Zero means "not supplied", which
+      ## adapters read as the unconditional base-rule behaviour.
+    nativeSourceBefore*, nativeSourceAfter*: string ## Guarded owned declaration receipts for exact undo.
+    historyId*: int
+      ## The inspector history transaction this plan belongs to; 0 for plans
+      ## that no history entry owns. Lets a completed write be credited to
+      ## the exact entry whose plan produced it, rather than to whichever
+      ## entry happens to share its property slot.
+    restoreWrite*: SourceWriteReceipt
+      ## Set (``restoreWrite.recorded``) on the plan that undoes or redoes an
+      ## already-written edit. The framework puts back exactly the text that
+      ## write replaced, at the place it wrote it, and refuses when that text
+      ## is no longer identifiable. It never calls the project's ``patchFile``
+      ## for such a plan: a value string cannot say WHICH declaration to
+      ## restore, and asking a writer to find one is how an undo rewrote an
+      ## unrelated sibling edit that happened to share its value.
+
+  SourceWriteReceipt* = object
+    ## The exact text one applied source plan replaced in one file.
+    ##
+    ## Line-granular: ``before`` and ``after`` are whole lines, so the block a
+    ## write appended (a marker line) or rewrote (a declaration) is identified
+    ## by its full text rather than by the value inside it.
+    recorded*: bool
+    file*: string
+    offset*: int          ## Where the block starts in ``afterContent``.
+    before*: string       ## The lines the write replaced (may be empty).
+    after*: string        ## The lines the write put there (may be empty).
+    afterContent*: string ## The whole file immediately after the write.
+    sequence*: int
+      ## Order of this write among all writes in the session (1-based, one
+      ## counter for every history). Lets a redo tell that an earlier edit to
+      ## the same slot was written AFTER this receipt, which makes the receipt
+      ## stale even though nothing outside the editor touched the file.
+    uniqueWhenWritten*: bool
+      ## ``after`` occurred exactly once, on line boundaries, in
+      ## ``afterContent``. Only then can a later single occurrence be known
+      ## to be the one this write produced rather than an identical,
+      ## pre-existing line.
 
   SourceEditAdapter* = proc(plan: SourceEditPlan): bool {.closure.}
 
@@ -1038,6 +1129,13 @@ type
     ancestors*: seq[string] ## Breadcrumb labels from root to selected element
     ancestorIds*: seq[string] ## Breadcrumb identities from root to selected element
     depth*: int            ## Nesting depth
+    styleBindings*: string
+      ## Encoded authored style provenance for this element, exactly as the
+      ## DSL stamped it (``data-isonim-props`` in SSR, ``noteProperties`` in
+      ## client mode). Decoded by ``editor/style_provenance_decode``; see
+      ## ``dsl/style_provenance`` for the format. Empty for any selection that
+      ## did not come from an IsoNim-rendered element, and every consumer
+      ## treats empty as "no provenance available" rather than "no bindings".
 
   ElementLayerRow* = object
     ## Source-backed row in the editor-owned element/layers tree.
@@ -1066,6 +1164,7 @@ type
     cmkError   ## Error message
 
   ChatMessage* = object
+    activityRepresented*: bool
     kind*: ChatMessageKind
     text*: string
     timestamp*: float
@@ -1179,6 +1278,12 @@ type
     property*: string
 
   AgentPromptContext* = object
+    renderedComponentTree*: seq[ElementLayerRow]
+    availableTailwindClasses*: seq[string]
+    tailwindClassTotal*: int
+    themeTokens*: seq[FoundationTokenEntry]
+    activeThemeContext*: seq[string]
+    contextAvailability*: seq[string]
     selectedStory*: StoryRef
     selectedElement*: ElementRef
     accumulatedEdits*: seq[EditRecord]
@@ -1221,6 +1326,27 @@ type
     sourceEdit*: SourceEditPlan
     beforeElement*: ElementRef
     afterElement*: ElementRef
+    saved*: bool
+      ## Has this edit reached disk?
+      ##
+      ## Recorded per transaction rather than inferred from the journal,
+      ## because the journal is keyed by edit SLOT: a saved `padding` edit and
+      ## a later pending `padding` edit occupy the same slot, so asking "is
+      ## there a pending plan matching this one" said yes for both and
+      ## Revert threw away work the user had already saved.
+    lastWrite*: SourceWriteReceipt
+      ## The most recent completed write of this entry's plan, or of the plan
+      ## that undid it. On the undo stack it describes the edit as it is on
+      ## disk; on the redo stack it describes the undo as it is on disk.
+      ## Restoring always inverts this receipt, so undo and redo put back
+      ## exactly the lines that were replaced and touch nothing else.
+    lastWriteApplied*: bool
+      ## ``lastWrite`` applied this entry's edit (written while on the undo
+      ## stack) rather than undoing it (written while on the redo stack).
+    superseded*: bool
+      ## A later edit to the same source slot replaced this entry's plan in
+      ## the journal before it was written. Its effect is therefore not on
+      ## disk; undoing the later edit journals this plan again.
 
   AgentEditProposalStatus* = enum
     aepsProposed
@@ -1323,6 +1449,23 @@ type
     wesReviewing
     wesFailed
 
+  SaveIndicatorState* = enum
+    ## What the chrome bar's save control shows. Four states, because a save
+    ## can be refused and "refused" is not "clean" -- before this existed, an
+    ## edit that committed and an edit that was refused looked identical.
+    sisClean   ## Nothing staged; everything the user did is on disk.
+    sisDirty   ## Staged edits waiting for a write.
+    sisSaving  ## A write transaction is in flight.
+    sisFailed  ## The last save was refused; `detail` says why.
+
+  SaveIndicator* = object
+    ## The whole control in one value, so the widget renders and the tests
+    ## assert against the same thing.
+    state*: SaveIndicatorState
+    label*: string   ## Never empty. Colour never carries the state alone.
+    detail*: string  ## The refusal, when there is one.
+    pending*: int    ## How many source edits are staged.
+
   WriteBridgeClientState* = enum
     wbcsOffline
     wbcsConnecting
@@ -1362,6 +1505,7 @@ type
     wedRollbackFailed
     wedBridgeUnavailable
     wedExternalChange
+    wedWorkspaceMismatch
 
   WorkspaceEditableSchemaEntry* = object
     ## Project-owned schema/source map entry used to resolve stable edit keys.
@@ -1429,6 +1573,10 @@ type
     ## Project-owned implementation for source reads, writes, codegen, and review.
     ## The framework owns transaction ordering and rollback around these callbacks.
     stagingOnly*: bool
+    durableSourceControl*: bool
+      ## Explicit opt-in for typed create/build commands. The adapter must persist
+      ## source, compile and publish the requested catalog before success.
+      ## Legacy interactive editing callbacks do not grant this capability.
     bridgeLabel*: string
     allowMissingExpectedOldValue*: bool
     schema*: seq[WorkspaceEditableSchemaEntry]
@@ -1792,6 +1940,13 @@ type
     beforeToken*: FoundationTokenEntry
     afterToken*: FoundationTokenEntry
     sourceEdit*: SourceEditPlan
+    lastWrite*: SourceWriteReceipt
+      ## The most recent completed write of this entry's plan, or of the plan
+      ## that undid it; see ``CSSPropertyEditTransaction.lastWrite``. Kept so
+      ## that undo after an automatic save restores exactly the lines the
+      ## write replaced instead of being lost with the save.
+    lastWriteApplied*: bool
+      ## ``lastWrite`` applied this entry's edit rather than undoing it.
 
   ComponentVariantEditHistoryEntry* = object
     beforeVariant*: ComponentVariantDefinition
@@ -1799,6 +1954,13 @@ type
     selectedBefore*: int
     selectedAfter*: int
     sourceEdit*: SourceEditPlan
+    lastWrite*: SourceWriteReceipt
+      ## The most recent completed write of this entry's plan, or of the plan
+      ## that undid it; see ``CSSPropertyEditTransaction.lastWrite``. Kept so
+      ## that undo after an automatic save restores exactly the lines the
+      ## write replaced instead of being lost with the save.
+    lastWriteApplied*: bool
+      ## ``lastWrite`` applied this entry's edit rather than undoing it.
 
   FoundationEditDiagnostic* = object
     kind*: FoundationEditDiagnosticKind
@@ -2225,7 +2387,7 @@ type
   # previously-linked history — as ADDITIVE editor-WORKSPACE metadata
   # written to a JSON sidecar (``<workspace-dir>/.isonim/bindings.json``),
   # NEVER the shipped framework code and NEVER the DTCG design-token
-  # source (``codetracer-design-system/*.json``). Both records are plain
+  # source owned by a consuming application. Both records are plain
   # value objects so the sidecar (de)serializer in ``workspace.nim`` can
   # round-trip them with no VM/DOM dependency.
   PersistedPropertyBinding* = object

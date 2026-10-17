@@ -3,7 +3,10 @@
 ## Real PostgreSQL via the REV-M3 ``PgFixture`` + real daemon spawned
 ## via ``campaign_routes_fixture.startCampaignDaemon`` + real fake ACP
 ## agent in the background.  No in-process mocks at the DB or HTTP
-## boundary.
+## boundary. The deterministic ACP process isolates transport/context and turn
+## completion from model behavior; real daemon/HTTP/PostgreSQL carry the route
+## assertions. The optional invocation-scoped record file only retains actual
+## outbound/inbound diagnostic JSON before fixture cleanup; it is not an oracle.
 ##
 ## CMP-M6 reshape: the orchestrator runs as one long-lived agent turn.
 ## There is no daemon-driven tick mechanism.  After ``campaign start``
@@ -16,6 +19,11 @@
 ## the tick-route 410 deprecation are added in their place.
 
 import std/[json, os, strutils, times, unittest]
+
+import isonim/editor/design_review/campaign_pin
+import isonim/editor/design_review/workspace_pin
+from isonim/editor/design_review/campaign_routes import
+  CampaignPromptInputs, assembleFirstPrompt
 
 import helpers/campaign_routes_fixture
 
@@ -100,10 +108,11 @@ proc writeDocFixture(docPath, body: string) =
   writeFile(docPath, body)
 
 proc startBody(docPath, docSha, briefBody, docBody: string;
-               briefRefs: seq[string] = @["render.demo-app"]):
+               briefRefs: seq[string] = @["render.demo-app"];
+               pin = fixtureWorkspacePin()):
     string =
   ## Compose the JSON body the daemon's POST /api/campaign/start
-  ## handler expects.
+  ## handler expects, carrying ``pin`` as the round's workspace pin.
   var refsJson = newJArray()
   for r in briefRefs: refsJson.add(%r)
   var briefsJson = newJArray()
@@ -116,15 +125,16 @@ proc startBody(docPath, docSha, briefBody, docBody: string;
     "maxIterations": 3,
     "body":         docBody,
     "briefs":       briefsJson,
-    "manifestHash": "test:fixture",
+    "workspacePin": workspacePinJson(pin),
     "startedBy":    "tester",
     "latestReport": "",
   }
   return $body
 
 proc startBodyDefault(docPath, docSha, briefBody: string;
-                     briefRefs: seq[string] = @["render.demo-app"]): string =
-  startBody(docPath, docSha, briefBody, FixtureCampaignDoc, briefRefs)
+                     briefRefs: seq[string] = @["render.demo-app"];
+                     pin = fixtureWorkspacePin()): string =
+  startBody(docPath, docSha, briefBody, FixtureCampaignDoc, briefRefs, pin)
 
 # ---------------------------------------------------------------------------
 # Lifecycle smoke tests.
@@ -145,7 +155,7 @@ test "test_start_campaign_persists_row_and_started_event":
   let rows = fetchCampaignByDoc(f, docPath)
   check rows.len == 1
   check rows[0][2] == "3"               # max_iterations
-  check rows[0][3] == "test:fixture"    # manifest_hash
+  check rows[0][3] == fixtureWorkspacePin().pin  # manifest_hash = start pin
   check rows[0][5] == "tester"          # started_by
   check rows[0][6] == "sha-fixture-1"   # doc_sha
 
@@ -234,7 +244,7 @@ test "test_start_campaign_rejects_missing_briefRefs":
     "maxIterations": 3,
     "body": FixtureCampaignDoc,
     "briefs": newJArray(),
-    "manifestHash": "test:fixture",
+    "workspacePin": workspacePinJson(fixtureWorkspacePin()),
     "startedBy": "tester",
   })
   let (code, respBody) = campaignPost(f, "/api/campaign/start", body)
@@ -242,6 +252,198 @@ test "test_start_campaign_rejects_missing_briefRefs":
   let node = parseJson(respBody)
   check node{"error"}.getStr("") == "missing_briefRefs"
   check countCampaigns(f) == 0
+
+test "test_start_campaign_refuses_a_missing_or_placeholder_pin":
+  ## REV-M5 follow-up (migration 012): ``/api/campaign/start`` must carry
+  ## the round's workspace pin (``workspacePin``), verified against its
+  ## record.  The pre-012 placeholder ``manifestHash: "local"`` is not a
+  ## pin, and neither is a pin paired with some other record.  Nothing is
+  ## written for a refused start.
+  let f = startCampaignDaemon()
+  defer: f.shutdown()
+  let docPath = "/tmp/cmp-m6-fixture/campaigns/no-pin.md"
+  writeDocFixture(docPath, FixtureCampaignDoc)
+  var legacy = parseJson(startBodyDefault(docPath, "sha-no-pin",
+                                          FixtureBriefBody))
+  legacy.delete("workspacePin")
+  legacy["manifestHash"] = %"local"
+  let (c1, b1) = campaignPost(f, "/api/campaign/start", $legacy)
+  check c1 == 400
+  check parseJson(b1){"error"}.getStr("") == "workspace_pin_required"
+
+  var forged = parseJson(startBodyDefault(docPath, "sha-no-pin",
+                                          FixtureBriefBody))
+  forged["workspacePin"] = %*{"pin": fixtureWorkspacePin('a').pin,
+                              "lockToml": fixtureWorkspacePin('b').lockToml}
+  let (c2, b2) = campaignPost(f, "/api/campaign/start", $forged)
+  check c2 == 400
+  check parseJson(b2){"error"}.getStr("") == "invalid_workspace_pin"
+
+  forged["workspacePin"] = %*{"pin": "local", "lockToml": ""}
+  let (c3, b3) = campaignPost(f, "/api/campaign/start", $forged)
+  check c3 == 400
+  check parseJson(b3){"error"}.getStr("") == "invalid_workspace_pin"
+  check countCampaigns(f) == 0
+
+test "test_campaign_start_records_start_pin_and_every_round_pin":
+  ## REV-M5 follow-up (migration 012): the first start's pin is the
+  ## campaign's start pin and round 1's pin; a later ``campaign start``
+  ## on the same doc is round 2 with its own pin, and the start pin stays.
+  let f = startCampaignDaemon()
+  defer: f.shutdown()
+  let docPath = "/tmp/cmp-m6-fixture/campaigns/round-pins.md"
+  writeDocFixture(docPath, FixtureCampaignDoc)
+  let a = fixtureWorkspacePin('a')
+  let b = fixtureWorkspacePin('b')
+  let (s1, _) = rawPostStream(f.baseUrl, "/api/campaign/start",
+    startBodyDefault(docPath, "sha-round-pins", FixtureBriefBody, pin = a))
+  check s1 == 200
+  check waitForCampaignStatus(f, docPath, "failed")
+  let firstRows = fetchCampaignByDoc(f, docPath)
+  check firstRows.len == 1
+  let (firstCode, firstBody) = campaignGet(f,
+    "/api/campaign/fetch?campaignId=" & firstRows[0][0] & "&eventLimit=50")
+  check firstCode == 200
+  let firstSession = parseJson(firstBody){"acp_session_id"}.getStr("")
+  check firstSession.len > 0
+  let (s2, _) = rawPostStream(f.baseUrl, "/api/campaign/start",
+    startBodyDefault(docPath, "sha-round-pins", FixtureBriefBody, pin = b))
+  check s2 == 200
+  let rows = fetchCampaignByDoc(f, docPath)
+  check rows.len == 1
+  check rows[0][3] == a.pin
+  let campaignId = rows[0][0]
+
+  let (code, respBody) = campaignGet(f,
+    "/api/campaign/fetch?campaignId=" & campaignId & "&eventLimit=50")
+  check code == 200
+  let node = parseJson(respBody)
+  check node{"manifest_hash"}.getStr("") == a.pin
+  let p = parseCampaignProvenance(node)
+  check p.startState == cpsPinned
+  check p.rounds.len == 2
+  check p.rounds[0].round == 1
+  check p.rounds[0].pin == a.pin
+  check p.rounds[1].round == 2
+  check p.rounds[1].pin == b.pin
+
+  # Each round's ``round_complete`` names its round and pin.
+  var completed: seq[(int, string)]
+  for e in eventsForCampaign(f, campaignId):
+    if e.kind == "round_complete":
+      let payload = parseJson(e.payload)
+      completed.add (payload{"round"}.getInt(0),
+                     payload{"workspacePin"}.getStr(""))
+  check completed == @[(1, a.pin), (2, b.pin)]
+
+  # Each turn's orchestrator prompt names the round it runs as and the
+  # round's pin, so the orchestrator knows the state it starts from.
+  let entries = readContentLogEntries(f)
+  let evidencePath = getEnv("ISONIM_CAMPAIGN_PIN_RECORDS")
+  if evidencePath.len > 0:
+    var raw = ""
+    for entry in entries: raw.add $entry & "\n"
+    writeFile(evidencePath, raw)
+  let secondSession = node{"acp_session_id"}.getStr("")
+  check secondSession.len > 0
+
+  proc promptRecordsMatch(records: seq[JsonNode]): bool =
+    var outbound, inbound: seq[JsonNode]
+    for entry in records:
+      let text = entry{"promptText"}.getStr("")
+      if "CAMPAIGN ROUND:" notin text: continue
+      case entry{"source"}.getStr("")
+      of "stream": outbound.add entry
+      of "fake_acp": inbound.add entry
+      else: return false
+    if outbound.len != 2 or inbound.len != 2: return false
+    var sent, received: seq[(bool, bool)]
+    for i in 0 .. 1:
+      let expectedSession = if i == 0: firstSession else: secondSession
+      if expectedSession.len == 0 or
+          outbound[i]{"sessionId"}.getStr("") != expectedSession or
+          inbound[i]{"sessionId"}.getStr("") != expectedSession or
+          outbound[i]{"campaignId"}.getStr("") != campaignId:
+        return false
+      let sentText = outbound[i]{"promptText"}.getStr("")
+      let receivedText = inbound[i]{"promptText"}.getStr("")
+      if sentText != receivedText or inbound[i]{"textBlocks"}.getInt(0) != 1:
+        return false
+      proc flags(text: string): (bool, bool) =
+        (("  round:         1\n" in text) and
+           ("  workspace pin: " & a.pin) in text,
+         ("  round:         2\n" in text) and
+           ("  workspace pin: " & b.pin) in text)
+      sent.add flags(sentText)
+      received.add flags(receivedText)
+    return sent == @[(true, false), (false, true)] and
+      received == @[(true, false), (false, true)]
+
+  check promptRecordsMatch(entries)
+  # Controls mutate the ACTUAL received records, without a synthetic successful
+  # transport or text deduplication. Missing inbound, wrong session/round/pin and
+  # reordered receipt must all reject the same exact positive predicate.
+  var missing: seq[JsonNode]
+  var removed = false
+  for entry in entries:
+    if not removed and entry{"source"}.getStr("") == "fake_acp" and
+        "CAMPAIGN ROUND:" in entry{"promptText"}.getStr(""):
+      removed = true
+    else: missing.add entry
+  check removed
+  check not promptRecordsMatch(missing)
+  for field in ["sessionId", "round", "pin"]:
+    var mutated: seq[JsonNode]
+    var changed = false
+    for entry in entries:
+      let copy = parseJson($entry)
+      if not changed and copy{"source"}.getStr("") == "fake_acp" and
+          "CAMPAIGN ROUND:" in copy{"promptText"}.getStr(""):
+        if field == "sessionId": copy["sessionId"] = %"wrong-session"
+        elif field == "round":
+          copy["promptText"] = %copy{"promptText"}.getStr("").replace(
+            "  round:         1\n", "  round:         2\n")
+        else:
+          copy["promptText"] = %copy{"promptText"}.getStr("").replace(a.pin, b.pin)
+        changed = true
+      mutated.add copy
+    check changed
+    check not promptRecordsMatch(mutated)
+
+  # Corrupt BOTH sides equally: equality still holds, so only the independent
+  # expected round/pin gate can reject this forged round's provenance.
+  var coupled: seq[JsonNode]
+  for entry in entries:
+    let copy = parseJson($entry)
+    if copy{"source"}.getStr("") in ["stream", "fake_acp"]:
+      copy["promptText"] = %copy{"promptText"}.getStr("").replace(a.pin, b.pin)
+    coupled.add copy
+  check not promptRecordsMatch(coupled)
+  var reordered = entries
+  var receivedIndices: seq[int]
+  for i, entry in entries:
+    if entry{"source"}.getStr("") == "fake_acp" and
+        "CAMPAIGN ROUND:" in entry{"promptText"}.getStr(""):
+      receivedIndices.add i
+  check receivedIndices.len == 2
+  swap(reordered[receivedIndices[0]], reordered[receivedIndices[1]])
+  check not promptRecordsMatch(reordered)
+
+test "test_first_prompt_names_the_round_and_its_workspace_pin":
+  ## Pure: the CAMPAIGN ROUND section sits between the system prompt and
+  ## the campaign doc, and is omitted when no round is known.
+  let pin = fixtureWorkspacePin('c').pin
+  let text = assembleFirstPrompt("SYS", CampaignPromptInputs(
+    docPath: "/c/doc.md", docBody: "DOC", campaignId: "cid-1", round: 3,
+    workspacePin: pin))
+  check ("\n\nCAMPAIGN ROUND:\n  campaign:      cid-1\n" &
+         "  round:         3\n  workspace pin: " & pin & "\n") in text
+  check text.find("SYS") < text.find("CAMPAIGN ROUND:")
+  check text.find("CAMPAIGN ROUND:") < text.find("CAMPAIGN DOCUMENT")
+  let bare = assembleFirstPrompt("SYS", CampaignPromptInputs(
+    docPath: "/c/doc.md", docBody: "DOC"))
+  check "CAMPAIGN ROUND:" notin bare
+  check "CAMPAIGN DOCUMENT (/c/doc.md):\nDOC" in bare
 
 test "test_list_campaigns_filters_by_status":
   ## With the post-turn fallback running every campaign that never

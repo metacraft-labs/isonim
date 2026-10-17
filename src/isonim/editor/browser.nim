@@ -9,16 +9,21 @@ when not defined(js):
 import std/[dom, strutils]
 
 import isonim/core/[computation, owner, signals]
+import isonim/editor/control_browser
 import isonim/editor/dom_renderer
 import isonim/editor/streaming_preview
 import isonim/editor/types
 import isonim/editor/viewmodels
 import isonim/editor/workspace
+import isonim/editor/editable_cells
 import isonim/editor/views/shell
 import isonim/editor/design_review/editor_agent_adapter
+from isonim/editor/design_review/browser_agent_client import BrowserAgentClient
 
 var
   routeSyncScheduled = false
+  routeWriteTimer = 0
+  routeOwnerGeneration = 0
   routeHistoryInitialized = false
   applyingRoute = false
   lastSyncedRoute = ""
@@ -27,16 +32,57 @@ proc injectEditorStyles*() =
   ## Inject base responsive styles required by the editor shell.
   let style = document.createElement("style")
   style.textContent = cstring"""
+    /* Discreet scrollbars, editor-wide.
+     *
+     * The platform default is a 15px light-grey bar that reads as chrome in
+     * its own right -- in a dark tool it is the brightest thing on screen,
+     * and the editor stacks several scroll regions, so the defaults compete
+     * with the content for attention.
+     *
+     * Overlay-style: thin, transparent track, thumb only, and only visibly
+     * darker on hover. Firefox gets `scrollbar-width` / `scrollbar-color`,
+     * which is the whole of what it offers.
+     */
+    * {
+      scrollbar-width: thin;
+      scrollbar-color: rgba(255, 255, 255, 0.16) transparent;
+    }
+    ::-webkit-scrollbar { width: 8px; height: 8px; }
+    ::-webkit-scrollbar-track { background: transparent; }
+    ::-webkit-scrollbar-corner { background: transparent; }
+    ::-webkit-scrollbar-thumb {
+      background-color: rgba(255, 255, 255, 0.14);
+      border-radius: 4px;
+      /* Inset with a transparent border so the thumb reads as 4px of colour
+       * inside an 8px track rather than a slab against the content. */
+      border: 2px solid transparent;
+      background-clip: padding-box;
+    }
+    ::-webkit-scrollbar-thumb:hover {
+      background-color: rgba(255, 255, 255, 0.28);
+    }
+
     .editor-tabbar::-webkit-scrollbar { display: none; }
     /* Inspector tabbar: fade the right edge so overflow reads as scrollable. */
-    .editor-manual-inspector .editor-tabbar {
+    .editor-manual-inspector:not(.editor-inspector) .editor-tabbar {
       mask-image: linear-gradient(to right, black calc(100% - 24px), transparent 100%);
       -webkit-mask-image: linear-gradient(to right, black calc(100% - 24px), transparent 100%);
     }
     .editor-sidebar,
     .editor-chat,
-    .editor-manual-inspector {
+    .editor-manual-inspector:not(.editor-inspector) {
       scrollbar-width: thin;
+    }
+    /* Use platform-sized, visible scrollbars in high-contrast mode. Keep
+     * the same specificity as panel rules and override legacy hidden tabs. */
+    @media (forced-colors: active) {
+      *, .editor-sidebar, .editor-chat, .editor-manual-inspector:not(.editor-inspector) {
+        scrollbar-color: auto;
+        scrollbar-width: auto;
+      }
+      ::-webkit-scrollbar { width: auto; height: auto; }
+      ::-webkit-scrollbar-thumb { background-color: CanvasText; }
+      .editor-tabbar::-webkit-scrollbar { display: revert; }
     }
     .editor-sidebar::-webkit-resizer {
       background: #334155;
@@ -45,12 +91,46 @@ proc injectEditorStyles*() =
     .editor-tabbar [role="tab"]:hover {
       background: #1E293B !important;
     }
-    .editor-manual-inspector details {
+    .editor-manual-inspector:not(.editor-inspector) details {
       border-top: 1px solid #1E293B;
       padding-top: 2px;
     }
-    .editor-manual-inspector details:not([open]) > *:not(summary) {
+    .editor-manual-inspector:not(.editor-inspector) details:not([open]) > *:not(summary) {
       display: none !important;
+    }
+    /* Adapt to the preview column, including a resizable chat/inspector.
+       The full chip strip remains unchanged when there is room. */
+    [data-preview-center-column] { container-type: inline-size; container-name: preview-chrome; }
+    [data-preview-viewport-pinned-option="true"] { display: none !important; }
+    @container preview-chrome (max-width: 1000px) {
+      [data-preview-chrome-bar] { gap: 4px !important; padding-left: 4px !important; padding-right: 4px !important; }
+      [data-preview-toolbar-spacer] { min-width: 0 !important; }
+      [data-toolbar-cluster="flow-playback"] { gap: 0 !important; }
+      [data-preview-chrome-bar] [data-choice-group-has-icon="true"] {
+        min-width: 24px !important; width: 24px !important;
+        box-sizing: border-box; padding: 2px !important;
+      }
+      [data-preview-viewport-strip-host] [data-choice-group-pill] {
+        min-width: 0 !important; padding: 2px 6px !important;
+      }
+    }
+    @container preview-chrome (max-width: 640px) {
+      [data-preview-chrome-bar] { gap: 2px !important; }
+      [data-preview-chrome-bar] [data-toolbar-cluster="backend"] [data-choice-group="segmented"],
+      [data-preview-chrome-bar] [data-toolbar-cluster="mode"] [data-choice-group="segmented"] {
+        gap: 0 !important; padding-left: 0 !important; padding-right: 0 !important;
+      }
+      [data-preview-viewport-strip-host] { display: none !important; }
+      [data-preview-chrome-bar] [data-toolbar-cluster="viewport"] {
+        min-width: 44px !important; flex-shrink: 1 !important;
+      }
+      [data-preview-viewport-overflow] { min-width: 44px !important; flex-shrink: 1; box-sizing: border-box; }
+      [data-preview-viewport-current] {
+        display: inline !important; min-width: 20px; flex-shrink: 1;
+        overflow: hidden; text-overflow: ellipsis;
+      }
+      [data-preview-viewport-overflow] { gap: 4px; }
+      [data-preview-viewport-pinned-option="true"] { display: flex !important; }
     }
     /* Per-row "More" disclosure: hidden by default, revealed on row hover. */
     [data-inspector-control] > details > summary {
@@ -113,12 +193,17 @@ proc injectEditorStyles*() =
     @media (max-width: 1024px) and (min-width: 769px) {
       .editor-sidebar { width: 220px !important; min-width: 220px !important; }
       .editor-inspector,
-      .editor-chat,
-      .editor-manual-inspector { width: min(320px, 38vw) !important; min-width: min(320px, 38vw) !important; max-width: min(320px, 38vw) !important; }
+      .editor-manual-inspector:not(.editor-inspector) { width: min(320px, 38vw) !important; min-width: min(320px, 38vw) !important; max-width: min(320px, 38vw) !important; }
       .editor-tabbar > div { padding: 0 6px !important; font-size: 10px !important; }
     }
     .editor-input::placeholder { color: #475569; }
     .editor-input:focus { border-color: #3B82F6 !important; }
+    /* Programmatic agent focus and keyboard focus use the same visible ring.
+       The search input has no border; paint its enclosing field instead. */
+    [data-sidebar-search-field]:focus-within {
+      outline: 2px solid #3B82F6;
+      outline-offset: 2px;
+    }
 
     /* ---- Phase H — Property row visual polish (2026-05-28) ---- */
 
@@ -160,7 +245,7 @@ proc injectEditorStyles*() =
     [data-inspector-section-header]:hover [data-inspector-section-title] {
       color: #FFFFFF !important;
     }
-    [data-inspector-section-action="add"]:hover {
+    [data-inspector-section-action="add"]:not([aria-disabled="true"]):hover {
       background-color: #1F212C !important;
       color: #ECEDF3 !important;
     }
@@ -255,8 +340,8 @@ proc writeRouteUrl(url: string; replace: bool) =
   else:
     {.emit: ["window.history.pushState({ isonimEditor: true }, '', ", next, ")"].}
 
-proc deferRouteWrite(cb: proc()) =
-  {.emit: ["setTimeout(", cb, ", 0)"].}
+proc deferRouteWrite(cb: proc()): int =
+  {.emit: [result, " = setTimeout(", cb, ", 0);"].}
 
 proc addPopstateListener(handler: proc()) =
   {.emit: ["window.addEventListener('popstate', ", handler, ")"].}
@@ -445,8 +530,12 @@ proc installEditorKeyboardShortcuts(vm: EditorVM) =
     discard vm.runEditorCommand(eckUndo)
   let redo = proc() =
     discard vm.runEditorCommand(eckRedo)
-  {.emit: ["""
+  var cleanup: proc()
+  {.emit: [cleanup, " = ", """
     (function () {
+      let disposed = false;
+      const timers = new Set();
+      function deferFocus(fn) { const id = setTimeout(() => { timers.delete(id); if(!disposed) fn(); }, 0); timers.add(id); }
       const openPalette = """, openPalette, """;
       const closePalette = """, closePalette, """;
       const editMode = """, editMode, """;
@@ -493,7 +582,7 @@ proc installEditorKeyboardShortcuts(vm: EditorVM) =
         const palette = document.querySelector('[data-editor-command-palette="true"]');
         return palette && palette.getAttribute('aria-hidden') === 'false';
       };
-      window.addEventListener('keydown', function (event) {
+      function key(event) {
         const key = event.key;
         const code = event.code;
         const lower = String(key || '').toLowerCase();
@@ -505,18 +594,27 @@ proc installEditorKeyboardShortcuts(vm: EditorVM) =
           openPalette();
           const palette = document.querySelector('[data-editor-command-palette="true"]');
           if (palette) palette.__isonimReturnFocus = returnFocus;
-          setTimeout(() => {
+          deferFocus(() => {
             const input = document.querySelector('[aria-label="Search editor commands"]');
             if (input && input.focus) input.focus({ preventScroll: true });
-          }, 0);
+          });
           return;
         }
         if (key === 'Escape' && paletteOpen()) {
           event.preventDefault();
           closePalette();
           if (returnFocus && returnFocus.focus) {
-            setTimeout(() => returnFocus.focus({ preventScroll: true }), 0);
+            deferFocus(() => returnFocus.focus({ preventScroll: true }));
           }
+          return;
+        }
+        // Save is exempt from the editable-target early return. Every other
+        // shortcut here would fight the field the user is typing in; this one
+        // is the thing they reach for immediately AFTER typing a value, and
+        // returning early made it dead in exactly that moment.
+        if (mod && lower === 's') {
+          event.preventDefault();
+          save();
           return;
         }
         if (editable) return;
@@ -526,9 +624,6 @@ proc installEditorKeyboardShortcuts(vm: EditorVM) =
         } else if (mod && (key === '/' || key === 'Slash' || code === 'Slash')) {
           event.preventDefault();
           toggleInspector();
-        } else if (mod && lower === 's') {
-          event.preventDefault();
-          save();
         } else if (mod && event.shiftKey && lower === 'z') {
           event.preventDefault();
           redo();
@@ -559,14 +654,17 @@ proc installEditorKeyboardShortcuts(vm: EditorVM) =
         } else if (lower === 'i') {
           event.preventDefault();
           focusInspector();
-          setTimeout(() => {
+          deferFocus(() => {
             const input = document.querySelector('[data-isonim-focus-id="section-search"]');
             if (input && input.focus) input.focus({ preventScroll: true });
-          }, 0);
+          });
         }
-      });
+      }
+      window.addEventListener('keydown', key);
+      return function() { disposed = true; window.removeEventListener('keydown', key); for(const id of timers) clearTimeout(id); timers.clear(); };
     })();
   """].}
+  onCleanup(cleanup)
 
 proc editorRouteUrl(vm: EditorVM): string =
   var parts = @[
@@ -605,7 +703,10 @@ proc scheduleEditorRouteSync(vm: EditorVM) =
     return
 
   routeSyncScheduled = true
-  deferRouteWrite proc() =
+  let generation = routeOwnerGeneration
+  routeWriteTimer = deferRouteWrite proc() =
+    if generation != routeOwnerGeneration: return
+    routeWriteTimer = 0
     routeSyncScheduled = false
     if not applyingRoute:
       syncEditorRouteNow(vm, replace = not routeHistoryInitialized)
@@ -654,6 +755,7 @@ proc applyEditorRoute(vm: EditorVM) =
       vm.activeView.val = viewFromSlug(viewParam, vm.activeView.val)
 
 proc installEditorHistorySync(vm: EditorVM) =
+  routeOwnerGeneration.inc
   routeSyncScheduled = false
   routeHistoryInitialized = false
   lastSyncedRoute = ""
@@ -682,6 +784,10 @@ proc installEditorHistorySync(vm: EditorVM) =
   addPopstateListener(onPopstate)
   onCleanup proc() =
     removePopstateListener(onPopstate)
+    routeOwnerGeneration.inc
+    {.emit: ["clearTimeout(", routeWriteTimer, ");"].}
+    routeWriteTimer = 0
+    routeSyncScheduled = false
 
 proc exposeWindowEditorHandle*(vm: EditorVM) =
   ## REV-M2: install a small ``window.__isonimEditor`` helper that the
@@ -718,6 +824,19 @@ proc exposeWindowEditorHandle*(vm: EditorVM) =
   # 2026-05-28: drag-resize handles for the left sidebar and the right
   # panel call into these closures so the JS-side mousemove handler
   # can push the new width back through the VM (which clamps).
+  proc cellKeysJson(): cstring =
+    var acc = "["
+    var first = true
+    for key in editableCellKeys():
+      if not first: acc.add ","
+      first = false
+      acc.add "\"" & key.replace("\\", "\\\\").replace("\"", "\\\"") & "\""
+    acc.add "]"
+    acc.cstring
+
+  proc setCell(id, property, value: cstring): bool =
+    setEditableValue($id, $property, $value)
+
   proc setLeftSidebar(width: int) =
     capturedVm.setLeftSidebarWidth(width)
   proc setRightPanel(width: int) =
@@ -731,12 +850,184 @@ proc exposeWindowEditorHandle*(vm: EditorVM) =
   let cbMode = setEditModeByIndex
   let cbLeftWidth = setLeftSidebar
   let cbRightWidth = setRightPanel
+  # Saving, and saying what happened. Every other exposure returns `true`
+  # unconditionally because the e2e tests only check truthiness -- which is
+  # exactly wrong for a command that writes files, where "it ran" and "it
+  # worked" are different answers and the interesting one is WHY NOT.
+  #
+  # Needed because `Mod+S` is unreachable from a test that has just typed
+  # into a field: the keydown handler returns early for an editable target,
+  # so the shortcut a person uses after typing a value is the one path a
+  # browser test cannot exercise.
+  let cbCells = cellKeysJson
+  let cbSetCell = setCell
+  let cbSave = proc(): cstring =
+    let state = vm.runEditorCommand(eckSave)
+    if state.diagnostic.len > 0: state.diagnostic.cstring
+    else: "".cstring
+  let cbPending = proc(): int =
+    vm.inspector.pendingSourceEdits.val.len
+
+  # ---- Source changed on disk: rebuild arrived, redraw ------------------ #
+  #
+  # The dev server watches the project, rebuilds when anything changes and
+  # broadcasts over the same SSE channel isonim's HMR uses
+  # (`/__isonim/hmr`, `update` / `error`). This is the client half.
+  #
+  # **This loads the new bundle. It does not reload the page.** The first
+  # version did reload, and it was wrong for the case that matters most: the
+  # editor writes files itself, so every property you changed in the inspector
+  # rebuilt the bundle, broadcast an update, and reloaded the editor out from
+  # under you. An editor that restarts each time you nudge a value is not
+  # usable, and no amount of session-snapshotting makes it feel otherwise --
+  # the reload also threw away the undo stacks, the focused input and every
+  # piece of state nobody had thought to snapshot.
+  #
+  # What replaces it is isonim's own mechanism, which `hmr_livereload.nim`
+  # already routes every JS change through: append a `<script>` for the fresh
+  # bundle and let it re-run the project's entry point. `mountEditor` sees a
+  # live editor and calls `loadProjectData` on it instead of mounting a second
+  # one, so the new bundle's project procs replace the old ones inside the
+  # running editor and the reactive graph recomputes what depended on them.
+  # Nothing is torn down, so nothing needs restoring.
+  #
+  # The old bundle's code stays resident -- this is a dev-mode swap, not a
+  # module system -- and its closures are simply no longer reachable from the
+  # VM once `loadProjectData` has replaced them. What makes that safe is that
+  # Nim's JS backend compiles top-level vars to globals, so the reactive
+  # graph's `Owner` / `Listener` / `Effects` / `Updates` are shared by name
+  # between the two bundles rather than duplicated; see `liveEditorVM`.
+  when defined(js):
+    let buildFailed = proc(message: cstring) =
+      vm.workspaceEditStage.val = wesFailed
+      vm.workspaceEditDiagnostics.val = @[WorkspaceEditDiagnostic(
+        kind: wedCompileFailed,
+        message: "The project failed to rebuild: " & $message)]
+    let buildRecovered = proc() =
+      # A failed build leaves the status bar saying so. Clear it on the next
+      # success, or the editor keeps reporting a compile error that has been
+      # fixed -- which teaches people to ignore the status bar.
+      vm.recoverProjectBuild()
+    {.emit: ["""
+      (function (buildFailed, buildRecovered) {
+        // Install once per DOCUMENT, not once per bundle.
+        //
+        // A hot swap loads a new copy of the whole bundle, which re-runs this
+        // top level -- so every swap opened ANOTHER EventSource on the same
+        // page. Each one then answered the next rebuild with its own
+        // `applyBundle`, so one file write produced several bundle loads, each
+        // of which added another listener. The editor degraded over a handful
+        // of edits and then stopped responding, which is exactly what it looks
+        // like from the outside: not a crash, a slide.
+        //
+        // The server saw it too, reporting two and three "clients" for a
+        // single open tab.
+        if (window.__isonimHmrInstalled) return;
+        window.__isonimHmrInstalled = true;
+
+        let applying = false;
+        let queued = null;
+
+        function applyBundle(url) {
+          // One swap at a time. A burst of saves can deliver several updates
+          // while a script is still evaluating, and two bundles evaluating
+          // concurrently would race on the globals they share. The last URL
+          // wins, because it is the only one whose bytes match the tree.
+          if (applying) { queued = url; return; }
+          applying = true;
+          const script = document.createElement('script');
+          // Cache-bust: the server already varies the URL per build, but a
+          // client that reconnected and replayed an older URL would otherwise
+          // be served from cache.
+          script.src = url + (url.indexOf('?') < 0 ? '?' : '&') +
+            'hot=' + Date.now();
+          script.async = false;
+          script.onload = function () {
+            // The bundle has re-run the project entry point by now, which
+            // means `mountEditor` has already adopted the live VM.
+            script.remove();
+            applying = false;
+            buildRecovered();
+            const next = queued;
+            queued = null;
+            if (next) applyBundle(next);
+          };
+          script.onerror = function () {
+            script.remove();
+            applying = false;
+            buildFailed('the rebuilt bundle could not be loaded from ' + url);
+          };
+          document.head.appendChild(script);
+        }
+
+        let source = null;
+        function connect() {
+          try {
+            source = new EventSource('/__isonim/hmr');
+          } catch (e) {
+            return;
+          }
+          source.addEventListener('update', function (event) {
+            // Per isonim/web/hmr_sse.nim the payload IS the bundle URL.
+            const url = (event && event.data) ? String(event.data) : '';
+            if (url) applyBundle(url);
+          });
+          source.addEventListener('error', function (event) {
+            // A Nim error is the single most useful thing a person can see
+            // here. Swallowing it makes a broken build look like a hung
+            // editor -- the change lands, nothing moves, nothing says why.
+            const text = (event && event.data) ? String(event.data) : '';
+            if (text) buildFailed(text);
+          });
+        }
+        connect();
+      })(""", buildFailed, ", ", buildRecovered, ");"].}
+
+  onCleanup proc() =
+    {.emit: "if (window.__isonimAutoSaveTimer) clearTimeout(window.__isonimAutoSaveTimer); window.__isonimAutoSaveTimer = null;".}
+
+  # Auto-save. The VM bumps a generation when a commit stages an edit; the
+  # debounce lives here because the VM has no timer and should not grow one
+  # -- a commit that wrote immediately would write once per keystroke in a
+  # numeric field.
+  #
+  # There is no manual mode. `Mod+S` still works and still saves NOW rather
+  # than in 900ms, because a person who reaches for it is telling you they
+  # do not want to wait.
+  #
+  # 900ms: long enough to type "1", "12", "120" as one edit, short enough
+  # that looking away and back finds the file already written.
+  when defined(js):
+    var lastAutoSaveGeneration = 0
+    let runAutoSave = proc() =
+      if vm.inspector.pendingSourceEdits.val.len > 0:
+        discard vm.runEditorCommand(eckSave)
+    createRenderEffect proc() =
+      let generation = vm.autoSaveGeneration.val
+      if generation == lastAutoSaveGeneration:
+        return
+      lastAutoSaveGeneration = generation
+      let fire = runAutoSave
+      {.emit: ["""
+        (function (fire) {
+          if (window.__isonimAutoSaveTimer) {
+            clearTimeout(window.__isonimAutoSaveTimer);
+          }
+          window.__isonimAutoSaveTimer = setTimeout(function () {
+            window.__isonimAutoSaveTimer = null;
+            fire();
+          }, 900);
+        })(""", fire, ");"].}
   {.emit: ["""
     (function () {
       const fn = """, cb, """;
       const fnMode = """, cbMode, """;
       const fnLeftW = """, cbLeftWidth, """;
       const fnRightW = """, cbRightWidth, """;
+      const fnSave = """, cbSave, """;
+      const fnCells = """, cbCells, """;
+      const fnSetCell = """, cbSetCell, """;
+      const fnPending = """, cbPending, """;
       window.__isonimEditor = window.__isonimEditor || {};
       window.__isonimEditor.selectStoryByName = function (group, name) {
         fn(group, name);
@@ -746,6 +1037,17 @@ proc exposeWindowEditorHandle*(vm: EditorVM) =
         fnMode(modeIndex | 0);
         return true;
       };
+      // The DSL's authored values, as the editor sees them. Test affordance:
+      // the cells are the mechanism that makes a mounted preview editable, and
+      // nothing in the DOM reveals whether a change came through one or
+      // through a stylesheet rule -- which is exactly the distinction a test
+      // of this has to make.
+      window.__isonimEditor.editableCells = function () {
+        return fnCells();
+      };
+      window.__isonimEditor.setEditableValue = function (id, property, value) {
+        return fnSetCell(id, property, value);
+      };
       window.__isonimEditor.setLeftSidebarWidth = function (width) {
         fnLeftW(width | 0);
         return true;
@@ -754,42 +1056,125 @@ proc exposeWindowEditorHandle*(vm: EditorVM) =
         fnRightW(width | 0);
         return true;
       };
+      // Returns "" when the save succeeded, or the refusal. Not a boolean:
+      // "this workspace is read-only" and "no adapter is ready" are
+      // different problems with different fixes.
+      window.__isonimEditor.save = function () { return String(fnSave()); };
+      // How many source edits are staged and waiting for a save.
+      window.__isonimEditor.pendingSourceEdits = function () {
+        return fnPending() | 0;
+      };
+
     })();
   """].}
 
-proc mountEditor*(workspace: EditorWorkspace;
-                  root: Element = document.body;
-                  useHashRoute = true;
-                  injectStyles = true): EditorVM =
-  ## Mount the editor shell into a DOM element and return the live VM.
+proc liveEditorVM(): EditorVM =
+  ## The VM of an editor already mounted in this document, or nil.
   ##
-  ## The returned VM is useful for tests and host-app integrations that need to
-  ## drive the editor after mount.
+  ## Stashed on `globalThis` rather than in a module-level `var` on purpose: a
+  ## hot bundle swap re-runs the whole bundle, which re-initialises every
+  ## module-level var, so a module-level handle would always read nil and every
+  ## swap would mount a second editor. `globalThis` is the one place both the
+  ## old and the new bundle can see.
+  ##
+  ## Reading a VM built by the PREVIOUS bundle and then driving it with THIS
+  ## bundle's code is sound for the same reason the rest of isonim's HMR is:
+  ## the JS backend compiles field names deterministically from the source, so
+  ## two builds of the same declarations agree on them, and it compiles
+  ## top-level vars to globals, so `Owner`, `Listener`, `Effects` and `Updates`
+  ## are shared by name rather than duplicated. The reactive graph the old
+  ## bundle built is the graph this bundle writes to. If the editor's own type
+  ## declarations change, that assumption breaks -- and so does every other
+  ## HMR swap, which is why a changed editor needs a real reload.
+  when defined(js):
+    {.emit: [result, " = globalThis.__isonimEditorVm || null;"].}
+  else:
+    nil
+
+proc rememberLiveEditorVM(vm: EditorVM) =
+  when defined(js):
+    {.emit: ["globalThis.__isonimEditorVm = ", vm, ";"].}
+  else:
+    discard vm
+
+proc onProjectCodeReplaced() =
+  ## What survives a hot swap, and why it is everything.
+  ##
+  ## The obvious move here is to drop the editor's pending state -- the cells
+  ## were seeded from literals in the OLD bundle, and the pending stylesheet
+  ## declarations were applied to rules it compiled. Both were cleared, and
+  ## both had to be put back, because the assumption underneath is wrong:
+  ## **a rebuild lags the edit that caused it.**
+  ##
+  ## The bundle arriving now was compiled from the source as it stood seconds
+  ## ago. An edit made since is still pending, and the editor's overlay is the
+  ## only record of it. Clearing on arrival therefore does not reconcile the
+  ## preview with the source -- it reverts the preview to a moment before the
+  ## user's most recent change. Measured: a third edit flashed back to the
+  ## second one's value 1119ms after it was made, when the second one's rebuild
+  ## landed.
+  ##
+  ## Keeping both is safe because both are idempotent overlays. Once the source
+  ## catches up, the cell holds the value the new literal would have seeded and
+  ## the declaration matches the rule it is written to, so applying them
+  ## changes nothing. They converge instead of fighting.
+  ##
+  ## The cost is that an edit made to the file by someone ELSE, to a value the
+  ## user has also touched here, stays masked by the local edit until the next
+  ## time it is set. That is the same trade `mergeTokensPreservingLocalEdits`
+  ## already makes for tokens, and it is the right way round: losing somebody's
+  ## unsaved work is worse than delaying somebody else's saved work.
+  ##
+  ## `resetEditableCells` still exists for an explicit "reload from source",
+  ## which is a deliberate act rather than a side effect of compiling.
+  discard
+
+proc unmountEditor*(vm: EditorVM): bool {.discardable.} =
+  ## Dispose this UI mount, retaining the application's model and backend
+  ## conversations. Repeated disposal is a no-op; another model is untouched.
+  {.emit: ["const mountedUI = globalThis.__isonimEditorMount; ", result,
+    " = false; if (mountedUI && mountedUI.vm === ", vm, ") {",
+    "globalThis.__isonimEditorMount = null; mountedUI.shell.setAttribute('data-isonim-unmounting','true'); mountedUI.dispose(); mountedUI.shell.remove();",
+    "globalThis.__isonimEditor = null; ", result, " = true; }"].}
+
+proc mountEditor*(vm: EditorVM; root: Element = document.body;
+                  useHashRoute = true; injectStyles = true;
+                  configureAgentChat: proc(chat: AgentChatVM): BrowserAgentClient {.closure.} = nil): EditorVM =
+  ## Mount a retained model through the production view path. Ownership of the
+  ## model remains with its host; unmounting these views does not close sessions.
+  ## An explicit configureAgentChat factory applies to initial and new chats.
+  ## Without it, production daemon discovery and client/control binding remain
+  ## the default. A factory may return nil only for an adapter-only host; such
+  ## a chat has no BrowserAgentClient bound to the control bridge.
+  if vm == nil: raise newException(ValueError, "An editor model is required.")
+  var alreadyMounted = false
+  {.emit: [alreadyMounted, " = !!globalThis.__isonimEditorMount;"].}
+  if alreadyMounted:
+    if liveEditorVM() == vm: return vm
+    raise newException(ValueError, "Another editor UI is already mounted.")
   if injectStyles:
     injectEditorStyles()
 
-  var mounted: EditorVM
-  createRoot proc(dispose: proc()) =
-    let vm = createEditorVM(workspace)
-    when defined(js):
-      # RS-M11 Pattern A: the JS bundle needs the streaming-preview
-      # VM so the non-Web canvas can route F/M/I packets and surface
-      # manifest selections back to the sidebar. createEditorVM
-      # leaves the field nil per the M57 headless contract; the
-      # JS mount path opts in here.  Web stays the default backend;
-      # the chip click flips `vm.platform` AND
-      # `streamingPreview.selectedBackend`.
+  when defined(js):
+    # RS-M11 Pattern A: the JS bundle needs the streaming-preview
+    # VM so the non-Web canvas can route F/M/I packets and surface
+    # manifest selections back to the sidebar. createEditorVM
+    # leaves the field nil per the M57 headless contract; the
+    # JS mount path opts in here.  Web stays the default backend;
+    # the chip click flips `vm.platform` AND
+    # `streamingPreview.selectedBackend`.
+    if vm.streamingPreview == nil:
       vm.streamingPreview = newStreamingPreviewVM(initial = pbWeb,
         available = @[pbWeb, pbTui, pbGpui, pbFreya, pbCocoa,
                       pbAndroid, pbIos])
-    mounted = vm
+  createRoot proc(dispose: proc()) =
     # Phase C: install the daemon-driven agent adapter on top of any
     # workspace-supplied placeholder.  The chat panel and the brief
     # tab's "Review this preview" button both drive the daemon's
     # ``/api/agent/*`` routes via the resolved base URL.  This is the
     # production wiring; VM tests inject a fake client via
     # ``configureAgentAdaptersWithClient`` instead.
-    discard configureDaemonAgentAdapters(vm.chat)
+
     vm.setTelemetryOverlayVisible(editorDebugEnabled())
     if useHashRoute:
       installEditorHistorySync(vm)
@@ -801,10 +1186,116 @@ proc mountEditor*(workspace: EditorWorkspace;
     {.emit: [shell, ".style.inset='0'"].}
     {.emit: [shell, ".style.overflow='hidden'"].}
     root.appendChild(shell)
+    let controlBridge = vm.installControlBridge(shell)
+    let priorConfigureChat = vm.configureChat
+    let priorTrackConfiguration = vm.trackChatConfiguration
+    var ownedChatConfigurations: seq[tuple[id: int, dispose: ChatConfigurationDisposer]]
+    var nextConfigurationId = 0
+    vm.trackChatConfiguration = proc(dispose: ChatConfigurationDisposer): ChatConfigurationDisposer =
+      inc nextConfigurationId
+      let id = nextConfigurationId
+      ownedChatConfigurations.add (id: id, dispose: dispose)
+      result = proc() =
+        for index in 0 ..< ownedChatConfigurations.len:
+          if ownedChatConfigurations[index].id == id:
+            ownedChatConfigurations.delete(index)
+            break
+    onCleanup proc() =
+      vm.configureChat = priorConfigureChat
+      vm.trackChatConfiguration = priorTrackConfiguration
+      # Remove each entry before invoking it: cleanup can unregister itself.
+      while ownedChatConfigurations.len > 0:
+        let disposeConfiguration = ownedChatConfigurations[^1].dispose
+        ownedChatConfigurations.setLen(ownedChatConfigurations.len - 1)
+        disposeConfiguration()
+    vm.configureChat = proc(chat: AgentChatVM) =
+      if configureAgentChat != nil:
+        # Explicit host composition owns this chat's adapters. An adapter-only
+        # fixture returns nil and receives no daemon-client control authority.
+        let client = configureAgentChat(chat)
+        if client != nil: controlBridge.bindClient(client)
+        return
+      var client: BrowserAgentClient
+      {.emit: ["globalThis.__isonimEditorAgentClients ||= new WeakMap(); ", client,
+        " = globalThis.__isonimEditorAgentClients.get(", chat, ") || null;"].}
+      if client == nil:
+        client = configureDaemonAgentAdapters(chat)
+        {.emit: ["globalThis.__isonimEditorAgentClients.set(", chat, ", ", client, ");"].}
+      controlBridge.bindClient(client)
+    try:
+      for session in vm.chats.val: vm.configureChatSession(session)
+    except Exception:
+      let originalError = getCurrentException()
+      vm.configureChat = priorConfigureChat
+      # A failed initial factory must not leave a half-mounted view. Cleanup
+      # errors are secondary and must not replace the factory's original error.
+      try:
+        dispose()
+      except Exception:
+        {.emit: "console.warn('Editor mount cleanup failed after agent factory error');".}
+      {.emit: ["try { ", shell, ".remove(); } catch (_) { console.warn('Editor shell removal failed after agent factory error'); }"] .}
+      raise originalError
     # REV-M2: expose a tiny window-level handle so Playwright e2e
     # tests can drive story selection without having to scrape the
     # sidebar DOM (which omits stories that aren't part of the demo
     # workspace).  The handle is intentionally minimal — production
     # consumers should not rely on it.
     exposeWindowEditorHandle(vm)
-  mounted
+    # Last thing on the first-mount path: from here on a re-run of this bundle
+    # is a swap, and `liveEditorVM` above is how it finds out.
+    rememberLiveEditorVM(vm)
+    {.emit: ["globalThis.__isonimEditorMount = {vm:", vm, ", shell:", shell, ", dispose:", dispose, "};"].}
+  vm
+
+proc mountEditor*(workspace: EditorWorkspace;
+                  root: Element = document.body;
+                  useHashRoute = true;
+                  injectStyles = true;
+                  configureAgentChat: proc(chat: AgentChatVM): BrowserAgentClient {.closure.} = nil): EditorVM =
+  ## Mount the editor shell into a DOM element and return the live VM.
+  ##
+  ## The returned VM is useful for tests and host-app integrations that need to
+  ## drive the editor after mount.
+  ##
+  ## **Called a second time in the same document, this does not mount a second
+  ## editor.** That is not a defensive nicety, it is the hot-reload path. When
+  ## a source file changes, the dev server rebuilds the bundle and the client
+  ## loads it with a script tag, which re-runs the project's entry point --
+  ## `newGripEditorWorkspace()` and then this proc. The project's entry point
+  ## needs to know nothing about any of that: building a workspace and handing
+  ## it to `mountEditor` is the same code path on a first load and on the
+  ## thousandth rebuild. Only the outcome differs.
+  ##
+  ## On a swap the editor keeps its VM and takes only the PROJECT's data from
+  ## the new bundle, via `loadProjectData`. Nothing is torn down, so there is
+  ## nothing to restore: the selection, the scroll positions, the expanded
+  ## sections, the undo stacks and the focused input are all still where they
+  ## were, because they were never destroyed. That is the difference between
+  ## this and the `location.reload()` it replaced -- a reload could put the
+  ## user's place back approximately, from a sessionStorage snapshot, and only
+  ## the parts somebody had remembered to snapshot.
+  when defined(js):
+    let live = liveEditorVM()
+    if live != nil:
+      # Before `loadProjectData`, which bumps `preview.sourceGeneration` and so
+      # rebuilds the preview: the overrides must be gone by the time the new
+      # frame asks for them, or the frame-start re-apply puts them straight
+      # back on top of the source that now carries the same values.
+      # Validate scope before clearing preview overrides or replacing any data.
+      try:
+        live.validateProjectRefresh(workspace)
+      except ValueError as error:
+        live.recordProjectRefreshRefusal(error.msg)
+        return live
+      onProjectCodeReplaced()
+      live.loadProjectData(workspace)
+      live.clearProjectRefreshRefusal()
+      var hasView = false
+      {.emit: [hasView, " = !!document.querySelector('[data-sidebar-content=inspector]');"].}
+      if hasView: return live
+      return mountEditor(live, root, useHashRoute, injectStyles)
+
+  # Model computations belong to the host/session, independently of this
+  # disposable presentation root, so remounting the same VM keeps its state.
+  let vm = createEditorVM(workspace)
+  mountEditor(vm, root, useHashRoute, injectStyles, configureAgentChat)

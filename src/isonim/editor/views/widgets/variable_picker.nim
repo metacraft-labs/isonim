@@ -64,6 +64,7 @@ import std/[strutils, tables]
 import isonim/core/signals
 import isonim/core/computation
 import isonim/dsl/ui
+import isonim/editor/views/widgets/anchored_popover
 import isonim/editor/types
 import isonim/editor/viewmodels
 
@@ -389,6 +390,7 @@ proc mountVariablePicker*[R, E](r: R; parent: E; vm: EditorVM;
   # ------------------------------------------------------------------------- #
   # Visibility + smart edge-flipping.
   # ------------------------------------------------------------------------- #
+  installAnchoredPopover(rootNode, "isonim-picker-close")
   createRenderEffect proc() =
     let open = capturedState.open.val
     let rect = capturedState.anchorRect.val
@@ -396,19 +398,8 @@ proc mountVariablePicker*[R, E](r: R; parent: E; vm: EditorVM;
       if open: "true" else: "false")
     r.setStyle(rootNode, "display",
       if open: "flex" else: "none")
-    if not open:
-      return
-    # The picker anchors below the chevron by default; if the popover
-    # would extend past the viewport bottom, flip above the anchor.
     when defined(js):
-      let belowSpace = 720.0 - (rect.y + rect.h)
-      let placeAbove = belowSpace < 480.0 and rect.y > 480.0
-      let topPx =
-        if placeAbove: rect.y - 6.0 - 480.0
-        else: rect.y + rect.h + 6.0
-      let leftPx = rect.x
-      r.setStyle(rootNode, "top", $topPx & "px")
-      r.setStyle(rootNode, "left", $leftPx & "px")
+      syncAnchoredPopover(rootNode, capturedState, open, rect.x, rect.y, rect.w, rect.h)
     else:
       # Native path — surface the rect via data-attrs so headless tests
       # can verify the popover is positioned without measuring DOM.
@@ -569,13 +560,17 @@ proc mountVariablePicker*[R, E](r: R; parent: E; vm: EditorVM;
         capturedVm.bindPropertyToVariable(targetKey, capturedKey)
         capturedState.closeVariablePicker()
       r.addEventListener(rowNode, "click", pickHandler)
-      r.addEventListener(rowNode, "keydown", pickHandler)
+
       let editHandler = proc() =
+        when defined(js):
+          {.emit: ["if (typeof ", editNode, ".focus === 'function') ", editNode, ".focus({preventScroll: true});"].}
         let cb = capturedState.onVariableEdit.val
         if cb != nil:
           cb(capturedKey)
+      when defined(js):
+        {.emit: ["if (typeof ", editNode, ".addEventListener === 'function') ", editNode, ".addEventListener('click', function(e) { e.stopPropagation(); });"].}
       r.addEventListener(editNode, "click", editHandler)
-      r.addEventListener(editNode, "keydown", editHandler)
+
 
     # VBIND-M6: leading "Previously linked" group. Intersect the history
     # (already most-recent-first) with the currently-visible ``filtered``
@@ -615,6 +610,16 @@ proc mountVariablePicker*[R, E](r: R; parent: E; vm: EditorVM;
       r.appendChild(bodyNode, priorHeader)
       for entry in priorEntries:
         renderRow(entry)
+
+    proc bindCategoryToggle(header: E; category: VariablePickerCategory) =
+      ## Its own proc so each header keeps its own ``category``: a
+      ## closure made in the loop below would share one environment
+      ## across the iterations and every header would toggle the last
+      ## category.
+      r.addEventListener(header, "click", proc() =
+        capturedState.toggleCategoryExpansion(category))
+      r.addEventListener(header, "keydown", proc() =
+        capturedState.toggleCategoryExpansion(category))
 
     let grouped = categoriseTokens(filtered)
     for groupIndex in 0 ..< grouped.len:
@@ -661,11 +666,7 @@ proc mountVariablePicker*[R, E](r: R; parent: E; vm: EditorVM;
               # when collapsed.
               text (if expanded: "\xE2\x96\xBE" else: "\xE2\x96\xB8")
       r.appendChild(bodyNode, section)
-      let capturedCategory = category
-      r.addEventListener(headerNode, "click", proc() =
-        capturedState.toggleCategoryExpansion(capturedCategory))
-      r.addEventListener(headerNode, "keydown", proc() =
-        capturedState.toggleCategoryExpansion(capturedCategory))
+      bindCategoryToggle(headerNode, category)
       if not expanded:
         continue
       for entry in entries:
@@ -686,40 +687,10 @@ proc mountVariablePicker*[R, E](r: R; parent: E; vm: EditorVM;
   let onCloseClick = proc() =
     capturedState.closeVariablePicker()
   r.addEventListener(closeBtn, "click", onCloseClick)
-  r.addEventListener(closeBtn, "keydown", onCloseClick)
 
-  # Outside click + ESC. JS-only: the headless tests close the picker
-  # through ``closeVariablePicker``.
-  when defined(js):
-    {.emit: ["""
-      (function (root, st) {
-        if (!root || root.__isonimPickerBound) return;
-        root.__isonimPickerBound = true;
-        function onDocClick(e) {
-          if (!root.__isonimPickerOpen) return;
-          if (root.contains(e.target)) return;
-          if (typeof st === 'function') return;
-          // Fire a synthetic close — we use a custom event that the
-          // Nim side hooks for symmetry with the keydown path.
-          var ev = new Event('isonim-picker-close', { bubbles: false });
-          root.dispatchEvent(ev);
-        }
-        function onKeyDown(e) {
-          if (e.key !== 'Escape') return;
-          if (!root.__isonimPickerOpen) return;
-          var ev = new Event('isonim-picker-close', { bubbles: false });
-          root.dispatchEvent(ev);
-        }
-        document.addEventListener('mousedown', onDocClick, true);
-        document.addEventListener('keydown', onKeyDown);
-      })(""", rootNode, """, null);
-    """].}
-    r.addEventListener(rootNode, "isonim-picker-close", proc() =
-      capturedState.closeVariablePicker())
-    # Mirror open state into a flag the JS shim reads above.
-    createRenderEffect proc() =
-      let open = capturedState.open.val
-      {.emit: [rootNode, ".__isonimPickerOpen = ", open, ";"].}
+
+  r.addEventListener(rootNode, "isonim-picker-close", proc() =
+    capturedState.closeVariablePicker())
 
   r.appendChild(parent, root)
   result = root
@@ -762,12 +733,13 @@ when defined(js):
         var rect = el.getBoundingClientRect();
         var sx = window.scrollX || 0;
         var sy = window.scrollY || 0;
-        """, rectX, """ = rect.left + sx;
-        """, rectY, """ = rect.top + sy;
+        """, rectX, """ = rect.left;
+        """, rectY, """ = rect.top;
         """, rectW, """ = rect.width;
         """, rectH, """ = rect.height;
       })(""", anchorEl, """);
     """].}
+    {.emit: [state, ".__isonimAnchor = ", anchorEl, ";"].}
     # VBIND-M4: seed the compatibility filter from the target property
     # so a JS-side open (chip chevron / bind slot) lists only compatible
     # variables. An unmapped property → empty set → show all.

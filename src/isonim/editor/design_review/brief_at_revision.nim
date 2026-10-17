@@ -1,130 +1,48 @@
 ## REV-M6 — historical brief resolver.
 ##
-## Resolves the markdown body of a brief at the *pinned* revision a run
-## was captured against.  Past runs remain reviewable even after briefs
-## are renamed, moved, or rewritten — the working tree state is
-## irrelevant, only ``git show`` against the manifest pin is consulted.
+## Resolves the markdown body of a brief at the *pinned* workspace state
+## a run was captured against.  Past runs remain reviewable even after
+## briefs are renamed, moved, or rewritten — the working tree state is
+## irrelevant, only ``git show <revision>:<path>`` against the pin is
+## consulted.
 ##
-## *Design choice — manifest XML lookup, not hash cache.*
+## *The pin carries its own revisions.*  A run's ``manifest_hash`` is a
+## workspace pin (``workspace_pin.nim``): the sha256 of a canonical
+## reprobuild workspace lock whose content is stored in
+## ``design_review.workspace_pins``.  The caller fetches that record
+## (``pin_db.fetchWorkspacePinLock``) and passes it in; this module
+## verifies that it hashes to the pin, then looks the brief up at each
+## pinned revision.  Nothing about the *current* workspace pinning has to
+## match — only the pinned commits have to be present in the local
+## checkouts (fetch them if they are not).
 ##
-## Two options were on the table:
+## *Values that are not workspace pins* (see ``workspace_pin.classifyPin``):
 ##
-##   1. Cache the canonical manifest XML keyed by ``manifestHash`` at
-##      capture time.
-##   2. Re-run ``repo manifest -r`` (or read ``.repo/manifest.xml``) at
-##      review time and validate that the recomputed hash matches.
-##
-## We went with (2):
-##
-##   * Avoids a new on-disk artefact + cache-eviction policy.
-##   * The hash↔XML mapping is already deterministic, so re-resolution
-##     is cheap and the validation step *proves* the workspace still
-##     pins the expected revisions.  A stale cache would lie silently.
-##   * The capture pipeline never had to write a cache; REV-M5 didn't
-##     touch it.  Symmetric: review-time fetches the manifest the same
-##     way capture-time hashed it.
+##   * ``seeded:<tag>`` — Follow-up 3: the run was ingested via
+##     ``isonim-review seed-run`` and has no pin; the brief is read from
+##     the working tree (documented limitation: edits between seeding and
+##     review flow into the review).
+##   * a bare 64-hex value — a run captured under the retired
+##     ``repo manifest -r`` hash.  No content was ever stored for it, so it
+##     cannot be resolved; we refuse rather than guess.
+##   * anything else — refused.
 ##
 ## *briefId → path convention.*  The brief index walker (REV-M1)
 ## enforces ``briefs/<kind>/<slug>.md`` and ``briefId == "<kind>.<slug>"``.
 ## This module mirrors that convention to turn a ``briefId`` into a
 ## relative path candidate.
 
-import std/[os, osproc, parsexml, streams, strutils]
+import std/[os, osproc, streams, strutils]
 
-import ./manifest_hash
+import ./workspace_pin
+
+export SeededManifestHashPrefix, isSeededManifestHash
 
 type
   BriefNotFoundAtRevisionError* = object of CatchableError
   BriefAtRevisionError* = object of CatchableError
-    ## Catch-all for non-NotFound failure modes (manifest mismatch,
-    ## git invocation failure, etc.).
-
-const SeededManifestHashPrefix* = "seeded:"
-  ## Follow-up 3 — sentinel that marks runs ingested via
-  ## ``isonim-review seed-run`` (no manifest pin, just pre-existing
-  ## PNGs).  When the prefix is seen, :proc:`briefAtRevision` falls
-  ## back to reading the brief from the working tree instead of
-  ## ``git show``-ing it at a manifest pin.  Documented limitation:
-  ## brief edits between seeding and review WILL affect the review
-  ## output — the seeded flow trades reproducibility for the ability
-  ## to drive a review against historical screenshots that pre-date
-  ## the design-review milestone.
-
-# --------------------------------------------------------------------------- #
-#  Manifest XML walk (similar shape to clean_tree's, but we keep the
-#  data we need: name + path + revision per repo).
-# --------------------------------------------------------------------------- #
-
-type
-  ManifestProject = object
-    name: string
-    path: string
-    revision: string
-
-proc parseRepoManifest(xml: string;
-                       projects: var seq[ManifestProject]) =
-  var defaultRevision = ""
-  let stream = newStringStream(xml)
-  var p: XmlParser
-  p.open(stream, "<manifest>")
-  defer:
-    p.close()
-    stream.close()
-  while true:
-    p.next()
-    case p.kind
-    of xmlEof: break
-    of xmlElementOpen, xmlElementStart:
-      let tag = p.elementName
-      var attrs: seq[(string, string)] = @[]
-      if p.kind == xmlElementOpen:
-        while true:
-          p.next()
-          case p.kind
-          of xmlAttribute:
-            attrs.add (p.attrKey, p.attrValue)
-          of xmlElementClose, xmlElementEnd, xmlEof:
-            break
-          else:
-            discard
-      if tag == "default":
-        for (k, v) in attrs:
-          if k == "revision": defaultRevision = v
-      elif tag == "project":
-        var proj = ManifestProject()
-        for (k, v) in attrs:
-          case k
-          of "name": proj.name = v
-          of "path": proj.path = v
-          of "revision": proj.revision = v
-          else: discard
-        if proj.path.len == 0: proj.path = proj.name
-        if proj.revision.len == 0: proj.revision = defaultRevision
-        projects.add(proj)
-    else:
-      discard
-
-proc collectManifestProjects(workspaceRoot: string;
-                             xmlBytes: var string): seq[ManifestProject] =
-  ## Read every project recorded in ``.repo/manifest.xml`` plus any
-  ## ``.repo/local_manifests/*.xml`` overlay.  Returns the merged list
-  ## and writes the *concatenated* canonical XML bytes used for hash
-  ## validation into ``xmlBytes``.
-  result = @[]
-  xmlBytes = ""
-  let main = workspaceRoot / ".repo" / "manifest.xml"
-  if fileExists(main):
-    let xml = readFile(main)
-    xmlBytes.add xml
-    parseRepoManifest(xml, result)
-  let localDir = workspaceRoot / ".repo" / "local_manifests"
-  if dirExists(localDir):
-    for kind, path in walkDir(localDir):
-      if kind != pcFile: continue
-      if not path.endsWith(".xml"): continue
-      let xml = readFile(path)
-      xmlBytes.add xml
-      parseRepoManifest(xml, result)
+    ## Catch-all for non-NotFound failure modes (unresolvable pin, pinned
+    ## commit missing locally, git invocation failure, etc.).
 
 # --------------------------------------------------------------------------- #
 #  briefId → relative path.
@@ -142,65 +60,35 @@ proc briefIdToRelativePath(briefId: string): string =
   result = "briefs" / kind / (slug & ".md")
 
 # --------------------------------------------------------------------------- #
-#  git show wrapper.
+#  git wrappers.
 # --------------------------------------------------------------------------- #
 
-proc runGitShow(repoPath, pin, relPath: string):
+proc runGit(args: openArray[string]):
     tuple[ok: bool; content: string; stderr: string] =
-  ## ``git -C <repoPath> show <pin>:<relPath>``.  Returns ok=false if
-  ## the file does not exist at that revision (``fatal: path 'X' does
-  ## not exist in 'Y'``) — the caller raises ``BriefNotFoundAtRevisionError``.
-  let p = startProcess("git",
-    args = @["-C", repoPath, "show", pin & ":" & relPath],
-    options = {poUsePath})
+  let p = startProcess("git", args = args, options = {poUsePath})
   defer: p.close()
-  let outStream = p.outputStream
-  let errStream = p.errorStream
-  let stdoutRead = outStream.readAll()
-  let stderrRead = errStream.readAll()
+  let stdoutRead = p.outputStream.readAll()
+  let stderrRead = p.errorStream.readAll()
   let exitCode = p.waitForExit()
   result = (exitCode == 0, stdoutRead, stderrRead)
+
+proc hasCommit(repoPath, revision: string): bool =
+  runGit(["-C", repoPath, "cat-file", "-e", revision & "^{commit}"]).ok
 
 # --------------------------------------------------------------------------- #
 #  Public API.
 # --------------------------------------------------------------------------- #
 
-proc isSeededManifestHash*(manifestHash: string): bool =
-  ## Follow-up 3 — true iff ``manifestHash`` carries the
-  ## :const:`SeededManifestHashPrefix` sentinel.  Callers use this to
-  ## branch into the working-tree fallback path of
-  ## :proc:`briefAtRevision`.
-  manifestHash.startsWith(SeededManifestHashPrefix)
-
 proc briefFromWorkingTree(workspaceRoot, briefId: string): string =
-  ## Walk every git repo under ``workspaceRoot`` (mirrors the manifest
-  ## walk for non-seeded runs) and return the first matching brief
-  ## body found *in the working tree*.  Used by :proc:`briefAtRevision`
-  ## when ``manifestHash`` is a ``seeded:`` sentinel.
-  ##
-  ## *Limitation.*  Brief edits between ``seed-run`` and
-  ## ``run-review`` flow into the review.  This is the explicit
-  ## tradeoff documented on :const:`SeededManifestHashPrefix`.
+  ## Return the first matching brief body found *in the working tree* of
+  ## a checkout directly under ``workspaceRoot`` (or the root itself).
+  ## Used by :proc:`briefAtRevision` for ``seeded:`` runs.
   let relPath = briefIdToRelativePath(briefId)
-  # Sweep the manifest's project list first (preserves locator ordering
-  # with the non-seeded path), then fall back to a top-level workspace
-  # scan in case the workspace isn't ``repo``-managed.
-  var xmlBytes: string
-  let projects = collectManifestProjects(workspaceRoot, xmlBytes)
-  for proj in projects:
-    let candidate = workspaceRoot / proj.path / relPath
-    if fileExists(candidate):
-      return readFile(candidate)
-  # Plain workspace fallback — scan immediate subdirectories of
-  # ``workspaceRoot`` for a matching brief.  This is what makes the
-  # seeded flow work in fresh test fixtures that don't include a
-  # ``.repo/manifest.xml`` at all.
   for kind, sub in walkDir(workspaceRoot):
     if kind != pcDir: continue
     let candidate = sub / relPath
     if fileExists(candidate):
       return readFile(candidate)
-  # Last resort: the brief might sit directly under ``workspaceRoot``.
   let direct = workspaceRoot / relPath
   if fileExists(direct):
     return readFile(direct)
@@ -208,27 +96,18 @@ proc briefFromWorkingTree(workspaceRoot, briefId: string): string =
     "briefAtRevision (seeded): brief '" & briefId & "' (" & relPath &
     ") not found under working tree at " & workspaceRoot)
 
-proc briefAtRevision*(workspaceRoot, manifestHash, briefId: string): string =
-  ## Resolve the brief markdown body at the captured manifest pin.
+proc briefAtRevision*(workspaceRoot, manifestHash, briefId: string;
+                      pinLockToml = ""): string =
+  ## Resolve the brief markdown body at the run's pin.
   ##
-  ## Sequence:
-  ##   1. **Follow-up 3 — seeded-run shortcut.**  When ``manifestHash``
-  ##      starts with ``seeded:`` the run was ingested via
-  ##      ``isonim-review seed-run`` from historical PNGs and has no
-  ##      manifest pin to validate against.  Fall back to reading the
-  ##      brief from the working tree (:proc:`briefFromWorkingTree`).
-  ##      Caveat: edits between seed-run and run-review flow into the
-  ##      review.
-  ##   2. Re-read the workspace's manifest XML and validate that the
-  ##      recomputed hash matches ``manifestHash``.  Mismatch raises
-  ##      ``BriefAtRevisionError`` — the workspace's manifest has
-  ##      shifted since the run was captured (the user has to check
-  ##      out the original manifest snapshot to reproduce the review).
-  ##   3. Walk every project recorded in the manifest; for each, run
-  ##      ``git show <revision>:<briefs/<kind>/<slug>.md>``.  Return
-  ##      the first successful result.
-  ##   4. If no project contains the brief at its pinned revision,
-  ##      raise ``BriefNotFoundAtRevisionError``.
+  ## ``pinLockToml`` is the stored lock record for a ``wslock-v1:`` pin
+  ## (``pin_db.fetchWorkspacePinLock``); it is ignored for ``seeded:``
+  ## runs.  For each pinned repo, in the record's canonical order, run
+  ## ``git show <revision>:briefs/<kind>/<slug>.md`` in its checkout
+  ## under ``workspaceRoot`` and return the first hit.  Raises
+  ## ``BriefNotFoundAtRevisionError`` when every pinned revision was
+  ## examined and none has the brief, ``BriefAtRevisionError`` for every
+  ## other failure (unresolvable pin, pinned commits not present).
   if briefId.len == 0:
     raise newException(BriefAtRevisionError,
       "briefAtRevision: briefId must be non-empty")
@@ -236,38 +115,53 @@ proc briefAtRevision*(workspaceRoot, manifestHash, briefId: string): string =
     raise newException(BriefAtRevisionError,
       "briefAtRevision: manifestHash must be non-empty")
 
-  if isSeededManifestHash(manifestHash):
+  case classifyPin(manifestHash)
+  of pkSeeded:
     return briefFromWorkingTree(workspaceRoot, briefId)
-
-  var xmlBytes: string
-  let projects = collectManifestProjects(workspaceRoot, xmlBytes)
-  if projects.len == 0:
+  of pkLegacyRepoManifest:
     raise newException(BriefAtRevisionError,
-      "briefAtRevision: no projects found in " & workspaceRoot &
-      "/.repo/manifest.xml")
-
-  let actualHash = captureManifestHashOfBytes(xmlBytes).toLowerAscii
-  if actualHash != manifestHash.toLowerAscii:
+      "briefAtRevision: run is pinned by a retired `repo manifest` hash (" &
+      manifestHash & "); its manifest was never stored, so the brief at " &
+      "that state cannot be resolved.  Re-capture the run.")
+  of pkUnrecognised:
     raise newException(BriefAtRevisionError,
-      "briefAtRevision: workspace manifest hash " & actualHash &
-      " does not match requested " & manifestHash &
-      " — check out the captured manifest pins to reproduce this review.")
+      "briefAtRevision: '" & manifestHash & "' is not a workspace pin " &
+      "(expected " & WorkspacePinPrefix & "<sha256>)")
+  of pkWorkspaceLock:
+    discard
 
-  let relPath = briefIdToRelativePath(briefId)
+  if pinLockToml.len == 0:
+    raise newException(BriefAtRevisionError,
+      "briefAtRevision: no lock record supplied for pin " & manifestHash)
+  let lock =
+    try:
+      resolvePin(manifestHash, pinLockToml)
+    except WorkspacePinError as e:
+      raise newException(BriefAtRevisionError, "briefAtRevision: " & e.msg)
+
+  let relPath = briefIdToRelativePath(briefId).replace('\\', '/')
+  var missing: seq[string]
   var lastStderr = ""
-  for proj in projects:
-    let absRepo = workspaceRoot / proj.path
-    if not dirExists(absRepo / ".git"):
+  for repo in lock.repos:
+    let absRepo = workspaceRoot / repo.path
+    if not (dirExists(absRepo / ".git") or fileExists(absRepo / ".git")):
+      missing.add repo.path & " (no checkout)"
       continue
-    if proj.revision.len == 0:
+    if not hasCommit(absRepo, repo.revision):
+      missing.add repo.path & "@" & repo.revision
       continue
-    let r = runGitShow(absRepo, proj.revision, relPath)
+    let r = runGit(["-C", absRepo, "show", repo.revision & ":" & relPath])
     if r.ok:
       return r.content
     lastStderr = r.stderr
 
+  if missing.len > 0:
+    raise newException(BriefAtRevisionError,
+      "briefAtRevision: brief '" & briefId & "' not found in the checked " &
+      "pinned revisions, and these pinned repos could not be examined " &
+      "(clone / `git fetch` them): " & missing.join(", "))
   raise newException(BriefNotFoundAtRevisionError,
     "briefAtRevision: brief '" & briefId & "' (" & relPath & ") not found " &
-    "at manifest hash " & manifestHash & " in any repo of " & workspaceRoot &
+    "at pin " & manifestHash & " in any repo of " & workspaceRoot &
     (if lastStderr.len > 0: " — last git stderr: " & lastStderr.strip()
      else: ""))

@@ -60,6 +60,26 @@ proc collectByAttr(node: MockNode; attr: string): seq[MockNode] =
 
 suite "TBAR-M2 segmented choice VM":
 
+  test "segmented mount preserves owning option metadata and single activation":
+    createRoot do (dispose: proc()):
+      let vm = createSegmentedChoiceVM(@["View", "Edit"])
+      let (r, root) = mkRoot()
+      var mounted: seq[int] = @[]
+      var changed: seq[int] = @[]
+      r.mountSegmentedChoice(root, vm,
+        (proc(i: int) = changed.add i),
+        onPillMounted = proc(node: MockNode; index: int) =
+          mounted.add index
+          r.setAttribute(node, "data-owning-mode", $index))
+      check mounted == @[0, 1]
+      let edit = findByAttr(root, "data-owning-mode", "1")
+      require edit != nil
+      edit.fireEvent("click")
+      check vm.activeIndex.val == 1
+      check changed == @[1]
+      dispose()
+
+
   test "segmented_vm_constructs_with_initial_active_index":
     createRoot do (dispose: proc()):
       let vm = createSegmentedChoiceVM(@["Preview", "Spec"], initialIndex = 0)

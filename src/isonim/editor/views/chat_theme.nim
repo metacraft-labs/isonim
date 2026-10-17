@@ -1,0 +1,16 @@
+## Shared palette for the editor's existing dark sidebar presentation.
+const
+  bgSurface* = "#1E293B"
+  bgSidebar* = "#111827"
+  bgInput* = "#0F172A"
+  border* = "#334155"
+  borderFaint* = "#1E293B"
+  textPrimary* = "#F1F5F9"
+  textSecondary* = "#94A3B8"
+  textDim* = "#475569"
+  textBody* = "#CBD5E1"
+  textError* = "#FCA5A5"
+  errorAccent* = "#F87171"
+  accent* = "#3B82F6"
+  gold* = "#F59E0B"
+  green* = "#22C55E"
