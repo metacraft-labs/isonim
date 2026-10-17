@@ -150,9 +150,11 @@ proc attachSourceProject*(vm: EditorVM; base: EditorWorkspace; inspectorEditing 
           if property.nativeSourceOffered != isOffered:
             property.nativeSourceOffered = isOffered
             changed = true
-          if not isOffered and (property.nativeRemovalStated or property.nativeRemovalRefusal.len > 0):
+          if not isOffered and (property.nativeRemovalStated or property.nativeRemovalRefusal.len > 0 or
+              property.nativeEditRefusal.len > 0):
             property.nativeRemovalStated = false
             property.nativeRemovalRefusal = ""
+            property.nativeEditRefusal = ""
             changed = true
         for mapping in mappings:
           if mapping{"elementId"}.getStr() != element.id or mapping{"storyId"}.getStr() != storyId: continue
@@ -189,6 +191,12 @@ proc attachSourceProject*(vm: EditorVM; base: EditorWorkspace; inspectorEditing 
             if property.nativeRemovalStated != stated or property.nativeRemovalRefusal != refusal:
               property.nativeRemovalStated = stated
               property.nativeRemovalRefusal = refusal
+              changed = true
+            # Likewise its statement against any edit (a declaration shared
+            # by a selector list): the row shows it as its read-only reason.
+            let editRefusal = mapping{"edits", property.name}.getStr()
+            if property.nativeEditRefusal != editRefusal:
+              property.nativeEditRefusal = editRefusal
               changed = true
         if changed: vm.inspector.selectedElement.val = selected
 
@@ -333,6 +341,12 @@ proc attachSourceProject*(vm: EditorVM; base: EditorWorkspace; inspectorEditing 
       if ownership.len > 0:
         done(false, ownership)
         return
+      # A declaration the worker states it cannot change for this element
+      # alone is refused here, at the act and before any request.
+      for candidate in vm.inspector.selectedElement.val.properties:
+        if candidate.name == property and candidate.nativeEditRefusal.len > 0:
+          done(false, candidate.nativeEditRefusal)
+          return
       # Reset and Fill Delete commit an empty value: remove the declaration.
       # Refused here, at the act and before any request, where the entry
       # states that its writer cannot remove it (editor spec "Saving").

@@ -937,6 +937,7 @@ test-editor: test-design-review-local-harbor test-design-review-harbor-build tes
 
 # Run packaged editor browser tests.
 test-browser-editor-example: editor-build
+    "${ISONIM_SCENARIO_NODE:-node}" tests/test_editor_example_reset_gui.mjs
     cd tests/browser && npm install && PLAYWRIGHT_CHROMIUM_EXECUTABLE="${PLAYWRIGHT_CHROMIUM_EXECUTABLE:-$(command -v chromium)}" npx playwright test --project=editor-example
 
 # Run the M43 visual screenshot, pixel, layout, and review brief gates.
@@ -1246,6 +1247,7 @@ browser-test-install:
 
 # Build everything, then run the six static in-repo Playwright projects (51 tests).
 test-browser-all: browser-test-deps
+    "${ISONIM_SCENARIO_NODE:-node}" tests/test_editor_example_reset_gui.mjs
     cd tests/browser && PLAYWRIGHT_CHROMIUM_EXECUTABLE="${PLAYWRIGHT_CHROMIUM_EXECUTABLE:-$(command -v chromium)}" npx playwright test --project=demo-app --project=hmr --project=hmr-parametric --project=hmr-transport --project=web-worker --project=editor-example
 
 # The gate run on every push: the three HMR projects, 25 tests, ~20s of
@@ -1559,6 +1561,7 @@ test-editor-c2-source: isonim-review-build editor-inspector-build
     "${ISONIM_SCENARIO_NODE:-node}" tests/test_editor_fill_readonly_gui.mjs
     "${ISONIM_SCENARIO_NODE:-node}" tests/test_editor_inspector_source_gui.mjs
     "${ISONIM_SCENARIO_NODE:-node}" tests/test_editor_native_reset_gui.mjs
+    "${ISONIM_SCENARIO_NODE:-node}" tests/test_editor_native_compiled_reset_gui.mjs
 
 test-editor-c2-lifetime: isonim-review-build editor-popup-build
     "${ISONIM_SCENARIO_NODE:-node}" tests/test_core_owner_hmr.mjs
@@ -1686,6 +1689,11 @@ test-editor-reset-removal: build-tailwind
     nim c -r --out:build/test_editor_reset_removal tests/test_editor_reset_removal.nim
     nim js -d:nodejs --out:build/test_editor_reset_removal.js tests/test_editor_reset_removal.nim
     python3 tools/run_nim_js_test.py build/test_editor_reset_removal.js
+
+# Reset, set, undo, undo in the packaged editor example: its real example
+# writer, served from build/editor, physical pointer and keyboard input.
+test-editor-example-reset-gui: editor-build
+    "${ISONIM_SCENARIO_NODE:-node}" tests/test_editor_example_reset_gui.mjs
 
 test-editor-c4a: test-editor-selection-keys test-editor-source-write-receipts test-editor-save-pipeline test-editor-act-time-refusals test-editor-inspector-controls test-editor-reset-removal test-editor-c4a-headless test-editor-c4a-compounds test-editor-c4a-properties test-editor-c4a-remaining test-editor-inline-preview test-editor-c4a-gestures test-editor-c4a-color test-editor-c4a-grip
 

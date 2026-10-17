@@ -4,7 +4,13 @@
 import std/[json, strutils, tables, sha1, options]
 import isonim/editor/[html_classes, css_patch, source_catalog, source_style_values, types, viewmodels]
 
-type SourceReader* = proc(file: string): string {.closure.}
+type
+  SourceReader* = proc(file: string): string {.closure.}
+  ReofferedDeclaration* = object
+    ## A declaration Reset removed from a compiled rule (and not yet undone),
+    ## which the bindings of every element the rule matches keep offering
+    ## with no value so it can be set again.
+    file*, constName*, selector*, property*: string
 
 func simpleSelectorMatches*(element: SourceHtmlElement; selector: string): bool =
   ## A single compound type/class/ID selector. Combinators, attributes, state
@@ -70,7 +76,15 @@ func selectorCouldMatch(element: SourceHtmlElement; selector: string): bool =
     if character notin {'a'..'z','A'..'Z','0'..'9','-','_','.','#'}: return true
   element.simpleSelectorMatches(simple)
 
-proc compiledStyleBindings*(catalog, manifest: JsonNode; readSource: SourceReader): JsonNode =
+proc compiledStyleBindings*(catalog, manifest: JsonNode; readSource: SourceReader;
+    reoffer: seq[ReofferedDeclaration] = @[]): JsonNode =
+  ## The editable declarations the project's opted-in stylesheets give each
+  ## rendered element. `reoffer` names declarations Reset removed: such a
+  ## property stays offered, with no value, to every element the rule
+  ## matches, while the project opts it in, the rule it came from is still
+  ## the only place a value for it could go (`cssInsertionHome`, not a
+  ## selector list) and nothing else in the opted-in stylesheets or that
+  ## element's inline style sets it for the element.
   result = newJArray()
   if manifest{"editableStyleSources"} == nil: return
   if manifest["editableStyleSources"].kind != JArray:
@@ -300,6 +314,50 @@ proc compiledStyleBindings*(catalog, manifest: JsonNode; readSource: SourceReade
         binding["properties"].add %property
         binding["values"][property] = value
         binding["sourceDeclarations"][property] = sourceDeclaration
+  for declaration in reoffer:
+    let property = declaration.property
+    if property.len == 0 or property.startsWith("--"): continue
+    var allowed = false
+    for source in manifest["editableStyleSources"]:
+      if source["file"].getStr() == declaration.file and
+          source["const"].getStr() == declaration.constName:
+        for name in source["properties"]:
+          if name.getStr() == property: allowed = true
+    if not allowed or not sourceTexts.hasKey(declaration.file): continue
+    let css = nimConstBody(sourceTexts[declaration.file], declaration.constName)
+    if not css.cssInsertionHome(declaration.selector, property) or
+        css.cssSelectorListRefusal(declaration.selector, property).len > 0: continue
+    var count = 0
+    for other in elements:
+      if simpleSelectorMatches(other.element, declaration.selector): inc count
+    for target in elements:
+      if not simpleSelectorMatches(target.element, declaration.selector): continue
+      var ownedElsewhere = false
+      for opted in optedInCss:
+        for other in cssPropertyOwners(opted, @[property]):
+          var selectorSupported = other.selector.len > 0
+          for character in other.selector:
+            if character notin {'a'..'z','A'..'Z','0'..'9','-','_','.','#'}: selectorSupported = false
+          if simpleSelectorMatches(target.element, other.selector) or
+              (not selectorSupported and target.element.selectorCouldMatch(other.selector)):
+            ownedElsewhere = true
+      let inlineStyle = target.element.attributes.getOrDefault("style")
+      if inlineStyle.len > 0 and cssPropertyOwners(".inline {" & inlineStyle & "}", @[property]).len > 0:
+        ownedElsewhere = true
+      if ownedElsewhere: continue
+      let key = "classes.native." & $secureHash(target.story & "\n" & target.element.id & "\n" &
+        declaration.file & "\n" & declaration.constName & "\n" & declaration.selector & "\n" & "")
+      var binding = bindingsByKey.getOrDefault(key)
+      if binding == nil:
+        binding = %* {"key":key,"elementId":target.element.id,"storyId":target.story,
+          "file":declaration.file,"const":declaration.constName,"selector":declaration.selector,
+          "sourceHash":sourceHashes[declaration.file],"properties":[],"values":{},"sourceDeclarations":{},
+          "scope":"shared-class","sharedCount":count,"tokenName":""}
+        result.add binding
+        bindingsByKey[key] = binding
+      if binding["values"]{property} != nil: continue
+      binding["properties"].add %property
+      binding["values"][property] = %""
   # Token impact includes every directly bound rendered target, across selectors.
   var knownTokenCounts = initCountTable[string]()
   proc tokenKey(binding:JsonNode): string =

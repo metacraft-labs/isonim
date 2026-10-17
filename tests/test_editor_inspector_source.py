@@ -902,20 +902,244 @@ class NativeDeclarationRemovalTests(InspectorSourceTransactionTests):
                 self.assertEqual(refused["diagnostic"], entry["removals"][property])
                 self.assertEqual(self.source.read_bytes(), source)
                 self.assertEqual(self.catalog.read_bytes(), catalog_before)
-        # The shared rule's only bound declaration: the binding itself goes
-        # away with it, and undo still restores exactly that line.
+        # The shared rule's only bound declaration: after Reset the binding
+        # keeps offering it with no value (nothing left to remove), so it can
+        # be set again (isonim-pm issue 2026-10-16-compiled-bindings-cannot-
+        # be-re-set-after-reset-removes-their-last-declaration), and undo
+        # still restores exactly that line.
         request = {"command": "inspector-edit", "commandId": "native-shared", "expectedRevision": 0,
                    "schemaKey": shared["key"], "target": "reused", "storyId": shared["storyId"],
                    "property": "width", "value": "", "expectedValue": "110px",
                    "expectedSourceHash": shared["sourceHash"], "viewportWidth": 1440}
         removed = self.operate(request)
         self.assertEqual(self.source.read_bytes(), source.replace(b"#reused-card { width:110px; ", b"#reused-card { ", 1))
-        self.assertFalse(any(row["key"] == shared["key"] for row in removed["editableStyles"]))
+        kept = [row for row in removed["editableStyles"] if row["key"] == shared["key"]]
+        self.assertEqual([row["values"] for row in kept], [{"width": ""}])
+        kept = kept[0]
+        self.assertIn("There is no `width` declaration", kept["removals"]["width"])
         restored = self.undo_removal(request, removed)
         self.assertTrue(restored["ok"], restored)
         self.assertEqual(self.source.read_bytes(), source)
         self.assertTrue(any(row["key"] == shared["key"] and row["values"]["width"] == "110px"
                             for row in restored["editableStyles"]))
+
+class NativeReSetAndSelectorListTests(InspectorSourceTransactionTests):
+    """Re-set after Reset for compiled bindings, and selector-list rules.
+
+    isonim-pm issues 2026-10-16-compiled-bindings-cannot-be-re-set-after-
+    reset-removes-their-last-declaration and 2026-10-16-selector-list-rules-
+    are-admitted-for-edit-and-removal. Editor spec "Universal Patterns": Reset
+    is "written and undoable like any edit", and after it the property can be
+    set again (a typed value is inserted into the rule it was removed from);
+    "Saving": an edit changes exactly the one owning declaration, so a
+    declaration in a rule shared by a selector list is refused with that
+    reason. The same real worker, files and project compiler as above; no
+    mock. Inherits fixture and helpers only (inherited cases filtered below)."""
+
+    file_hash = NativeDeclarationRemovalTests.file_hash
+    undo_removal = NativeDeclarationRemovalTests.undo_removal
+    manifest_path = NativeDeclarationRemovalTests.manifest_path
+    compile_provider = NativeDeclarationRemovalTests.compile_provider
+
+    def one(self, rows, matches, what):
+        found = [row for row in rows if matches(row)]
+        self.assertEqual(len(found), 1, what + ": " + json.dumps(rows))
+        return found[0]
+
+    def edit(self, entry, target, property, value, expected):
+        return {"command": "inspector-edit", "commandId": "native-re-set", "expectedRevision": 0,
+                "schemaKey": entry["key"], "target": target, "storyId": entry["storyId"],
+                "property": property, "value": value, "expectedValue": expected,
+                "expectedSourceHash": entry["sourceHash"], "viewportWidth": 1440}
+
+    def test_a_compiled_binding_is_re_set_after_reset_removes_its_last_declaration(self):
+        source, _ = self.compile_provider(["width"], [])
+        rows = self.metadata()
+        shared = self.one(rows, lambda row: row["elementId"] == "reused" and row["storyId"] == "Card / default ready", "the reused binding")
+        self.assertEqual(shared["values"], {"width": "110px"})
+        removal = self.edit(shared, "reused", "width", "", "110px")
+        removed = self.operate(removal)
+        reset = source.replace(b"#reused-card { width:110px; ", b"#reused-card { ", 1)
+        self.assertEqual(self.source.read_bytes(), reset)
+        # Still offered, with nothing to remove, under the same key.
+        offered = self.one(self.metadata(), lambda row: row["key"] == shared["key"], "the binding after Reset")
+        self.assertEqual(offered["values"], {"width": ""})
+        self.assertEqual(offered["selector"], "#reused-card")
+        self.assertIn("There is no `width` declaration", offered["removals"]["width"])
+        # Set again: one declaration inserted into the rule it came from.
+        set_request = self.edit(offered, "reused", "width", "150px", "")
+        written = self.operate(set_request)
+        self.assertTrue(written["ok"], written)
+        again = reset.replace(b"#reused-card { height:40px; background-color:#224466; }",
+                              b"#reused-card { height:40px; background-color:#224466; width:150px; }", 1)
+        self.assertNotEqual(again, reset)
+        self.assertEqual(self.source.read_bytes(), again)
+        card = next(story["documentHtml"] for story in written["catalog"]["stories"] if story["group"] == "Card")
+        self.assertIn("width:150px", card)
+        now = self.one(written["editableStyles"], lambda row: row["key"] == shared["key"], "the binding after the set")
+        self.assertEqual(now["values"], {"width": "150px"})
+        # Undo the set (the browser removes what it inserted), then the Reset.
+        unset = self.edit(now, "reused", "width", "", "150px")
+        self.assertTrue(self.operate(unset)["ok"])
+        self.assertEqual(self.source.read_bytes(), reset)
+        restored = self.undo_removal(removal, removed)
+        self.assertTrue(restored["ok"], restored)
+        self.assertEqual(self.source.read_bytes(), source)
+        self.assertTrue(any(row["key"] == shared["key"] and row["values"] == {"width": "110px"}
+                            for row in restored["editableStyles"]))
+
+    def test_a_compiled_re_set_is_offered_only_where_the_rule_alone_would_own_it(self):
+        source, _ = self.compile_provider(["width"], [])
+        shared = self.one(self.metadata(), lambda row: row["elementId"] == "reused" and row["storyId"] == "Card / default ready", "the reused binding")
+        self.operate(self.edit(shared, "reused", "width", "", "110px"))
+        reset = self.source.read_bytes()
+        # Another rule that sets width for the element (here a conditional
+        # one for the same selector) decides it: not offered, and a set is
+        # refused with nothing written.
+        conditional = reset.replace(b'#secondary-action {', b'@media (max-width: 600px) { #reused-card { width:90px; } }\n#secondary-action {', 1)
+        self.assertNotEqual(conditional, reset)
+        self.source.write_bytes(conditional)
+        self.assertFalse(any(row["key"] == shared["key"] for row in self.metadata()))
+        refused = self.operate(self.edit(dict(shared, sourceHash=self.file_hash()), "reused", "width", "150px", ""), expected=4)
+        self.assertIn("Unsupported editable source schema", refused["diagnostic"])
+        self.assertEqual(self.source.read_bytes(), conditional)
+        # Another selector's rule that sets width for the element (here a
+        # type selector) decides it too: not offered.
+        typed = reset.replace(b'#secondary-action {', b'button { width:90px; }\n#secondary-action {', 1)
+        self.assertNotEqual(typed, reset)
+        self.source.write_bytes(typed)
+        self.assertFalse(any(row["key"] == shared["key"] for row in self.metadata()))
+        # Without another owner it is offered again; once the project no
+        # longer opts width in, it is not (height, still opted in, is).
+        self.source.write_bytes(reset)
+        rows = [row for row in self.metadata() if row["key"] == shared["key"]]
+        self.assertEqual([row["values"] for row in rows], [{"width": ""}])
+        manifest = json.loads(self.manifest_path().read_text())
+        manifest["editableStyleSources"][0]["properties"] = ["height"]
+        self.manifest_path().write_text(json.dumps(manifest))
+        rows = [row for row in self.metadata() if row["key"] == shared["key"]]
+        self.assertEqual([row["values"] for row in rows], [{"height": "40px"}])
+
+    def test_a_compiled_re_offer_outlives_the_receipt_undo_cap(self):
+        # Review R1: the re-offer lasts until the removal is undone, not
+        # while its receipt is among the last 64. 65 later removals (each
+        # set back, none undone) evict the Reset's receipt from the undo
+        # history; width is still offered and can be set.
+        source, _ = self.compile_provider(["width"], [])
+        shared = self.one(self.metadata(), lambda row: row["elementId"] == "reused" and row["storyId"] == "Card / default ready", "the reused binding")
+        self.operate(self.edit(shared, "reused", "width", "", "110px"))
+        reset = self.source.read_bytes()
+        for index in range(65):
+            action = self.one(self.metadata(), lambda row: row["elementId"] == "action", "the action binding")
+            self.operate(self.edit(action, "action", "width", "", "120px"))
+            again = self.one(self.metadata(), lambda row: row["elementId"] == "action", "the action binding after Reset")
+            self.assertEqual(again["values"], {"width": ""})
+            self.operate(self.edit(again, "action", "width", "120px", ""))
+        self.assertEqual(self.source.read_bytes(), reset.replace(b"#action { width:120px; ", b"#action { ", 1)
+                         .replace(b"color:#FFFFFF; }\n#reused-card", b"color:#FFFFFF; width:120px; }\n#reused-card", 1))
+        store = json.loads((self.project / ".isonim/removal-receipts.json").read_text())
+        receipts = [row for row in store if "receipt" in row]
+        self.assertEqual(len(receipts), 64)
+        self.assertFalse(any(row["schemaKey"] == shared["key"] for row in receipts))
+        offered = self.one(self.metadata(), lambda row: row["key"] == shared["key"], "the reused binding after 65 later removals")
+        self.assertEqual(offered["values"], {"width": ""})
+        self.assertTrue(self.operate(self.edit(offered, "reused", "width", "150px", ""))["ok"])
+        self.assertIn(b"#reused-card { height:40px; background-color:#224466; width:150px; }", self.source.read_bytes())
+
+    def test_a_compiled_re_offer_reaches_every_element_its_rule_matches(self):
+        # Review: every element the shared single-selector rule matches keeps
+        # the offer, each under every condition: the rule matches it, its
+        # inline style does not set the property, the project opts it in.
+        target = b'button(id = target, `data-isonim-element-id` = target): text "Continue"'
+        chip_target = b'button(id = target, `data-isonim-element-id` = target, class = "chip"): text "Continue"'
+        secondary = b'button(id = "secondary-action", `data-isonim-element-id` = "secondary-action"): text "Review"'
+        chip_secondary = b'button(id = "secondary-action", `data-isonim-element-id` = "secondary-action", class = "chip"): text "Review"'
+        source, _ = self.compile_provider(["opacity"], [
+            (b'const cardStyles* = """\n', b'const cardStyles* = """\n.chip { opacity:0.5; }\n'),
+            (target, chip_target), (secondary, chip_secondary)])
+        chips = lambda: {(row["storyId"], row["elementId"]): row for row in self.metadata() if row["selector"] == ".chip"}
+        before = chips()
+        self.assertEqual(sorted(before), [("Alternate / default ready", "alternate-action"),
+                                          ("Card / default ready", "action"), ("Card / default ready", "secondary-action")])
+        self.assertTrue(all(row["values"] == {"opacity": "0.5"} for row in before.values()))
+        action = before[("Card / default ready", "action")]
+        removal = self.edit(action, "action", "opacity", "", "0.5")
+        removed = self.operate(removal)
+        reset = self.source.read_bytes()
+        self.assertIn(b".chip { }", reset)
+        after = chips()
+        self.assertEqual(sorted(after), sorted(before))
+        self.assertTrue(all(row["values"] == {"opacity": ""} for row in after.values()))
+        self.assertEqual({key: row["key"] for key, row in after.items()}, {key: row["key"] for key, row in before.items()})
+        # Set from another element sharing the rule: inserted into .chip.
+        other = after[("Card / default ready", "secondary-action")]
+        self.assertTrue(self.operate(self.edit(other, "secondary-action", "opacity", "0.7", ""))["ok"])
+        self.assertIn(b".chip { opacity:0.7; }", self.source.read_bytes())
+        self.operate(self.edit(chips()[("Card / default ready", "secondary-action")], "secondary-action", "opacity", "", "0.7"))
+        self.assertEqual(self.source.read_bytes(), reset)
+        def rebuild(text):
+            self.source.write_bytes(text)
+            built = subprocess.run(["python3", str(REPO / "tools/build_source_catalog.py"), str(self.project)],
+                                   env=self.env, capture_output=True, text=True, timeout=70)
+            self.assertEqual(built.returncode, 0, built.stdout + built.stderr)
+        # The rule no longer matches an element: that element is not offered.
+        rebuild(reset.replace(chip_secondary, secondary, 1))
+        self.assertEqual(sorted(chips()), [("Alternate / default ready", "alternate-action"), ("Card / default ready", "action")])
+        # An inline style that sets the property owns it: not offered.
+        rebuild(reset.replace(chip_target, b'button(id = target, `data-isonim-element-id` = target, class = "chip", style = "opacity:1"): text "Continue"', 1))
+        self.assertEqual(sorted(chips()), [("Card / default ready", "secondary-action")])
+        # The project stops opting the property in: offered nowhere.
+        rebuild(reset)
+        self.assertEqual(len(chips()), 3)
+        manifest = json.loads(self.manifest_path().read_text())
+        manifest["editableStyleSources"][0]["properties"] = ["width"]
+        self.manifest_path().write_text(json.dumps(manifest))
+        self.assertEqual(chips(), {})
+        # Undo of the Reset restores the line and ends the re-offer record.
+        manifest["editableStyleSources"][0]["properties"] = ["opacity"]
+        self.manifest_path().write_text(json.dumps(manifest))
+        self.assertTrue(self.undo_removal(removal, removed)["ok"])
+        self.assertEqual(self.source.read_bytes(), source)
+        store = json.loads((self.project / ".isonim/removal-receipts.json").read_text())
+        self.assertFalse(any("offer" in row and "receipt" not in row for row in store), store)
+
+    def test_a_selector_list_rule_is_refused_for_edit_and_removal(self):
+        listed = self.original.replace(b"#secondary-action { width:160px;", b"#secondary-action, .ghost { width:160px;", 1)
+        self.assertNotEqual(listed, self.original)
+        self.source.write_bytes(listed)
+        built = subprocess.run(["python3", str(REPO / "tools/build_source_catalog.py"), str(self.project)],
+                               env=self.env, capture_output=True, text=True, timeout=70)
+        self.assertEqual(built.returncode, 0, built.stdout + built.stderr)
+        catalog = self.catalog.read_bytes()
+        reason = ("`#secondary-action` is styled here by the selector list `#secondary-action, .ghost`; "
+                  "changing `width` there would change every selector in the list. Edit the stylesheet directly.")
+        row = self.one(self.metadata(), lambda row: row["key"] == "style.secondary-action", "the explicit entry")
+        self.assertEqual(row.get("edits", {}).get("width"), reason)
+        self.assertEqual(row["removals"]["width"], reason)
+        self.assertEqual(set(row.get("edits", {})), set(row["values"]))
+        # Every other entry states nothing against its edits.
+        self.assertTrue(all(not reason for other in self.metadata() if other["key"] != "style.secondary-action"
+                            for reason in other.get("edits", {}).values()))
+        for value in ["170px", ""]:
+            with self.subTest(value=value):
+                refused = self.operate(self.edit(row, "secondary-action", "width", value, "160px"), expected=4)
+                self.assertEqual(refused["diagnostic"], reason)
+                self.assertEqual(self.source.read_bytes(), listed)
+                self.assertEqual(self.catalog.read_bytes(), catalog)
+                self.assertFalse((self.project / ".isonim/source-transaction.json").exists())
+        # Compiled bindings state the same for the list member's declarations.
+        self.compile_provider(["width"], [(b"#secondary-action { width:160px;", b"#secondary-action, .ghost { width:160px;")])
+        compiled = self.one(self.metadata(), lambda row: row["elementId"] == "secondary-action", "the compiled binding")
+        self.assertEqual(compiled.get("edits", {}).get("width"), reason)
+        self.assertEqual(compiled["removals"]["width"], reason)
+        before = self.source.read_bytes()
+        refused = self.operate(self.edit(compiled, "secondary-action", "width", "170px", "160px"), expected=4)
+        self.assertEqual(refused["diagnostic"], reason)
+        self.assertEqual(self.source.read_bytes(), before)
+
+for _name in list(vars(InspectorSourceTransactionTests)):
+    if _name.startswith("test_") and _name not in vars(NativeReSetAndSelectorListTests):
+        setattr(NativeReSetAndSelectorListTests, _name, None)
 
 for _name in list(vars(InspectorSourceTransactionTests)):
     if _name.startswith("test_") and _name not in vars(NativeDeclarationRemovalTests):

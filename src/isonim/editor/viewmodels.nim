@@ -4781,11 +4781,25 @@ proc sourcePlanAdmissionRefusal(editor: EditorVM;
 
 proc removalWriteRefusal(editor: EditorVM; plan: SourceEditPlan): string
 
+proc writerEditRefusal(editor: EditorVM; plan: SourceEditPlan): string =
+  ## The project writer's statement against changing ``plan``'s declaration
+  ## for its entry alone (`WorkspaceEditAdapter.editRefusal`), or "". Part
+  ## of the commit-time check only: callers that track signals use
+  ## `sourcePlanAdmissionRefusal`.
+  let adapter = editor.workspaceEditAdapter
+  if adapter.isNil or adapter.editRefusal.isNil or editor.hasAsyncSourceProject:
+    return
+  let resolved = adapter.resolveWorkspaceSchema(plan)
+  if not resolved.ok: return
+  adapter.editRefusal(plan, resolved.entry)
+
 proc sourcePlanCommitRefusal(editor: EditorVM; plan: SourceEditPlan): string =
   ## Everything a commit of ``plan`` is refused for at the act: the schema
   ## admission, and -- for a removal -- whether the write it joins can find
   ## the one declaration to remove (`removalWriteRefusal`).
   result = editor.sourcePlanAdmissionRefusal(plan)
+  if result.len == 0:
+    result = editor.writerEditRefusal(plan)
   if result.len == 0:
     result = editor.removalWriteRefusal(plan)
 

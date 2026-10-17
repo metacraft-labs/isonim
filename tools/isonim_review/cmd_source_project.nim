@@ -11,7 +11,11 @@ from isonim/editor/design_review/control_routes import validNativeRestoreWrite
 const removalReceiptsRelPath = ".isonim/removal-receipts.json"
   ## The receipts this worker issued for removals (Reset / Fill Delete) not
   ## yet undone. An undo is honoured only for a receipt recorded here, so it
-  ## can put back only what a removal actually removed.
+  ## can put back only what a removal actually removed. The last 64
+  ## receipts are kept. The store also holds one `{"offer": ...}` record per
+  ## compiled rule and property a removal took and no undo has put back;
+  ## those are not receipts and are never evicted with them (they keep the
+  ## property offered after Reset, `describeEditableStyles`).
 
 proc safePath(root, relative: string): string =
   if relative.len == 0 or relative.isAbsolute:
@@ -52,12 +56,27 @@ proc recoverSourceTransaction(root: string) =
         "Interrupted source transaction conflicts with a later edit: " & row["file"].getStr())
   removeFile(journal)
 
+proc editStatement(source: string; entry: JsonNode; property: string): string =
+  ## Whether this writer can change `property` for `entry` alone: "" when it
+  ## can, otherwise why not. A declaration in a rule whose selector is a list
+  ## (or a value that would be added to one) also styles the list's other
+  ## selectors, so it is refused (editor spec "Saving": an edit changes
+  ## exactly the one owning declaration). Stated per declaration, from the
+  ## file as it is now, and re-derived under the project lock at the act.
+  if entry{"scope"}.getStr() == "semantic-token": return ""
+  let declaration = entry{"sourceDeclarations", property}
+  let owner = if declaration != nil: declaration{"property"}.getStr() else: property
+  nimConstBody(source, entry{"const"}.getStr()).cssSelectorListRefusal(
+    entry{"selector"}.getStr(), owner)
+
 proc removalStatement(source: string; entry: JsonNode; property: string): string =
   ## Whether this writer can remove the one declaration that owns
   ## `property` for `entry`: "" when it can, otherwise why not, in the words
   ## Reset and Fill Delete show (editor spec "Universal Patterns": each
   ## source-map entry states whether its writer can remove the declaration it
   ## owns). Stated per declaration, from the file as it is now.
+  let shared = editStatement(source, entry, property)
+  if shared.len > 0: return shared
   if entry{"scope"}.getStr() == "semantic-token":
     return "This value comes from the design token " & entry{"tokenName"}.getStr() &
       "; Reset cannot remove a token's definition, which every reference to it shares."
@@ -73,41 +92,6 @@ proc removalStatement(source: string; entry: JsonNode; property: string): string
   let removed = removeCssInNimConst(source, entry{"const"}.getStr(),
     entry{"selector"}.getStr(), property)
   if removed.ok: "" else: removed.message
-
-proc describeEditableStyles(root: string; manifest: JsonNode; overrideFile = "";
-    overrideContent = ""): JsonNode =
-  ## Every editable declaration with its value and its removal statement.
-  ## With `overrideFile`, as the project would be if that file held
-  ## `overrideContent` (an undo is checked before it is written).
-  var sources = initTable[string, string]()
-  proc read(file: string): string =
-    if overrideFile.len > 0 and file == overrideFile: return overrideContent
-    if not sources.hasKey(file): sources[file] = readFile(safePath(root, file))
-    sources[file]
-  result = compiledStyleBindings(parseFile(safePath(root, manifest{"catalog"}.getStr())),
-    manifest, proc(file: string): string = read(file))
-  for binding in result:
-    var removals = newJObject()
-    for property, _ in binding{"values"}:
-      removals[property] = %removalStatement(read(binding["file"].getStr()), binding, property)
-    binding["removals"] = removals
-  if manifest{"editableStyles"} == nil: return
-  if manifest["editableStyles"].kind != JArray:
-    raise newException(ValueError, "Editable source declarations must be an array.")
-  for entry in manifest{"editableStyles"}:
-    let source = read(entry{"file"}.getStr())
-    var values = newJObject()
-    var removals = newJObject()
-    for property in entry{"properties"}:
-      let probe = patchCssInNimConstAt(source, entry{"const"}.getStr(),
-        entry{"selector"}.getStr(), property.getStr(), "0", 0)
-      if probe.ok:
-        values[property.getStr()] = %probe.oldValue
-        removals[property.getStr()] = %removalStatement(source, entry, property.getStr())
-    result.add(%* {"key": entry{"key"}.getStr(), "elementId": entry{"elementId"}.getStr(),
-      "storyId": entry{"storyId"}.getStr(), "file": entry{"file"}.getStr(),
-      "const": entry{"const"}, "selector": entry{"selector"}, "properties": entry{"properties"},
-      "sourceHash": $secureHash(source), "values": values, "removals": removals})
 
 proc removalReceipts(root: string): JsonNode =
   ## The issued receipts, validated. Read before a removal or its undo
@@ -129,6 +113,61 @@ proc removalReceipts(root: string): JsonNode =
   if result.kind != JArray:
     raise newException(ValueError, "The removal receipt store " & removalReceiptsRelPath &
       " is unreadable. Nothing was changed.")
+
+proc describeEditableStyles(root: string; manifest: JsonNode; overrideFile = "";
+    overrideContent = ""): JsonNode =
+  ## Every editable declaration with its value and its removal statement.
+  ## With `overrideFile`, as the project would be if that file held
+  ## `overrideContent` (an undo is checked before it is written).
+  var sources = initTable[string, string]()
+  proc read(file: string): string =
+    if overrideFile.len > 0 and file == overrideFile: return overrideContent
+    if not sources.hasKey(file): sources[file] = readFile(safePath(root, file))
+    sources[file]
+  # A compiled binding exists only while a declaration does; the store's
+  # re-offer records (one per compiled rule and property a removal took and
+  # no undo has put back, kept apart from the receipts' undo cap) keep the
+  # property offered so it can be set again after Reset. An unreadable store
+  # offers nothing more; a removal or undo still refuses it before writing.
+  var reoffer: seq[ReofferedDeclaration] = @[]
+  try:
+    for row in removalReceipts(root):
+      let offer = row{"offer"}
+      if row{"receipt"} != nil or offer == nil or offer.kind != JObject: continue
+      reoffer.add ReofferedDeclaration(file: offer{"file"}.getStr(),
+        constName: offer{"const"}.getStr(), selector: offer{"selector"}.getStr(),
+        property: offer{"property"}.getStr())
+  except CatchableError:
+    reoffer = @[]
+  result = compiledStyleBindings(parseFile(safePath(root, manifest{"catalog"}.getStr())),
+    manifest, proc(file: string): string = read(file), reoffer)
+  for binding in result:
+    var removals = newJObject()
+    var edits = newJObject()
+    for property, _ in binding{"values"}:
+      removals[property] = %removalStatement(read(binding["file"].getStr()), binding, property)
+      edits[property] = %editStatement(read(binding["file"].getStr()), binding, property)
+    binding["removals"] = removals
+    binding["edits"] = edits
+  if manifest{"editableStyles"} == nil: return
+  if manifest["editableStyles"].kind != JArray:
+    raise newException(ValueError, "Editable source declarations must be an array.")
+  for entry in manifest{"editableStyles"}:
+    let source = read(entry{"file"}.getStr())
+    var values = newJObject()
+    var removals = newJObject()
+    var edits = newJObject()
+    for property in entry{"properties"}:
+      let probe = patchCssInNimConstAt(source, entry{"const"}.getStr(),
+        entry{"selector"}.getStr(), property.getStr(), "0", 0)
+      if probe.ok:
+        values[property.getStr()] = %probe.oldValue
+        removals[property.getStr()] = %removalStatement(source, entry, property.getStr())
+        edits[property.getStr()] = %editStatement(source, entry, property.getStr())
+    result.add(%* {"key": entry{"key"}.getStr(), "elementId": entry{"elementId"}.getStr(),
+      "storyId": entry{"storyId"}.getStr(), "file": entry{"file"}.getStr(),
+      "const": entry{"const"}, "selector": entry{"selector"}, "properties": entry{"properties"},
+      "sourceHash": $secureHash(source), "values": values, "removals": removals, "edits": edits})
 
 proc bindingSnapshot(root: string): JsonNode =
   let file = safePath(root, bindingSidecarRelPath)
@@ -350,6 +389,10 @@ proc cmdSourceProject*(args: seq[string]): int =
             raise newException(ValueError, "This source entry does not state whether its writer can remove " & property & ".")
           if statement.getStr().len > 0: raise newException(ValueError, statement.getStr())
           nativeAfter = ""
+        elif literalMap{"edits", property}.getStr().len > 0:
+          # The same statement the metadata carries, re-derived under the
+          # project lock: a declaration shared by a selector list.
+          raise newException(ValueError, literalMap["edits"][property].getStr())
         elif declaration != nil and declaration{"component"} != nil:
           nativeAfter = patchCssQuad(nativeProperty,nativeBefore,request["value"].getStr(),
             declaration["component"].getInt(),request{"sourceValue"}.getStr())
@@ -516,9 +559,7 @@ proc cmdSourceProject*(args: seq[string]): int =
       else:
         # Validate the complete response before retiring rollback state. A
         # malformed capability producer must not leave a write behind a failed ACK.
-        let refreshedStyles = describeEditableStyles(root, manifest)
-        var response = %* {"ok": true, "catalog": built, "manifest": manifest, "storyId": storyId,
-          "editableStyles": refreshedStyles}
+        var response = %* {"ok": true, "catalog": built, "manifest": manifest, "storyId": storyId}
         if inspectorEdit:
           response["sourceEdit"] = %* {"before":nativeBefore,"after":nativeAfter}
           if removal:
@@ -536,11 +577,42 @@ proc cmdSourceProject*(args: seq[string]): int =
           # act is reported refused -- never a write behind a failed ACK.
           var issued = issuedReceipts.copy()
           if removal:
-            issued.add(%* {"schemaKey": literalMap{"key"}.getStr(), "property": request["property"].getStr(),
-              "value": nativeBefore, "receipt": response["sourceEdit"]["receipt"]})
-            while issued.len > 64: issued.elems.delete(0)
+            var record = %* {"schemaKey": literalMap{"key"}.getStr(), "property": request["property"].getStr(),
+              "value": nativeBefore, "receipt": response["sourceEdit"]["receipt"]}
+            if literalMap{"scope"}.getStr() == "shared-class":
+              # A compiled binding goes away with its last declaration. A
+              # re-offer record (deduplicated, never evicted with the
+              # receipts) keeps the property offered for every element the
+              # rule matches until a removal of it is undone; the receipt
+              # names it so its undo can drop it.
+              let offer = %* {"file": literalMap{"file"}, "const": literalMap{"const"},
+                "selector": literalMap{"selector"}, "property": request["property"].getStr()}
+              record["offer"] = offer
+              var known = false
+              for row in issued:
+                if row{"receipt"} == nil and row{"offer"} == offer: known = true
+              if not known: issued.add(%* {"offer": offer})
+            issued.add record
+            # The undo cap counts receipts only; re-offer records stay.
+            var receipts = 0
+            for row in issued:
+              if row{"receipt"} != nil: inc receipts
+            var index = 0
+            while receipts > 64 and index < issued.len:
+              if issued[index]{"receipt"} != nil:
+                issued.elems.delete(index)
+                dec receipts
+              else: inc index
           else:
+            let offer = issued[restoreRecord]{"offer"}
             issued.elems.delete(restoreRecord)
+            if offer != nil:
+              # Undone: the declaration is back, and its re-offer ends.
+              var index = 0
+              while index < issued.len:
+                if issued[index]{"receipt"} == nil and issued[index]{"offer"} == offer:
+                  issued.elems.delete(index)
+                else: inc index
           var stored: WorkspaceOperationResult
           try:
             stored = adapter.writeFile(removalReceiptsRelPath, $issued)
@@ -549,6 +621,9 @@ proc cmdSourceProject*(args: seq[string]): int =
           if not stored.ok:
             raise newException(ValueError, "The removal receipt store " & removalReceiptsRelPath &
               " could not be written (" & stored.message & "); the source and catalog were restored. Nothing was changed.")
+        # Described after the receipt store is written: a compiled binding
+        # whose last declaration this removal took keeps offering it.
+        response["editableStyles"] = describeEditableStyles(root, manifest)
         if fileExists(journalFile): removeFile(journalFile)
         echo $response
       dispose()

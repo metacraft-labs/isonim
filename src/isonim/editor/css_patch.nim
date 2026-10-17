@@ -1077,3 +1077,64 @@ proc cssUnconditionalLiterals*(css: string; properties: seq[string]): seq[CssLit
           literal.values.add((property, value))
           literal.declarationPositions.add((property,declaration.valueStart))
       if literal.values.len > 0: result.add literal
+
+proc cssSelectorListRefusal*(css, selector, property: string): string =
+  ## Why an edit or removal of `property` for `selector` would not be this
+  ## selector's alone, or "" when it would be. A rule whose selector is a list
+  ## (`.a, .b { ... }`) styles every selector in it, so a declaration there --
+  ## or one added to it when no rule declares the property yet -- changes
+  ## them all (editor spec "Saving": an edit changes exactly the one owning
+  ## declaration). The patcher itself still treats a list as a home for any
+  ## of its members; the editor's writers ask this first and refuse.
+  let wanted = selector.strip()
+  if wanted.len == 0 or property.len == 0: return
+  let message = proc(list: string): string =
+    "`" & wanted & "` is styled here by the selector list `" & list &
+      "`; changing `" & property & "` there would change every selector " &
+      "in the list. Edit the stylesheet directly."
+  var declared = false
+  var baseRules: seq[string] = @[]
+  for rule in css.allRules():
+    var members: seq[string] = @[]
+    for member in rule.selector.withoutComments().split(','):
+      members.add member.strip()
+    if wanted notin members: continue
+    let list = rule.selector.withoutComments().strip()
+    let body = RuleSpan(selector: rule.selector, bodyStart: rule.bodyStart,
+                        bodyEnd: rule.bodyEnd)
+    var sets = false
+    for resetter in property.capabilityResetters():
+      if css.findDeclaration(body, resetter).valueStart >= 0: sets = true
+    if sets:
+      declared = true
+      if members.len > 1: return message(list)
+    if rule.condition.len == 0:
+      baseRules.add (if members.len > 1: list else: "")
+  # Nothing declares it: a value would be inserted into the selector's one
+  # top-level rule, which must not be a list either.
+  if not declared and baseRules.len == 1 and baseRules[0].len > 0:
+    return message(baseRules[0])
+
+proc cssInsertionHome*(css, selector, property: string): bool =
+  ## Whether a value for `property` would be inserted into the one rule for
+  ## `selector`, and nowhere else: exactly one rule names the selector, at
+  ## the top level, alone (not in a list), and nothing in it sets the
+  ## property yet. Used to keep offering a property after Reset removed its
+  ## last declaration.
+  let wanted = selector.strip()
+  if wanted.len == 0 or property.len == 0: return false
+  var owners = 0
+  var home = false
+  for rule in css.allRules():
+    var members: seq[string] = @[]
+    for member in rule.selector.withoutComments().split(','):
+      members.add member.strip()
+    if wanted notin members: continue
+    inc owners
+    let body = RuleSpan(selector: rule.selector, bodyStart: rule.bodyStart,
+                        bodyEnd: rule.bodyEnd)
+    var sets = false
+    for resetter in property.capabilityResetters():
+      if css.findDeclaration(body, resetter).valueStart >= 0: sets = true
+    home = rule.condition.len == 0 and members.len == 1 and not sets
+  owners == 1 and home

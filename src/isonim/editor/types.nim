@@ -622,6 +622,10 @@ type
       ## declaration that owns this property (``nativeRemovalRefusal``).
     nativeRemovalRefusal*: string
       ## Why the native writer cannot remove that declaration, "" when it can.
+    nativeEditRefusal*: string
+      ## Why the native writer cannot change this property for the selected
+      ## element alone (its declaration is in a rule shared by a selector
+      ## list), "" when it can. The row is read-only with this reason.
     origin*: PropertyOrigin
     originDetail*: string ## e.g. "class:p-4" or "themeColor(\"primary\")"
     sourceLine*: int      ## Line in source file
@@ -1621,6 +1625,14 @@ type
     reloadPreview*: proc(stories: seq[StoryRef];
       fullReload: bool): WorkspaceOperationResult {.closure.}
     review*: proc(patches: seq[WorkspaceFilePatch]): WorkspaceReviewResult {.closure.}
+    editRefusal*: proc(plan: SourceEditPlan;
+      schema: WorkspaceEditableSchemaEntry): string {.closure.}
+      ## Optional: the writer's own statement, without a write, of why it
+      ## cannot change ``plan``'s declaration for this entry alone (a rule
+      ## shared by a selector list), or "". Asked when an edit is committed
+      ## (and when Reset's menu opens), never from a tracked render effect,
+      ## so a refusal the writer can know at the act is made there (editor
+      ## spec "Saving").
 
   # --- Design-system schema and source ownership ---
   DesignSchemaNodeKind* = enum

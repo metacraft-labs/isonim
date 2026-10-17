@@ -378,3 +378,42 @@ suite "css_patch: removing the one owning declaration (Reset)":
     check r.ok
     check r.content == "const s* = \"\"\"\n#a { width:1px; }\n\"\"\"\n# #a { height:9px; }\n"
     check not removeCssInNimConst(module, "missing", "#a", "height").ok
+
+suite "the editor's writers ask before writing a selector list or inserting":
+  # isonim-pm issues 2026-10-16-selector-list-rules-are-admitted-for-edit-
+  # and-removal and 2026-10-16-compiled-bindings-cannot-be-re-set-after-
+  # reset-removes-their-last-declaration. Editor spec "Saving": an edit
+  # changes exactly the one owning declaration; "Universal Patterns": after
+  # Reset the property can be set again in the rule it was removed from. The
+  # patcher still accepts a list as a home for its members (the grouped-rule
+  # cases above); these are the questions the writers ask first.
+  test "a declaration in a selector-list rule, or an insertion into one, is refused":
+    let message = cssSelectorListRefusal("html,body { margin:0; }\n", "body", "margin")
+    check message == "`body` is styled here by the selector list `html,body`; " &
+      "changing `margin` there would change every selector in the list. " &
+      "Edit the stylesheet directly."
+    # A shorthand in the list rule sets the longhand too.
+    check cssSelectorListRefusal(".a, .b { padding:1px; }\n.a { color:red; }\n",
+      ".a", "padding-top").len > 0
+    # Nothing declares it and the only rule for the selector is a list.
+    check cssSelectorListRefusal(".a, .b { color:red; }\n", ".a", "width").len > 0
+    # The selector's own rule owns it, or would receive it: allowed.
+    check cssSelectorListRefusal("html,body { margin:0; }\nbody { color:red; }\n",
+      "body", "color") == ""
+    check cssSelectorListRefusal(".a { color:red; }\n.a, .b { margin:0; }\n",
+      ".a", "color") == ""
+    check cssSelectorListRefusal("#a { width:1px; }\n", "#a", "width") == ""
+    # A conditional list rule that sets it is refused as well.
+    check cssSelectorListRefusal("#a { width:1px; }\n@media (max-width:600px) { #a, #b { width:2px; } }\n",
+      "#a", "width").len > 0
+
+  test "an insertion home is the selector's one unconditional rule, alone and not yet setting it":
+    check cssInsertionHome("#a { height:1px; }\n", "#a", "width")
+    check cssInsertionHome("#a { }\n", "#a", "width")
+    check not cssInsertionHome("#a { width:1px; }\n", "#a", "width")
+    check not cssInsertionHome("#a { padding:1px; }\n", "#a", "padding-top")
+    check not cssInsertionHome("#a { all:unset; }\n", "#a", "width")
+    check not cssInsertionHome("#a, #b { height:1px; }\n", "#a", "width")
+    check not cssInsertionHome("#a { }\n#a { }\n", "#a", "width")
+    check not cssInsertionHome("#a { }\n@media (max-width:600px) { #a { width:2px; } }\n", "#a", "width")
+    check not cssInsertionHome("#b { }\n", "#a", "width")

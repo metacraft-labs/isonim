@@ -132,6 +132,195 @@ suite "editor example writer: removal":
       check foundation[] == DemoFoundationInitialSource
       dispose()
 
+proc findByAttr(node: MockNode; name, value: string): MockNode =
+  if node == nil: return nil
+  if node.kind == mnkElement and node.attributes.getOrDefault(name) == value:
+    return node
+  for child in node.children:
+    let found = findByAttr(child, name, value)
+    if found != nil: return found
+
+proc findTag(node: MockNode; tag: string): MockNode =
+  if node == nil: return nil
+  if node.kind == mnkElement and node.tag == tag: return node
+  for child in node.children:
+    let found = findTag(child, tag)
+    if found != nil: return found
+
+proc press(node: MockNode; key: string) =
+  node.fireEventWith("keydown", MockEvent(`type`: "keydown", target: node,
+    currentTarget: node, key: key))
+
+template need(node: MockNode) {.dirty.} =
+  check node != nil
+  if node == nil:
+    dispose()
+    return
+
+suite "editor example writer: re-set after Reset":
+  # isonim-pm issue 2026-10-16-editor-example-writer-re-sets-a-reset-
+  # property-outside-any-rule. Editor spec "Universal Patterns": Reset is
+  # "written and undoable like any edit"; setting the property again writes
+  # a declaration inside the rule that owns it, so the value applies to the
+  # element. The writer appended `padding: 20px;` at the end of the file,
+  # outside any rule.
+  test "a value set after Reset is written inside the owning rule":
+    let adapter = demoVectorEditAdapter(new(string), new(string))
+    let entry = adapter.paddingEntry
+    let reset = DemoFoundationInitialSource.replace(DestinationRule,
+      ".destination-card { }\n")
+    proc setPlan(value: string; expected = ""): SourceEditPlan =
+      SourceEditPlan(file: DemoFoundationSource, line: 9, property: "padding",
+        oldValue: expected, newValue: value, planKind: cspPropertyAddition,
+        schemaKey: "classes.destination-card.padding",
+        expectedOldValue: expected, sourceScope: sskSharedClass,
+        scope: pesShared)
+    let again = adapter.patchFile(setPlan("20px"), reset, entry)
+    check again.ok
+    check again.patch.afterContent == DemoFoundationInitialSource.replace(
+      DestinationRule, ".destination-card { padding: 20px; }\n")
+    # Setting back the removed value gives back the original bytes.
+    let same = adapter.patchFile(setPlan("18px"), reset, entry)
+    check same.ok
+    check same.patch.afterContent == DemoFoundationInitialSource
+    # With the declaration present, the value is replaced in that rule only:
+    # an equal value elsewhere in the file is not touched.
+    let elsewhere = DemoFoundationInitialSource & ".hero { margin: 18px; }\n"
+    let replaced = adapter.patchFile(setPlan("24px", "18px"), elsewhere, entry)
+    check replaced.ok
+    check replaced.patch.afterContent == elsewhere.replace(DestinationRule,
+      ".destination-card { padding: 24px; }\n")
+    # No owning rule, or a value the rule no longer declares: refused, with
+    # nothing written.
+    let noRule = adapter.patchFile(setPlan("20px"),
+      DemoFoundationInitialSource.replace(DestinationRule, ""), entry)
+    check not noRule.ok
+    check noRule.diagnostics.len == 1 and
+      noRule.diagnostics[0].message.contains("no .destination-card rule")
+    check noRule.patch.afterContent.len == 0
+    let stale = adapter.patchFile(setPlan("20px", "24px"),
+      DemoFoundationInitialSource, entry)
+    check not stale.ok
+    check stale.diagnostics.len == 1 and
+      stale.diagnostics[0].kind == wedSourceConflict
+    # Two rules for the class, or two declarations in its rule: which one
+    # owns the property cannot be identified, so nothing is written.
+    let twoRules = adapter.patchFile(setPlan("20px"),
+      reset & ".destination-card { margin: 0; }\n", entry)
+    check not twoRules.ok
+    check twoRules.diagnostics.len == 1 and twoRules.diagnostics[0].message.contains(
+      "has 2 .destination-card rules")
+    check twoRules.patch.afterContent.len == 0
+    let twoDeclarations = adapter.patchFile(setPlan("20px", "18px"),
+      DemoFoundationInitialSource.replace(DestinationRule,
+        ".destination-card { padding: 18px; padding: 24px; }\n"), entry)
+    check not twoDeclarations.ok
+    check twoDeclarations.diagnostics.len == 1 and
+      twoDeclarations.diagnostics[0].message.contains("has 2 padding declarations")
+    check twoDeclarations.patch.afterContent.len == 0
+    # Reset removes only from the class's own rule: a padding declared by
+    # another rule is not this entry's to remove.
+    let elsewhereOnly = reset & ".hero { padding: 18px; }\n"
+    let notOwned = adapter.patchFile(removalPlan(), elsewhereOnly, entry)
+    check not notOwned.ok
+    check notOwned.diagnostics.len == 1 and notOwned.diagnostics[0].message.contains(
+      "not in the .destination-card rule")
+    check notOwned.patch.afterContent.len == 0
+
+  test "a selector-list rule is refused for set and Reset with the reason":
+    # isonim-pm issue 2026-10-16-selector-list-rules-are-admitted-for-edit-
+    # and-removal. Editor spec "Saving": an edit changes exactly the one
+    # owning declaration; a rule shared by a selector list also styles the
+    # other selectors, so it is refused with that reason.
+    let adapter = demoVectorEditAdapter(new(string), new(string))
+    let entry = adapter.paddingEntry
+    let listed = DemoFoundationInitialSource.replace(DestinationRule,
+      ".destination-card, .hero { padding: 18px; }\n")
+    let set = adapter.patchFile(SourceEditPlan(file: DemoFoundationSource,
+      line: 9, property: "padding", oldValue: "18px", newValue: "20px",
+      planKind: cspStructuredSchemaUpdate,
+      schemaKey: "classes.destination-card.padding",
+      expectedOldValue: "18px", sourceScope: sskSharedClass,
+      scope: pesShared), listed, entry)
+    check not set.ok
+    check set.diagnostics.len == 1 and set.diagnostics[0].message.contains(
+      "shared by the selector list `.destination-card, .hero`")
+    check set.patch.afterContent.len == 0
+    let removed = adapter.patchFile(removalPlan(), listed, entry)
+    check not removed.ok
+    check removed.diagnostics.len == 1 and removed.diagnostics[0].message.contains(
+      "shared by the selector list `.destination-card, .hero`")
+    check removed.patch.afterContent.len == 0
+    createRoot proc(dispose: proc()) =
+      let foundation = new(string)
+      foundation[] = listed
+      let vm = demoVm(foundation)
+      # Reset says why before the act, and an empty commit is refused there.
+      let reason = vm.propertyResetRefusal("padding", sskSharedClass)
+      check reason.contains("shared by the selector list")
+      let refused = vm.editSharedDesignProperty("padding", "", sskSharedClass)
+      check refused.status == pesRejected
+      check vm.inspector.undoStack.val.len == 0
+      # A value is refused at the act too, with the same reason (the
+      # writer's statement, asked at the commit): nothing is previewed,
+      # journaled, pending or written.
+      let value = vm.editSharedDesignProperty("padding", "20px", sskSharedClass)
+      check value.status == pesRejected
+      check value.diagnostics.len == 1 and value.diagnostics[0].message.contains(
+        "shared by the selector list `.destination-card, .hero`")
+      check vm.inspector.pendingSourceEdits.val.len == 0
+      check vm.inspector.undoStack.val.len == 0
+      let local = vm.editCssProperty("padding", "20px", pesShared)
+      check local.status == pesRejected
+      check vm.inspector.pendingSourceEdits.val.len == 0
+      check foundation[] == listed
+      dispose()
+    # The mounted row: a typed value is refused at the commit with the
+    # reason, and nothing is staged.
+    createRoot proc(dispose: proc()) =
+      let r = MockRenderer()
+      let host = r.createElement("div")
+      let foundation = new(string)
+      foundation[] = listed
+      let vm = demoVm(foundation)
+      let wiring = vm.inspectorRowWiring("padding")
+      let row = r.mountPropertyRow(host, propertyRowText("Padding",
+        createSignal("18px"), wiring = wiring))
+      let field = findTag(row, "input")
+      need(field)
+      r.setInputValue(field, "20px")
+      field.fireEvent("change")
+      check wiring.commitMessage.val.contains("shared by the selector list")
+      check vm.inspector.pendingSourceEdits.val.len == 0
+      check vm.inspector.undoStack.val.len == 0
+      check foundation[] == listed
+      dispose()
+
+  test "Reset, set, undo, undo through the editor writes exact bytes":
+    createRoot proc(dispose: proc()) =
+      let foundation = new(string)
+      foundation[] = DemoFoundationInitialSource
+      let vm = demoVm(foundation)
+      let reset = DemoFoundationInitialSource.replace(DestinationRule,
+        ".destination-card { }\n")
+      check vm.editSharedDesignProperty("padding", "",
+        sskSharedClass).status == pesAccepted
+      check vm.applyWorkspaceFileEdits().ok
+      check foundation[] == reset
+      let set = vm.editSharedDesignProperty("padding", "20px", sskSharedClass)
+      check set.status == pesAccepted
+      check set.diagnostics.len == 0
+      check vm.applyWorkspaceFileEdits().ok
+      check foundation[] == DemoFoundationInitialSource.replace(
+        DestinationRule, ".destination-card { padding: 20px; }\n")
+      check vm.runEditorCommand(eckUndo).status == ecsSucceeded
+      check vm.applyWorkspaceFileEdits().ok
+      check foundation[] == reset
+      check vm.runEditorCommand(eckUndo).status == ecsSucceeded
+      check vm.applyWorkspaceFileEdits().ok
+      check foundation[] == DemoFoundationInitialSource
+      dispose()
+
 suite "removal is admitted per schema entry and refused at the act":
   test "each example schema entry states whether its writer can remove":
     let adapter = demoVectorEditAdapter(new(string), new(string))
@@ -216,31 +405,6 @@ suite "removal is admitted per schema entry and refused at the act":
         DestinationRule, ".destination-card { }\n")
       dispose()
 
-proc findByAttr(node: MockNode; name, value: string): MockNode =
-  if node == nil: return nil
-  if node.kind == mnkElement and node.attributes.getOrDefault(name) == value:
-    return node
-  for child in node.children:
-    let found = findByAttr(child, name, value)
-    if found != nil: return found
-
-proc findTag(node: MockNode; tag: string): MockNode =
-  if node == nil: return nil
-  if node.kind == mnkElement and node.tag == tag: return node
-  for child in node.children:
-    let found = findTag(child, tag)
-    if found != nil: return found
-
-proc press(node: MockNode; key: string) =
-  node.fireEventWith("keydown", MockEvent(`type`: "keydown", target: node,
-    currentTarget: node, key: key))
-
-template need(node: MockNode) {.dirty.} =
-  check node != nil
-  if node == nil:
-    dispose()
-    return
-
 suite "Reset through the mounted property row":
   test "Reset commits the removal through the row's commit; undo restores the line":
     createRoot proc(dispose: proc()) =
@@ -266,6 +430,43 @@ suite "Reset through the mounted property row":
       check vm.applyWorkspaceFileEdits().ok
       check foundation[] == DemoFoundationInitialSource.replace(
         DestinationRule, ".destination-card { }\n")
+      check vm.runEditorCommand(eckUndo).status == ecsSucceeded
+      check vm.applyWorkspaceFileEdits().ok
+      check foundation[] == DemoFoundationInitialSource
+      dispose()
+
+  test "after Reset the row sets the property again inside its rule; undo, undo":
+    createRoot proc(dispose: proc()) =
+      let r = MockRenderer()
+      let host = r.createElement("div")
+      let foundation = new(string)
+      foundation[] = DemoFoundationInitialSource
+      let vm = demoVm(foundation)
+      let shown = createSignal("18px")
+      let row = r.mountPropertyRow(host, propertyRowText("Padding", shown,
+        wiring = vm.inspectorRowWiring("padding")))
+      row.fireEvent("contextmenu")
+      let menu = findByAttr(row, "data-property-actions-menu", "true")
+      need(menu)
+      let reset = findByAttr(menu, "data-property-action", "reset")
+      need(reset)
+      reset.fireEvent("click")
+      check vm.applyWorkspaceFileEdits().ok
+      let afterReset = DemoFoundationInitialSource.replace(DestinationRule,
+        ".destination-card { }\n")
+      check foundation[] == afterReset
+      let field = findTag(row, "input")
+      need(field)
+      r.setInputValue(field, "20px")
+      field.fireEvent("change")
+      check vm.inspector.pendingSourceEdits.val.len == 1
+      check vm.inspector.undoStack.val.len == 2
+      check vm.applyWorkspaceFileEdits().ok
+      check foundation[] == DemoFoundationInitialSource.replace(
+        DestinationRule, ".destination-card { padding: 20px; }\n")
+      check vm.runEditorCommand(eckUndo).status == ecsSucceeded
+      check vm.applyWorkspaceFileEdits().ok
+      check foundation[] == afterReset
       check vm.runEditorCommand(eckUndo).status == ecsSucceeded
       check vm.applyWorkspaceFileEdits().ok
       check foundation[] == DemoFoundationInitialSource
