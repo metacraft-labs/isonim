@@ -365,3 +365,17 @@ proc sourceElementMarkup*(html, identityPrefix: string): tuple[html: string,
     result.html.add " data-isonim-element-id=\"" & id & "\""
     cursor = insertion
   result.html.add html[cursor ..< html.len]
+
+proc htmlStyleTexts*(html: string): seq[string] =
+  ## The text of every `<style>` element the page applies, in document order,
+  ## through the same tokenizer as element identities (so inert `<template>`
+  ## content never counts). A `<style>` limited by a `media` attribute other
+  ## than `all` does not apply at every width and is left out, as is one
+  ## without its closing tag.
+  let tokens = htmlElementTokens(html)
+  for index, token in tokens:
+    if token.closing or token.tag != "style": continue
+    let media = token.attributes.getOrDefault("media").strip().toLowerAscii()
+    if media.len > 0 and media != "all": continue
+    if index + 1 < tokens.len and tokens[index + 1].closing and tokens[index + 1].tag == "style":
+      result.add html[token.finish ..< tokens[index + 1].start]

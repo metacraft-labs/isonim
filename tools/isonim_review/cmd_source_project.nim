@@ -437,6 +437,11 @@ proc cmdSourceProject*(args: seq[string]): int =
         built = parseJson(execution.output)
         if built{"stories"} == nil or built["stories"].kind != JArray:
           raise newException(ValueError, "Build did not return a story catalog.")
+        # Which opted-in stylesheets each page embeds, from the exact
+        # constants this build compiled (the files as written for it), so
+        # binding matching names them by identity rather than inferring it
+        # later from a page whose sources may have been edited since.
+        recordEmbeddedStylesheets(built, manifest, proc(file: string): string = readFile(safePath(root, file)))
         discard sourceCatalogWorkspace(built, manifest, newEditorWorkspace("validation", @[]))
         for story in built["stories"]:
           if story{"group"}.getStr().len == 0 or story{"name"}.getStr().len == 0 or story{"documentHtml"}.getStr().len == 0:

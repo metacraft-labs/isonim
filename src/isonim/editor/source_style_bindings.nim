@@ -1,7 +1,7 @@
 ## Compiler-owned bindings for opted-in CSS constants. No DOM, filesystem or
 ## caller-supplied source paths: the project owns source declarations and the
 ## rendered catalog owns target identity. Complex/ambiguous rules are refused.
-import std/[json, strutils, tables, sha1, options]
+import std/[json, strutils, tables, sha1, options, algorithm]
 import isonim/editor/[html_classes, css_patch, source_catalog, source_style_values, types, viewmodels]
 
 type
@@ -33,6 +33,95 @@ func simpleSelectorMatches*(element: SourceHtmlElement; selector: string): bool 
       if element.attributes.getOrDefault("id") != name: return false
     elif name notin element.attributes.getOrDefault("class").splitWhitespace(): return false
   true
+
+const shorthandSides = [("padding", @["padding-top", "padding-right", "padding-bottom", "padding-left"]),
+  ("border-radius", @["border-top-left-radius", "border-top-right-radius",
+    "border-bottom-right-radius", "border-bottom-left-radius"])]
+
+const embeddedStylesheetsField* = "editableStylesheets"
+  ## A catalog row's record of the opted-in stylesheets its page embeds, as
+  ## `[{"file": ..., "const": ...}]`. The project's catalog producer may
+  ## declare it (it knows which constants it embeds: identity by name);
+  ## otherwise the native worker's build writes it from the exact constants
+  ## it compiled (`recordEmbeddedStylesheets`).
+
+func nimTripleQuotedValue*(body: string): string =
+  ## The runtime value of a raw `"""` string with this body: the compiler
+  ## reads every line end (CRLF or a lone CR, as in a file checked out with
+  ## Windows line ends) as LF, and a newline right after the opening quotes
+  ## (whitespace before it allowed) is not part of the value.
+  let text = body.replace("\r\n", "\n").replace('\r', '\n')
+  var at = 0
+  while at < text.len and text[at] in {' ', '\t'}: inc at
+  if at < text.len and text[at] == '\n': text[at + 1 .. ^1]
+  else: text
+
+proc loadedStylesheets*(documentHtml: string; sheets: seq[tuple[key, css: string]]): seq[string] =
+  ## The keys of the `sheets` (key, constant body) whose exact compiled value
+  ## a page embeds in one of its `<style>` elements (alone or together with
+  ## other stylesheets). Identity is the constant's bytes, not its rules: a
+  ## foreign stylesheet with the same selectors is not it. Longer values claim
+  ## their bytes first, so a stylesheet whose text only repeats part of a
+  ## loaded one is not loaded by that repetition. Opted-in constants with the
+  ## same bytes cannot be told apart, so none of them is loaded. Called by the
+  ## build on the exact sources it compiled; at describe time only when the
+  ## catalog carries no record (a page built from other bytes then loads none).
+  var styles = htmlStyleTexts(documentHtml)
+  var claimed: seq[seq[bool]]
+  for style in styles: claimed.add newSeq[bool](style.len)
+  var groups = initOrderedTable[string, seq[string]]()
+  for sheet in sheets:
+    let value = nimTripleQuotedValue(sheet.css)
+    if value.strip().len == 0: continue
+    if not groups.hasKey(value): groups[value] = @[]
+    if sheet.key notin groups[value]: groups[value].add sheet.key
+  var ordered: seq[string]
+  for value in groups.keys: ordered.add value
+  ordered.sort(proc(a, b: string): int = cmp(b.len, a.len))
+  for value in ordered:
+    var found = false
+    for styleIndex, style in styles:
+      var at = style.find(value)
+      while at >= 0:
+        var free = true
+        for offset in 0 ..< value.len:
+          if claimed[styleIndex][at + offset]: free = false; break
+        if free:
+          found = true
+          for offset in 0 ..< value.len: claimed[styleIndex][at + offset] = true
+          at = style.find(value, at + value.len)
+        else: at = style.find(value, at + 1)
+    if found and groups[value].len == 1: result.add groups[value][0]
+
+proc optedStylesheets(manifest: JsonNode; readSource: SourceReader): seq[tuple[key, css: string]] =
+  if manifest{"editableStyleSources"} == nil or manifest["editableStyleSources"].kind != JArray: return
+  var texts = initTable[string, string]()
+  for source in manifest["editableStyleSources"]:
+    let file = source{"file"}.getStr()
+    let name = source{"const"}.getStr()
+    if file.len == 0 or name.len == 0: continue
+    if not texts.hasKey(file): texts[file] = readSource(file)
+    let key = file & "\n" & name
+    var listed = false
+    for sheet in result:
+      if sheet.key == key: listed = true
+    if not listed: result.add (key, nimConstBody(texts[file], name))
+
+proc recordEmbeddedStylesheets*(catalog, manifest: JsonNode; readSource: SourceReader) =
+  ## Record on each story row which opted-in stylesheets its page embeds,
+  ## from the exact constants `readSource` holds -- the sources this build
+  ## compiled -- so the record stays valid while declarations are edited
+  ## until the next build. A row whose producer declared its stylesheets
+  ## keeps that declaration.
+  let sheets = optedStylesheets(manifest, readSource)
+  if sheets.len == 0 or catalog{"stories"} == nil: return
+  for story in catalog["stories"]:
+    if story{embeddedStylesheetsField} != nil: continue
+    var record = newJArray()
+    for key in loadedStylesheets(story{"documentHtml"}.getStr(), sheets):
+      let parts = key.split('\n', 1)
+      record.add(%* {"file": parts[0], "const": parts[1]})
+    story[embeddedStylesheetsField] = record
 
 func selectorCouldMatch(element: SourceHtmlElement; selector: string): bool =
   ## Only required terminal type/class/ID can prove a rule unrelated. Attribute,
@@ -79,12 +168,18 @@ func selectorCouldMatch(element: SourceHtmlElement; selector: string): bool =
 proc compiledStyleBindings*(catalog, manifest: JsonNode; readSource: SourceReader;
     reoffer: seq[ReofferedDeclaration] = @[]): JsonNode =
   ## The editable declarations the project's opted-in stylesheets give each
-  ## rendered element. `reoffer` names declarations Reset removed: such a
-  ## property stays offered, with no value, to every element the rule
-  ## matches, while the project opts it in, the rule it came from is still
+  ## rendered element. A stylesheet's rules bind only the elements of stories
+  ## whose compiled page loads it (`loadedStylesheets`), and only the
+  ## stylesheets a page loads decide who else owns a property there.
+  ## `reoffer` names declarations Reset removed: such a property stays
+  ## offered, with no value, to every element the rule matches in a page that
+  ## loads it, while the project opts it in, the rule it came from is still
   ## the only place a value for it could go (`cssInsertionHome`, not a
-  ## selector list) and nothing else in the opted-in stylesheets or that
-  ## element's inline style sets it for the element.
+  ## selector list) and nothing else in the opted-in stylesheets that page
+  ## loads or that element's inline style sets it for the element. A padding
+  ## or border-radius shorthand re-offered that way also offers each of its
+  ## sides that the same conditions leave free, as an authored shorthand
+  ## does; a value typed for a side is that side's own declaration.
   result = newJArray()
   if manifest{"editableStyleSources"} == nil: return
   if manifest["editableStyleSources"].kind != JArray:
@@ -96,6 +191,7 @@ proc compiledStyleBindings*(catalog, manifest: JsonNode; readSource: SourceReade
   var attributionProperties: seq[string]
   var sourceTexts = initTable[string,string]()
   var sourceHashes = initTable[string,string]()
+  var sheets: seq[tuple[key, css: string]]
   for source in manifest["editableStyleSources"]:
     if source.kind != JObject or source{"file"} == nil or source{"file"}.kind != JString or
         source{"const"} == nil or source{"const"}.kind != JString or
@@ -110,6 +206,11 @@ proc compiledStyleBindings*(catalog, manifest: JsonNode; readSource: SourceReade
     let css = nimConstBody(text, source["const"].getStr())
     optedInCss.add css
     if css.len == 0: raise newException(ValueError, "Editable stylesheet constant not found.")
+    let sheetKey = sourceFile & "\n" & source["const"].getStr()
+    var listed = false
+    for sheet in sheets:
+      if sheet.key == sheetKey: listed = true
+    if not listed: sheets.add (sheetKey, css)
     var allowed: seq[string]
     for property in source["properties"]:
       if property.kind != JString or property.getStr().len == 0:
@@ -219,11 +320,27 @@ proc compiledStyleBindings*(catalog, manifest: JsonNode; readSource: SourceReade
       if values.len > 0:
         declarations.add(%* {"file": source["file"], "const": source["const"],
           "selector": rule.selector, "values": values, "sourceDeclarations": owners,"sourceHash":sourceHash})
+  proc sheetOf(node: JsonNode): string = node["file"].getStr() & "\n" & node["const"].getStr()
   var elements: seq[tuple[story: string, element: SourceHtmlElement]]
+  var storySheets = initTable[string, seq[string]]()
   for story in catalog{"stories"}:
     let storyId = story{"group"}.getStr() & " / " & story{"name"}.getStr()
     let markup = sourceElementMarkup(story{"documentHtml"}.getStr(), sourceStoryIdentityPrefix(storyId))
+    # The build's record names the constants the page embeds; without one
+    # (a catalog another tool built) only a page holding a constant's exact
+    # current bytes loads it.
+    let record = story{embeddedStylesheetsField}
+    if record != nil and record.kind == JArray:
+      var named: seq[string]
+      for row in record:
+        let key = row{"file"}.getStr() & "\n" & row{"const"}.getStr()
+        for sheet in sheets:
+          if sheet.key == key and key notin named: named.add key
+      storySheets[storyId] = named
+    else:
+      storySheets[storyId] = loadedStylesheets(story{"documentHtml"}.getStr(), sheets)
     for element in markup.elements: elements.add((storyId, element))
+  proc loads(story, sheet: string): bool = sheet in storySheets.getOrDefault(story)
   var unsupportedTokens: seq[string]
   var tokenOwnerCount = initCountTable[string]()
   for css in optedInCss:
@@ -234,17 +351,18 @@ proc compiledStyleBindings*(catalog, manifest: JsonNode; readSource: SourceReade
   for name,count in tokenOwnerCount:
     if count != 1 and name notin unsupportedTokens: unsupportedTokens.add name
   # Inline variable owners also prevent authority from being assigned to root.
+  # A shared rule's known usage: the elements it matches in the pages that load it.
+  proc usage(sheet, selector: string): int =
+    for target in elements:
+      if loads(target.story, sheet) and simpleSelectorMatches(target.element, selector): inc result
   var selectorCounts = initTable[string,int]()
   for declaration in declarations:
-    let selector = declaration["selector"].getStr()
-    if selectorCounts.hasKey(selector): continue
-    var count = 0
-    for target in elements:
-      if simpleSelectorMatches(target.element,selector): inc count
-    selectorCounts[selector] = count
-  var possibleOwners: seq[tuple[selector, condition, property: string]]
-  for css in optedInCss:
-    possibleOwners.add cssPropertyOwners(css,attributionProperties)
+    let counted = declaration.sheetOf() & "\n" & declaration["selector"].getStr()
+    if not selectorCounts.hasKey(counted):
+      selectorCounts[counted] = usage(declaration.sheetOf(), declaration["selector"].getStr())
+  var sheetOwners = initTable[string, seq[tuple[selector, condition, property: string]]]()
+  for sheet in sheets:
+    sheetOwners[sheet.key] = cssPropertyOwners(sheet.css,attributionProperties)
   var bindingsByKey = initTable[string,JsonNode]()
   for target in elements:
     let inlineStyle = target.element.attributes.getOrDefault("style")
@@ -254,8 +372,11 @@ proc compiledStyleBindings*(catalog, manifest: JsonNode; readSource: SourceReade
   for target in elements:
     let inlineStyle = target.element.attributes.getOrDefault("style")
     var candidates = newJArray()
+    var possibleOwners: seq[tuple[selector, condition, property: string]]
+    for sheet in storySheets.getOrDefault(target.story): possibleOwners.add sheetOwners[sheet]
     for declaration in declarations:
-      if simpleSelectorMatches(target.element, declaration["selector"].getStr()): candidates.add declaration
+      if loads(target.story, declaration.sheetOf()) and
+          simpleSelectorMatches(target.element, declaration["selector"].getStr()): candidates.add declaration
     for declaration in candidates:
       for property,raw in declaration["values"]:
         var ownerCount = 0
@@ -290,7 +411,7 @@ proc compiledStyleBindings*(catalog, manifest: JsonNode; readSource: SourceReade
             if token["name"].getStr() == tokenName:
               if tokenOwner != nil: tokenOwner = nil; break
               tokenOwner = token
-          if tokenOwner == nil: continue
+          if tokenOwner == nil or not loads(target.story, tokenOwner.sheetOf()): continue
           value = tokenOwner["value"]
           let parsed = parseCssPropertyValue(property,value.getStr())
           if validateCssPropertyValue(PropertyInfo(name:property,directStyleAllowed:true),
@@ -299,7 +420,7 @@ proc compiledStyleBindings*(catalog, manifest: JsonNode; readSource: SourceReade
           scope = "semantic-token"
           sourceDeclaration = %* {"property":tokenName,"value":value}
         elif "var(" in raw.getStr(): continue
-        let count = selectorCounts[declaration["selector"].getStr()]
+        let count = selectorCounts[declaration.sheetOf() & "\n" & declaration["selector"].getStr()]
         let key = (if scope == "semantic-token": "tokens.native." else: "classes.native.") &
           $secureHash(target.story & "\n" & target.element.id & "\n" & owner["file"].getStr() &
             "\n" & owner["const"].getStr() & "\n" & owner["selector"].getStr() & "\n" & tokenName)
@@ -317,47 +438,62 @@ proc compiledStyleBindings*(catalog, manifest: JsonNode; readSource: SourceReade
   for declaration in reoffer:
     let property = declaration.property
     if property.len == 0 or property.startsWith("--"): continue
+    # Opted in by name, or -- for a side -- through its shorthand, as the
+    # declaration path offers an authored side.
     var allowed = false
     for source in manifest["editableStyleSources"]:
       if source["file"].getStr() == declaration.file and
           source["const"].getStr() == declaration.constName:
         for name in source["properties"]:
           if name.getStr() == property: allowed = true
+          for (shorthand, sides) in shorthandSides:
+            if name.getStr() == shorthand and property in sides: allowed = true
     if not allowed or not sourceTexts.hasKey(declaration.file): continue
+    let sheet = declaration.file & "\n" & declaration.constName
     let css = nimConstBody(sourceTexts[declaration.file], declaration.constName)
-    if not css.cssInsertionHome(declaration.selector, property) or
-        css.cssSelectorListRefusal(declaration.selector, property).len > 0: continue
-    var count = 0
-    for other in elements:
-      if simpleSelectorMatches(other.element, declaration.selector): inc count
+    # The shorthand, then its sides, as the declaration path presents an
+    # authored one; each offered only where the rule is its one home.
+    var offered = @[property]
+    for (shorthand, sides) in shorthandSides:
+      if shorthand == property: offered.add sides
+    var homes: seq[string]
+    for name in offered:
+      if css.cssInsertionHome(declaration.selector, name) and
+          css.cssSelectorListRefusal(declaration.selector, name).len == 0: homes.add name
+    if homes.len == 0: continue
+    let count = usage(sheet, declaration.selector)
     for target in elements:
-      if not simpleSelectorMatches(target.element, declaration.selector): continue
-      var ownedElsewhere = false
-      for opted in optedInCss:
-        for other in cssPropertyOwners(opted, @[property]):
-          var selectorSupported = other.selector.len > 0
-          for character in other.selector:
-            if character notin {'a'..'z','A'..'Z','0'..'9','-','_','.','#'}: selectorSupported = false
-          if simpleSelectorMatches(target.element, other.selector) or
-              (not selectorSupported and target.element.selectorCouldMatch(other.selector)):
-            ownedElsewhere = true
+      if not loads(target.story, sheet) or
+          not simpleSelectorMatches(target.element, declaration.selector): continue
       let inlineStyle = target.element.attributes.getOrDefault("style")
-      if inlineStyle.len > 0 and cssPropertyOwners(".inline {" & inlineStyle & "}", @[property]).len > 0:
-        ownedElsewhere = true
-      if ownedElsewhere: continue
-      let key = "classes.native." & $secureHash(target.story & "\n" & target.element.id & "\n" &
-        declaration.file & "\n" & declaration.constName & "\n" & declaration.selector & "\n" & "")
-      var binding = bindingsByKey.getOrDefault(key)
-      if binding == nil:
-        binding = %* {"key":key,"elementId":target.element.id,"storyId":target.story,
-          "file":declaration.file,"const":declaration.constName,"selector":declaration.selector,
-          "sourceHash":sourceHashes[declaration.file],"properties":[],"values":{},"sourceDeclarations":{},
-          "scope":"shared-class","sharedCount":count,"tokenName":""}
-        result.add binding
-        bindingsByKey[key] = binding
-      if binding["values"]{property} != nil: continue
-      binding["properties"].add %property
-      binding["values"][property] = %""
+      for name in homes:
+        var ownedElsewhere = false
+        for loaded in storySheets.getOrDefault(target.story):
+          for opted in sheets:
+            if opted.key != loaded: continue
+            for other in cssPropertyOwners(opted.css, @[name]):
+              var selectorSupported = other.selector.len > 0
+              for character in other.selector:
+                if character notin {'a'..'z','A'..'Z','0'..'9','-','_','.','#'}: selectorSupported = false
+              if simpleSelectorMatches(target.element, other.selector) or
+                  (not selectorSupported and target.element.selectorCouldMatch(other.selector)):
+                ownedElsewhere = true
+        if inlineStyle.len > 0 and cssPropertyOwners(".inline {" & inlineStyle & "}", @[name]).len > 0:
+          ownedElsewhere = true
+        if ownedElsewhere: continue
+        let key = "classes.native." & $secureHash(target.story & "\n" & target.element.id & "\n" &
+          declaration.file & "\n" & declaration.constName & "\n" & declaration.selector & "\n" & "")
+        var binding = bindingsByKey.getOrDefault(key)
+        if binding == nil:
+          binding = %* {"key":key,"elementId":target.element.id,"storyId":target.story,
+            "file":declaration.file,"const":declaration.constName,"selector":declaration.selector,
+            "sourceHash":sourceHashes[declaration.file],"properties":[],"values":{},"sourceDeclarations":{},
+            "scope":"shared-class","sharedCount":count,"tokenName":""}
+          result.add binding
+          bindingsByKey[key] = binding
+        if binding["values"]{name} != nil: continue
+        binding["properties"].add %name
+        binding["values"][name] = %""
   # Token impact includes every directly bound rendered target, across selectors.
   var knownTokenCounts = initCountTable[string]()
   proc tokenKey(binding:JsonNode): string =

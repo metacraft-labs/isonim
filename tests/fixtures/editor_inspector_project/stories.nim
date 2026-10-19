@@ -28,6 +28,10 @@ proc card(title, css, target: string): string =
           if target == "action":
             button(id = "secondary-action", `data-isonim-element-id` = "secondary-action"): text "Review"
 var stories = newJArray()
-stories.add(%* {"group":"Card", "name":"default ready", "kind":"component", "documentHtml":card("Ready card", cardStyles, "action")})
-stories.add(%* {"group":"Alternate", "name":"default ready", "kind":"component", "documentHtml":card("Alternate card", alternateStyles, "alternate-action")})
+# Each row names the constants its page embeds ("editableStylesheets"): the
+# editor binds a stylesheet rule only on the pages that load it.
+stories.add(%* {"group":"Card", "name":"default ready", "kind":"component", "documentHtml":card("Ready card", cardStyles, "action"),
+  "editableStylesheets":[{"file":"stories.nim", "const":"cardStyles"}]})
+stories.add(%* {"group":"Alternate", "name":"default ready", "kind":"component", "documentHtml":card("Alternate card", alternateStyles, "alternate-action"),
+  "editableStylesheets":[{"file":"stories.nim", "const":"alternateStyles"}]})
 echo $(%* {"stories":stories})

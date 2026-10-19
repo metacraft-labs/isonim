@@ -6555,8 +6555,11 @@ proc sourceScopeChoices*(schema: DesignSystemSchema; element: ElementRef;
   for kind in [sskStoryFixture, sskComponentSchemaApi, sskSharedClass,
       sskComponentToken, sskSemanticToken, sskGlobalPrimitiveToken]:
     let nativeKind = if prop.nativeSourceToken: sskSemanticToken else: sskSharedClass
+    # A binding that offers the property with no declaration (re-offered
+    # after Reset, including a shorthand's sides) owns it as well: the
+    # worker inserts the typed value into the binding's rule.
     if prop.nativeSourceShared and kind == nativeKind and
-        prop.sourceFile.len > 0 and prop.authoredValue.len > 0 and
+        prop.sourceFile.len > 0 and (prop.authoredValue.len > 0 or prop.nativeSourceOffered) and
         ((prop.nativeSourceToken and prop.tokenName.len > 0 and prop.schemaKey.startsWith("tokens.native.")) or
           (not prop.nativeSourceToken and prop.schemaKey.startsWith("classes.native."))):
       # The native manifest owns an exact declaration, including derived sides

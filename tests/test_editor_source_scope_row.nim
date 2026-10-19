@@ -29,6 +29,15 @@ suite "Reactive horizontal source scopes":
         PropertyInfo(name:"padding-top",nativeSourceShared:true,authoredValue:"48px",sourceFile:"styles.nim",schemaKey:"tokens.native.hero"),
         PropertyInfo(name:"padding-top",authoredValue:"48px",sourceFile:"styles.nim",schemaKey:"classes.native.hero")]:
       check sourceScopeChoices(schema,element,malformed).allIt(not it.editable)
+    # Offered with no declaration (a compiled binding's property re-offered
+    # after Reset, a shorthand's sides included): the binding's rule owns it,
+    # so the shared scope stays the editable one (isonim-pm issue 2026-10-17-
+    # re-offered-shorthand-after-reset-has-no-per-side-rows).
+    let reoffered=PropertyInfo(name:"border-top-left-radius",sourceFile:"styles.nim",
+      schemaKey:"classes.native.hero",nativeSourceShared:true,nativeSourceOffered:true,sharedCount:1)
+    let reofferedChoices=sourceScopeChoices(schema,element,reoffered)
+    check reofferedChoices.anyIt(it.kind==sskSharedClass and it.editable and it.schemaKey==reoffered.schemaKey)
+    check reofferedChoices.anyIt(it.kind==sskLocalInstance and not it.editable)
     let token=PropertyInfo(name:"background-color",authoredValue:"#fbfbfc",sourceFile:"styles.nim",
       schemaKey:"tokens.native.panel",tokenName:"--panel",nativeSourceShared:true,nativeSourceToken:true,sharedCount:40)
     let tokenChoices=sourceScopeChoices(schema,element,token)

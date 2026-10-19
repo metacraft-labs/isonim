@@ -998,7 +998,17 @@ class NativeReSetAndSelectorListTests(InspectorSourceTransactionTests):
         # refused with nothing written.
         conditional = reset.replace(b'#secondary-action {', b'@media (max-width: 600px) { #reused-card { width:90px; } }\n#secondary-action {', 1)
         self.assertNotEqual(conditional, reset)
-        self.source.write_bytes(conditional)
+        # Each variant is built, so the compiled page loads the stylesheet as
+        # written (a rule added since the build leaves the page unknown).
+        def rebuild(text):
+            self.source.write_bytes(text)
+            built = subprocess.run(["python3", str(REPO / "tools/build_source_catalog.py"), str(self.project)],
+                                   env=self.env, capture_output=True, text=True, timeout=70)
+            self.assertEqual(built.returncode, 0, built.stdout + built.stderr)
+        def card_page():
+            return next(story["documentHtml"] for story in json.loads(self.catalog.read_text())["stories"] if story["group"] == "Card")
+        rebuild(conditional)
+        self.assertIn("@media (max-width: 600px) { #reused-card { width:90px; } }", card_page())
         self.assertFalse(any(row["key"] == shared["key"] for row in self.metadata()))
         refused = self.operate(self.edit(dict(shared, sourceHash=self.file_hash()), "reused", "width", "150px", ""), expected=4)
         self.assertIn("Unsupported editable source schema", refused["diagnostic"])
@@ -1007,11 +1017,12 @@ class NativeReSetAndSelectorListTests(InspectorSourceTransactionTests):
         # type selector) decides it too: not offered.
         typed = reset.replace(b'#secondary-action {', b'button { width:90px; }\n#secondary-action {', 1)
         self.assertNotEqual(typed, reset)
-        self.source.write_bytes(typed)
+        rebuild(typed)
+        self.assertIn("button { width:90px; }", card_page())
         self.assertFalse(any(row["key"] == shared["key"] for row in self.metadata()))
         # Without another owner it is offered again; once the project no
         # longer opts width in, it is not (height, still opted in, is).
-        self.source.write_bytes(reset)
+        rebuild(reset)
         rows = [row for row in self.metadata() if row["key"] == shared["key"]]
         self.assertEqual([row["values"] for row in rows], [{"width": ""}])
         manifest = json.loads(self.manifest_path().read_text())
@@ -1059,8 +1070,10 @@ class NativeReSetAndSelectorListTests(InspectorSourceTransactionTests):
             (target, chip_target), (secondary, chip_secondary)])
         chips = lambda: {(row["storyId"], row["elementId"]): row for row in self.metadata() if row["selector"] == ".chip"}
         before = chips()
-        self.assertEqual(sorted(before), [("Alternate / default ready", "alternate-action"),
-                                          ("Card / default ready", "action"), ("Card / default ready", "secondary-action")])
+        # The Alternate story's page loads only alternateStyles, so cardStyles'
+        # .chip is not offered on its button (issue 2026-10-17-compiled-
+        # bindings-match-elements-in-stories-that-do-not-load-their-stylesheet).
+        self.assertEqual(sorted(before), [("Card / default ready", "action"), ("Card / default ready", "secondary-action")])
         self.assertTrue(all(row["values"] == {"opacity": "0.5"} for row in before.values()))
         action = before[("Card / default ready", "action")]
         removal = self.edit(action, "action", "opacity", "", "0.5")
@@ -1084,13 +1097,13 @@ class NativeReSetAndSelectorListTests(InspectorSourceTransactionTests):
             self.assertEqual(built.returncode, 0, built.stdout + built.stderr)
         # The rule no longer matches an element: that element is not offered.
         rebuild(reset.replace(chip_secondary, secondary, 1))
-        self.assertEqual(sorted(chips()), [("Alternate / default ready", "alternate-action"), ("Card / default ready", "action")])
+        self.assertEqual(sorted(chips()), [("Card / default ready", "action")])
         # An inline style that sets the property owns it: not offered.
         rebuild(reset.replace(chip_target, b'button(id = target, `data-isonim-element-id` = target, class = "chip", style = "opacity:1"): text "Continue"', 1))
         self.assertEqual(sorted(chips()), [("Card / default ready", "secondary-action")])
         # The project stops opting the property in: offered nowhere.
         rebuild(reset)
-        self.assertEqual(len(chips()), 3)
+        self.assertEqual(len(chips()), 2)
         manifest = json.loads(self.manifest_path().read_text())
         manifest["editableStyleSources"][0]["properties"] = ["width"]
         self.manifest_path().write_text(json.dumps(manifest))
@@ -1102,6 +1115,137 @@ class NativeReSetAndSelectorListTests(InspectorSourceTransactionTests):
         self.assertEqual(self.source.read_bytes(), source)
         store = json.loads((self.project / ".isonim/removal-receipts.json").read_text())
         self.assertFalse(any("offer" in row and "receipt" not in row for row in store), store)
+
+    def test_a_compiled_binding_is_not_offered_where_the_page_does_not_load_its_stylesheet(self):
+        # isonim-pm issue 2026-10-17-compiled-bindings-match-elements-in-
+        # stories-that-do-not-load-their-stylesheet; editor spec "Saving": an
+        # edit changes the one declaration that owns the element's property.
+        # Both stories' first button carries .chip, but only the Card story's
+        # page loads cardStyles; the Alternate page loads alternateStyles.
+        target = b'button(id = target, `data-isonim-element-id` = target): text "Continue"'
+        chip_target = b'button(id = target, `data-isonim-element-id` = target, class = "chip"): text "Continue"'
+        source, catalog = self.compile_provider(["opacity"], [
+            (b'const cardStyles* = """\n', b'const cardStyles* = """\n.chip { opacity:0.5; }\n'), (target, chip_target)])
+        alternate_page = next(story["documentHtml"] for story in json.loads(catalog)["stories"] if story["group"] == "Alternate")
+        self.assertIn('class="chip"', alternate_page)
+        self.assertNotIn(".chip", alternate_page)
+        chips = lambda: sorted((row["storyId"], row["elementId"]) for row in self.metadata() if row["selector"] == ".chip")
+        self.assertEqual(chips(), [("Card / default ready", "action")])
+        # The binding a story-blind match would offer there, by its key:
+        # refused at the act, with nothing written.
+        key = "classes.native." + hashlib.sha1("\n".join(["Alternate / default ready", "alternate-action",
+            "stories.nim", "cardStyles", ".chip", ""]).encode()).hexdigest().upper()
+        stray = {"key": key, "storyId": "Alternate / default ready", "sourceHash": self.file_hash()}
+        for value, expected in [("0.7", "0.5"), ("", "0.5")]:
+            with self.subTest(value=value):
+                refused = self.operate(self.edit(stray, "alternate-action", "opacity", value, expected), expected=4)
+                self.assertEqual(refused["diagnostic"], "Unsupported editable source schema.")
+                self.assertEqual(self.source.read_bytes(), source)
+                self.assertEqual(self.catalog.read_bytes(), catalog)
+                self.assertFalse((self.project / ".isonim/source-transaction.json").exists())
+        # Once the Alternate page loads cardStyles too (and its row names it),
+        # the same rule is offered there under that key, and an edit from it
+        # writes .chip.
+        loads = source.replace(b'card("Alternate card", alternateStyles, "alternate-action")',
+                               b'card("Alternate card", alternateStyles & cardStyles, "alternate-action")', 1).replace(
+            b'"editableStylesheets":[{"file":"stories.nim", "const":"alternateStyles"}]',
+            b'"editableStylesheets":[{"file":"stories.nim", "const":"alternateStyles"}, {"file":"stories.nim", "const":"cardStyles"}]', 1)
+        self.assertEqual(loads.count(b"cardStyles"), source.count(b"cardStyles") + 2)
+        self.source.write_bytes(loads)
+        built = subprocess.run(["python3", str(REPO / "tools/build_source_catalog.py"), str(self.project)],
+                               env=self.env, capture_output=True, text=True, timeout=70)
+        self.assertEqual(built.returncode, 0, built.stdout + built.stderr)
+        self.assertEqual(chips(), [("Alternate / default ready", "alternate-action"), ("Card / default ready", "action")])
+        offered = self.one(self.metadata(), lambda row: row["key"] == key, "the Alternate .chip binding")
+        self.assertEqual(offered["sharedCount"], 2)
+        written = self.operate(self.edit(offered, "alternate-action", "opacity", "0.7", "0.5"))
+        self.assertTrue(written["ok"], written)
+        self.assertEqual(self.source.read_bytes(), loads.replace(b".chip { opacity:0.5; }", b".chip { opacity:0.7; }", 1))
+        rendered = next(story["documentHtml"] for story in written["catalog"]["stories"] if story["group"] == "Alternate")
+        self.assertIn(".chip { opacity:0.7; }", rendered)
+
+    def test_without_a_declared_record_the_native_build_records_the_embedded_constants(self):
+        # The catalog producer may omit "editableStylesheets". Then a page
+        # loads a stylesheet only if it holds the constant's exact text, and
+        # the worker's build records the constants it compiled into each page,
+        # so a removal (which leaves the catalog's bytes behind the source)
+        # is still undone exactly.
+        target = b'button(id = target, `data-isonim-element-id` = target): text "Continue"'
+        chip_target = b'button(id = target, `data-isonim-element-id` = target, class = "chip"): text "Continue"'
+        source, catalog = self.compile_provider(["opacity"], [
+            (b'const cardStyles* = """\n', b'const cardStyles* = """\n.chip { opacity:0.5; }\n'), (target, chip_target),
+            (b',\n  "editableStylesheets":[{"file":"stories.nim", "const":"cardStyles"}]})', b'})'),
+            (b',\n  "editableStylesheets":[{"file":"stories.nim", "const":"alternateStyles"}]})', b'})')])
+        self.assertNotIn(b'"editableStylesheets":[', source)
+        self.assertFalse(any("editableStylesheets" in story for story in json.loads(catalog)["stories"]))
+        chips = lambda: sorted((row["storyId"], row["elementId"]) for row in self.metadata() if row["selector"] == ".chip")
+        self.assertEqual(chips(), [("Card / default ready", "action")])
+        action = self.one(self.metadata(), lambda row: row["selector"] == ".chip", "the .chip binding")
+        removal = self.edit(action, "action", "opacity", "", "0.5")
+        removed = self.operate(removal)
+        self.assertTrue(removed["ok"], removed)
+        records = {story["group"]: story.get("editableStylesheets") for story in removed["catalog"]["stories"]}
+        self.assertEqual(records, {"Card": [{"file": "stories.nim", "const": "cardStyles"}],
+                                   "Alternate": []})
+        self.assertEqual(json.loads(self.catalog.read_text()), removed["catalog"])
+        self.assertEqual(chips(), [("Card / default ready", "action")])
+        restored = self.undo_removal(removal, removed)
+        self.assertTrue(restored["ok"], restored)
+        self.assertEqual(self.source.read_bytes(), source)
+
+    def test_a_re_offered_shorthand_presents_its_sides_each_set_and_undone_exactly(self):
+        # isonim-pm issue 2026-10-17-re-offered-shorthand-after-reset-has-no-
+        # per-side-rows; editor spec "Universal Patterns": after Reset the
+        # property can be set again, written and undone exactly like any
+        # edit, and a re-settable shorthand presents its sides as an authored
+        # one does. A side typed there is its own declaration in the rule.
+        source, _ = self.compile_provider(["padding", "border-radius"], [])
+        authored = self.one(self.metadata(), lambda row: row["elementId"] == "secondary-action", "the secondary binding")
+        self.assertEqual(authored["values"]["padding"], "12px")
+        self.assertEqual(authored["values"]["border-top-left-radius"], "6px")
+        rows = sorted(authored["values"])
+        rule = b"#secondary-action { width:160px; height:52px; padding:12px; border-radius:6px; background-color:#334455; color:#FFFFFF; }"
+        self.assertIn(rule, source)
+        for shorthand, value, side, typed, sides in [
+                ("padding", "12px", "padding-top", "5px", ["padding-top", "padding-right", "padding-bottom", "padding-left"]),
+                ("border-radius", "6px", "border-top-left-radius", "3px",
+                 ["border-top-left-radius", "border-top-right-radius", "border-bottom-right-radius", "border-bottom-left-radius"])]:
+            with self.subTest(shorthand=shorthand):
+                self.assertEqual(self.source.read_bytes(), source)
+                current = self.one(self.metadata(), lambda row: row["key"] == authored["key"], "the binding")
+                removal = self.edit(current, "secondary-action", shorthand, "", value)
+                removed = self.operate(removal)
+                reset = source.replace(b" " + shorthand.encode() + b":" + value.encode() + b";", b"", 1)
+                self.assertNotEqual(reset, source)
+                self.assertEqual(self.source.read_bytes(), reset)
+                offered = self.one(self.metadata(), lambda row: row["key"] == authored["key"], "the binding after Reset")
+                self.assertEqual(sorted(offered["values"]), rows, "the same rows as the authored shorthand")
+                for name in [shorthand] + sides:
+                    self.assertEqual(offered["values"][name], "", name)
+                    self.assertIn(name, offered["properties"])
+                    self.assertEqual(offered["edits"][name], "", name)
+                # Set one side: its declaration is inserted into the rule.
+                written = self.operate(self.edit(offered, "secondary-action", side, typed, ""))
+                self.assertTrue(written["ok"], written)
+                with_side = reset.replace(b"background-color:#334455; color:#FFFFFF; }", b"background-color:#334455; color:#FFFFFF; " + side.encode() + b":" + typed.encode() + b"; }", 1)
+                self.assertNotEqual(with_side, reset)
+                self.assertEqual(self.source.read_bytes(), with_side)
+                card = next(story["documentHtml"] for story in written["catalog"]["stories"] if story["group"] == "Card")
+                self.assertIn(side + ":" + typed, card)
+                now = self.one(written["editableStyles"], lambda row: row["key"] == authored["key"], "the binding after the set")
+                self.assertEqual(now["values"][side], typed)
+                self.assertEqual(sorted(now["values"]), rows)
+                for name in [shorthand] + [other for other in sides if other != side]:
+                    self.assertEqual(now["values"][name], "", name)
+                # Undo the set (the browser removes what it inserted), then the Reset.
+                self.assertTrue(self.operate(self.edit(now, "secondary-action", side, "", typed))["ok"])
+                self.assertEqual(self.source.read_bytes(), reset)
+                restored = self.undo_removal(removal, removed)
+                self.assertTrue(restored["ok"], restored)
+                self.assertEqual(self.source.read_bytes(), source)
+                back = self.one(restored["editableStyles"], lambda row: row["key"] == authored["key"], "the binding after undo")
+                self.assertEqual(back["values"][shorthand], value)
+                self.assertEqual(sorted(back["values"]), rows)
 
     def test_a_selector_list_rule_is_refused_for_edit_and_removal(self):
         listed = self.original.replace(b"#secondary-action { width:160px;", b"#secondary-action, .ghost { width:160px;", 1)
