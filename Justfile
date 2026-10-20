@@ -1513,6 +1513,7 @@ test-editor-chat-contract:
 # Runs `nix develop`, so it is not part of the in-shell test recipes.
 test-dev-shell:
     bash tests/test_dev_shell_writes_nothing_elsewhere.sh
+    bash tests/test_dev_shell_linked_worktree.sh
 
 # Functional inspector popup geometry, focus and private-source acceptance.
 editor-popup-build:

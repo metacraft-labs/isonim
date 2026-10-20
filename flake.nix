@@ -64,7 +64,6 @@
           if [ -n "$_own_repo_root" ] && [ -f "$_own_repo_root/flake.nix" ] \
             && [ "$(${pkgs.coreutils}/bin/sha256sum "$_own_repo_root/flake.nix" | ${pkgs.coreutils}/bin/cut -d' ' -f1)" \
               = "${builtins.hashFile "sha256" ./flake.nix}" ]; then
-          ${script}
           # A clone where git-hooks.nix's own installer once ran keeps its RELATIVE
           # core.hooksPath `.git/hooks`, in the config every worktree shares. A linked
           # worktree cannot resolve it (there `.git` is a file), so git silently runs
@@ -72,6 +71,8 @@
           if [ "$(${pkgs.git}/bin/git config --local --get core.hooksPath 2>/dev/null)" = .git/hooks ]; then
             ${pkgs.git}/bin/git config --local core.hooksPath "$(${pkgs.git}/bin/git rev-parse --path-format=absolute --git-common-dir)/hooks"
           fi
+          # Resolve the legacy hooks path before the installer asks Git for it.
+          ${script}
           # `pre-commit install` (and git-hooks.nix's installer, where it once ran)
           # moves each Reprobuild hook dispatcher aside to `<hook>.legacy` and puts
           # its shim in the slot, so the managed hook (for pre-push, the publication
