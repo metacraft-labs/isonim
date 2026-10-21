@@ -384,6 +384,7 @@ test-data-loading:
 # Run SSR and round-trip tests
 test-ssr:
     nim c -r tests/test_ssr.nim
+    nim c -r --out:build/test_ssr_serializer_safety tests/test_ssr_serializer_safety.nim
     nim c -r tests/test_streaming.nim
     nim c -r tests/test_dsl_ssr.nim
     nim c -r tests/test_round_trip.nim
