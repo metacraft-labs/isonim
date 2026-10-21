@@ -258,7 +258,8 @@ proc buildRowChip[R, E](r: R; option: CompactChoiceOption): E =
   bindChoiceKeyboard(r, result, enabled and option.onChoose != nil, choose)
   for (key, value) in option.dataAttrs:
     r.setAttribute(result, key, value)
-  if enabled: installPopoverTrigger(result)
+  # bindChoiceKeyboard owns activation, including popup callbacks. A generic
+  # popover trigger here would synthesize a second click after that choice.
 
 proc buildRowPopupChip[R, E](r: R; option: CompactChoiceOption): E =
   ## Build a single overflow-popup row for the horizontal row.
@@ -295,7 +296,8 @@ proc buildRowPopupChip[R, E](r: R; option: CompactChoiceOption): E =
   bindChoiceKeyboard(r, result, enabled and option.onChoose != nil, choose)
   for (key, value) in option.dataAttrs:
     r.setAttribute(result, key, value)
-  if enabled: installPopoverTrigger(result)
+  # bindChoiceKeyboard owns activation, including popup callbacks. A generic
+  # popover trigger here would synthesize a second click after that choice.
 
 # ---- horizontal row (static + thunk overloads) -----------------------------
 

@@ -2,6 +2,9 @@
 ##
 ## These tests run under `nim js -r` which executes via Node.js.
 ## Since Node.js has no DOM, we inject a minimal DOM shim via {.emit.}.
+## The shim isolates renderer registrations; event cancellation uses Node's
+## real Event implementation, and dispatch preserves listener order and
+## stopImmediatePropagation rather than substituting no-op event methods.
 
 when not defined(js):
   {.error: "test_web must be compiled with the JS backend: nim js -r tests/test_web.nim".}
@@ -208,6 +211,26 @@ when not defined(js):
     if (!this._eventListeners[event]) return;
     var idx = this._eventListeners[event].indexOf(handler);
     if (idx >= 0) this._eventListeners[event].splice(idx, 1);
+  };
+
+  // Dispatch with real Event cancellation semantics. The DOM node shim
+  // supplies target/currentTarget because Node's EventTarget is not this DOM.
+  globalThis.__isonimTestDispatch = function(node, type, key) {
+    const event = new Event(type, {cancelable: true});
+    Object.defineProperty(event, 'target', {value: node});
+    Object.defineProperty(event, 'currentTarget', {value: node});
+    if (key !== undefined) Object.defineProperty(event, 'key', {value: key});
+    let stopped = false;
+    const stop = event.stopImmediatePropagation.bind(event);
+    event.stopImmediatePropagation = function() { stopped = true; stop(); };
+    for (const handler of (node._eventListeners[type] || []).slice()) {
+      handler(event);
+      if (stopped) break;
+    }
+    return event.defaultPrevented;
+  };
+  ElementNode.prototype.click = function() {
+    if (!this.disabled) globalThis.__isonimTestDispatch(this, 'click');
   };
 
   // DocumentFragment
@@ -536,10 +559,10 @@ import isonim/web/web_renderer
 import isonim/editor/views/choice_row
 
 proc dispatchChoiceEvent[N](node: N; event, key: cstring): bool
-  {.importjs: "((n,t,k) => { const e = {key:k, defaultPrevented:false, preventDefault(){this.defaultPrevented=true;}}; (n._eventListeners[t] || []).slice().forEach(h => h(e)); return e.defaultPrevented; })(#, #, #)".}
+  {.importjs: "globalThis.__isonimTestDispatch(#, #, #)".}
 
 proc dispatchPlainChoiceEvent[N](node: N): bool
-  {.importjs: "((n) => { const e = new Event('keydown', {cancelable:true}); (n._eventListeners.keydown || []).slice().forEach(h => h(e)); return e.defaultPrevented; })(#)".}
+  {.importjs: "globalThis.__isonimTestDispatch(#, 'keydown')".}
 
 template checkChoiceDom(R, N: typedesc) =
   createRoot proc(dispose: proc()) =
@@ -565,3 +588,17 @@ template checkChoiceDom(R, N: typedesc) =
 suite "Choice-row DOM registrations":
   test "WebRenderer dispatches each choice exactly once":
     checkChoiceDom(WebRenderer, dom_api.Element)
+
+  test "event shim preserves listener order and immediate cancellation":
+    let target = document.createElement("button")
+    var calls: seq[int]
+    target.Node.addEventListener("click", proc(ev: Event) = calls.add(1))
+    target.Node.addEventListener("click", proc(ev: Event) =
+      calls.add(2)
+      proc stop(event: Event) {.importjs: "#.stopImmediatePropagation()".}
+      stop(ev)
+      proc prevent(event: Event) {.importjs: "#.preventDefault()".}
+      prevent(ev))
+    target.Node.addEventListener("click", proc(ev: Event) = calls.add(3))
+    check dispatchChoiceEvent(target, "click", "")
+    check calls == @[1, 2]
