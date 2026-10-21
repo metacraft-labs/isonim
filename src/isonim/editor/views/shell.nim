@@ -5468,13 +5468,14 @@ proc renderEditorShell*[R, E](r: R; vm: EditorVM;
   # AIVS-NSO — "Select an item to edit its properties" overlay.
   #
   # Several centre-column surfaces are meaningless without a selected
-  # story: the component detail / component edit / page preview /
-  # foundations views all depend on ``vm.selectedStory`` to know what
+  # story: the component detail / component edit / page preview
+  # views depend on ``vm.selectedStory`` to know what
   # to render, and the Spec pane (View / Comment / Edit) needs a
   # brief to display.  Storyboard is the exception — it shows the
   # whole flow graph regardless of selection — and so is the vector
   # editor, which only opens via an explicit ``openVectorEditor``
-  # affordance.
+  # affordance. The Foundations catalog also works without a story:
+  # it presents the workspace's tokens directly.
   #
   # The overlay sits absolute-positioned over the centre column, gated
   # by a single ``createRenderEffect`` that observes ``selectedStory``,
@@ -5539,13 +5540,12 @@ proc renderEditorShell*[R, E](r: R; vm: EditorVM;
       # ``vector editor`` is never reached without an explicit
       # ``openVectorEditor`` affordance so it always has a target;
       # ``storyboard`` renders the whole flow graph and is the
-      # default landing surface — both are exempt from the no-story
-      # overlay.  The remaining centre-column surfaces all hinge on
-      # ``vm.selectedStory``.
+      # default landing surface. Foundations browse workspace tokens
+      # independently of story selection. These surfaces are exempt
+      # from the preview no-story overlay; Spec always needs a story.
       let surfaceNeedsStory =
         surface == sSpec or
-        view in {evComponentDetail, evComponentEdit,
-                 evPagePreview, evFoundationsPage}
+        view in {evComponentDetail, evComponentEdit, evPagePreview}
       let noStory = story.name.len == 0
       let want = surfaceNeedsStory and noStory
       r.setStyle(overlayEl, "display", if want: "flex" else: "none")

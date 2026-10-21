@@ -2110,6 +2110,23 @@ suite "Per-item shell effects":
       require findByAttr(chrome, "data-preview-viewport", "desktop") != nil
       dispose()
 
+  test "foundation catalog remains usable without a story but spec still needs one":
+    createRoot do (dispose: proc()):
+      let vm = createEditorVM()
+      let shell = renderEditorShell[MockRenderer, MockNode](MockRenderer(), vm)
+      let overlay = findByAttr(shell, "data-no-story-overlay", "true")
+      require overlay != nil
+      vm.setActiveView(evFoundationsPage)
+      check vm.selectedStory.val.name.len == 0
+      check overlay.styles["display"] == "none"
+      vm.setEditMode(emSpec)
+      check overlay.styles["display"] == "flex"
+      vm.setEditMode(emView)
+      check overlay.styles["display"] == "none"
+      vm.setActiveView(evComponentDetail)
+      check overlay.styles["display"] == "flex"
+      dispose()
+
   test "hovering each retained breadcrumb changes only that chip":
     createRoot do (dispose: proc()):
       let vm = createEditorVM()
