@@ -1,8 +1,12 @@
-"""Actual GRIP SSR/compiler source-provider integration in a disposable copy.
+"""Real SSR/compiler/source transactions for the pinned literal-constant consumer.
 
-No renderer, source map, filesystem, worker or compiler is mocked. The existing
-prototype is copied read-only and opts into the reusable constant provider only
-inside that copy; the protected network instance is never built or modified.
+The full source revision/archive hash is declared in
+fixtures/native_literal_consumer/source.json. This historical source exercises
+literal class/custom-property ownership; the current design's generated tokens
+are a different writer contract. Private source is acquired read-only into temp,
+never published or fetched by a test. Compiler/SSR/worker/filesystem outcomes
+are real. Every original source-byte, guard, catalog and restore assertion stays.
+CI must provision the declared archive or sibling object; absence fails loudly.
 """
 import hashlib
 import json
@@ -12,16 +16,14 @@ import shutil
 import subprocess
 import tempfile
 import unittest
+from helpers.native_literal_fixture import acquire
 
 REPO = Path(__file__).resolve().parent.parent
 
 class SourceStyleProviderTests(unittest.TestCase):
     def test_real_grip_compiled_targets_shared_scope_and_follow_up_source_edit(self):
-        prototype = Path(os.environ.get("ISONIM_SOURCE_PROVIDER_PROJECT", REPO.parent / "web-site-prototypes/grip/isonim"))
-        self.assertTrue((prototype / "src/components/styles.nim").is_file(), "Real GRIP source fixture is required.")
         directory = Path(tempfile.mkdtemp(prefix="source-provider-", dir=os.environ.get("ISONIM_POPUP_ARTIFACTS")))
-        project = directory / "project"
-        shutil.copytree(prototype, project, ignore=shutil.ignore_patterns(".git", ".repro", "build", "node_modules", "catalog-producer"))
+        prototype, project = acquire(self, directory)
         (project / "config.nims").write_text('switch("nimcache", ' + json.dumps(str(project / "native-cache")) + ')\n')
         source = project / "src/components/styles.nim"
         original = source.read_bytes()
@@ -31,11 +33,12 @@ class SourceStyleProviderTests(unittest.TestCase):
             "properties": ["font-size", "font-weight", "letter-spacing", "gap", "height", "width", "padding", "border-radius", "color", "background", "opacity"]}]
         manifest_path.write_text(json.dumps(manifest))
         env = {**os.environ, "ISONIM_SOURCE_FRAMEWORK": str(REPO)}
-        built = subprocess.run(["python3", "tools/build_editor_catalog.py"], cwd=project,
+        built = subprocess.run(["python3", str(REPO / "tools/build_source_catalog.py"), str(project)], cwd=project,
             env=env, capture_output=True, text=True, timeout=90)
         (directory / "initial-build.log").write_text(built.stdout + built.stderr)
         self.assertEqual(built.returncode, 0, built.stdout + built.stderr)
-        catalog = json.loads(built.stdout)
+        catalog = json.loads((project / manifest["catalog"]).read_text())
+        self.assertGreater(len(catalog["stories"]), 0)
         (project / manifest["catalog"]).write_text(json.dumps(catalog))
         binary = REPO / "build/bin/isonim-review"
         described = subprocess.run([str(binary), "source-project", str(project), "--describe"],
@@ -82,11 +85,8 @@ class SourceStyleProviderTests(unittest.TestCase):
 
 
     def test_real_grip_token_and_derived_side_guarded_exact_restore(self):
-        prototype = Path(os.environ.get("ISONIM_SOURCE_PROVIDER_PROJECT", REPO.parent / "web-site-prototypes/grip/isonim"))
-        self.assertTrue((prototype / "src/components/styles.nim").is_file())
         directory = Path(tempfile.mkdtemp(prefix="source-values-provider-", dir=os.environ.get("ISONIM_POPUP_ARTIFACTS")))
-        project = directory / "project"
-        shutil.copytree(prototype, project, ignore=shutil.ignore_patterns(".git", ".repro", "build", "node_modules", "catalog-producer"))
+        prototype, project = acquire(self, directory)
         (project / "config.nims").write_text('switch("nimcache", ' + json.dumps(str(project / "native-cache")) + ')\n')
         source = project / "src/components/styles.nim"
         original = source.read_text()

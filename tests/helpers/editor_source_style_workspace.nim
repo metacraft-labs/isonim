@@ -5,7 +5,12 @@ import std/[json, options]
 import isonim/editor/[browser, source_browser, viewmodels, types]
 import isonim/core/signals
 import mount as source_workspace
-let project = newGripEditorWorkspace()
+# This acceptance fixture explicitly owns writable disposable source. The real
+# site's default remains read-only; attaching a source transport grants no rights.
+var project = newGripEditorWorkspace()
+doAssert not project.permissions.writeSource
+project.permissions.writeSource = true
+doAssert project.permissions.writeSource
 let editor = mountEditor(project)
 editor.attachSourceProject(project)
 proc openStory(group, name: cstring): bool =

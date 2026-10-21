@@ -13,10 +13,12 @@ import {fileURLToPath} from 'node:url';
 import {createHash} from 'node:crypto';
 const repo=path.resolve(path.dirname(fileURLToPath(import.meta.url)),'..');
 const root=mkdtempSync(path.join(process.env.ISONIM_POPUP_ARTIFACTS||tmpdir(),'source-style-gui-'));
-const prototype=process.env.ISONIM_SOURCE_PROVIDER_PROJECT||repo+'/../web-site-prototypes/grip/isonim';
-const project=root+'/project',pub=root+'/public';
+// The declared real literal-provider archive is hash checked; current source is protected.
+const acquired=spawnSync('python3',[repo+'/tests/helpers/native_literal_fixture.py','prepare',root],{encoding:'utf8'});
+assert.equal(acquired.status,0,acquired.stdout+acquired.stderr);
+const {prototype,project}=JSON.parse(acquired.stdout),pub=root+'/public';
 const original=readFileSync(prototype+'/src/components/styles.nim','utf8');
-cpSync(prototype,project,{recursive:true,filter:source=>!source.split(path.sep).some(part=>['.git','.repro','build','node_modules','catalog-producer'].includes(part))});mkdirSync(pub);
+mkdirSync(pub);
 writeFileSync(project+'/config.nims','switch("nimcache", '+JSON.stringify(project+'/native-cache')+')\n');
 const manifest=JSON.parse(readFileSync(project+'/.isonim/source-project.json','utf8'));
 manifest.editableStyleSources=[{file:'src/components/styles.nim',const:'structureCss',properties:['border-radius','font-size','font-weight','gap','height','color','background']}];
@@ -40,7 +42,7 @@ try{
  const page=await browser.newPage({viewport:{width:1440,height:900}});page.setDefaultTimeout(30000);
  page.on('pageerror',error=>proof.errors.push(error.message));page.on('request',request=>{const url=new URL(request.url());if(url.pathname.startsWith('/api/agent/'))proof.agentRequests.push(url.pathname);if(url.pathname==='/api/editor/source/operation')proof.sourceRequests.push(request.postDataJSON());if(url.pathname==='/api/editor/rpc'){const body=request.postDataJSON();if(body?.method==='editor.inspector-source')proof.inspectorRequests.push(body);}});
  const snapshot=()=>page.evaluate(()=>JSON.parse(window.__sourceStyleAcceptance.snapshot()));
- async function openTarget(){const divider=target.storyId.indexOf(' / ');assert(await page.evaluate(([group,name])=>window.__sourceStyleAcceptance.openStory(group,name),[target.storyId.slice(0,divider),target.storyId.slice(divider+3)]));await page.locator('[data-toolbar-cluster="mode"] [aria-label="Edit"]').click();await page.locator('[data-layer-search="true"]').fill('panel');await page.locator('[data-scene-graph-row="'+target.elementId+'"]').click();}
+ async function openTarget(){const divider=target.storyId.indexOf(' / ');assert(await page.evaluate(([group,name])=>window.__sourceStyleAcceptance.openStory(group,name),[target.storyId.slice(0,divider),target.storyId.slice(divider+3)]));await page.locator('[data-toolbar-cluster="mode"] [aria-label="Switch to edit mode"]').click();await page.locator('[data-layer-search="true"]').fill('panel');await page.locator('[data-scene-graph-row="'+target.elementId+'"]').click();}
  await page.goto(origin);await page.waitForFunction(()=>window.__sourceStyleAcceptance&&JSON.parse(window.__sourceStyleAcceptance.snapshot()).ready);await openTarget();
  const row=page.locator('[data-property-row-css-property="border-radius"][data-property-row-kind="numeric"][data-property-row="corner-radius"]');await row.waitFor();assert.equal(await row.count(),1);
  const input=row.locator('[data-property-row-input]');
@@ -79,4 +81,7 @@ try{
  throw error;
 }finally{
  if(browser)await browser.close();if(browserServer)await browserServer.close();server.kill('SIGTERM');await new Promise(resolve=>{if(server.exitCode!==null)return resolve();server.once('exit',resolve);setTimeout(()=>{server.kill('SIGKILL');resolve();},15000).unref();});writeFileSync(root+'/proof-final.json',JSON.stringify(proof,null,2));
+ const protectedCheck=spawnSync('python3',[repo+'/tests/helpers/native_literal_fixture.py','verify',root],{encoding:'utf8'});
+ assert.equal(protectedCheck.status,0,protectedCheck.stdout+protectedCheck.stderr);
+
 }

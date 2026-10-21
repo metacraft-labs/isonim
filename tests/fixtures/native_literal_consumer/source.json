@@ -1,0 +1,21 @@
+{
+  "repository": "metacraft-labs/web-site-prototypes",
+  "revision": "68032724839fdabfeb4e31e4861027611a89ca11",
+  "projectPath": "grip/isonim",
+  "paths": [
+    "src/components/behaviour.nim",
+    "src/components/highlight.nim",
+    "src/components/layout.nim",
+    "src/components/pane.nim",
+    "src/components/styles.nim",
+    "src/components/viva.nim",
+    "src/content/claims.nim",
+    "src/content/corpus.nim",
+    "src/content/search_index.nim",
+    "src/editor/mount.nim",
+    "src/editor/workspace.nim",
+    "src/pages/home.nim",
+    "src/ssr.nim"
+  ],
+  "archiveSha256": "9448396b089b15370aacf2b3d49e1e7f42b8304d1d70bf7dac52a36245ea5105"
+}
