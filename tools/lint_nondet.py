@@ -28,6 +28,69 @@ def blank(text: str) -> str:
     return ''.join('\n' if c == '\n' else ' ' for c in text)
 
 
+def decode_nim_string(text: str) -> tuple[str, list[int]]:
+    r"""Decode an ordinary Nim string and map output characters to source offsets.
+
+    Follow Nim 2.2.4 compiler/lexer.nim getEscapedChar/handleHexChar/
+    handleDecChars, not Python's different unicode_escape grammar. Nim strings
+    contain bytes: hexadecimal/decimal bytes must be joined before UTF-8
+    decoding (e.g. \xC2\xA0 is one JS whitespace character). \p is normalized
+    to LF: both supported target newlines have the same JS lexical boundary.
+    Invalid escapes fail closed instead of silently hiding foreign code.
+    """
+    data, origins = bytearray(), []
+    simple = {'n': '\n', 'p': '\n', 'r': '\r', 'c': '\r', 'l': '\n',
+              'f': '\f', 'e': '\x1b', 'a': '\a', 'b': '\b', 'v': '\v', 't': '\t',
+              "'": "'", '"': '"', '\\': '\\'}
+    i = 0
+    while i < len(text):
+        start = i
+        if text[i] != '\\':
+            chunk = text[i].encode('utf-8')
+            i += 1
+        else:
+            i += 1
+            if i == len(text): raise ValueError('unfinished Nim string escape')
+            kind = text[i].lower()
+            i += 1
+            if kind in simple:
+                chunk = simple[kind].encode('utf-8')
+            elif kind in {'x', 'u'}:
+                braced = kind == 'u' and text[i:i+1] == '{'
+                if braced: i += 1
+                digits = i
+                limit = len(text) if braced else i + (2 if kind == 'x' else 4)
+                while i < min(len(text), limit) and text[i] in '0123456789abcdefABCDEF':
+                    i += 1
+                if digits == i: raise ValueError('Nim hexadecimal escape needs a digit')
+                value = int(text[digits:i], 16)
+                if braced:
+                    if text[i:i+1] != '}' or value > 0x10ffff:
+                        raise ValueError('invalid Nim braced Unicode escape')
+                    i += 1
+                elif i < limit and i < len(text) and text[i] not in "\"'":
+                    # Nim permits short hex escapes only at a quote boundary;
+                    # the enclosing literal's closing quote is not in text.
+                    raise ValueError('incomplete Nim hexadecimal escape')
+                chunk = bytes([value]) if kind == 'x' else chr(value).encode('utf-8', 'surrogatepass')
+            elif kind in '0123456789':
+                digits = i - 1
+                while i < len(text) and text[i] in '0123456789': i += 1
+                value = int(text[digits:i], 10)
+                if value > 255: raise ValueError('Nim decimal escape exceeds one byte')
+                chunk = bytes([value])
+            else:
+                raise ValueError(f'invalid Nim string escape: \\{text[i - 1]}')
+        data.extend(chunk)
+        origins.extend([start] * len(chunk))
+    decoded = data.decode('utf-8', 'surrogateescape')
+    offsets, byte_index = [], 0
+    for ch in decoded:
+        offsets.append(origins[byte_index])
+        byte_index += len(ch.encode('utf-8', 'surrogateescape'))
+    return decoded, offsets
+
+
 def nim_foreign(text: str):
     """Yield importjs/importc/emit payloads, including emit fragment arrays.
 
@@ -35,6 +98,12 @@ def nim_foreign(text: str):
     becoming code. Nested Nim block comments and multiline strings are supported.
     """
     tokens = []
+    literal_lines = {}
+    source_lines = []
+    line = 1
+    for ch in text:
+        source_lines.append(line)
+        if ch == '\n': line += 1
     i = 0
     while i < len(text):
         start = i
@@ -53,23 +122,35 @@ def nim_foreign(text: str):
             # complete character literal can hide a quote or comment marker.
             i += len(match[0])
         elif text[i] == '"' or (text[i:i+2].lower() == 'r"'):
-            raw = text[i] != '"'
-            if raw: i += 1
+            prefixed_r = text[i] != '"'
+            raw = prefixed_r or (i > 0 and (text[i - 1].isalnum() or text[i - 1] == '_'))
+            if prefixed_r: i += 1
             triple = text.startswith('"""', i)
             width = 3 if triple else 1
             i += width
             payload_start = i
             while i < len(text):
                 if raw and not triple and text.startswith('""', i): i += 2
-                elif text.startswith('"' * width, i): break
+                elif text.startswith('"' * width, i) and not (triple and text.startswith('""""', i)): break
                 elif not raw and not triple and text[i] == '\\': i += 2
                 else: i += 1
             payload = text[payload_start:i]
             if raw and not triple:
+                offsets = []
+                cursor = 0
+                while cursor < len(payload):
+                    offsets.append(cursor)
+                    cursor += 2 if payload.startswith('""', cursor) else 1
                 payload = payload.replace('""', '"')
-            elif not triple:
-                # Nim foreign strings use the usual quote/backslash escapes.
-                payload = re.sub(r'\\(["\\])', r'\1', payload)
+            elif triple:
+                # Nim skips an optional whitespace-only first line in triples.
+                leading = re.match(r'[ \t]*\n', payload)
+                skip = leading.end() if leading else 0
+                offsets = list(range(skip, len(payload)))
+                payload = payload[skip:]
+            else:
+                payload, offsets = decode_nim_string(payload)
+            literal_lines[start] = [source_lines[payload_start + offset] for offset in offsets]
             tokens.append(('string', payload, start))
             i += width
         elif text[i].isalpha() or text[i] == '_':
@@ -86,11 +167,11 @@ def nim_foreign(text: str):
         if not tail or tail[0][1] != ':': continue
         tail = tail[1:]
         if tail and tail[0][0] == 'string':
-            yield tail[0][1], text.count('\n', 0, tail[0][2]) + 1
+            yield tail[0][1], literal_lines[tail[0][2]]
         elif value == 'emit' and tail and tail[0][1] == '[':
             # Non-string Nim expressions splice generated identifiers. A marker
             # retains expression structure while adjacent strings concatenate.
-            parts, fragment = [], []
+            parts, locations, fragment = [], [], []
             nesting = []
 
             def append_fragment():
@@ -98,8 +179,10 @@ def nim_foreign(text: str):
                 # indexed/called Nim expressions belong to those expressions.
                 if len(fragment) == 1 and fragment[0][0] == 'string':
                     parts.append(fragment[0][1])
+                    locations.extend(literal_lines[fragment[0][2]])
                 elif fragment:
                     parts.append('__nim')
+                    locations.extend([source_lines[fragment[0][2]]] * len('__nim'))
                 fragment.clear()
 
             for tk, val, at in tail[1:]:
@@ -112,8 +195,8 @@ def nim_foreign(text: str):
                         continue
                     if val in '[({': nesting.append(val)
                     elif val in '])}' and nesting: nesting.pop()
-                fragment.append((tk, val))
-            yield ''.join(parts), text.count('\n', 0, pos) + 1
+                fragment.append((tk, val, at))
+            yield ''.join(parts), locations
 
 
 def executable_js(text: str) -> str:
@@ -162,7 +245,8 @@ def executable_js(text: str) -> str:
         while i < len(text):
             start = i
             if text.startswith('//', i):
-                end = text.find('\n', i); i = len(text) if end < 0 else end
+                end = re.search(r'[\r\n\u2028\u2029]', text[i:])
+                i = i + end.start() if end else len(text)
                 elide(start, i)
             elif text.startswith('/*', i):
                 end = text.find('*/', i + 2); i = len(text) if end < 0 else end + 2
@@ -176,7 +260,7 @@ def executable_js(text: str) -> str:
             elif text[i] == '/' and (not previous or previous in '=(:,[!&|?;{}' or
                                       re.search(r'\b(?:return|throw|case|delete|typeof|void|yield|await|in|of)\s*$', text[:i])):
                 i += 1; in_class = False
-                while i < len(text) and text[i] != '\n':
+                while i < len(text) and text[i] not in '\r\n\u2028\u2029':
                     if text[i] == '\\': i += 2; continue
                     if text[i] == '[': in_class = True
                     elif text[i] == ']': in_class = False
@@ -226,21 +310,28 @@ WARNINGS = ['Worker', 'WebAssembly', 'BroadcastChannel', 'indexedDB']
 
 def scan_file(path: Path, label: str) -> list[Finding]:
     text = path.read_text()
-    fragments = [(text, 1)] if path.suffix == '.js' else nim_foreign(text)
+    if path.suffix == '.js':
+        positions, line = [], 1
+        for ch in text:
+            positions.append(line)
+            if ch == '\n': line += 1
+        fragments = [(text, positions)]
+    else:
+        fragments = nim_foreign(text)
     findings = []
-    for payload, line in fragments:
+    for payload, positions in fragments:
         code = executable_js(payload)
         for api, pattern in PATTERNS.items():
             matches = list(re.finditer(pattern, code))
             for match in matches:
-                findings.append(Finding(label, line + code.count('\n', 0, match.start()), api))
+                findings.append(Finding(label, positions[match.start()], api))
             # importc commonly names the symbol rather than spelling a call.
             # A bare foreign binding must not evade the call-shaped checks.
             if not matches and path.suffix == '.nim' and code.strip() == api:
-                findings.append(Finding(label, line, api))
+                findings.append(Finding(label, positions[0], api))
         for api in WARNINGS:
             for match in re.finditer(IDENT + api + r'(?![\w$])', code):
-                findings.append(Finding(label, line + code.count('\n', 0, match.start()), api, 'warning'))
+                findings.append(Finding(label, positions[match.start()], api, 'warning'))
     return findings
 
 

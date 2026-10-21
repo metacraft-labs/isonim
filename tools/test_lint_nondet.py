@@ -150,6 +150,109 @@ var values = [1]
         self.assertEqual(Counter(f['api'] for f in json.loads(result.stdout)),
                          {'Date.now': 1, 'performance.now': 1})
 
+    def test_decoded_nim_escapes_reveal_foreign_calls_at_physical_source_lines(self):
+        cases = [
+            r'{.emit: "// note\nDate.now();".}',
+            r'proc clock(): float {.importjs: "\x44ate.now()".}',
+            *[r'{.emit: "//' + '\\' + escape + r'Date.now();".}'
+              for escape in ['n', 'N', 'l', 'L', 'p', 'P', 'r', 'R', 'c', 'C',
+                             'x0A', '10', 'u000A', 'u2028', 'u{2029}']],
+            *[r'proc clock(): float {.importjs: "' + '\\' + escape + r'ate.now()".}'
+              for escape in ['X44', '68', '00000068', 'u0044', 'U0044', 'u{44}', 'U{44}']],
+            r'{.emit: "\t\f\vDate.now();".}',
+            r'{.emit: "\xC2\xA0Date.now();".}',
+        ]
+        for code in cases:
+            with self.subTest(code=code):
+                self.write('escapes.nim', '# physical source line one\n' + code)
+                result = self.cli()
+                self.assertEqual(result.returncode, 1, result.stderr)
+                self.assertEqual(json.loads(result.stdout), [dict(
+                    path='site/src/escapes.nim', line=2, api='Date.now', severity='error')])
+        self.write('escapes.nim', '# first\n{.emit: ["// note\\n",\n value[0],\n " = \\x44ate.now();"].}')
+        result = self.cli()
+        self.assertEqual(result.returncode, 1, result.stderr)
+        self.assertEqual([f['line'] for f in json.loads(result.stdout)], [4])
+
+    def test_nim_escapes_preserve_noncode_raw_and_triple_literals(self):
+        self.write('negative.nim', r'''
+# {.emit: "// note\nDate.now();".}
+#[ {.emit: "\x44ate.now();".} ]#
+let ordinary = "\x44ate.now()"
+let regex = re"\d+\w+"
+let interpolated = fmt"\unknown"
+{.emit: r"// note\nDate.now();".}
+{.emit: """// note\nDate.now();""".}
+{.emit: "// note\\nDate.now();".}
+{.emit: "\x22Date.now()\x22;".}
+''')
+        result = self.cli()
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertEqual(json.loads(result.stdout), [])
+        self.write('triple.nim', '{.emit: """\n// actual newline\nDate.now();\n""".}')
+        result = self.cli()
+        self.assertEqual(result.returncode, 1, result.stderr)
+        self.assertEqual([f['line'] for f in json.loads(result.stdout)], [3])
+
+    def test_nim_decoder_matches_real_compiler_bytes_and_foreign_execution(self):
+        # The real compiler is the oracle for the literal grammar; no Python
+        # codec or second handwritten decoder supplies the expected bytes.
+        spellings = [r'"// note\nDate.now();"', r'"\x44ate.now()"',
+                     r'"\x4"', r'"\u4"',
+                     r'"\00000068"', r'"\xC2\xA0"', r'"\u{1F642}"',
+                     r'"\U{10FFFF}"', r'"\uD800"', r'"\255"', r'"\xFF"',
+                     r'"café"', r'"\u00E9"', r'"\'\"\\"']
+        spellings += ['"\\' + escape + '"' for escape in 'nNpPrRcClLfFeEaAbBvVtT']
+        probe = Path(self.temp.name) / 'escape_probe.nim'
+        probe.write_text('import std/strutils\nfor value in [' + ', '.join(spellings) + ''']:
+  var encoded = ""
+  for ch in value: encoded.add(toHex(ord(ch), 2))
+  echo encoded
+''')
+        result = subprocess.run(['nim', 'c', '-r', '--hints:off',
+                                 '--out:' + str(Path(self.temp.name) / 'escape_probe'), str(probe)],
+                                capture_output=True, text=True)
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertEqual(len(result.stdout.splitlines()), len(spellings))
+        for spelling, encoded in zip(spellings, result.stdout.splitlines()):
+            with self.subTest(spelling=spelling):
+                decoded, offsets = lint.decode_nim_string(spelling[1:-1])
+                self.assertEqual(len(decoded), len(offsets))
+                actual = bytes.fromhex(encoded)
+                if spelling in [r'"\p"', r'"\P"']: actual = actual.replace(b'\r\n', b'\n')
+                self.assertEqual(decoded.encode('utf-8', 'surrogateescape'), actual)
+        probe = Path(self.temp.name) / 'foreign_probe.nim'
+        probe.write_text(r'''{.emit: "// note\nDate.now();".}
+proc clock(): float {.importjs: "\x44ate.now()".}
+doAssert clock() > 0
+echo "escaped_foreign_compiler_probe_ok"
+''')
+        result = subprocess.run(['nim', 'js', '-r', '--hints:off',
+                                 '--out:' + str(Path(self.temp.name) / 'foreign_probe.js'), str(probe)],
+                                capture_output=True, text=True)
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertEqual(result.stdout.strip(), 'escaped_foreign_compiler_probe_ok')
+
+    def test_reverting_nim_decoder_misses_both_confirmed_escape_cases(self):
+        # Isolated implementation mutation: restore the former quote/backslash
+        # decoder. Both real CLI controls must distinguish it from the fix.
+        mutant = Path(self.temp.name) / 'old_decoder.py'
+        old = "payload = re.sub(r'\\\\([\"\\\\])', r'\\1', payload)\n                offsets = list(range(len(payload)))"
+        source = SCRIPT.read_text()
+        self.assertEqual(source.count('payload, offsets = decode_nim_string(payload)'), 1)
+        mutant.write_text(source.replace('payload, offsets = decode_nim_string(payload)', old))
+        for code in [r'{.emit: "// note\nDate.now();".}',
+                     r'proc clock(): float {.importjs: "\x44ate.now()".}']:
+            with self.subTest(code=code):
+                self.write('mutant_control.nim', code)
+                fixed = self.cli()
+                self.assertEqual(fixed.returncode, 1, fixed.stderr)
+                self.assertEqual([f['api'] for f in json.loads(fixed.stdout)], ['Date.now'])
+                result = subprocess.run([sys.executable, str(mutant), '--json', str(self.root)],
+                                        capture_output=True, text=True)
+                self.assertEqual(result.returncode, 0, result.stderr)
+                self.assertEqual(json.loads(result.stdout), [])
+
     def test_allowlist_exact_counts_reasons_and_hmr_mutation(self):
         path = self.write('isonim/web/hmr_css_watch.nim', 'proc now(): float {.importjs: "Date.now()".}\n')
         entry = {'path': 'site/src/isonim/web/hmr_css_watch.nim', 'api': 'Date.now', 'count': 1,

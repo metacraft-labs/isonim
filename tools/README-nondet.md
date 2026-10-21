@@ -1,5 +1,5 @@
 Run `just lint-nondet` to check the framework and nim-everywhere, including the
-scanner's real-file negative controls. Run `just test-strict-nondet` for the
+scanner's real-file negative controls and real Nim compiler escape probes. Run `just test-strict-nondet` for the
 native and JS compiler controls.
 
 A site can reuse the same checker with all source roots in one invocation:
@@ -22,6 +22,13 @@ ownership excludes ignored generated outputs and submodule trees; untracked
 source is included. Without Git, it scans all files in the source roots. It
 recognizes literal bracket members, but does not infer aliases, computed member
 names, generated code or ordinary Nim variables later evaluated as JavaScript.
+
+Ordinary Nim string escapes are decoded using Nim's literal grammar before
+scanning JavaScript, including named/control, hexadecimal/decimal byte and
+Unicode escapes. Raw/triple/generalized literals keep literal backslashes.
+Diagnostics identify physical Nim source lines, even when escapes insert JS
+line breaks or emit arrays splice multiple literals. The standalone checker
+needs only Python and Git; the recipe's compiler controls also need Nim and Node.
 
 The existing native editor/iframe/preview adapter allowances are a bounded
 inventory, not a claim that those adapters can be recorded and replayed. They
