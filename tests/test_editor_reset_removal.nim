@@ -80,6 +80,27 @@ proc removalPlan(expected = "18px"): SourceEditPlan =
     scope: pesShared)
 
 suite "editor example writer: removal":
+  test "every authored compound CSS declaration writes and undoes exact source bytes":
+    const nextValues = ["2px", "uppercase", "linear-gradient(red, blue)",
+      "contain", "dashed", "4px", "brightness(1.08)", "translateX(8px)",
+      "180ms", "wrap", "auto", "4 / 3"]
+    for i in 0 ..< DemoLongTailValues.len:
+      createRoot proc(dispose: proc()) =
+        let declaration = DemoLongTailValues[i]
+        let foundation = new(string)
+        foundation[] = DemoFoundationInitialSource
+        let vm = demoVm(foundation)
+        let changed = vm.editSharedDesignProperty(declaration[0], nextValues[i], sskSharedClass)
+        require changed.status == pesAccepted
+        require vm.applyWorkspaceFileEdits().ok
+        check foundation[] == DemoFoundationInitialSource.replace(
+          " " & declaration[0] & ": " & declaration[1] & ";",
+          " " & declaration[0] & ": " & changed.editor.value.canonical & ";")
+        require vm.runEditorCommand(eckUndo).status == ecsSucceeded
+        require vm.applyWorkspaceFileEdits().ok
+        check foundation[] == DemoFoundationInitialSource
+        dispose()
+
   test "a removal plan removes exactly the declaration that owns the property":
     let foundation = new(string)
     foundation[] = DemoFoundationInitialSource
@@ -337,7 +358,7 @@ suite "removal is admitted per schema entry and refused at the act":
         check not entry.removable
         inc svgEntries
       else: discard
-    check (classEntries, tokenEntries, svgEntries) == (1, 8, 1)
+    check (classEntries, tokenEntries, svgEntries) == (1 + DemoLongTailValues.len, 8, 1)
 
   test "a removal the entry does not support is refused when committed":
     createRoot proc(dispose: proc()) =

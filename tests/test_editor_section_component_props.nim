@@ -37,6 +37,43 @@ proc domSelection(testId = ""; className = ""; declared = ""): ElementRef =
 
 suite "Phase G section_component_props":
 
+  test "ratio literals remain text and time fields admit milliseconds":
+    createRoot do (dispose: proc()):
+      let r = MockRenderer()
+      let root = r.createElement("div")
+      let vm = createEditorVM()
+      var permissions = vm.workspacePermissions.val
+      permissions.writeSource = true
+      vm.workspacePermissions.val = permissions
+      vm.inspector.selectedElement.val = ElementRef(id: "card", tag: "div",
+        properties: @[
+          PropertyInfo(name: "aspect-ratio", value: "4 / 3",
+            schemaKey: "Card.ratio", directStyleAllowed: true),
+          PropertyInfo(name: "transition-duration", value: "0s",
+            schemaKey: "Card.duration", directStyleAllowed: true)])
+      var requests: seq[string]
+      vm.inspectorSourceCommit = proc(element: ElementRef; property, value: string;
+          scope: SourceScopeChoiceKind; done: proc(ok: bool; diagnostic: string) {.closure.}) =
+        requests.add property & ":" & value
+        done(true, "")
+      mountSectionComponentProps[MockRenderer, MockNode](r, root, vm)
+      let ratio = findByAttr(root, "data-property-row-css-property", "aspect-ratio")
+      require ratio != nil
+      check ratio.attributes["data-property-row-kind"] == "text"
+      let ratioInput = findByAttr(ratio, "data-property-row-input", "true")
+      check r.inputValue(ratioInput) == "4 / 3"
+      r.setInputValue(ratioInput, "16 / 9")
+      ratioInput.fireEvent("change")
+      check requests == @["aspect-ratio:16 / 9"]
+      let duration = findByAttr(root, "data-property-row-css-property", "transition-duration")
+      require duration != nil
+      let durationInput = findByAttr(duration, "data-property-row-input", "true")
+      r.setInputValue(durationInput, "180ms")
+      durationInput.fireEvent("change")
+      check requests == @["aspect-ratio:16 / 9", "transition-duration:180ms"]
+      check r.inputValue(durationInput) == "180"
+      dispose()
+
   test "mounts empty-state when selection is not a component instance":
     createRoot do (dispose: proc()):
       let r = MockRenderer()

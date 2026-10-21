@@ -44,7 +44,11 @@ proc main() =
     designSystemSchema = demoDesignSystemSchema(),
     initialVectorSymbol = some(0),
     initialInspectorElement = some(demoInspectorElement()),
-    previewHook = wanderlust.wanderlustPreviewHook,
+    previewHook = proc(story: StoryRef; platform: Platform): ProjectPreview =
+      result = wanderlust.wanderlustPreviewHook(story, platform)
+      if story.kind == skComponent and story.group == "DestinationCard":
+        result.documentHtml = demoComponentDocument(foundationSource[],
+          result.title, result.bodyText),
     agentPromptAdapter = proc(prompt: string; context: AgentPromptContext): bool =
       editor.chat.addAgentResponse(
         "Fake adapter streamed response for '" & prompt &

@@ -154,6 +154,49 @@ proc mountSectionSource*[R, E](r: R; parent: E; vm: EditorVM) =
           text "No conflicts"
   r.appendChild(parent, body)
 
+  # Shared edits need their ownership and affected uses visible before a
+  # commit. Keep this source-aware summary beside the source scope rather
+  # than resurrecting the removed tabbed inspector.
+  let impact = ui(r):
+    tdiv(`data-design-system-impact` = "true",
+         `aria-label` = "Shared design-system editors",
+         display = "flex", flex_direction = "column", gap = "6px",
+         padding = "6px 0", font_size = "11px", color = textSecondary,
+         overflow_wrap = "anywhere")
+  r.appendChild(parent, impact)
+  createRenderEffect proc() =
+    var editors: seq[SharedDesignPropertyEditor]
+    let schema = vm.designSystemSchema.val
+    for candidate in vm.sharedDesignPropertyEditors():
+      # Unmapped hypothetical scopes are not affected uses. Their refusal
+      # remains on the row; the impact panel lists actual declared owners.
+      for node in schema.nodes:
+        if node.key == candidate.sourceScope.schemaKey:
+          editors.add candidate
+          break
+    let previews = vm.sharedDesignCommitPreviews()
+    r.setAttribute(impact, "data-shared-design-editor-count", $editors.len)
+    r.setAttribute(impact, "data-shared-design-commit-preview-count", $previews.len)
+    r.clearChildren(impact)
+    for editor in editors:
+      let description = editor.property & " | " & sharedDesignCategoryLabel(editor.category) &
+        " | " & editor.sourceScope.label & " | " & editor.sourceScope.schemaKey &
+        " | " & $editor.sourceScope.usageCount & " mapped uses"
+      let row = ui(r):
+        tdiv(): text description
+      r.appendChild(impact, row)
+    for preview in previews:
+      let property = preview.property
+      let detail = preview.property & " | " & sourceScopeChoiceLabel(preview.sourceScope) &
+        "\n" & preview.sourceDiff & "\nAffected components: " &
+        preview.affectedComponents.join(", ") & "\n" & preview.previewStateLabel &
+        "\nRegeneration: " & (if preview.regenerationRequired: "required" else: "not required")
+      let row = ui(r):
+        tdiv(`data-shared-design-commit-preview` = property,
+             white_space = "pre-wrap", overflow_wrap = "anywhere"):
+          text detail
+      r.appendChild(impact, row)
+
   createRenderEffect proc() =
     let el = vm.inspector.selectedElement.val
     if vm.inspector.hasElement.val:

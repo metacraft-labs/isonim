@@ -21,6 +21,20 @@ proc exposeDemoSource*(file, content: string) =
       }
     """].}
 
+const DemoLongTailValues* = [
+  ("letter-spacing", "0px"), ("text-transform", "none"),
+  ("background-image", "none"), ("background-size", "auto"),
+  ("border-style", "solid"), ("outline-offset", "0px"),
+  ("filter", "none"), ("transform", "none"),
+  ("transition-duration", "0s"), ("flex-wrap", "nowrap"),
+  ("overflow", "visible"), ("aspect-ratio", "auto")]
+
+func demoLongTailRule(): string =
+  result = ".long-tail-card {"
+  for (property, value) in DemoLongTailValues:
+    result.add " " & property & ": " & value & ";"
+  result.add " }\n"
+
 const DemoFoundationInitialSource* =
   "--wl-color-blue-600: #2563EB;\n" &
   "--wl-action-primary: token(color.blue.600);\n" &
@@ -30,10 +44,10 @@ const DemoFoundationInitialSource* =
   "--wl-shadow-card: 0 12px 28px #0F172A;\n" &
   "--wl-motion-fast: 120ms;\n" &
   "--wl-breakpoint-compact: 640px;\n" &
-  ".destination-card { padding: 18px; }\n"
+  ".destination-card { padding: 18px; }\n" & demoLongTailRule()
 
 proc demoInspectorElement*(): ElementRef =
-  ElementRef(
+  result = ElementRef(
     id: "destination-card-root",
     sourceKey: "destination-card.root",
     tag: "DestinationCard",
@@ -62,6 +76,31 @@ proc demoInspectorElement*(): ElementRef =
         sharedCount: 5,
         directStyleAllowed: true)
     ])
+  for (property, value) in DemoLongTailValues:
+    result.properties.add PropertyInfo(name: property, value: value,
+      origin: poTailwindClass, originDetail: "class:long-tail-card",
+      sourceFile: DemoFoundationSource, sourceLine: 10,
+      schemaKey: "classes.destination-card." & property,
+      sharedCount: 4, directStyleAllowed: true)
+
+func demoComponentDocument*(source, title, body: string): string =
+  ## The demonstration renders the exact source its authored writer changes.
+  ## Its class-backed long-tail declarations are not synthetic browser values.
+  func html(value: string): string =
+    value.replace("&", "&amp;").replace("<", "&lt;")
+      .replace(">", "&gt;").replace("\"", "&quot;")
+  let classStart = source.find(".destination-card")
+  let css = if classStart >= 0:
+    ":root {" & source[0 ..< classStart] & "}\n" & source[classStart .. ^1]
+    else: source
+  "<!doctype html><html><head><style>" & css & "</style></head>" &
+    "<body style=\"margin:0;padding:24px;background:#F8FAFC;color:#111827;font:14px/1.5 system-ui,sans-serif\">" &
+    "<article class=\"destination-card long-tail-card\" data-testid=\"component-edit-preview\" " &
+    "data-isonim-src=\"" & DemoFoundationSource & ":9\" " &
+    "data-isonim-schema-key=\"classes.destination-card\" " &
+    "style=\"max-width:420px;border-width:1px;border-color:#CBD5E1;border-radius:8px;background-color:white;box-shadow:0 8px 24px rgba(15,23,42,.12)\">" &
+    "<h1 style=\"margin:0 0 8px;font-size:20px;line-height:1.2\">" & html(title) & "</h1>" &
+    "<p style=\"margin:0;color:#475569\">" & html(body) & "</p></article></body></html>"
 
 func demoSourceSpan(line: int): SourceSpan =
   SourceSpan(file: DemoFoundationSource, line: line, column: 1,
@@ -70,7 +109,7 @@ func demoSourceSpan(line: int): SourceSpan =
 proc demoDesignSystemSchema*(): DesignSystemSchema =
   let componentStory = StoryRef(group: "DestinationCard", name: "Default",
     kind: skComponent, index: 0)
-  DesignSystemSchema(
+  result = DesignSystemSchema(
     schemaVersion: 1,
     projectId: "wanderlust-demo",
     ownerPackage: "isonim-example",
@@ -94,6 +133,13 @@ proc demoDesignSystemSchema*(): DesignSystemSchema =
         stories: @[componentStory], components: @["DestinationCard"],
         usageCount: 3)
     ])
+  for (property, value) in DemoLongTailValues:
+    result.nodes.add DesignSchemaNode(
+      key: "classes.destination-card." & property,
+      kind: dsnClassDefinition, name: "long-tail-card",
+      component: "DestinationCard", property: property, value: value,
+      sourceSpan: demoSourceSpan(10), stories: @[componentStory],
+      components: @["DestinationCard"], usageCount: 4)
 
 proc demoFoundationTokens*(): seq[FoundationTokenEntry] =
   let foundationStory = StoryRef(group: "Foundations", name: "Colors",
@@ -357,6 +403,12 @@ proc demoVectorEditAdapter*(vectorSource, foundationSource: ref string): Workspa
     property: "padding",
     removable: true)
   result = WorkspaceEditAdapter(schema: schema)
+  for (property, value) in DemoLongTailValues:
+    result.schema.add WorkspaceEditableSchemaEntry(
+      key: "classes.destination-card." & property, kind: wskSourceMap,
+      file: DemoFoundationSource, path: "classes.long-tail-card." & property,
+      story: StoryRef(group: "DestinationCard", name: "Default", kind: skComponent, index: 0),
+      property: property, removable: true)
   result.readFile = proc(file: string): WorkspaceReadResult =
     if file == DemoFoundationSource:
       exposeDemoSource(file, foundationSource[])

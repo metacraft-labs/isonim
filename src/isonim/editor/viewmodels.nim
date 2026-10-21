@@ -6686,10 +6686,14 @@ proc sourceScopeImpacts*(editor: EditorVM; prop: PropertyInfo): seq[
 
 func sharedDesignCategory*(prop: PropertyInfo;
     sourceScope = sskLocalInstance): SharedDesignEditorCategory =
-  discard sourceScope
-
   let name = prop.name.normalizedCssName()
-  if cssPropertyCategory(name) == cpcColor or name in [
+  if sourceScope == sskSharedClass and name in ["background-size",
+      "border-style", "outline-offset", "filter", "transform", "flex-wrap",
+      "overflow", "aspect-ratio"]:
+    # Compound declarations use the existing class writer and CSS validator.
+    # Each admitted family is covered by source write + exact undo tests.
+    sdecSharedClass
+  elif cssPropertyCategory(name) == cpcColor or name in [
       "background", "background-color", "color", "border-color",
       "outline-color"]:
     sdecColor

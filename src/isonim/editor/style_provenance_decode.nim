@@ -232,7 +232,7 @@ func styleBindingDiagnostics*(encoded, file: string;
 const inspectorEditableCssProperties* = [
   # Position / Layout
   "left", "top", "transform", "width", "height", "display", "position",
-  "flex-direction", "gap", "overflow",
+  "flex-direction", "flex-wrap", "gap", "overflow", "aspect-ratio",
   "padding", "padding-top", "padding-right", "padding-bottom", "padding-left",
   "margin", "margin-top", "margin-right", "margin-bottom", "margin-left",
   # Appearance / Fill / Stroke / Effects
@@ -241,6 +241,8 @@ const inspectorEditableCssProperties* = [
   "border-bottom-right-radius", "border-bottom-left-radius",
   "border-color", "outline-color", "border-top-color", "border-right-color",
   "border-bottom-color", "border-left-color", "border-width", "border-style",
+  "background-image", "background-size", "outline-offset", "filter",
+  "transition-duration",
   # Typography
   "font", "font-family", "font-weight", "font-size", "line-height",
   "letter-spacing", "text-align", "text-decoration", "text-transform",

@@ -84,12 +84,20 @@ proc mountSectionComponentProps*[R, E](r: R; parent: E; vm: EditorVM) =
         onDetachRequest = vm.inspectorDetachRequestHandler(prop.name),
         wiring = vm.inspectorRowWiring(prop.name))
       let parsed = parseNumericInput(authored)
-      if parsed.value.isSome:
+      # CSS aspect ratios are compound literals, not arithmetic drafts. Keep
+      # "4 / 3" intact when a successful commit rebuilds this row.
+      if parsed.value.isSome and prop.name != "aspect-ratio":
         let numeric = createSignal(parsed.value.get)
         let authoredUnit = PropertyUnitOption(label: parsed.unit, code: parsed.unit)
         let unit = createSignal(authoredUnit)
+        var units = @[authoredUnit]
+        if prop.name in ["transition-duration", "transition-delay",
+            "animation-duration", "animation-delay"]:
+          for code in ["ms", "s"]:
+            if code != parsed.unit:
+              units.add PropertyUnitOption(label: code, code: code)
         cfg = propertyRowNumeric(name = prop.name, value = numeric, unit = unit,
-          units = @[authoredUnit], binding = vm.inspectorBindingFor(prop.name),
+          units = units, binding = vm.inspectorBindingFor(prop.name),
           onBindRequest = vm.inspectorBindRequestHandler(prop.name),
           onDetachRequest = vm.inspectorDetachRequestHandler(prop.name),
           wiring = vm.inspectorRowWiring(prop.name))

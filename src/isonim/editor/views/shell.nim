@@ -26,6 +26,7 @@ import isonim/editor/views/icons
 import isonim/editor/views/design_review_mount as design_review_mount_view
 import isonim/editor/views/widgets as editor_widgets
 import isonim/editor/views/widgets/inspector_search
+import isonim/editor/views/widgets/exposed_css_rows
 from isonim/core/context import provide
 import isonim/editor/design_review/brief_format
 import isonim/editor/design_review/brief_index
@@ -3183,14 +3184,18 @@ proc mountInspectorSectionBody[R, E](r: R; vm: EditorVM;
     mountSectionPosition[R, E](r, body, vm)
   of "layout":
     mountSectionLayout[R, E](r, body, vm)
+    mountExposedCssRows[R, E](r, body, vm, ["flex-wrap", "aspect-ratio"])
   of "appearance":
     mountSectionAppearance[R, E](r, body, vm)
   of "fill":
     mountSectionFill[R, E](r, body, vm)
+    mountExposedCssRows[R, E](r, body, vm, ["background-image", "background-size"])
   of "stroke":
     mountSectionStroke[R, E](r, body, vm)
+    mountExposedCssRows[R, E](r, body, vm, ["outline-offset"])
   of "effects":
     mountSectionEffects[R, E](r, body, vm)
+    mountExposedCssRows[R, E](r, body, vm, ["filter", "transform", "transition-duration"])
   of "typography":
     mountSectionTypography[R, E](r, body, vm)
   of "selection-colors":
