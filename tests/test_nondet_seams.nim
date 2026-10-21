@@ -1,5 +1,6 @@
 ## Scripted boundaries make nondeterministic values reproducible. Real timers
 ## still run on the actual event loop; native browser-only seams must reject.
+{.define: isonimNondetCoverage.}
 import std/[unittest, json, times, monotimes, tables, strutils]
 import nim_everywhere/platform
 import isonim/core/nondet

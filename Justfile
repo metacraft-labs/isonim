@@ -1847,6 +1847,9 @@ test-stable-id-mutants: build-tailwind
 
 # Platform boundaries include real layout and networking under Chromium.
 test-nondet:
+    nim c -r --out:build/test_nondet_default tests/test_nondet_default.nim
+    nim js --out:build/test_nondet_default.js tests/test_nondet_default.nim
+    python3 tools/run_nim_js_test.py build/test_nondet_default.js
     python3 tools/test_nondet_mutants.py
     nim c -r tests/test_nondet_seams.nim
     nim js tests/test_nondet_seams.nim

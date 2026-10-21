@@ -48,9 +48,12 @@ else:
 proc backend*(): NondetBackend =
   if currentClock == nil: install(newRealBackend(pageSeed()))
   currentClock
-proc note(name: string) =
-  let b = backend()
-  b.seamCalls[name] = b.seamCalls.getOrDefault(name) + 1
+template note(name: string) =
+  # Coverage counters are absent from normal builds, including their table
+  # state and per-call lookup/allocation. Dispatch ordering remains universal.
+  when defined(isonimNondetCoverage):
+    let selected = backend()
+    selected.seamCalls[name] = selected.seamCalls.getOrDefault(name) + 1
 proc script*(b: NondetBackend; name: string; values: seq[JsonNode]) =
   if not b.scripted: raise newException(ValueError, "not a scripted backend")
   b.reads[name] = values

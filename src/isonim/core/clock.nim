@@ -20,7 +20,8 @@ type
     dispatchSequence*: uint64
     lastTimerId: int
     ## Boundary backend state shared by RealClock and TestClock.
-    seamCalls*: Table[string, int]
+    when defined(isonimNondetCoverage):
+      seamCalls*: Table[string, int] ## Explicit test coverage instrumentation only.
     scripted*: bool
     reads*: Table[string, seq[JsonNode]]
     randomState*: Rand
