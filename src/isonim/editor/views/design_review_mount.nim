@@ -884,7 +884,12 @@ proc mountSidebarHistoryButtonForEditor*[R, E](r: R; parent: E; vm: EditorVM) =
       user_select = "none")
   # CHRM-M7: narrow-mode mirror uses the same SVG history glyph the
   # chrome-bar button now renders (see preview_chrome.nim).
-  r.setInnerHtml(button, historySvg)
+  let iconHost = ui(r):
+    tdiv(`data-history-sidebar-icon` = "true", `aria-hidden` = "true",
+         display = "inline-flex", width = "18px", height = "18px",
+         flex_shrink = "0")
+  r.setInnerHtml(iconHost, historySvg)
+  r.appendChild(button, iconHost)
   proc onActivate() =
     capturedState.galleryHostState.val =
       if capturedState.galleryHostState.val == ghsClosed: ghsOpen

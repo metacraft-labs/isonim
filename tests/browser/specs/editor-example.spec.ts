@@ -1452,6 +1452,15 @@ test.describe("IsoNim packaged editor example", () => {
     await page.goto("/");
     await expect(page.locator(".editor-sidebar")).toBeVisible();
     await expect(page.locator(".editor-preview:visible")).toHaveCount(0);
+    const mobileHistory = page.locator('[data-design-review-history-button-sidebar="true"]');
+    const historyHitBox = await mobileHistory.boundingBox();
+    const historyGlyphBox = await mobileHistory.locator("svg").boundingBox();
+    expect(historyHitBox).not.toBeNull();
+    expect(historyGlyphBox).not.toBeNull();
+    expect(historyHitBox!.width).toBeGreaterThanOrEqual(44);
+    expect(historyHitBox!.height).toBeGreaterThanOrEqual(44);
+    expect(historyGlyphBox!.width).toBe(18);
+    expect(historyGlyphBox!.height).toBe(18);
     await expectStableVisualSnapshot(page, "m43-shell-mobile-width.png");
 
     await page.setViewportSize(desktop);
