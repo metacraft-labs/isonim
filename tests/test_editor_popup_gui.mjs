@@ -223,7 +223,7 @@ try{
   proof.cases.push({width,name:'genuinely empty real document clears only on its second actual poll and reload restores saved expansion',emptyStart});
 
 
-  await page.locator('[data-toolbar-cluster="mode"] [aria-label="Edit"]').click();
+  await page.locator('[data-toolbar-cluster="mode"] [aria-label="Switch to edit mode"]').click();
   const frame=page.locator('.editor-preview iframe').filter({visible:true}).first().contentFrame();
   await frame.locator('#isonim-editor-selection-style').waitFor({state:'attached'});
   await frame.locator('#action').waitFor();
@@ -360,9 +360,9 @@ try{
   await page.keyboard.press('PageDown');
   await page.waitForFunction(()=>document.querySelector('[data-scene-graph-rows]').scrollTop>0);
   assert.equal(await story.evaluate(el=>el.scrollTop),forcedStoryTop,'Forced-colors Layers keyboard scroll leaves Storyboard fixed');
-  await page.locator('[data-toolbar-cluster="mode"] [aria-label="View"]').click();
+  await page.locator('[data-toolbar-cluster="mode"] [aria-label="Switch to view mode"]').click();
   const forcedChat=await forcedSnapshot(['.editor-chat','[data-chat-scroll]']);
-  await page.locator('[data-toolbar-cluster="mode"] [aria-label="Edit"]').click();
+  await page.locator('[data-toolbar-cluster="mode"] [aria-label="Switch to edit mode"]').click();
   await page.emulateMedia({forcedColors:'none'});
   for(const selector of ['.editor-sidebar','[data-sidebar-story-tree]','[data-scene-graph-rows]','[data-inspector-section-list]']){
     const actual=await page.locator(selector).evaluate(el=>({width:getComputedStyle(el).scrollbarWidth,color:getComputedStyle(el).scrollbarColor}));

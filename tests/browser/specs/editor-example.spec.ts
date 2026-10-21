@@ -122,9 +122,9 @@ async function assertNoClippedEssentialText(page) {
       ".editor-sidebar button",
       ".editor-statusbar [role=button]",
       ".editor-tabbar [role=tab]",
-      ".editor-manual-inspector [role=button]",
+      ".editor-inspector [role=button]",
       ".editor-chat [role=button]",
-      ".editor-manual-inspector input",
+      ".editor-inspector input",
       ".editor-chat textarea",
     ];
     const failures: string[] = [];
@@ -227,9 +227,49 @@ async function openDestinationComponentDetail(page: Page) {
 async function openDestinationComponentEdit(page: Page) {
   await openDestinationComponentDetail(page);
   await page
-    .getByRole("button", { name: "Open selected component in edit mode" })
+    .getByRole("button", { name: "Switch to edit mode" })
     .click();
-  await expect(page.locator(".editor-manual-inspector")).toBeVisible();
+  await expect(page.locator(".editor-inspector")).toBeVisible();
+}
+
+// Saving is automatic: assert admission and the actual authored adapter's
+// source bytes, not a removed dirty badge. The demo adapter is project-owned;
+// real filesystem writes/refusals are additionally covered by test-editor-source.
+async function pendingSourceEdits(page: Page) {
+  return page.evaluate(() => (window as any).__isonimEditor.pendingSourceEdits());
+}
+async function expectAutomaticWrite(page: Page, previous: string, file = demoFoundationSource) {
+  await expect.poll(() => demoSourceContent(page, file)).not.toBe(previous);
+  await expect.poll(() => pendingSourceEdits(page)).toBe(0);
+  await expect(page.locator("[data-save-error]")).toBeHidden();
+}
+
+async function openSourcePropertyRows(page: Page) {
+  const header = page.locator('[data-inspector-section-header="component-properties"]');
+  const body = page.locator('[data-inspector-section-body="component-properties"]');
+  if (!(await body.isVisible())) await header.click();
+  await expect(body).toBeVisible();
+  const sourceBody = page.locator('[data-inspector-section-body="source"]');
+  if (!(await sourceBody.isVisible())) await page.locator('[data-inspector-section-header="source"]').click();
+}
+async function resizeRightPanel(page: Page, width: number) {
+  const panel = page.locator(".editor-inspector");
+  const before = await panel.boundingBox();
+  expect(before).not.toBeNull();
+  const handle = page.locator('[data-resize-handle="right-panel"]:visible');
+  const box = await handle.boundingBox();
+  expect(box).not.toBeNull();
+  await page.mouse.move(box!.x + box!.width / 2, box!.y + 40);
+  await page.mouse.down();
+  await page.mouse.move(box!.x + box!.width / 2 + before!.width - width, box!.y + 40);
+  await page.mouse.up();
+}
+
+async function sourcePropertyInput(page: Page, property: string) {
+  await openSourcePropertyRows(page);
+  const row = page.locator(`[data-component-props-list] [data-property-row-css-property="${property}"]`).first();
+  await expect(row).toBeVisible();
+  return row.locator('[data-property-row-input="true"]');
 }
 
 async function setInspectorProperty(
@@ -239,10 +279,8 @@ async function setInspectorProperty(
   value: string,
   expectAccepted = true,
 ) {
-  await page.getByRole("tab", { name: `Show ${tab} edit controls` }).click();
-  const input = page
-    .getByRole("textbox", { name: `Edit inspector property ${property}` })
-    .first();
+  await openSourcePropertyRows(page);
+  const input = await sourcePropertyInput(page, property);
   await expect(input).toBeVisible();
   await input.evaluate((node: HTMLInputElement, nextValue) => {
     node.value = String(nextValue);
@@ -251,12 +289,19 @@ async function setInspectorProperty(
     node.dispatchEvent(new Event("blur", { bubbles: true }));
   }, value);
   if (expectAccepted) {
-    await expect(input).toHaveValue(value);
-    await expect(page.getByText("Unsaved source edit")).toBeVisible();
+    const numeric = await input.evaluate(node => node.closest("[data-property-row-kind]")?.getAttribute("data-property-row-kind") === "numeric");
+    const numberAndUnit = value.match(/^(-?[0-9.]+)(px|ms|s)?$/);
+    await expect(input).toHaveValue(numeric && numberAndUnit ? numberAndUnit[1] : value);
+    if (numeric && numberAndUnit?.[2]) {
+      await expect(input.locator('xpath=ancestor::*[@data-property-row-css-property][1]').locator('[data-property-row-unit]')).toContainText(numberAndUnit[2]);
+    }
+    await expect.poll(() => pendingSourceEdits(page)).toBeGreaterThan(0);
+    await expect(page.locator("[data-save-error]")).toBeHidden();
   }
 }
 
 async function applyRawInspectorCss(page: Page, tab: string, cssText: string) {
+  const sourceBefore = await demoSourceContent(page, demoFoundationSource);
   await page.getByRole("tab", { name: `Show ${tab} edit controls` }).click();
   const input = page
     .getByRole("textbox", { name: `Edit raw CSS for ${tab} section` })
@@ -268,7 +313,7 @@ async function applyRawInspectorCss(page: Page, tab: string, cssText: string) {
   await page
     .getByRole("button", { name: `Apply raw CSS for ${tab} section` })
     .click();
-  await expect(page.getByText("Unsaved source edit")).toBeVisible();
+  await expectAutomaticWrite(page, sourceBefore);
 }
 
 async function forceSelectedStyle(page: Page, property: string, value: string) {
@@ -323,22 +368,11 @@ async function demoSourceContent(page: Page, file: string) {
 }
 
 async function markPreviewSelected(page: Page) {
-  await page.evaluate(() => {
-    const frame = document.querySelector<HTMLIFrameElement>(
-      'iframe[title="Editable component preview"]',
-    );
-    const target = frame?.contentDocument?.querySelector<HTMLElement>(
-      '[data-testid="component-edit-preview"]',
-    );
-    target?.setAttribute("data-isonim-selected", "true");
-    if (frame?.contentWindow && target) {
-      (
-        frame.contentWindow as unknown as {
-          __isonimSelectedElement?: HTMLElement;
-        }
-      ).__isonimSelectedElement = target;
-    }
-  });
+  // A physical selection must bind the real DOM identity to the VM. Merely
+  // painting a selected attribute leaves the source writer targeting another node.
+  const frame = page.frameLocator('iframe[title="Editable component preview"]');
+  await frame.getByTestId("component-edit-preview").click({ force: true });
+  await expect(frame.locator('[data-isonim-selected="true"]')).toBeVisible();
 }
 
 test.describe("IsoNim packaged editor example", () => {
@@ -405,13 +439,13 @@ test.describe("IsoNim packaged editor example", () => {
     await layer.click();
     await expect(layer).toHaveAttribute("aria-selected", "true");
 
-    await page.getByRole("button", { name: "Toggle inspector panel" }).click();
+    await page.getByRole("button", { name: "Toggle right sidebar", exact: true }).click();
     await expect(page.locator(".editor-chat")).toBeHidden();
   });
 
   test("e2e_agent_assisted_edit_flow", async ({ page }) => {
     await expect(page.getByText("Ask for design-system changes")).toBeVisible();
-    await expect(page.getByText("AI Designer: Fake adapter")).toHaveCount(0);
+    await expect(page.getByText("Fake adapter streamed response", { exact: false })).toHaveCount(0);
     await expect(
       page.getByRole("button", {
         name: "Allow agent permission agent-permission-1",
@@ -432,7 +466,8 @@ test.describe("IsoNim packaged editor example", () => {
     await expect(userTurn).toHaveCount(1);
     await expect(userTurn).toBeVisible();
     await expect(userTurn.locator('[data-chat-markdown="paragraph"]')).toHaveText("Apply the spacing edit");
-    await expect(page.getByText("AI Designer: Fake adapter")).toBeVisible();
+    await expect(conversation.locator('[data-chat-role="arAssistant"]')).toBeVisible();
+    await expect(conversation.locator('[data-chat-role="arAssistant"] [data-chat-activity-status="true"]')).toHaveText("completed");
     await expect(
       page.getByText(
         "Fake adapter streamed response for 'Apply the spacing edit'",
@@ -455,16 +490,19 @@ test.describe("IsoNim packaged editor example", () => {
         name: "Allow agent permission agent-permission-1",
       })
       .click();
-    await expect(page.getByText("agent-permission-1=granted")).toBeVisible();
+    await expect(page.locator('[data-agent-permission="agent-permission-1"]')).toHaveAttribute("data-agent-permission-status", "granted");
+    await expect(page.getByText("Write workspace source - granted", { exact: true })).toBeVisible();
     await page
       .getByRole("button", { name: "Accept agent edit agent-proposal-1" })
       .click();
-    await expect(page.getByText("agent-proposal-1=accepted")).toBeVisible();
+    await expect(page.locator('[data-agent-proposal="agent-proposal-1"]')).toHaveAttribute("data-agent-proposal-status", "accepted");
+    await expect(page.locator('[data-agent-proposal="agent-proposal-1"]')).toContainText(" - accepted - ");
     await page
       .getByRole("button", { name: "Revert agent edit agent-proposal-1" })
       .click();
-    await expect(page.getByText("agent-proposal-1=reverted")).toBeVisible();
-    await expect(page.getByText("Connected / ready")).toBeVisible();
+    await expect(page.locator('[data-agent-proposal="agent-proposal-1"]')).toHaveAttribute("data-agent-proposal-status", "reverted");
+    await expect(page.locator('[data-agent-proposal="agent-proposal-1"]')).toContainText(" - reverted - ");
+    await expect(page.locator("[data-chat-session-summary]")).toContainText("Ready for next message");
   });
 
   test("e2e_comment_review_ai_prompt_and_acceptance_flow", async ({ page }) => {
@@ -476,9 +514,9 @@ test.describe("IsoNim packaged editor example", () => {
       .getByRole("button", { name: "Select story DestinationCard / Default" })
       .click();
     await page
-      .getByRole("button", { name: "Open selected component in edit mode" })
+      .getByRole("button", { name: "Switch to edit mode" })
       .click();
-    await expect(page.locator(".editor-manual-inspector")).toBeVisible();
+    await expect(page.locator(".editor-inspector")).toBeVisible();
 
     await page.getByRole("button", { name: "Switch to comment mode" }).click();
     await expect(page.locator(".editor-chat")).toBeVisible();
@@ -503,7 +541,7 @@ test.describe("IsoNim packaged editor example", () => {
       page.getByText("Make the hero headline quieter."),
     ).toBeVisible();
     await expect(
-      page.getByText("review-annotation-1=open:included"),
+      page.getByText("review-annotation-1 - open - included"),
     ).toBeVisible();
 
     await page
@@ -512,7 +550,7 @@ test.describe("IsoNim packaged editor example", () => {
       })
       .click();
     await expect(
-      page.getByText("review-annotation-1=open:excluded"),
+      page.getByText("review-annotation-1 - open - excluded"),
     ).toBeVisible();
     await page
       .getByRole("button", {
@@ -520,7 +558,7 @@ test.describe("IsoNim packaged editor example", () => {
       })
       .click();
     await expect(
-      page.getByText("review-annotation-1=open:included"),
+      page.getByText("review-annotation-1 - open - included"),
     ).toBeVisible();
 
     await page
@@ -546,14 +584,15 @@ test.describe("IsoNim packaged editor example", () => {
     await page
       .getByRole("button", { name: "Accept agent edit agent-proposal-1" })
       .click();
-    await expect(page.getByText("agent-proposal-1=accepted")).toBeVisible();
+    await expect(page.locator('[data-agent-proposal="agent-proposal-1"]')).toHaveAttribute("data-agent-proposal-status", "accepted");
+    await expect(page.locator('[data-agent-proposal="agent-proposal-1"]')).toContainText(" - accepted - ");
     await page
       .getByRole("button", {
         name: "Resolve review comment review-annotation-1",
       })
       .click();
     await expect(
-      page.getByText("review-annotation-1=resolved:included"),
+      page.getByText("review-annotation-1 - resolved - included"),
     ).toBeVisible();
   });
 
@@ -684,12 +723,12 @@ test.describe("IsoNim packaged editor example", () => {
     await page
       .getByRole("option", { name: /Toggle inspector command/ })
       .click();
-    await expect(page.locator(".editor-manual-inspector")).toBeHidden();
+    await expect(page.locator(".editor-inspector")).toBeHidden();
     await sidebarToggle.evaluate((node: HTMLElement) =>
       node.focus({ preventScroll: true }),
     );
     await page.keyboard.press("I");
-    await expect(page.locator(".editor-manual-inspector")).toBeVisible();
+    await expect(page.locator(".editor-inspector")).toBeVisible();
     await expect(
       page.getByRole("textbox", { name: "Search inspector sections" }),
     ).toBeFocused();
@@ -709,10 +748,10 @@ test.describe("IsoNim packaged editor example", () => {
       .getByRole("heading", { name: /DestinationCard \/ Default/ })
       .click();
     const selectedLayer = page
-      .locator('[data-isonim-layer-selected="true"]')
+      .locator('[data-scene-graph-row][data-selected="true"]')
       .first();
     const selectedBefore = await selectedLayer.getAttribute(
-      "data-isonim-layer-id",
+      "data-scene-graph-row",
     );
     await editModeButton.evaluate((node: HTMLElement) =>
       node.focus({ preventScroll: true }),
@@ -725,9 +764,9 @@ test.describe("IsoNim packaged editor example", () => {
     await expect
       .poll(() =>
         page
-          .locator('[data-isonim-layer-selected="true"]')
+          .locator('[data-scene-graph-row][data-selected="true"]')
           .first()
-          .getAttribute("data-isonim-layer-id"),
+          .getAttribute("data-scene-graph-row"),
       )
       .not.toBe(selectedBefore);
     await editModeButton.evaluate((node: HTMLElement) =>
@@ -741,9 +780,9 @@ test.describe("IsoNim packaged editor example", () => {
     await expect
       .poll(() =>
         page
-          .locator('[data-isonim-layer-selected="true"]')
+          .locator('[data-scene-graph-row][data-selected="true"]')
           .first()
-          .getAttribute("data-isonim-layer-id"),
+          .getAttribute("data-scene-graph-row"),
       )
       .toBe(selectedBefore);
 
@@ -795,7 +834,7 @@ test.describe("IsoNim packaged editor example", () => {
 
     const modeDuration = await page.evaluate(async () => {
       const target = document.querySelector<HTMLElement>(
-        '[aria-label="Open selected component in edit mode"]',
+        '[aria-label="Switch to edit mode"]',
       );
       const started = performance.now();
       target?.click();
@@ -803,7 +842,7 @@ test.describe("IsoNim packaged editor example", () => {
       return performance.now() - started;
     });
     expect(modeDuration).toBeLessThan(await budgetMs("epbkModeSwitch"));
-    await expect(page.locator(".editor-manual-inspector")).toBeVisible();
+    await expect(page.locator(".editor-inspector")).toBeVisible();
 
     const editFrame = page.frameLocator(
       'iframe[title="Editable component preview"]',
@@ -823,10 +862,10 @@ test.describe("IsoNim packaged editor example", () => {
       editFrame.locator('[data-isonim-selected="true"]'),
     ).toBeVisible();
 
-    await page.getByRole("tab", { name: "Show Space edit controls" }).click();
+    await openSourcePropertyRows(page);
     await page.evaluate(async () => {
       const input = document.querySelector<HTMLInputElement>(
-        'input[aria-label="Edit inspector property padding"]',
+        '[data-component-props-list] [data-property-row-css-property="padding"] input',
       );
       if (input) {
         input.value = "28px";
@@ -834,10 +873,8 @@ test.describe("IsoNim packaged editor example", () => {
       }
       await new Promise((resolve) => requestAnimationFrame(resolve));
     });
-    await expect(page.getByText("Unsaved source edit")).toBeVisible();
-    await page
-      .getByRole("button", { name: "Save inspector source edits" })
-      .click();
+    await expect(page.locator("[data-save-error]")).toBeHidden();
+    await expect.poll(() => pendingSourceEdits(page)).toBe(0);
     await expect(
       page.locator('[data-editor-telemetry-event="save and reload"]'),
     ).toBeVisible();
@@ -845,10 +882,9 @@ test.describe("IsoNim packaged editor example", () => {
       .locator('[data-editor-telemetry-event="save and reload"]')
       .last()
       .getAttribute("data-editor-telemetry-detail");
-    expect(saveDetail ?? "").toMatch(/bridge-error:|preview-reload:/);
-    await expect(page.locator(".editor-statusbar")).toContainText(
-      saveDetail?.startsWith("bridge-error:") ? "write failed" : "clean",
-    );
+    expect(saveDetail ?? "").toMatch(/^preview-reload:/);
+    await expect(page.locator("[data-save-error]")).toBeHidden();
+    await expect.poll(() => demoSourceContent(page, demoFoundationSource)).toContain("padding: 28px");
 
     const searchDuration = await page.evaluate(async () => {
       const input = document.querySelector<HTMLInputElement>(
@@ -906,9 +942,7 @@ test.describe("IsoNim packaged editor example", () => {
       )
       .toBe("2px");
 
-    const letterSpacingInput = page
-      .getByRole("textbox", { name: "Edit inspector property letter-spacing" })
-      .first();
+    const letterSpacingInput = await sourcePropertyInput(page, "letter-spacing");
     await letterSpacingInput.focus();
     await expect(letterSpacingInput).toBeFocused();
     await page.keyboard.press("Enter");
@@ -951,10 +985,8 @@ test.describe("IsoNim packaged editor example", () => {
       .toContain("dashed");
     await setInspectorProperty(page, "Stroke", "outline-offset", "4px");
     await expect(
-      page.getByRole("textbox", {
-        name: "Edit inspector property outline-offset",
-      }),
-    ).toHaveValue("4px");
+      await sourcePropertyInput(page, "outline-offset"),
+    ).toHaveValue("4");
 
     await setInspectorProperty(
       page,
@@ -1003,12 +1035,26 @@ test.describe("IsoNim packaged editor example", () => {
       .toBe("4 / 3");
 
     await setInspectorProperty(page, "Effects", "filter", "glow(4px)", false);
-    await page.getByRole("tab", { name: "Show Fill edit controls" }).click();
-    await page.getByRole("tab", { name: "Show Effects edit controls" }).click();
+    await openSourcePropertyRows(page);
+    await openSourcePropertyRows(page);
     await expect(
-      page.locator('[data-isonim-edit-diagnostics="true"]'),
+      page.locator('[data-component-props-list] [data-property-row-css-property="filter"]'),
     ).toContainText("Filter values must use supported CSS filter functions");
 
+    // The user's sequence is debounced as one write, rather than waiting a
+    // debounce after every gesture. Verify EVERY declaration in the actual
+    // authored source and rejection of the invalid filter before capturing.
+    for (const declaration of [
+      "letter-spacing: 2px;", "text-transform: uppercase;",
+      "background-image: linear-gradient(90deg, rgb(59, 130, 246), rgb(34, 197, 94));",
+      "background-size: contain;", "border-style: dashed;", "outline-offset: 4px;",
+      "filter: brightness(1.08) contrast(1.1);", "transform: translateX(8px) scale(1.02);",
+      "transition-duration: 180ms;", "flex-wrap: wrap;", "overflow: auto;", "aspect-ratio: 4 / 3;",
+    ]) {
+      await expect.poll(() => demoSourceContent(page, demoFoundationSource)).toContain(" " + declaration);
+    }
+    await expect.poll(() => pendingSourceEdits(page)).toBe(0);
+    expect(await demoSourceContent(page, demoFoundationSource)).not.toContain("glow(");
     const afterShot = await page.screenshot({ fullPage: true });
     expect(
       afterShot.length,
@@ -1018,7 +1064,7 @@ test.describe("IsoNim packaged editor example", () => {
       Buffer.compare(beforeShot, afterShot),
       "long-tail edits produce a changed screenshot",
     ).not.toBe(0);
-    await expect(page.getByText("Unsaved source edit")).toBeVisible();
+    await expect(page.locator("[data-save-error]")).toBeHidden();
     await assertNoClippedEssentialText(page);
     await assertNoBodyScrollbar(page);
   });
@@ -1109,11 +1155,9 @@ test.describe("IsoNim packaged editor example", () => {
     await expect(host).toHaveAttribute("data-vector-active-fill", "#EF4444");
     await page.getByRole("button", { name: "Vector set-stroke" }).click();
     await expect(host).toHaveAttribute("data-vector-active-stroke", "#22C55E");
-    await expect(host).toHaveAttribute("data-vector-source-dirty", "true");
+    await expect.poll(() => pendingSourceEdits(page)).toBeGreaterThan(0);
 
-    const saveVector = page.getByRole("button", {
-      name: "Save vector source edits",
-    });
+    const saveVector = page.locator("[data-vector-editor-toolbar]");
     await expect
       .poll(async () =>
         Number(
@@ -1123,7 +1167,7 @@ test.describe("IsoNim packaged editor example", () => {
         ),
       )
       .toBeGreaterThan(0);
-    await saveVector.click();
+    await expect.poll(() => demoSourceContent(page, "examples/wanderlust/design-system/vector-symbols.svg")).toMatch(/stroke:\s*(?:#22C55E|rgb\(34,\s*197,\s*94\))/i);
     await expect(saveVector).toHaveAttribute(
       "data-vector-source-stage",
       "wesClean",
@@ -1132,7 +1176,8 @@ test.describe("IsoNim packaged editor example", () => {
       "data-vector-pending-source-edits",
       "0",
     );
-    await expect(host).toHaveAttribute("data-vector-source-saved", "true");
+    await expect.poll(() => pendingSourceEdits(page)).toBe(0);
+    await expect(page.locator("[data-save-error]")).toBeHidden();
 
     await page
       .getByRole("button", { name: "Select Polygon vector tool" })
@@ -1244,7 +1289,7 @@ test.describe("IsoNim packaged editor example", () => {
         ),
       )
       .toBeGreaterThan(0);
-    await saveVector.click();
+    await expect.poll(() => demoSourceContent(page, "examples/wanderlust/design-system/vector-symbols.svg")).toMatch(/stroke:\s*(?:#22C55E|rgb\(34,\s*197,\s*94\))/i);
     await expect(saveVector).toHaveAttribute(
       "data-vector-source-stage",
       "wesClean",
@@ -1465,27 +1510,29 @@ test.describe("IsoNim packaged editor example", () => {
 
     await page.setViewportSize(desktop);
     await openDestinationComponentEdit(page);
+    await markPreviewSelected(page);
+    await openSourcePropertyRows(page);
     await expect(
-      page.getByLabel("Token manager", { exact: true }),
+      page.locator('[data-component-props-list] [data-property-row-css-property="padding"]').getByRole("button", { name: "Bind padding to variable", exact: true }),
     ).toBeVisible();
     await expect(
-      page.getByLabel(/Style class cascade token manager/),
+      page.locator('[data-component-props-list] [data-property-row-css-property="padding"]').getByRole("group", { name: "Choose source scope for padding", exact: true }),
     ).toBeVisible();
-    await expect(page.getByLabel(/Element tree selected/)).toBeVisible();
+    await expect(page.locator('[data-scene-graph="true"]')).toBeVisible();
     await expectStableVisualSnapshot(page, "m55-compact-inspector.png");
     await expectStableVisualSnapshot(
       page,
       "m43-edit-inspector-token-style-layers.png",
     );
 
-    await page.getByRole("tab", { name: "Show Space edit controls" }).click();
-    const paddingScopeGroup = page.getByRole("group", {
+    await openSourcePropertyRows(page);
+    const paddingScopeGroup = page.locator('[data-component-props-list] [data-property-row-css-property="padding"]').getByRole("group", {
       name: "Choose source scope for padding",
       exact: true,
     });
     await expect(
       paddingScopeGroup.getByRole("button", {
-        name: "Apply Shared class source scope for padding",
+        name: "Apply shared class scope for padding",
         exact: true,
       }),
     ).toBeVisible();
@@ -1508,23 +1555,17 @@ test.describe("IsoNim packaged editor example", () => {
     );
     await expectStableElementSnapshot(page, impact, "m55-impact-panel.png");
 
-    const paddingInput = page
-      .getByRole("textbox", {
-        name: "Edit inspector property padding",
-        exact: true,
-      })
-      .first();
+    const paddingInput = await sourcePropertyInput(page, "padding");
     await expect(paddingInput).toBeVisible();
-    await paddingInput.fill("");
-    await paddingInput.fill("24px");
-    await paddingInput.blur();
     await paddingScopeGroup
       .getByRole("button", {
-        name: "Apply Shared class source scope for padding",
+        name: "Apply shared class scope for padding",
         exact: true,
       })
       .click();
-    await expect(page.getByText("Unsaved source edit")).toBeVisible();
+    await paddingInput.fill("24px");
+    await paddingInput.press("Enter");
+    await expect(page.locator("[data-save-error]")).toBeHidden();
     await expect
       .poll(async () => (await previewStyle(page))?.padding)
       .toBe("24px");
@@ -1554,12 +1595,10 @@ test.describe("IsoNim packaged editor example", () => {
       sharedReview,
       "m55-shared-edit-review.png",
     );
-    await page
-      .getByRole("button", { name: "Revert inspector source edits" })
-      .click();
+    await page.keyboard.press(process.platform === "darwin" ? "Meta+z" : "Control+z");
 
-    await page.getByRole("button", { name: "Narrow right panel" }).click();
-    await expect(page.locator(".editor-manual-inspector")).toHaveAttribute(
+    await resizeRightPanel(page, 280);
+    await expect(page.locator(".editor-inspector")).toHaveAttribute(
       "data-right-panel-width",
       "280",
     );
@@ -1623,7 +1662,7 @@ test.describe("IsoNim packaged editor example", () => {
     expect(initialStyle!.padding).toBe("18px");
     expect(initialStyle!.source).not.toBe("");
 
-    await page.getByRole("tab", { name: "Show Space edit controls" }).click();
+    await openSourcePropertyRows(page);
 
     const impact = page.locator('[data-design-system-impact="true"]');
     await expect(impact).toHaveAttribute(
@@ -1634,27 +1673,13 @@ test.describe("IsoNim packaged editor example", () => {
       "padding | Spacing",
     );
 
-    const input = page
-      .getByRole("textbox", { name: "Edit inspector property padding" })
-      .first();
+    const input = await sourcePropertyInput(page, "padding");
     await expect(input).toBeVisible();
-    await input.evaluate((node: HTMLInputElement) => {
-      node.value = "24px";
-    });
-    await page
-      .getByRole("group", {
-        name: "Choose source scope for padding",
-        exact: true,
-      })
-      .click();
-    await page
-      .getByRole("button", {
-        name: "Apply Shared class source scope for padding",
-        exact: true,
-      })
-      .click();
+    await page.locator('[data-component-props-list] [data-property-row-css-property="padding"]').getByRole("button", { name: "Apply shared class scope for padding", exact: true }).click();
+    await input.fill("24px");
+    await input.press("Enter");
 
-    await expect(page.getByText("Unsaved source edit")).toBeVisible();
+    await expect(page.locator("[data-save-error]")).toBeHidden();
     await expect
       .poll(async () => (await previewStyle(page))?.padding)
       .toBe("24px");
@@ -1672,13 +1697,8 @@ test.describe("IsoNim packaged editor example", () => {
     await expect(commitPreview).toContainText("commit: rebuild + full reload");
     await expect(commitPreview).toContainText("Regeneration: required");
 
-    await page
-      .getByRole("button", { name: "Save inspector source edits" })
-      .click();
-    await expect(page.locator(".editor-statusbar")).toContainText("clean");
-    await expect(page.locator(".editor-statusbar")).toContainText(
-      "write writable",
-    );
+    await expect.poll(() => pendingSourceEdits(page)).toBe(0);
+    await expect(page.locator("[data-save-error]")).toBeHidden();
     await expect
       .poll(() => demoSourceContent(page, demoFoundationSource))
       .toContain(".destination-card { padding: 24px; }");
@@ -1687,29 +1707,15 @@ test.describe("IsoNim packaged editor example", () => {
       .toBe("24px");
     await markPreviewSelected(page);
 
-    await input.evaluate((node: HTMLInputElement) => {
-      node.value = "30px";
-    });
-    await page
-      .getByRole("group", {
-        name: "Choose source scope for padding",
-        exact: true,
-      })
-      .click();
-    await page
-      .getByRole("button", {
-        name: "Apply Shared class source scope for padding",
-        exact: true,
-      })
-      .click();
-    await expect(page.getByText("Unsaved source edit")).toBeVisible();
+    await input.fill("30px");
+    await input.press("Enter");
+    await expect(page.locator("[data-save-error]")).toBeHidden();
+    await expect.poll(() => demoSourceContent(page, demoFoundationSource)).toContain("padding: 30px");
     await expect
       .poll(async () => (await previewStyle(page))?.padding)
       .toBe("30px");
-    await page
-      .getByRole("button", { name: "Revert inspector source edits" })
-      .click();
-    await expect(page.getByText("Unsaved source edit")).toHaveCount(0);
+    await page.keyboard.press(process.platform === "darwin" ? "Meta+z" : "Control+z");
+    await expect.poll(() => pendingSourceEdits(page)).toBe(0);
     await expect
       .poll(async () => (await previewStyle(page))?.padding)
       .toBe("24px");
@@ -1723,29 +1729,35 @@ test.describe("IsoNim packaged editor example", () => {
   }) => {
     await page.setViewportSize(desktop);
     await openDestinationComponentEdit(page);
+    await openSourcePropertyRows(page);
     await assertVisibleBox(
       page.locator('iframe[title="Editable component preview"]'),
       "component edit preview iframe",
     );
     await assertVisibleBox(
-      page.locator(".editor-manual-inspector"),
+      page.locator(".editor-inspector"),
       "manual inspector",
     );
     await assertVisibleBox(
-      page.getByLabel("Token manager", { exact: true }),
-      "token manager",
+      page.locator('[data-component-props-list] [data-property-row-css-property="padding"]'),
+      "source-aware variable property row",
     );
     await assertVisibleBox(
-      page.getByLabel(/Style class cascade token manager/),
+      page.locator('[data-component-props-list] [data-property-row-css-property="padding"]').getByRole("group", { name: "Choose source scope for padding", exact: true }),
       "style manager",
     );
     await assertVisibleBox(
-      page.getByLabel(/Element tree selected/),
+      page.locator('[data-scene-graph="true"]'),
       "layers panel",
     );
+    const bind = page.locator('[data-component-props-list] [data-property-row-css-property="padding"]').getByRole("button", { name: "Bind padding to variable", exact: true });
+    await bind.click();
+    await assertVisibleBox(page.locator('[data-variable-picker="true"]'), "variable picker");
+    await page.keyboard.press("Escape");
+    await expect(page.locator('[data-variable-picker="true"]')).toBeHidden();
     await assertNoBodyScrollbar(page);
     await assertNoEssentialOverlaps(page, [
-      ".editor-manual-inspector",
+      ".editor-inspector",
       ".editor-preview",
       ".editor-preview iframe",
     ]);
@@ -1769,18 +1781,18 @@ test.describe("IsoNim packaged editor example", () => {
       frame.locator('[data-layout-guide="spacing-measurement"]'),
     ).toBeVisible();
 
-    const before = await page.locator(".editor-manual-inspector").boundingBox();
+    const before = await page.locator(".editor-inspector").boundingBox();
     await page.getByRole("button", { name: "Switch to comment mode" }).click();
     await expect(page.locator(".editor-chat")).toBeVisible();
     await page.getByRole("button", { name: "Switch to edit mode" }).click();
-    await expect(page.locator(".editor-manual-inspector")).toBeVisible();
-    const after = await page.locator(".editor-manual-inspector").boundingBox();
+    await expect(page.locator(".editor-inspector")).toBeVisible();
+    const after = await page.locator(".editor-inspector").boundingBox();
     expect(after!.width, "mode switch keeps right panel width stable").toBe(
       before!.width,
     );
 
-    await page.getByRole("button", { name: "Narrow right panel" }).click();
-    await expect(page.locator(".editor-manual-inspector")).toHaveAttribute(
+    await resizeRightPanel(page, 280);
+    await expect(page.locator(".editor-inspector")).toHaveAttribute(
       "data-right-panel-width",
       "280",
     );
@@ -1890,10 +1902,11 @@ test.describe("IsoNim packaged editor example", () => {
       "style",
       /#1D4ED8/,
     );
-    await expect(page.getByText("Unsaved token edit")).toBeVisible();
+    await expect.poll(() => demoSourceContent(page, demoFoundationSource)).toContain("--wl-color-blue-600: #1D4ED8;");
+    await expect.poll(() => pendingSourceEdits(page)).toBe(0);
 
     await page
-      .getByRole("button", { name: "Revert foundation source edits" })
+      .getByRole("button", { name: "Undo foundation token edit" })
       .click();
     await expect(
       page.getByRole("textbox", { name: "Foundation token value" }),
@@ -1905,10 +1918,13 @@ test.describe("IsoNim packaged editor example", () => {
     await page
       .getByRole("button", { name: "Apply foundation token value" })
       .click();
-    await page
-      .getByRole("button", { name: "Save foundation source edits" })
-      .click();
-    await expect(page.getByText("Clean - source ready")).toBeVisible();
+    await expect.poll(() => demoSourceContent(page, demoFoundationSource)).toContain("--wl-color-blue-600: #1D4ED8;");
+    await expect.poll(() => pendingSourceEdits(page)).toBe(0);
+    await expect(page.locator("[data-save-error]")).toBeHidden();
+    await page.getByRole("button", { name: "Select foundation category Spacing" }).click();
+    await page.getByRole("button", { name: "Select foundation category Color" }).click();
+    await page.getByRole("button", { name: "Select foundation token color.blue.600" }).click();
+    await expect(page.getByRole("textbox", { name: "Foundation token value" })).toHaveValue("#1D4ED8");
 
     const desktopShot = await page.screenshot({ fullPage: true });
     expect(desktopShot.length).toBeGreaterThan(10000);

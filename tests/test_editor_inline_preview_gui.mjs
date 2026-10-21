@@ -45,7 +45,7 @@ try {
  page.on('pageerror',error=>proof.errors.push(error.message));
  page.on('request',request=>{const url=new URL(request.url());if(url.pathname.startsWith('/api/agent/'))proof.agentRequests.push(url.pathname);if(url.pathname==='/api/editor/source/operation')proof.sourceRequests.push(request.postDataJSON());});
  await page.goto(origin);await page.waitForFunction(()=>!!window.__popupAcceptance);
- await page.locator('[data-toolbar-cluster="mode"] [aria-label="Edit"]').click();
+ await page.locator('[data-toolbar-cluster="mode"] [aria-label="Switch to edit mode"]').click();
  const snapshot=()=>page.evaluate(()=>JSON.parse(window.__popupAcceptance.snapshot()));
  const source=()=>readFileSync(project+'/stories.nim','utf8'),catalog=()=>readFileSync(project+'/.isonim/catalog.json','utf8');
  let selected='action',expectedSource=source(),count=0;

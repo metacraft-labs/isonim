@@ -955,7 +955,7 @@ test-editor: test-design-review-local-harbor test-design-review-harbor-build tes
 
 # Run packaged editor browser tests.
 test-browser-editor-example: editor-build
-    "${ISONIM_SCENARIO_NODE:-node}" tests/test_editor_example_reset_gui.mjs
+    PLAYWRIGHT_CHROMIUM_EXECUTABLE="${PLAYWRIGHT_CHROMIUM_EXECUTABLE:-$(command -v chromium)}" "${ISONIM_SCENARIO_NODE:-node}" tests/test_editor_example_reset_gui.mjs
     cd tests/browser && npm install && PLAYWRIGHT_CHROMIUM_EXECUTABLE="${PLAYWRIGHT_CHROMIUM_EXECUTABLE:-$(command -v chromium)}" npx playwright test --project=editor-example
 
 # Run the M43 visual screenshot, pixel, layout, and review brief gates.
@@ -1265,7 +1265,7 @@ browser-test-install:
 
 # Build everything, then run the six static in-repo Playwright projects (51 tests).
 test-browser-all: browser-test-deps
-    "${ISONIM_SCENARIO_NODE:-node}" tests/test_editor_example_reset_gui.mjs
+    PLAYWRIGHT_CHROMIUM_EXECUTABLE="${PLAYWRIGHT_CHROMIUM_EXECUTABLE:-$(command -v chromium)}" "${ISONIM_SCENARIO_NODE:-node}" tests/test_editor_example_reset_gui.mjs
     cd tests/browser && PLAYWRIGHT_CHROMIUM_EXECUTABLE="${PLAYWRIGHT_CHROMIUM_EXECUTABLE:-$(command -v chromium)}" npx playwright test --project=demo-app --project=hmr --project=hmr-parametric --project=hmr-transport --project=web-worker --project=editor-example
 
 # The gate run on every push: the three HMR projects, 25 tests, ~20s of
@@ -1713,7 +1713,7 @@ test-editor-reset-removal: build-tailwind
 # Reset, set, undo, undo in the packaged editor example: its real example
 # writer, served from build/editor, physical pointer and keyboard input.
 test-editor-example-reset-gui: editor-build
-    "${ISONIM_SCENARIO_NODE:-node}" tests/test_editor_example_reset_gui.mjs
+    PLAYWRIGHT_CHROMIUM_EXECUTABLE="${PLAYWRIGHT_CHROMIUM_EXECUTABLE:-$(command -v chromium)}" "${ISONIM_SCENARIO_NODE:-node}" tests/test_editor_example_reset_gui.mjs
 
 test-editor-c4a: test-editor-selection-keys test-editor-source-write-receipts test-editor-save-pipeline test-editor-act-time-refusals test-editor-inspector-controls test-editor-reset-removal test-editor-c4a-headless test-editor-c4a-compounds test-editor-c4a-properties test-editor-c4a-remaining test-editor-inline-preview test-editor-c4a-gestures test-editor-c4a-color test-editor-c4a-grip
 
@@ -1809,6 +1809,9 @@ test-editor-inspector: test-editor-shell-current test-editor-inspector-native-so
 
 # Real native guarded-source transactions and disposable compiled GRIP provider.
 test-editor-inspector-native-source: isonim-review-build
+    #!/usr/bin/env bash
+    set -euo pipefail
+    export PLAYWRIGHT_CHROMIUM_EXECUTABLE="${PLAYWRIGHT_CHROMIUM_EXECUTABLE:-$(command -v chromium)}"
     python3 tests/test_editor_inspector_source.py
     python3 tests/test_editor_source_style_provider.py
     timeout --signal=TERM --kill-after=15s 180s "${ISONIM_SCENARIO_NODE:-node}" tests/test_editor_source_bindings_gui.mjs

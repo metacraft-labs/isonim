@@ -44,7 +44,7 @@ try {
  page.on('request',request=>{const url=new URL(request.url());if(url.pathname.startsWith('/api/agent/'))proof.agentRequests.push(url.pathname);if(url.pathname==='/api/editor/source/operation')proof.sourceRequests.push(request.postDataJSON());});
  await page.addInitScript(()=>{window.__flexSelectionEvents=[];window.addEventListener('isonim-preview-element-selected',event=>window.__flexSelectionEvents.push(event.detail));});
  await page.goto(origin);await page.waitForFunction(()=>!!window.__popupAcceptance);
- await page.locator('[data-toolbar-cluster="mode"] [aria-label="Edit"]').click();
+ await page.locator('[data-toolbar-cluster="mode"] [aria-label="Switch to edit mode"]').click();
  await page.locator('[data-scene-graph-row="action"]').click();
 
  const state=()=>page.evaluate(()=>JSON.parse(window.__flexMetadata.state()));
@@ -96,7 +96,7 @@ try {
  assert.equal(source(),beforeSource);assert.equal(catalog(),beforeCatalog);assert.deepEqual(await computed(),beforeComputed);assert.equal(proof.sourceRequests.length,beforeCount);assert.equal((await snapshot()).undoCount,before.undoCount);
  await page.keyboard.press('Escape');record('live permission refuses choice with source/catalog/preview/history unchanged');
  await page.evaluate(()=>window.__popupAcceptance.readOnly(false));await choose('Column');await waitApplied(5,'column');record('restored permission enables genuine source edit');
- await page.reload();await page.waitForFunction(()=>!!window.__popupAcceptance);await page.locator('[data-toolbar-cluster="mode"] [aria-label="Edit"]').click();await page.locator('[data-scene-graph-row="action"]').click();
+ await page.reload();await page.waitForFunction(()=>!!window.__popupAcceptance);await page.locator('[data-toolbar-cluster="mode"] [aria-label="Switch to edit mode"]').click();await page.locator('[data-scene-graph-row="action"]').click();
  await page.waitForFunction(()=>JSON.parse(window.__flexMetadata.state()).properties.some(p=>p.name==='flex-direction'&&p.authoredValue==='column'));
  assert.equal((await computed()).direction,'column');assert.equal((await computed()).display,'inline-flex');record('fresh editor reload selects current direction and authoring capability from compiled source');
  await row.locator('[data-choice-group-trigger]').click();

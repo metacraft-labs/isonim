@@ -394,7 +394,7 @@ try{
   await option.click();await dropdown.waitFor({state:'hidden'});
   await until(async()=> (await cli(['state'])).viewport==='wide','normal viewport dropdown selection '+width);
   if(compact)assert.equal(await current.innerText(),'Wide');
-  await toolbar.locator('[data-toolbar-cluster=mode]').getByRole('button',{name:'View',exact:true}).click();
+  await toolbar.locator('[data-toolbar-cluster=mode]').getByRole('button',{name:'Switch to view mode',exact:true}).click();
   await until(async()=> (await cli(['state'])).mode==='emView','normal View mode selection '+width);
  }
  evidence(10,'wide/narrow 44px scrolling toolbar, anchored viewport dropdown, keyboard/ESC/outside-click/resize and View controls remain reachable');

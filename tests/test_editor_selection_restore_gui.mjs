@@ -122,7 +122,7 @@ try{
   await page.waitForFunction(()=>!!window.__popupAcceptance);
   await page.locator('[data-scene-graph-row="action"]').waitFor();
 
-  await page.locator('[data-toolbar-cluster="mode"] [aria-label="Edit"]').click();
+  await page.locator('[data-toolbar-cluster="mode"] [aria-label="Switch to edit mode"]').click();
   const ready=async()=>page.waitForFunction(()=>Array.from(document.querySelectorAll('.editor-preview iframe')).some(frame=>frame.getClientRects().length&&typeof frame.contentWindow?.__isonimRestoreSelection==='function'));
   await ready();
   await page.evaluate(()=>{

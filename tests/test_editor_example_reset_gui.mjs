@@ -38,7 +38,7 @@ try {
  await page.getByRole('button',{name:'Open Components section'}).click();
  await page.getByRole('button',{name:'Toggle DestinationCard stories'}).click();
  await page.locator('[aria-label="Select story DestinationCard / Default"]').click();
- await page.locator('[aria-label="Preview mode"]').getByRole('button',{name:'Edit',exact:true}).click();
+ await page.locator('[aria-label="Preview mode"]').getByRole('button',{name:'Switch to edit mode',exact:true}).click();
  await page.frameLocator('iframe[title="Editable component preview"]').locator('[data-testid="component-edit-preview"]').click();
  const file='examples/wanderlust/design-system/foundations.css';
  const source=()=>page.evaluate(file=>(window.__isonimDemoSources||{})[file],file);

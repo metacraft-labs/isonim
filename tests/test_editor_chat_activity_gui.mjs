@@ -512,9 +512,9 @@ try{
     assert.equal(JSON.parse(await toolbarPage.evaluate(()=>window.__chatTest.controlState())).viewport,firstSlug);
     assert.equal(await overflow.getAttribute('aria-expanded'),'false');
     const modes=bar.locator('[data-toolbar-cluster="mode"]');
-    await modes.getByRole('button',{name:'Spec',exact:true}).click();
+    await modes.getByRole('button',{name:'Switch to spec mode',exact:true}).click();
     assert.equal(JSON.parse(await toolbarPage.evaluate(()=>window.__chatTest.controlState())).mode,'emSpec');
-    await modes.getByRole('button',{name:'View',exact:true}).click();
+    await modes.getByRole('button',{name:'Switch to view mode',exact:true}).click();
     assert.equal(JSON.parse(await toolbarPage.evaluate(()=>window.__chatTest.controlState())).mode,'emView');
     await settleToolbar();
     writeFileSync(path.join(artifacts,`preview-toolbar-${width}.json`),JSON.stringify({geometry,slugs,firstSlug},null,2));

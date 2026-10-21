@@ -42,7 +42,7 @@ try {
  page.on('request',request=>{const url=new URL(request.url());if(url.pathname.startsWith('/api/agent/'))proof.agentRequests.push(url.pathname);if(url.pathname==='/api/editor/source/operation')proof.sourceRequests.push(request.postDataJSON());});
  page.on('request',request=>{try{const body=request.postDataJSON();if(body?.method==='editor.inspector-source')proof.inspectorRequests.push(body.params.request);}catch(error){}});
  await page.goto(origin);await page.waitForFunction(()=>!!window.__popupAcceptance);
- await page.locator('[data-toolbar-cluster="mode"] [aria-label="Edit"]').click();
+ await page.locator('[data-toolbar-cluster="mode"] [aria-label="Switch to edit mode"]').click();
  await page.locator('[data-scene-graph-row="action"]').click();
 
  const snapshot=()=>page.evaluate(()=>JSON.parse(window.__popupAcceptance.snapshot()));

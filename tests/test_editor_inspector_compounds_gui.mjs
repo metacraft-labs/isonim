@@ -47,7 +47,7 @@ try {
  const requestTimes=new WeakMap();page.on('request',request=>{if(new URL(request.url()).pathname.startsWith('/api/editor/source'))requestTimes.set(request,performance.now());});
  page.on('requestfinished',request=>{const started=requestTimes.get(request);if(started!==undefined)proof.httpTimings.push({path:new URL(request.url()).pathname,commandId:request.method()==='POST'?request.postDataJSON()?.commandId:null,milliseconds:performance.now()-started});});
  await page.goto(origin);await page.waitForFunction(()=>!!window.__popupAcceptance);
- await page.locator('[data-toolbar-cluster="mode"] [aria-label="Edit"]').click();
+ await page.locator('[data-toolbar-cluster="mode"] [aria-label="Switch to edit mode"]').click();
  await page.locator('[data-scene-graph-row="action"]').click();
  // Exercise all five current embedded channels on the real visible document.
  // The same forwarded events must leave hidden preview documents untouched.

@@ -47,7 +47,7 @@ try {
  page.on('pageerror',error=>proof.errors.push(error.message));
  page.on('request',request=>{const url=new URL(request.url());if(url.pathname.startsWith('/api/agent/'))proof.agentRequests.push(url.pathname);if(url.pathname==='/api/editor/source/operation')proof.sourceRequests.push(request.postDataJSON());});
  await page.goto(origin);await page.waitForFunction(()=>!!window.__popupAcceptance);
- await page.locator('[data-toolbar-cluster="mode"] [aria-label="Edit"]').click();
+ await page.locator('[data-toolbar-cluster="mode"] [aria-label="Switch to edit mode"]').click();
  await page.locator('[data-scene-graph-row="action"]').click();
  const snapshot=()=>page.evaluate(()=>JSON.parse(window.__popupAcceptance.snapshot()));
  const source=()=>readFileSync(project+'/stories.nim','utf8');
@@ -140,7 +140,7 @@ try {
  const finalSource=source(),finalCatalog=catalog(),finalPreview={...reference},finalRequests=proof.sourceRequests.length;
  await page.evaluate(()=>window.__popupAcceptance.history(false));await published(--count);assert.equal(source(),finalSource.replace('overflow:scroll;','overflow:hidden;'));reference.overflow='hidden';await checkPreview();
  await page.evaluate(()=>window.__popupAcceptance.history(true));await published(++count);assert.equal(source(),finalSource);reference.overflow='scroll';await checkPreview();assert.equal(proof.sourceRequests.length,finalRequests+2);record('native undo redo recompile exact source and restore all section previews');
- await page.reload();await page.waitForFunction(()=>!!window.__popupAcceptance);await page.locator('[data-toolbar-cluster="mode"] [aria-label="Edit"]').click();await page.locator('[data-scene-graph-row="action"]').click();await checkPreview();assert.equal(source(),finalSource);assert.equal(catalog(),finalCatalog);record('fresh browser reload reads real compiled catalog and exact persisted declarations');
+ await page.reload();await page.waitForFunction(()=>!!window.__popupAcceptance);await page.locator('[data-toolbar-cluster="mode"] [aria-label="Switch to edit mode"]').click();await page.locator('[data-scene-graph-row="action"]').click();await checkPreview();assert.equal(source(),finalSource);assert.equal(catalog(),finalCatalog);record('fresh browser reload reads real compiled catalog and exact persisted declarations');
  const strokeAfterReload=page.locator('[data-inspector-section-header="stroke"]');if(await strokeAfterReload.getAttribute('aria-expanded')==='false')await strokeAfterReload.click();
  // Unsupported input and permission refusal leave actual bytes/catalog/preview.
  const before=await snapshot(),requests=proof.sourceRequests.length;
