@@ -203,6 +203,16 @@ test-c:
     nim c -r tests/test_static_dist_dev_server.nim
     nim c -r tests/test_data_loading.nim
     nim c -r tests/test_file_routes.nim
+    # isonim/content and isonim/theming/dtcg: the content libraries static
+    # sites, blogs and HTML email share (Markdown, front matter, anchors,
+    # highlighting, directives, DTCG tokens). Pure, so they run on both
+    # targets; the DTCG suite reads token files, so it is C-only.
+    nim c -r tests/test_content_markdown.nim
+    nim c -r tests/test_content_frontmatter.nim
+    nim c -r tests/test_content_anchors.nim
+    nim c -r tests/test_content_highlight.nim
+    nim c -r tests/test_content_directives.nim
+    nim c -r tests/test_theming_dtcg.nim
     nim c -r tests/test_http_types.nim
     nim c -r tests/test_streaming_stress.nim
     nim c -r tests/test_third_party.nim
@@ -295,6 +305,12 @@ test-js: build-tailwind
     nim js -r tests/test_server_functions.nim
     nim js -r tests/test_form_actions.nim
     nim js -r tests/test_data_loading.nim
+    # isonim/content (see test-c).
+    nim js -r tests/test_content_markdown.nim
+    nim js -r tests/test_content_frontmatter.nim
+    nim js -r tests/test_content_anchors.nim
+    nim js -r tests/test_content_highlight.nim
+    nim js -r tests/test_content_directives.nim
     # The Web Worker target's message codec and build guard (IFP-M3).
     nim js -r tests/test_web_worker.nim
 

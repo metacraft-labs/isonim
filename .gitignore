@@ -48,6 +48,12 @@ tests/test_form_actions
 tests/test_rpc_dispatch
 tests/test_route_manifest
 tests/test_file_routes
+tests/test_content_markdown
+tests/test_content_frontmatter
+tests/test_content_anchors
+tests/test_content_highlight
+tests/test_content_directives
+tests/test_theming_dtcg
 benchmarks/runner/
 benchmarks/results/
 # Matches the directory AND the dev shell's symlink into the Nix store:
