@@ -73,7 +73,7 @@ proc matchesRoute*(routes: seq[SsrRouteEntry]; path: string): bool =
   findSsrMatch(routes, path)[0].len > 0
 
 proc renderRoute*(routes: seq[SsrRouteEntry]; path: string;
-                  routeParams: RouteParams = nil): string =
+                  routeParams: RouteParams = nil; setup: proc() = nil): string =
   ## Render the matched route for the given path to an HTML string.
   ## Used by SSR (nginx module) to render the correct page.
   ##
@@ -95,6 +95,7 @@ proc renderRoute*(routes: seq[SsrRouteEntry]; path: string;
     return "<div>404 Not Found</div>"
 
   renderToString proc(): string =
+    if setup != nil: setup()
     if chain.len == 1:
       if chain[0].isLayout:
         chain[0].layout("")

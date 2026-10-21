@@ -1,0 +1,20 @@
+// Compiler/Node-only manifest contract, independent of browser provisioning.
+import {readFileSync} from 'node:fs';
+import assert from 'node:assert/strict';
+const out = new URL('../build/experiments/', import.meta.url);
+const safe=JSON.parse(readFileSync(new URL('safe-js.json',out),'utf8'));
+assert.deepEqual(Object.keys(safe.experiments),['__proto__','constructor'],'prototype-safe experiment keys');
+assert.deepEqual(safe.routes.__proto__,['__proto__','constructor']);
+assert.deepEqual(safe.experiments.__proto__.arms,['p0','p1']);
+export const manifest=JSON.parse(readFileSync(new URL('js.json', out),'utf8'));
+assert.deepEqual(Object.keys(manifest.experiments), ['Color','home-cta']);
+assert.deepEqual(manifest.routes, {'/':['Color','home-cta'], '/other':['home-cta']});
+assert.deepEqual(manifest.experiments['home-cta'].arms,['control','estimate','startFree']);
+assert.deepEqual(manifest.experiments['home-cta'].weights,[50,25,25]);
+assert.deepEqual(manifest.experiments['home-cta'].window,{start:'2026-10-01',end:'2027-01-01'});
+assert.equal(manifest.experiments.Color.callSites.length,1);
+assert.equal(manifest.experiments['home-cta'].callSites.length,3);
+assert.equal(new Set(Object.values(manifest.experiments).flatMap(e=>e.callSites.map(s=>s.file))).size,3);
+const bundle=readFileSync(new URL('app.js',out),'utf8');
+assert(!bundle.includes('tests/fixtures/experiments') && !bundle.includes(process.cwd()));
+console.log('experiment manifest metadata and source exclusion passed');

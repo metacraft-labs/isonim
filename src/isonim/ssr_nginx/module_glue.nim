@@ -26,6 +26,9 @@ type
     httpMethod*: string
     headers*: seq[(string, string)]
 
+  AppRendererReq* = proc(req: RequestInfo): string
+    ## Request-aware renderer, executed inside the handler's render root.
+
   HandlerResult* = object
     ## Result of handling a request.
     statusCode*: int
@@ -116,6 +119,16 @@ proc handleStreamingSsrRequest*(conf: IsoNimLocConf; reqInfo: RequestInfo;
     body: html,
     chunks: chunks,
   )
+
+proc handleSsrRequest*(conf: IsoNimLocConf; reqInfo: RequestInfo;
+    app: AppRendererReq): HandlerResult =
+  ## Forward the request while retaining the buffered handler's policy.
+  handleSsrRequest(conf, reqInfo, proc(): string = app(reqInfo))
+
+proc handleStreamingSsrRequest*(conf: IsoNimLocConf; reqInfo: RequestInfo;
+    app: AppRendererReq; onChunk: proc(chunk: string)): HandlerResult =
+  ## Request forwarding is identical for streamed responses.
+  handleStreamingSsrRequest(conf, reqInfo, proc(): string = app(reqInfo), onChunk)
 
 when not defined(isNginxTest):
   ## Real nginx entry point. Exported as C function for the nginx module.

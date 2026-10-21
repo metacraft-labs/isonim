@@ -1836,6 +1836,14 @@ test-editor-selection-keys: test-editor-selection-keys-headless isonim-review-bu
 # Structural IDs and compiler manifest parity, both real backends.
 manifest-check: build-tailwind
     bash tools/check_manifest.sh
+    bash tools/check_experiments.sh --manifest-only
+
+test-experiments: build-tailwind
+    nim c -r -d:isServer -d:isNginxTest --out:build/test_experiment_ssr tests/test_experiment_ssr.nim
+    bash tools/check_experiments.sh
+
+test-experiment-mutants: build-tailwind
+    node tools/test_experiment_mutants.mjs
 
 test-stable-ids: manifest-check
     nim c -r --out:build/test_iid_stability tests/test_iid_stability.nim
