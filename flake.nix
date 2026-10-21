@@ -143,6 +143,11 @@
               # ``fetchYarnDeps`` hash when ``yarn.lock`` changes).
               prefetch-yarn-deps
               just
+              # The Justfile's test recipes run Python drivers
+              # (``tools/run_nim_js_test.py``, ``tests/test_editor_*.py``,
+              # ...), so the shell must provide the interpreter rather than
+              # rely on one happening to be on the host's PATH.
+              python3
               # REV-M3: userspace PostgreSQL substrate.  ``postgresql_16``
               # provides ``initdb``, ``postgres``, ``psql``, ``pg_isready``,
               # ``pg_dump``, ``pg_restore`` on $PATH.  ``process-compose``
