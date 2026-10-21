@@ -53,6 +53,9 @@ type
     galleryHostState*: Signal[GalleryHostState]
     httpClient*: EditorHttpClient
     discovery*: DaemonDiscovery
+    index*: BriefIndex
+      ## Immutable baked catalog parsed once for this editor, rather than
+      ## reparsing/copying all brief bodies during every story selection.
     # CHRM-M7 — narrow-viewport breakpoint signal.  Driven by a JS
     # ``window.innerWidth`` probe + resize listener installed by
     # ``mountGalleryHostForEditor``. ``true`` when the viewport width
@@ -71,7 +74,8 @@ proc previewIdFor*(story: StoryRef; backend: PreviewBackend): string =
     return ""
   result = canonicalPreviewId(story, backend)
 
-proc resolveBriefId*(story: StoryRef; backend: PreviewBackend): string =
+proc resolveBriefId*(story: StoryRef; backend: PreviewBackend;
+    index: BriefIndex = nil): string =
   ## Resolve the canonical briefId for the gallery / history-button
   ## flow against the active (story, backend) pair.
   ##
@@ -95,7 +99,7 @@ proc resolveBriefId*(story: StoryRef; backend: PreviewBackend): string =
   ## ``isonim-review capture`` CLI).  Fall back to the first listed
   ## briefId otherwise.
   if story.name.len == 0: return ""
-  let idx = builtInBriefIndex()
+  let idx = if index != nil: index else: builtInBriefIndex()
   if idx == nil or idx.empty():
     return ""
   let previewId = canonicalPreviewId(story, backend)
@@ -134,6 +138,7 @@ proc ensureDesignReviewState*(vm: EditorVM): DesignReviewState =
     galleryHostState: createSignal(ghsClosed),
     httpClient: client,
     discovery: discovery,
+    index: builtInBriefIndex(),
     # CHRM-M7 — initialise the narrow signal optimistically to false;
     # ``mountGalleryHostForEditor`` installs the JS resize probe that
     # flips it reactively based on ``window.innerWidth``.
@@ -145,7 +150,7 @@ proc ensureDesignReviewState*(vm: EditorVM): DesignReviewState =
   createRenderEffect proc() =
     let story = capturedVm.selectedStory.val
     let backend = capturedVm.platform.val
-    let bid = resolveBriefId(story, backend)
+    let bid = resolveBriefId(story, backend, capturedState.index)
     capturedState.briefId.val = bid
     capturedState.galleryVm.briefId.val = bid
     discard previewIdFor(story, backend)

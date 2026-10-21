@@ -5361,10 +5361,10 @@ proc renderEditorShell*[R, E](r: R; vm: EditorVM;
     createRenderEffect proc() =
       let story = capturedVm.selectedStory.val
       let backend = capturedVm.platform.val
-      let bid = design_review_mount_view.resolveBriefId(story, backend)
+      let bid = design_review_mount_view.resolveBriefId(story, backend, designReviewState.index)
       var body = ""
       if bid.len > 0:
-        let idx = builtInBriefIndex()
+        let idx = designReviewState.index
         if idx != nil and bid in idx.byBriefId:
           let b = idx.byBriefId[bid]
           if b.title.len > 0:
