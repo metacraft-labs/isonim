@@ -16,6 +16,8 @@ tests/test_references
 tests/test_redirects
 tests/test_proofsite_examples_compile
 tests/test_theme_contract
+tests/test_landing_components
+tests/test_dev
 src/ssr
 src/build
 

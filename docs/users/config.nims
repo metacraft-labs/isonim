@@ -26,6 +26,16 @@ switch("path", siblingRoot / "nim-stew")
 switch("path", siblingRoot / "isonim/vendor/chronicles")
 switch("path", siblingRoot / "isonim/vendor/serialization")
 switch("path", siblingRoot / "isonim/vendor/json_serialization")
+# The import closure of `isonim/editor`, which the guide's editor pages
+# document with compiled examples. These are the same sibling libraries
+# isonim's own `repro.nim` declares as `uses:` edges for its editor subtree,
+# and `../../tests/config.nims` puts on the path for isonim's own tests:
+# the editor imports `isonim_render_serve`, `nim_acp` and `nim_agents`, and
+# `nim_agents` needs `nim_agent_harbor` in turn.
+switch("path", siblingRoot / "isonim-render-serve/src")
+switch("path", siblingRoot / "nim-acp/src")
+switch("path", siblingRoot / "nim-agents/src")
+switch("path", siblingRoot / "nim-agent-harbor/src")
 switch("define", "chronicles_sinks=textlines[stderr]")
 switch("define", "chronicles_runtime_filtering=on")
 switch("define", "chronicles_log_level=TRACE")

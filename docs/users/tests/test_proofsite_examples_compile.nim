@@ -7,8 +7,14 @@
 ## deliverable 4): walks this site's own real `content/` dir through the
 ## same manifest + content-loader + markdown pipeline, extracts every
 ## `nim runnable` fence verbatim, and shells out to a real
-## `nim c --compileOnly` against this repo's own sibling-package search
-## paths (mirroring `config.nims`).
+## `nim c --compileOnly`.
+##
+## Each example is written below this package's `build/` directory, so Nim
+## applies this package's own `config.nims` to it exactly as it does to the
+## site itself (Nim runs every `config.nims` in the parent directories of
+## the compiled module). That file is the one declaration of the search
+## paths; an example sees the same paths a reader's code in this package
+## would, and this test keeps no copy of them that could drift.
 
 import std/[unittest, os, osproc, streams, strutils]
 import core/content
@@ -40,29 +46,18 @@ proc collectRunnableExamples(contentDir: string; manifest: RouteManifest): seq[R
     except CatchableError:
       discard
 
-proc repoSiblingSwitches(siblingRoot: string): seq[string] =
-  ## Mirrors this package's own `config.nims`.
-  @[
-    "--path:" & (siblingRoot / "isonim-docs" / "src"),
-    "--path:" & (siblingRoot / "isonim" / "src"),
-    "--path:" & (siblingRoot / "isonim-render-serve" / "src"),
-    "--path:" & (siblingRoot / "nim-everywhere" / "src"),
-    "--path:" & (siblingRoot / "nim-faststreams"),
-    "--path:" & (siblingRoot / "nim-stew"),
-    "--path:" & (siblingRoot / "isonim" / "vendor" / "chronicles"),
-    "--path:" & (siblingRoot / "isonim" / "vendor" / "serialization"),
-    "--path:" & (siblingRoot / "isonim" / "vendor" / "json_serialization"),
-    "--define:chronicles_sinks=textlines[stderr]",
-  ]
-
-proc compileExample(tmpDir, siblingRoot: string; ex: RunnableExample): tuple[ok: bool, output: string] =
+proc compileExample(tmpDir: string; ex: RunnableExample): tuple[ok: bool, output: string] =
+  ## Compiles one example from `tmpDir`, which must lie inside this package
+  ## so that its `config.nims` supplies the search paths. The nimcache goes
+  ## inside `tmpDir` too, so removing `tmpDir` leaves nothing behind.
   var safeName = ""
   for c in ex.contentPath:
     if c in IdentChars: safeName.add c
     else: safeName.add '_'
   let filePath = tmpDir / ("ex_" & $ex.index & "_" & safeName & ".nim")
   writeFile(filePath, ex.code)
-  let args = @["c", "--compileOnly", "--hints:off"] & repoSiblingSwitches(siblingRoot) & @[filePath]
+  let args = @["c", "--compileOnly", "--hints:off",
+               "--nimcache:" & (tmpDir / "nimcache"), filePath]
   var p = startProcess("nim", args = args, options = {poUsePath, poStdErrToStdOut})
   let output = p.outputStream.readAll()
   let exitCode = p.waitForExit()
@@ -72,15 +67,16 @@ proc compileExample(tmpDir, siblingRoot: string; ex: RunnableExample): tuple[ok:
 suite "IsoNim docs site examples -- every `nim runnable` fence in the real content/ dir compiles (Tier 3, C-target)":
   test "extracting and compiling every real content/ dir `nim runnable` fence succeeds":
     let repoRoot = currentSourcePath().parentDir().parentDir()
-    let siblingRoot = repoRoot.parentDir().parentDir().parentDir() # .../codetracer-ci-refactor/
     let contentDir = repoRoot / "content"
     let examples = collectRunnableExamples(contentDir, docsRouteManifest())
     check examples.len >= 4
-    let tmpDir = getTempDir() / "isonim_docs_users_proofsite_examples_" & $getCurrentProcessId()
+    # Inside this package (under the git-ignored `build/`), not the system
+    # temp directory: see the module comment.
+    let tmpDir = repoRoot / "build" / ("runnable-examples-" & $getCurrentProcessId())
     createDir(tmpDir)
     try:
       for ex in examples:
-        let (ok, output) = compileExample(tmpDir, siblingRoot, ex)
+        let (ok, output) = compileExample(tmpDir, ex)
         checkpoint ex.contentPath & " runnable example #" & $ex.index & ":\n" & output
         check ok
     finally:
