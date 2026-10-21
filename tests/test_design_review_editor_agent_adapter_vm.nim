@@ -31,6 +31,7 @@
 import std/[unittest, strutils, json, sequtils]
 
 import nim_agents
+import nim_agents/activity
 import isonim/core/[signals, owner]
 import isonim/viewmodel
 import isonim/theming/theme
@@ -93,7 +94,13 @@ suite "Phase C editor agent adapter VM":
 
       # Drive the SSE callbacks.
       emitSessionUpdate(client, "hi there")
+      check chat.activity.val.entries.anyIt(it.role == arAssistant and it.status == "streaming")
       emitEnd(client)
+      check chat.activity.val.entries.anyIt(it.role == arAssistant and it.status == "completed")
+      check not chat.activity.val.entries.anyIt(it.role == arAssistant and it.status == "streaming")
+      let completedEntries = chat.activity.val.entries.len
+      emitEnd(client)
+      check chat.activity.val.entries.len == completedEntries
 
       var agentText = ""
       for msg in chat.messages.val:

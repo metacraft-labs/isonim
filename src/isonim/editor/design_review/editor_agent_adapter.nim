@@ -118,11 +118,14 @@ proc installAdapterCallbacks*(client: BrowserAgentClient; chat: AgentChatVM;
     capturedChat.stopReason.val = $stopReason
     capturedChat.sessionStatus.val = asReady
     if $stopReason == "cancelled":
+      capturedChat.settleAgentReply(aekCancelled)
       capturedChat.connectionState.val = $acsCancelled
     elif $stopReason == "error":
+      capturedChat.settleAgentReply(aekError)
       capturedChat.connectionState.val = $acsError
       capturedChat.sessionStatus.val = asError
     else:
+      capturedChat.settleAgentReply(aekCompleted)
       capturedChat.connectionState.val = $acsCompleted
   client.onInterrupted = proc(message: cstring) {.closure.} =
     if client.closed or (generation >= 0 and capturedChat.promptGeneration != generation): return

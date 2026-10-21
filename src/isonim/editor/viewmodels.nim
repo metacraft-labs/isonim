@@ -15,6 +15,7 @@ import isonim/editor/design_review/context_policy
 import isonim/editor/element_semantics
 import isonim/editor/streaming_preview
 import nim_agents/activity
+from nim_agents/client import AgentEvent, aekCompleted, aekThoughtChunk
 import isonim/dsl/tailwind
 import isonim/editor/agent_context
 
@@ -10616,6 +10617,23 @@ proc addAgentResponse*(chat: AgentChatVM; text: string; recordActivity = true) =
     result = prev
     result.add ChatMessage(kind: cmkAgent, text: text, timestamp: 0.0)
 
+proc settleAgentReply*(chat: AgentChatVM;
+    terminal = aekCompleted) =
+  ## A synchronous adapter return or the transport's terminal frame ends
+  ## prose streaming. Reuse the shared reducer, and avoid a second terminal
+  ## entry when the provider already supplied the same completion.
+  var streaming = false
+  let timeline = chat.activity.val
+  for entry in timeline.entries:
+    if entry.turn == timeline.turn and entry.status == "streaming" and
+        (entry.role == arAssistant or entry.kind == aekThoughtChunk):
+      streaming = true
+      break
+  if streaming:
+    chat.activity.update proc(previous: ActivityTimeline): ActivityTimeline =
+      result = previous
+      discard result.reduce(AgentEvent(kind: terminal))
+
 proc recordEdit*(chat: AgentChatVM; edit: EditRecord) =
   chat.accumulatedEdits.update proc(prev: seq[EditRecord]): seq[EditRecord] =
     result = prev
@@ -11013,6 +11031,7 @@ proc sendAgentPrompt*(editor: EditorVM): bool {.discardable.} =
   editor.chat.lastPromptContext.val = context
   if editor.chat.promptAdapter(prompt, context):
     if editor.chat.asyncAgentAdapter: return true
+    editor.chat.settleAgentReply()
     if editor.chat.sessionStatus.val == asLoading:
       editor.chat.sessionStatus.val = asReady
     if editor.chat.connectionState.val == "streaming":

@@ -452,7 +452,10 @@ proc renderChatPanel*[R, E](r: R; vm: EditorVM): E =
           elif annotation.selector.len > 0: annotation.selector
           else: annotation.elementId
         let card = ui(r):
-          tdiv(display = "flex", flex_direction = "column", gap = "6px",
+          tdiv(`data-review-annotation` = annotationId,
+              `data-review-state` = annotationStateText(state),
+              `data-review-included` = (if included: "true" else: "false"),
+              display = "flex", flex_direction = "column", gap = "6px",
               padding = "7px", border = "1px solid " & borderFaint,
               border_radius = "6px")
         let summary = ui(r):
@@ -535,7 +538,9 @@ proc renderChatPanel*[R, E](r: R; vm: EditorVM): E =
         let requestSummary = request.title & " - " &
           permissionStatusText(request.status)
         let row = ui(r):
-          tdiv(display = "flex", flex_direction = "column", gap = "6px")
+          tdiv(`data-agent-permission` = requestId,
+              `data-agent-permission-status` = permissionStatusText(request.status),
+              display = "flex", flex_direction = "column", gap = "6px")
         let summary = ui(r):
           span(font_size = "11px", color = textSecondary):
             text requestSummary
@@ -607,7 +612,9 @@ proc renderChatPanel*[R, E](r: R; vm: EditorVM): E =
             "Affected stories: adapter-resolved"
         let testSummary = "Tests: " & proposal.tests.join(", ")
         let card = ui(r):
-          tdiv(display = "flex", flex_direction = "column", gap = "6px")
+          tdiv(`data-agent-proposal` = proposalId,
+              `data-agent-proposal-status` = proposalStatusText(proposal.status),
+              display = "flex", flex_direction = "column", gap = "6px")
         let summary = ui(r):
           tdiv(display = "flex", flex_direction = "column", gap = "3px"):
             span(font_size = "11px", color = textPrimary):
