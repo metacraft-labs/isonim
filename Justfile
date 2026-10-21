@@ -1822,3 +1822,16 @@ test-editor-selection-keys-headless: build-tailwind
 
 test-editor-selection-keys: test-editor-selection-keys-headless isonim-review-build
     timeout --signal=TERM --kill-after=15s 180s "${ISONIM_SCENARIO_NODE:-node}" tests/test_editor_selection_keys_gui.mjs
+
+# Structural IDs and compiler manifest parity, both real backends.
+manifest-check: build-tailwind
+    bash tools/check_manifest.sh
+
+test-stable-ids: manifest-check
+    nim c -r --out:build/test_iid_stability tests/test_iid_stability.nim
+    nim c -r --out:build/test_iid_instances tests/test_iid_instances.nim
+    nim c -r -d:isonimStableIds --out:build/test_iid_keyed tests/test_iid_keyed.nim
+    node tests/test_iid_browser.mjs
+
+test-stable-id-mutants: build-tailwind
+    node tools/test_iid_mutants.mjs

@@ -178,3 +178,65 @@ proc clearEventListeners*(r: WebRenderer; node: Element) =
   ## For a full implementation, we would need to clone+replace the
   ## node, but the current generic view pattern does not require it.
   discard
+
+
+when defined(isonimStableIds):
+  {.emit: """
+  (() => {
+  if (globalThis.__isonimRememberIid) return;
+  globalThis.__isonimIids = new Map();
+  const iidCandidates = new Map();
+  globalThis.__isonimValidateIids = (only) => {
+    const entries = only === undefined ? iidCandidates : [[only, iidCandidates.get(only) || []]];
+    for (const [iid, refs] of entries) {
+      const alive = refs.filter(ref => ref.deref());
+      const mounted = alive.filter(ref => ref.deref().isConnected);
+      if (mounted.length > 1) throw new Error('duplicate live stable iid: ' + iid);
+      const chosen = mounted[0] || alive[alive.length - 1];
+      if (chosen) globalThis.__isonimIids.set(iid, chosen);
+      else { globalThis.__isonimIids.delete(iid); iidCandidates.delete(iid); }
+    }
+  };
+  let iidValidationPending = false;
+  const scheduleIidValidation = () => {
+    if (iidValidationPending) return;
+    iidValidationPending = true;
+    queueMicrotask(() => { iidValidationPending = false; globalThis.__isonimValidateIids(); });
+  };
+  globalThis.__isonimIidFinalizer = new FinalizationRegistry(({iid, ref}) => {
+    const refs = (iidCandidates.get(iid) || []).filter(candidate => candidate !== ref && candidate.deref());
+    if (refs.length) iidCandidates.set(iid, refs);
+    else iidCandidates.delete(iid);
+    // A collected predecessor never removes a newer claim for the same id.
+    if (globalThis.__isonimIids.get(iid) === ref) {
+      if (refs.length) globalThis.__isonimIids.set(iid, refs[refs.length - 1]);
+      else globalThis.__isonimIids.delete(iid);
+    }
+  });
+  globalThis.__isonimRememberIid = (iid, el) => {
+    const refs = (iidCandidates.get(iid) || []).filter(ref => ref.deref());
+    if (!refs.some(ref => ref.deref() === el)) {
+      const ref = new WeakRef(el);
+      refs.push(ref);
+      iidCandidates.set(iid, refs);
+      globalThis.__isonimIidFinalizer.register(el, {iid, ref});
+      const previous = globalThis.__isonimIids.get(iid)?.deref();
+      if (!previous || !previous.isConnected) globalThis.__isonimIids.set(iid, ref);
+    }
+    // Reconciliation may insert a successor before detaching its predecessor.
+    // Validate the completed DOM batch, never overwrite a mounted predecessor.
+    scheduleIidValidation();
+  };
+  new MutationObserver(scheduleIidValidation).observe(document, {childList: true, subtree: true});
+  })();
+  """.}
+  proc rememberIid(iid: cstring; el: Element) {.importjs: "globalThis.__isonimRememberIid(#, #)".}
+  proc resolveIidRaw(iid: cstring): Element {.importjs: "((iid) => { globalThis.__isonimValidateIids(iid); return globalThis.__isonimIids.get(iid)?.deref() || null; })(#)".}
+  proc noteElement*(el: Element; iid: string) =
+    ## The two-argument typed element hook indexes stable ids. Weak refs
+    ## prevent detached trees from being retained; finalization removes keys
+    ## only if no newer claim has replaced the collected node.
+    rememberIid(cstring(iid), el)
+  proc resolveIid*(iid: string): Element =
+    ## Resolve the latest node claimed for an identity, or nil after GC.
+    resolveIidRaw(cstring(iid))

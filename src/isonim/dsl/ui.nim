@@ -49,6 +49,7 @@ import vocabulary
 import ./scene_graph
 import ./style_provenance
 import ./style_binding
+import ./stable_ids
 # Bound, not left for the caller to import: every element of a `ui:` block
 # asks for its hydration key, and a consumer that never hydrates should not
 # have to know the module exists.
@@ -181,6 +182,10 @@ proc genName(prefix: string): NimNode {.compileTime.} =
 # editor records every element exactly as it does for renderers without an
 # overload, and the backend still learns each element's location.
 # `tests/test_dsl_element_hook.nim` pins this in both configurations.
+
+template noteElement*(el: untyped; iid: string) =
+  ## Erased unless a backend supplies a typed overload.
+  discard
 
 template noteElement*(el: untyped; id: static string; tag: static string;
                       loc: static string; parentId: static string) =
@@ -577,8 +582,14 @@ proc processChildren(rendererSym, parentSym: NimNode; body: NimNode;
       # it has to append itself, into the parent only this scope knows.
       if child.kind in {nnkCall, nnkCommand} and child.len == 2 and
           child[0].kind == nnkIdent and child[0].strVal == "raw":
-        stmts.add(newCall(newDotExpr(rendererSym, ident"appendRawHtml"),
-                          parentSym, child[1]))
+        let value = scopedInstanceExpr(child, child[1])
+        # Raw component results are nodes on the client and markup on the
+        # server. Type selection erases itself for existing raw HTML callers.
+        let appendHtml = newCall(newDotExpr(rendererSym, ident"appendRawHtml"), parentSym, value)
+        let appendNode = newCall(newDotExpr(rendererSym, ident"appendChild"), parentSym, value)
+        stmts.add(newNimNode(nnkWhenStmt).add(
+          newNimNode(nnkElifBranch).add(newCall(ident"compiles", appendHtml), newStmtList(appendHtml)),
+          newNimNode(nnkElse).add(newStmtList(appendNode))))
       else:
         let childNode = processNode(rendererSym, child, stmts)
         if childNode != nil:
@@ -671,8 +682,10 @@ proc processNode(rendererSym: NimNode; node: NimNode;
         stmts.add(newCall(ident"createRenderEffect", effectBody))
         return txtSym
 
+    if name == "raw":
+      return scopedInstanceExpr(node, node[1])
     if name.len > 0 and not isElementCall(name, node):
-      return node
+      return scopedInstanceExpr(node, node)
 
   # Handle element nodes: tagName(...): body or tagName: body
   if node.kind in {nnkCall, nnkCommand}:
@@ -699,7 +712,8 @@ proc processNode(rendererSym: NimNode; node: NimNode;
       let arg = node[i]
       if arg.kind == nnkExprEqExpr and arg[0].kind != nnkRefTy:
         let attrName = attrNameStr(arg[0])
-        if isEventHandler(attrName) or isHydrationFlag(attrName):
+        if isEventHandler(attrName) or isHydrationFlag(attrName) or
+            (stableIdsEnabled and attrName == "key"):
           continue
         if isStyleProperty(attrName):
           vocabStyles.add attrName
@@ -721,6 +735,13 @@ proc processNode(rendererSym: NimNode; node: NimNode;
     # body nests. Pushed before the argument walk and popped after, so a
     # `return` out of the loop cannot leave the stack unbalanced -- every exit
     # from this proc after the push goes through the pop below.
+    let stableId = elementIid(node)
+    if stableId.len > 0:
+      let iidExpr = newCall(bindSym"runtimeIid", newLit(stableId))
+      stmts.add(newCall(newDotExpr(rendererSym, ident"setAttribute"),
+        elSym, newLit("data-iid"), iidExpr))
+      # A separate overload avoids changing the established editor hook.
+      stmts.add(newCall(bindSym("noteElement", brForceOpen), elSym, iidExpr))
     let sceneId = emitNoteElement(stmts, elSym, htmlTag, node)
     parentIdStack.add sceneId
     vocabParentStack.add htmlTag
@@ -767,7 +788,9 @@ proc processNode(rendererSym: NimNode; node: NimNode;
           let attrVal = arg[1]
           collectAttrBindings(styleBindings, attrName, attrVal)
 
-          if isHydrationFlag(attrName):
+          if stableIdsEnabled and attrName == "key":
+            discard
+          elif isHydrationFlag(attrName):
             # `hydrate = true` is a server-side request for a key; the
             # client counts every element anyway.
             discard
@@ -894,7 +917,9 @@ macro ui*(renderer: untyped; body: untyped): untyped =
   ##       button(onclick = handler):
   ##         text "Click me"
 
-  buildClientTree(renderer, body)
+  let registrations = prepareStableIds(body, isElementCall, attrNameStr)
+  result = buildClientTree(renderer, body)
+  result[^1].insert(0, registrations)
 
 
 # ---------------------------------------------------------------------------
@@ -1076,7 +1101,9 @@ proc ssrNodeExpr(node: NimNode; stmts: NimNode): NimNode {.compileTime.} =
 
     # Handle `raw` calls - insert pre-rendered HTML without escaping
     if name == "raw":
-      return node[1]
+      return scopedInstanceExpr(node, node[1])
+    if name.len > 0 and not isElementCall(name, node):
+      return scopedInstanceExpr(node, node)
 
     # Handle element nodes
     let htmlTag = resolveTagName(name)
@@ -1091,6 +1118,11 @@ proc ssrNodeExpr(node: NimNode; stmts: NimNode): NimNode {.compileTime.} =
     # arguments have been read.
     let keyCall = newCall(bindSym"ssrHydrationKey", newLit(false))
     tagParts.add(keyCall)
+    let stableId = elementIid(node)
+    if stableId.len > 0:
+      tagParts.add(newLit(" data-iid=\""))
+      tagParts.add(newCall(ident"escapeAttr", newCall(bindSym"ssrRuntimeIid", newLit(stableId))))
+      tagParts.add(newLit("\""))
 
     # SGR-M1b: in an editor build, carry the source location in the markup.
     # String mode has no renderer to call and no element handle to hand a
@@ -1133,7 +1165,9 @@ proc ssrNodeExpr(node: NimNode; stmts: NimNode): NimNode {.compileTime.} =
         let attrVal = arg[1]
         collectAttrBindings(styleBindings, attrName, attrVal)
 
-        if isEventHandler(attrName):
+        if stableIdsEnabled and attrName == "key":
+          discard
+        elif isEventHandler(attrName):
           # Event handlers are ignored in SSR
           discard
         elif attrName == "needsId" or attrName == "hydrate":
@@ -1258,7 +1292,9 @@ proc ssrTopLevelExpr(node: NimNode; stmts: NimNode): NimNode {.compileTime.} =
 
 proc uiSsrImpl(body: NimNode): NimNode {.compileTime.} =
   ## Shared SSR implementation used by both `ui` (no renderer) and `uiString`.
+  let registrations = prepareStableIds(body, isElementCall, attrNameStr)
   let stmts = newStmtList()
+  stmts.add(registrations)
   var resultExpr: NimNode = nil
 
   case body.kind
@@ -1438,7 +1474,10 @@ proc collectNode(node: NimNode; ops: var seq[StreamOp]) {.compileTime.} =
       ops.add(StreamOp(kind: sokEscapedHtml, expr: node[1]))
       return
     if name == "raw":
-      ops.add(StreamOp(kind: sokRaw, expr: node[1]))
+      ops.add(StreamOp(kind: sokRaw, expr: scopedInstanceExpr(node, node[1])))
+      return
+    if name.len > 0 and not isElementCall(name, node):
+      ops.add(StreamOp(kind: sokRaw, expr: scopedInstanceExpr(node, node)))
       return
 
     let htmlTag = resolveTagName(name)
@@ -1456,6 +1495,12 @@ proc collectNode(node: NimNode; ops: var seq[StreamOp]) {.compileTime.} =
     openTag = ""
     let keyOp = StreamOp(kind: sokHydrationKey)
     pendingOps.add(keyOp)
+    let stableId = elementIid(node)
+    if stableId.len > 0:
+      pendingOps.add(StreamOp(kind: sokStatic, text: " data-iid=\""))
+      pendingOps.add(StreamOp(kind: sokEscapedAttr,
+        expr: newCall(bindSym"ssrRuntimeIid", newLit(stableId))))
+      pendingOps.add(StreamOp(kind: sokStatic, text: "\""))
 
     for i in 1 ..< node.len:
       let arg = node[i]
@@ -1466,7 +1511,9 @@ proc collectNode(node: NimNode; ops: var seq[StreamOp]) {.compileTime.} =
         let attrName = attrNameStr(arg[0])
         let attrVal = arg[1]
 
-        if isEventHandler(attrName):
+        if stableIdsEnabled and attrName == "key":
+          discard
+        elif isEventHandler(attrName):
           discard # Ignored in SSR
         elif attrName == "needsId" or attrName == "hydrate":
           keyOp.forceKey = true
@@ -1613,6 +1660,7 @@ proc uiStreamImpl*(streamSym: NimNode; body: NimNode): NimNode {.compileTime.} =
   ## Streaming SSR codegen pipeline: DSL → collect → coalesce → emit.
   ## Adjacent static string writes are coalesced into a single write call
   ## at compile time.
+  let registrations = prepareStableIds(body, isElementCall, attrNameStr)
   var ops: seq[StreamOp]
 
   case body.kind
@@ -1634,6 +1682,7 @@ proc uiStreamImpl*(streamSym: NimNode; body: NimNode): NimNode {.compileTime.} =
   let optimized = coalesce(ops)
 
   let stmts = newStmtList()
+  stmts.add(registrations)
   emit(optimized, streamSym, stmts)
   result = newBlockStmt(stmts)
 

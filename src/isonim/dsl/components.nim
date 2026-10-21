@@ -8,6 +8,7 @@
 import std/tables
 import ../core/[signals, computation, owner, platform]
 import ../core/reconcile
+import ./stable_ids
 
 proc forEachKeyed*[T, R, N](
     renderer: R;
@@ -24,6 +25,8 @@ proc forEachKeyed*[T, R, N](
   var indexSignals: seq[Signal[int]] = @[]
   var itemDisposers: seq[proc()] = @[]
   let listOwner = getOwner()
+  when stableIdsEnabled:
+    let listStableScope = captureStableScope()
 
   # Row lifetimes follow reconciliation, not the tracking effect's reruns.
   # Each row has its own root; retained rows keep subscriptions and removed
@@ -71,7 +74,12 @@ proc forEachKeyed*[T, R, N](
                 # Accessors escape the render callback; capture each signal
                 # in its own invocation rather than a shared loop variable.
                 result = proc(): V = signal.val
-              node = body(accessor(itemSig), accessor(idxSig))
+              when stableIdsEnabled:
+                withStableScope(listStableScope):
+                  withStableKey($item):
+                    node = body(accessor(itemSig), accessor(idxSig))
+              else:
+                node = body(accessor(itemSig), accessor(idxSig))
           )
           newNodes.add(node)
           newItemSignals.add(itemSig)
@@ -105,6 +113,8 @@ proc indexEach*[T, R, N](
   var currentNodes: NativeSeq[N] = newNativeSeq[N]()
   var itemSignals: seq[Signal[T]] = @[]
   let savedOwner = getOwner()
+  when stableIdsEnabled:
+    let listStableScope = captureStableScope()
 
   createRenderEffect proc() =
     let newItems = each()
@@ -122,7 +132,12 @@ proc indexEach*[T, R, N](
           result = proc(): T = sig.val
         var node: N
         runWithOwner(savedOwner, proc() =
-          node = body(makeAccessor(itemSig), idx)
+          when stableIdsEnabled:
+            withStableScope(listStableScope):
+              withStableKey($idx):
+                node = body(makeAccessor(itemSig), idx)
+          else:
+            node = body(makeAccessor(itemSig), idx)
         )
         itemSignals.add(itemSig)
         currentNodes.add(node)
@@ -149,6 +164,8 @@ proc show*[R, N](
   ## Conditional rendering. Renders `body` when condition is true,
   ## `fallback` (if provided) when false.
 
+  when stableIdsEnabled:
+    let renderStableScope = captureStableScope()
   var currentNode: N
   var hasNode = false
   var currentState = false
@@ -166,11 +183,17 @@ proc show*[R, N](
     currentState = newState
 
     if newState:
-      currentNode = body()
+      when stableIdsEnabled:
+        withStableScope(renderStableScope): currentNode = body()
+      else:
+        currentNode = body()
       hasNode = true
       renderer.appendChild(parent, currentNode)
     elif fallback != nil:
-      currentNode = fallback()
+      when stableIdsEnabled:
+        withStableScope(renderStableScope): currentNode = fallback()
+      else:
+        currentNode = fallback()
       hasNode = true
       renderer.appendChild(parent, currentNode)
 

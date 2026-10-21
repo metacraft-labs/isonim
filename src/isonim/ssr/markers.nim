@@ -22,6 +22,9 @@
 ## enclosing `ui:` block (rather than called inline, e.g. through `raw`)
 ## takes its keys before its ancestors and will not match the client.
 
+when defined(isonimStableIds):
+  import ../dsl/stable_ids
+
 var hydrationCounter {.threadvar.}: int
 var hydrationActive {.threadvar.}: bool
 var hydrationPrefix {.threadvar.}: string
@@ -29,6 +32,8 @@ var hydrationPrefix {.threadvar.}: string
 type
   HydrationKeyScope* = object
     ## The key state a hydratable render replaced, restored when it ends.
+    when defined(isonimStableIds):
+      stableScope: StableRenderScope
     counter: int
     active: bool
     prefix: string
@@ -58,12 +63,16 @@ proc beginHydratableRender*(renderId = ""): HydrationKeyScope =
   ## `renderId`. Returns the state to give back to `endHydratableRender`.
   result = HydrationKeyScope(counter: hydrationCounter, active: hydrationActive,
                              prefix: hydrationPrefix)
+  when defined(isonimStableIds):
+    result.stableScope = beginStableRender()
   hydrationCounter = 0
   hydrationActive = true
   hydrationPrefix = renderId
 
 proc endHydratableRender*(saved: HydrationKeyScope) =
   ## Ends the hydratable render begun by `beginHydratableRender`.
+  when defined(isonimStableIds):
+    endStableRender(saved.stableScope)
   hydrationCounter = saved.counter
   hydrationActive = saved.active
   hydrationPrefix = saved.prefix
