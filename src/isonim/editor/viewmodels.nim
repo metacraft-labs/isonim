@@ -4,6 +4,7 @@
 ## No CSS, no colors, no rendering — only signals, memos, and enums.
 ## Created via withViewModel inside createRoot.
 
+import isonim/core/nondet as nondet
 import std/[algorithm, hashes, json, math, options, sequtils, strutils, tables]
 from std/unicode import runeLen, runeSubStr
 import isonim/core/[signals, computation]
@@ -4258,11 +4259,10 @@ proc hydrateInspectorExpansionFromStorage*(vm: EditorVM) =
   ## Storage key: ``isonim:inspector:expanded``.
   ## Payload: comma-separated slug list (eg. ``position,layout,fill``).
   when defined(js):
-    var raw: cstring
-    {.emit: ["try { ", raw,
-      " = (window.localStorage && window.localStorage.getItem('isonim:inspector:expanded')) || ''; } catch (e) { ",
-      raw, " = ''; }"].}
-    applyExpandedSectionsFromStorage(vm.inspector, $raw)
+    var raw = ""
+    try: raw = nondet.storageGet("isonim:inspector:expanded")
+    except: discard # Preserve optional preferences even for native JS storage errors.
+    applyExpandedSectionsFromStorage(vm.inspector, raw)
   else:
     discard
 
@@ -13806,9 +13806,12 @@ proc createEditorVM*(): EditorVM =
   when defined(js):
     var storedOpen = 0
     var storedActive = cstring""
+    var storedDrawer = cstring""
+    try: storedDrawer = nondet.storageGet("isonim-editor-ai-drawer").cstring
+    except: discard # Native browser errors must retain the old optional fallback.
     {.emit: ["""
       try {
-        const raw = window.localStorage.getItem('isonim-editor-ai-drawer');
+        const raw = """, storedDrawer, """;
         if (raw) {
           const parsed = JSON.parse(raw);
           if (parsed && parsed.open) { """, storedOpen, """ = 1; }
@@ -13914,14 +13917,7 @@ proc createEditorVM*(): EditorVM =
     createRenderEffect proc() =
       let open = persistOpen.val
       let active = persistActive.val
-      let openFlag = if open: 1 else: 0
-      let activeC: cstring = active
-      {.emit: ["""
-        try {
-          window.localStorage.setItem(
-            'isonim-editor-ai-drawer',
-            JSON.stringify({ open: !!""", openFlag, """,
-                              activeChatId: """, activeC, """ })
-          );
-        } catch (e) { /* ignore */ }
-      """].}
+      try:
+        nondet.storageSet("isonim-editor-ai-drawer",
+          $(%*{"open": open, "activeChatId": active}))
+      except: discard # Preserve optional preferences even for native JS storage errors.

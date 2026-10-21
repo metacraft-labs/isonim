@@ -1873,3 +1873,11 @@ test-editor-workspace-adapters-gui: editor-build
     cp build/editor/fabric.min.js build/editor-workspace-adapters/
     cp build/editor/paper-core.min.js build/editor/svgo.browser.js build/editor-workspace-adapters/
     PLAYWRIGHT_CHROMIUM_EXECUTABLE="${PLAYWRIGHT_CHROMIUM_EXECUTABLE:-$(command -v chromium)}" node tests/test_editor_workspace_adapters_gui.mjs
+
+# Optional editor preference persistence, including real Chromium denial paths.
+test-editor-nondet-storage:
+    nim c -r --out:build/test_editor_nondet_storage tests/test_editor_nondet_storage.nim
+    nim js -d:nodejs --out:build/test_editor_nondet_storage.js tests/test_editor_nondet_storage.nim
+    python3 tools/run_nim_js_test.py build/test_editor_nondet_storage.js
+    nim js --out:build/editor_storage_browser_fixture.js tests/editor_storage_browser_fixture.nim
+    PLAYWRIGHT_CHROMIUM_EXECUTABLE="${PLAYWRIGHT_CHROMIUM_EXECUTABLE:-$(command -v chromium)}" node tools/check_editor_storage_browser.cjs

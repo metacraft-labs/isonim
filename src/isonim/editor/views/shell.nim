@@ -3,6 +3,7 @@
 ## Fully dogfoods IsoNim: all elements via ui macro with if/for/case.
 ## Only uses manual setStyle for reactive effects (createRenderEffect).
 
+import isonim/core/nondet as nondet
 import isonim/editor/views/view_lifecycle
 import std/[json, options, sets, strutils, tables]
 
@@ -3497,16 +3498,9 @@ proc renderInspectorPanel*[R, E](r: R; vm: EditorVM): E =
   # signal-write side but skips the storage emit.
   when isDomViewHost(E):
     createRenderEffect proc() =
-      let payload = serializeExpandedSections(
-        vm.inspector.expandedSections.val).cstring
-      {.emit: ["""
-        try {
-          if (window.localStorage) {
-            window.localStorage.setItem(
-              'isonim:inspector:expanded', """, payload, """);
-          }
-        } catch (e) {}
-      """].}
+      let payload = serializeExpandedSections(vm.inspector.expandedSections.val)
+      try: nondet.storageSet("isonim:inspector:expanded", payload)
+      except: discard # Preserve optional preferences even for native JS storage errors.
 
   r.bindRightPanelWidth(result, vm)
 
