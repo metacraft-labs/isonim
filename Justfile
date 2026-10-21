@@ -1835,3 +1835,12 @@ test-stable-ids: manifest-check
 
 test-stable-id-mutants: build-tailwind
     node tools/test_iid_mutants.mjs
+
+# Production browser adapter composition, retained chats and control bridge.
+test-editor-workspace-adapters-gui: editor-build
+    mkdir -p build/editor-workspace-adapters
+    nim js --path:src --path:. --path:../nim-everywhere/src --path:../isonim-render-serve/src --path:../nim-acp/src --path:../nim-agent-harbor/src --path:../nim-agents/src -o:build/editor-workspace-adapters/editor.js tests/helpers/editor_workspace_adapters_browser.nim
+    cp src/isonim/editor/index.html build/editor-workspace-adapters/index.html
+    cp build/editor/fabric.min.js build/editor-workspace-adapters/
+    cp build/editor/paper-core.min.js build/editor/svgo.browser.js build/editor-workspace-adapters/
+    PLAYWRIGHT_CHROMIUM_EXECUTABLE="${PLAYWRIGHT_CHROMIUM_EXECUTABLE:-$(command -v chromium)}" node tests/test_editor_workspace_adapters_gui.mjs

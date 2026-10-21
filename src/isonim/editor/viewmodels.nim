@@ -528,6 +528,10 @@ type
     nextChatNumber: int
     chatClosePending: bool
     configureChat*: proc(chat: AgentChatVM) {.closure.}
+    configureWorkspaceChat*: proc(chat: AgentChatVM) {.closure.}
+      ## Explicit project-owned adapter composition. Browser mounts preserve
+      ## this choice; nil selects the normal daemon transport. Unlike the
+      ## presentation bridge this callback survives UI unmount/remount.
     activeChatId*: Signal[string]
       ## Identifier of the currently active chat session. Used by the
       ## Assistant-tab strip in ``shell.nim`` to highlight the active
@@ -686,7 +690,10 @@ proc createNewChat*(vm: EditorVM): string {.discardable.} =
   let id = "chat-" & $vm.nextChatNumber
   let title = defaultChatTitleFor(nextIndex)
   let session = createChatSession(id, title)
-  if vm.configureChat != nil: vm.configureChat(session.vm)
+  if vm.configureChat != nil:
+    vm.configureChat(session.vm)
+  elif vm.configureWorkspaceChat != nil:
+    vm.configureWorkspaceChat(session.vm)
   vm.chats.update proc(prev: seq[ChatSession]): seq[ChatSession] =
     result = prev
     result.add session

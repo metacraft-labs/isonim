@@ -47,6 +47,8 @@ type
       ## not opted in, and the editor then says nothing about breakpoints
       ## rather than inventing one.
     agentPromptAdapter*: AgentPromptAdapter
+      ## Explicit project-owned transport, including offline demonstrations.
+      ## When nil the browser installs its normal daemon-backed transport.
     agentCancelAdapter*: AgentCancelAdapter
     agentBackend*: AgentBackendSelection
     permissions*: EditorWorkspacePermissions
@@ -388,6 +390,13 @@ proc applyWorkspace*(vm: EditorVM; workspace: EditorWorkspace) =
   vm.controlAsyncCommandAdapter = nil
   vm.workspaceId = workspace.id
   vm.loadProjectData(workspace)
+  vm.configureWorkspaceChat = nil
+  if workspace.agentPromptAdapter != nil:
+    let prompt = workspace.agentPromptAdapter
+    let cancel = workspace.agentCancelAdapter
+    let backend = workspace.agentBackend
+    vm.configureWorkspaceChat = proc(chat: AgentChatVM) =
+      chat.configureAgentAdapters(prompt, cancel, backend)
   vm.chat.configureAgentAdapters(workspace.agentPromptAdapter,
                                   workspace.agentCancelAdapter,
                                   workspace.agentBackend)

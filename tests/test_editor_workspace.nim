@@ -1,4 +1,7 @@
 ## Tests for the importable IsoNim Editor workspace framework API.
+## Authored adapter callbacks below are controlled project peers: they record
+## prompt/cancel routing, not provider, network or compiler outcomes. Real
+## mounted browser tests separately prove composition through the UI.
 
 import std/[options, unittest]
 
@@ -9,6 +12,35 @@ import isonim/editor
 import examples/wanderlust/stories as wanderlust
 
 suite "IsoNim Editor workspace API":
+
+  test "explicit project adapters apply to initial and future conversations":
+    createRoot do(dispose: proc()):
+      var prompts: seq[string]
+      var cancels = 0
+      let project = newEditorWorkspace("Offline authored project", @[],
+        agentPromptAdapter = proc(prompt: string; context: AgentPromptContext): bool =
+          prompts.add prompt
+          true,
+        agentCancelAdapter = proc(): bool =
+          inc cancels
+          true)
+      let vm = createEditorVM(project)
+      require vm.configureWorkspaceChat != nil
+      let first = vm.chat
+      require first.promptAdapter != nil
+      check first.promptAdapter("first", AgentPromptContext())
+      discard vm.createNewChat()
+      let second = vm.chat
+      check second != first
+      require second.promptAdapter != nil
+      check second.promptAdapter("second", AgentPromptContext())
+      check second.cancelAdapter()
+      check prompts == @["first", "second"]
+      check cancels == 1
+      vm.applyWorkspace(newEditorWorkspace("Normal project", @[]))
+      check vm.configureWorkspaceChat == nil
+      check vm.chat.promptAdapter == nil
+      dispose()
 
   test "workspace constructor keeps project-owned story data":
     let workspace = newEditorWorkspace(

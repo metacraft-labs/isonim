@@ -1171,12 +1171,10 @@ proc mountEditor*(vm: EditorVM; root: Element = document.body;
         available = @[pbWeb, pbTui, pbGpui, pbFreya, pbCocoa,
                       pbAndroid, pbIos])
   createRoot proc(dispose: proc()) =
-    # Phase C: install the daemon-driven agent adapter on top of any
-    # workspace-supplied placeholder.  The chat panel and the brief
-    # tab's "Review this preview" button both drive the daemon's
-    # ``/api/agent/*`` routes via the resolved base URL.  This is the
-    # production wiring; VM tests inject a fake client via
-    # ``configureAgentAdaptersWithClient`` instead.
+    # The daemon is the default transport. An explicitly authored project
+    # adapter remains authoritative, including offline demonstration projects.
+    # Configure every retained/new chat by the same policy on each UI mount;
+    # existing daemon clients bind to this mount's fresh control bridge.
 
     vm.setTelemetryOverlayVisible(editorDebugEnabled())
     if useHashRoute:
@@ -1191,6 +1189,9 @@ proc mountEditor*(vm: EditorVM; root: Element = document.body;
     root.appendChild(shell)
     let controlBridge = vm.installControlBridge(shell)
     vm.configureChat = proc(chat: AgentChatVM) =
+      if vm.configureWorkspaceChat != nil:
+        vm.configureWorkspaceChat(chat)
+        return
       var client: BrowserAgentClient
       {.emit: ["globalThis.__isonimEditorAgentClients ||= new WeakMap(); ", client,
         " = globalThis.__isonimEditorAgentClients.get(", chat, ") || null;"].}
