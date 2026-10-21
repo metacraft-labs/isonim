@@ -253,7 +253,8 @@ proc hydrate*(code: proc(): Node, element: Element,
 
   if hyDone:
     # Hydration already done or no SSR context — fall back to normal render
-    discard render(code, element)
+    let dispose = render(code, element)
+    if getOwner() != nil: onCleanup(dispose)
     return
 
   # Wire up sharedConfig from globalThis._$HY
@@ -279,15 +280,20 @@ proc hydrate*(code: proc(): Node, element: Element,
   )
   {.emit: "isonimHy.mismatches = 0; isonimHy.adopted = [];".}
 
+  var disposeHydrated: proc()
   try:
     gatherHydratable(element.Node, renderId)
     createRoot proc(dispose: proc()) =
+      disposeHydrated = dispose
       let node = untrack(proc(): Node = code())
       if not node.isNodeNil and node.parentNode != element.Node:
         element.Node.appendChild(node)
   finally:
     {.emit: "isonimHy.finish();".}
     sharedConfig.context = nil
+
+  # A nested hydration root belongs to the enclosing application lifecycle.
+  if getOwner() != nil: onCleanup(disposeHydrated)
 
   # Take the queue (the bootstrap stops recording), then replay it.
   {.emit: "globalThis._$HY.events = null;".}
