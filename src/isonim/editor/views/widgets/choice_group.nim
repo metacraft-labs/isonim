@@ -304,7 +304,8 @@ const
 proc mountSegmentedChoice*[R, E](r: R; parent: E; vm: ChoiceGroupVM;
                                   onChange: proc(i: int) {.closure.};
                                   variant: ChoiceGroupContainerVariant =
-                                    cgvFilled) =
+                                    cgvFilled;
+                                  onPillMounted: proc(pill: E; index: int) {.closure.} = nil) =
   ## Mount the segmented pill row into ``parent``. The mount body
   ## structure:
   ##
@@ -456,6 +457,9 @@ proc mountSegmentedChoice*[R, E](r: R; parent: E; vm: ChoiceGroupVM;
             transition = "background-color 120ms ease-out, " &
               "border-color 120ms ease-out, color 120ms ease-out"):
             text lbl
+      # Hosts attach domain metadata without replacing widget activation or styling.
+      if onPillMounted != nil:
+        onPillMounted(pillNode, i)
       pills.add pillNode
       r.appendChild(root, pillNode)
 

@@ -2093,6 +2093,23 @@ suite "Per-item shell effects":
             (if j <= i: "#F59E0B" else: "#A0A2B0")
       dispose()
 
+  test "canonical chrome preserves host metadata across viewport rebuilds":
+    createRoot do (dispose: proc()):
+      let vm = createEditorVM()
+      let chrome = renderPreviewChromeBar[MockRenderer, MockNode](MockRenderer(), vm)
+      for slug in ["view", "comment", "edit"]:
+        let pill = findByAttr(chrome, "data-preview-mode", slug)
+        require pill != nil
+        check pill.attributes["aria-label"] == "Switch to " & slug & " mode"
+      require findByAttr(chrome, "data-preview-backend", "web") != nil
+      require findByAttr(chrome, "data-preview-viewport", "desktop") != nil
+      vm.changePlatform(pbTui)
+      let tuiViewport = pinnedViewports(pbTui)[0]
+      require findByAttr(chrome, "data-preview-viewport", tuiViewport.slug) != nil
+      vm.changePlatform(pbWeb)
+      require findByAttr(chrome, "data-preview-viewport", "desktop") != nil
+      dispose()
+
   test "hovering each retained breadcrumb changes only that chip":
     createRoot do (dispose: proc()):
       let vm = createEditorVM()

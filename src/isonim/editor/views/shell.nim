@@ -4022,7 +4022,10 @@ proc renderPreviewChromeBar*[R, E](r: R; vm: EditorVM): E =
           target in capturedVm.streamingPreview.availableBackends.val:
         selectBackend(capturedVm.streamingPreview, target)
       capturedVm.changePlatform(target),
-    variant = cgvTransparent)
+    variant = cgvTransparent,
+    onPillMounted = proc(pill: E; i: int) =
+      r.setAttribute(pill, "data-preview-backend", backendId(backendOrder[i]))
+      r.setAttribute(pill, "aria-label", "Preview backend " & backendLabel(backendOrder[i])))
 
   # Mirror external writes to ``vm.platform`` onto the segmented
   # control. Same ``.value``-not-``.val`` precaution as the Surface
@@ -4212,6 +4215,7 @@ proc renderPreviewChromeBar*[R, E](r: R; vm: EditorVM): E =
          `aria-label` = "More viewport sizes",
          title = "More viewport sizes",
          `data-preview-viewport-overflow` = "true",
+         `data-compact-choice-overflow` = "true",
          display = "inline-flex",
          align_items = "center",
          justify_content = "center",
@@ -4365,7 +4369,10 @@ proc renderPreviewChromeBar*[R, E](r: R; vm: EditorVM): E =
     proc(i: int) {.closure.} =
       if i >= 0 and i < viewportPinned.len:
         capturedVm.changeViewport(viewportPinned[i]),
-    variant = cgvTransparent)
+    variant = cgvTransparent,
+    onPillMounted = proc(pill: E; i: int) =
+      r.setAttribute(pill, "data-preview-viewport", viewportPinned[i].slug)
+      r.setAttribute(pill, "aria-label", "Preview viewport " & viewportPinned[i].label))
 
   proc rebuildViewportDropdown(host: E; popup: seq[PreviewViewport]) =
     r.clearChildren(host)
@@ -4524,7 +4531,10 @@ proc renderPreviewChromeBar*[R, E](r: R; vm: EditorVM): E =
           proc(i: int) {.closure.} =
             if i >= 0 and i < viewportPinned.len:
               capturedVm.changeViewport(viewportPinned[i]),
-          variant = cgvTransparent))
+          variant = cgvTransparent,
+          onPillMounted = proc(pill: E; i: int) =
+            r.setAttribute(pill, "data-preview-viewport", viewportPinned[i].slug)
+            r.setAttribute(pill, "aria-label", "Preview viewport " & viewportPinned[i].label)))
     else:
       viewportPinned = newPinned
     if needsRebuild or viewportSlugSeq(newPopup) != viewportSlugSeq(viewportPopup):
@@ -4646,7 +4656,11 @@ proc renderPreviewChromeBar*[R, E](r: R; vm: EditorVM): E =
       capturedVm.setEditMode(emSpec)
     else:
       discard capturedVm.runEditorCommand(commandForMode(mode)),
-    variant = cgvTransparent)
+    variant = cgvTransparent,
+    onPillMounted = proc(pill: E; i: int) =
+      let slug = modeLabels[i].toLowerAscii
+      r.setAttribute(pill, "data-preview-mode", slug)
+      r.setAttribute(pill, "aria-label", "Switch to " & slug & " mode"))
 
   block:
     let syncVm = modeVm
