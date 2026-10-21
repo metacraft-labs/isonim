@@ -18,13 +18,19 @@ type
     exposed*: seq[ExperimentExposure]
     day*: string
     production*: bool
+    trackReads*: bool
+      ## Static exporters opt in to collecting compiler descriptors.
+    metadata*: Table[string, JsonNode]
+      ## Descriptors of actually read keys, from compiler registration metadata.
 let ExperimentCtx* = createContext[ExperimentAssignment](nil)
 proc newExperimentAssignment*(day = ""; production = true): ExperimentAssignment =
   ## Hosts supply assignments; experiment reads never choose random arms.
   ExperimentAssignment(day: day, production: production)
 proc beginExperiments*(assignment: ExperimentAssignment) =
   ## Call once inside each render root, before evaluating the page.
-  if assignment != nil: assignment.exposed.setLen(0)
+  if assignment != nil:
+    assignment.exposed.setLen(0)
+    assignment.metadata.clear()
   provide(ExperimentCtx, assignment)
 template withExperiments*(assignment: ExperimentAssignment; body: untyped): untyped =
   block:
@@ -118,6 +124,7 @@ proc useExperimentImpl*[E: enum](callSite: string): E =
         error("experiment window must contain ordered ISO calendar dates")
       dates = %*{"start": bounds.start, "end": bounds.finish}
     registerExperiment(key, arms, allocation, dates)
+  const descriptor = $(registrations[key])
   result = low(E)
   let assignment = useContext(ExperimentCtx)
   if assignment == nil: return
@@ -128,6 +135,7 @@ proc useExperimentImpl*[E: enum](callSite: string): E =
       if exposure.arm >= ord(low(E)) and exposure.arm <= ord(high(E)):
         result = E(exposure.arm)
       return
+  if assignment.trackReads: assignment.metadata[key] = parseJson(descriptor)
   var ordinal = assignment.assign.getOrDefault(key, ord(low(E)))
   if not assignment.production and key in assignment.qaOverrides:
     ordinal = assignment.qaOverrides[key]

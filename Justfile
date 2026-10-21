@@ -1839,8 +1839,13 @@ manifest-check: build-tailwind
     bash tools/check_experiments.sh --manifest-only
 
 test-experiments: build-tailwind
+    nim c -r --out:build/test_export_permutations tests/test_export_permutations.nim
     nim c -r -d:isServer -d:isNginxTest --out:build/test_experiment_ssr tests/test_experiment_ssr.nim
     bash tools/check_experiments.sh
+
+# Exported HTML JavaScript and canonical links through real HTTP + Chromium.
+test-export-permutations-browser:
+    nim c -r -d:exportPermutationBrowser --out:build/test_export_permutations_browser tests/test_export_permutations.nim
 
 test-experiment-mutants: build-tailwind
     node tools/test_experiment_mutants.mjs
