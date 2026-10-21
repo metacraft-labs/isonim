@@ -154,6 +154,14 @@ proc renderVectorEditor*[R, E](r: R; vm: EditorVM): E =
           span(ref = symbolNameLabel,
                 font_size = "11px", color = textDim):
             text "\xE2\x80\x94 check-icon.svg"
+          # The shared chrome is hidden in the vector workspace, so its
+          # sidebar toggle belongs in this workspace's sole toolbar.
+          button(`type` = "button", `aria-label` = "Toggle right sidebar",
+                 title = "Toggle right sidebar", cursor = "pointer",
+                 color = textSecondary, background_color = "transparent",
+                 border = "0", padding = "4px",
+                 onclick = proc() = vm.togglePanel(epInspector)):
+            text "▥"
         # Boolean operations are delegated to Paper.js, a supplemental path backend.
         tdiv(display = "flex", align_items = "center", gap = "2px",
               background_color = bgSurface, border_radius = "6px",

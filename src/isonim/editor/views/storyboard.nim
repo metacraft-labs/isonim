@@ -227,14 +227,14 @@ proc zoomStoryboardAt(vm: EditorVM; nextZoom, localX, localY: float) =
   vm.storyboard.panX.val = localX - contentX * zoom
   vm.storyboard.panY.val = localY - contentY * zoom
 
-proc zoomStoryboardFromCenter(vm: EditorVM; nextZoom: float) =
+proc zoomStoryboardFromCenter*(vm: EditorVM; nextZoom: float) =
   zoomStoryboardAt(vm, nextZoom, 640.0, 360.0)
 
 proc panStoryboard(vm: EditorVM; dx, dy: float) =
   vm.storyboard.panX.val = vm.storyboard.panX.val + dx
   vm.storyboard.panY.val = vm.storyboard.panY.val + dy
 
-proc resetStoryboardView(vm: EditorVM) =
+proc resetStoryboardView*(vm: EditorVM) =
   vm.storyboard.zoom.val = 1.0
   vm.storyboard.panX.val = 0
   vm.storyboard.panY.val = 0

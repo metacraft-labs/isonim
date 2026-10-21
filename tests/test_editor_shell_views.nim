@@ -841,35 +841,45 @@ suite "Editor Shell Views (M2)":
 
       vm.flowPlayer.steps.val = userFlows()[0].steps
       let flowShell = renderEditorShell[MockRenderer, MockNode](r, vm)
-      # M-EVP-6: the storyboard's inner toolbar (with Next/Previous/Play/
-      # Stop flow buttons) is gone. The underlying flow-player VM
-      # operations remain reachable and drive the same state changes;
-      # the visual affordances are tracked under the broader chrome
-      # consolidation series (M-EVP-7..M-EVP-9). The test now exercises
-      # the VM API directly so the storyboard's flow-player semantics
-      # stay covered.
-      check findByAttr(flowShell, "aria-label", "Next flow step") == nil
-      check findByAttr(flowShell, "aria-label", "Previous flow step") == nil
-      check findByAttr(flowShell, "aria-label", "Play flow") == nil
-      check findByAttr(flowShell, "aria-label", "Stop flow") == nil
+      # Consolidation removes duplicate inner toolbars, not playback.
+      # The canonical chrome owns exactly one functional set of controls.
+      let flowChrome = findByAttr(flowShell, "data-preview-chrome-bar", "true")
+      let flowCanvas = findByAttr(flowShell, "data-storyboard-canvas", "true")
+      require flowChrome != nil
+      require flowCanvas != nil
+      for label in ["Next flow step", "Previous flow step", "Play flow", "Stop flow"]:
+        check countByAttr(flowShell, "aria-label", label) == 1
+        require findByAttr(flowChrome, "aria-label", label) != nil
+        check findByAttr(flowCanvas, "aria-label", label) == nil
       check vm.flowPlayer.playState.val == psStopped
 
-      discard vm.nextFlowStep()
+      findByAttr(flowChrome, "aria-label", "Next flow step").fireEvent("click")
       check vm.flowPlayer.currentStep.val == 1
       let secondStep = findByAttr(flowShell, "aria-label",
         "Select story Pages / Empty State")
       check secondStep != nil
       check secondStep.attributes["aria-current"] == "true"
 
-      discard vm.prevFlowStep()
+      findByAttr(flowChrome, "aria-label", "Previous flow step").fireEvent("click")
       check vm.flowPlayer.currentStep.val == 0
 
-      vm.flowPlayer.play()
+      let play = findByAttr(flowChrome, "aria-label", "Play flow")
+      play.fireEvent("click")
       check vm.flowPlayer.playState.val == psPlaying
-
-      discard vm.stopFlow()
+      check play.attributes["aria-pressed"] == "true"
+      play.fireEvent("click")
+      check vm.flowPlayer.playState.val == psPaused
+      findByAttr(flowChrome, "aria-label", "Stop flow").fireEvent("click")
       check vm.flowPlayer.playState.val == psStopped
       check vm.flowPlayer.currentStep.val == 0
+      check play.attributes["aria-pressed"] == "false"
+      let initialZoom = vm.storyboard.zoom.val
+      findByAttr(flowChrome, "aria-label", "Zoom storyboard in").fireEvent("click")
+      check vm.storyboard.zoom.val > initialZoom
+      findByAttr(flowChrome, "aria-label", "Fit storyboard").fireEvent("click")
+      check vm.storyboard.zoom.val == 1.0
+      check vm.storyboard.panX.val == 0
+      check vm.storyboard.panY.val == 0
       storyButton.fireEvent("click")
       check vm.selectedStory.val.name == "Active task"
 

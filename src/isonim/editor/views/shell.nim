@@ -3875,6 +3875,48 @@ proc renderEditorTitleBar[R, E](r: R; vm: EditorVM): E =
       span(font_size = "11px", color = textDim, font_family = "monospace"):
         text "v" & editorVersion
 
+proc renderFlowControls[R, E](r: R; vm: EditorVM): E =
+  ## Playback and navigation have one owner in the shared chrome bar.
+  ## They operate on the same selection/zoom reducers as canvas gestures.
+  let group = ui(r):
+    tdiv(`data-flow-controls` = "true", display = "inline-flex",
+         align_items = "center", gap = "4px", flex_shrink = "0")
+  proc control(label, glyph: string; action: proc() {.closure.}): E =
+    result = ui(r):
+      button(`type` = "button", tabindex = "0", `aria-label` = label,
+           title = label, min_width = "24px", min_height = "24px",
+           display = "inline-flex", align_items = "center",
+           justify_content = "center", color = textPrimary,
+           border = "0", background_color = "transparent",
+           padding = "2px", border_radius = "4px", cursor = "pointer"):
+        text glyph
+    r.makeButton(result, label)
+    r.addEventListener(result, "click", action)
+  let playButton = control("Play flow", "▶", proc() =
+    if vm.flowPlayer.playState.val == psPlaying:
+      vm.flowPlayer.pause()
+    else:
+      vm.flowPlayer.play())
+  r.appendChild(group, playButton)
+  r.appendChild(group, control("Stop flow", "■", proc() = discard vm.stopFlow()))
+  r.appendChild(group, control("Previous flow step", "‹", proc() = discard vm.prevFlowStep()))
+  r.appendChild(group, control("Next flow step", "›", proc() = discard vm.nextFlowStep()))
+  r.appendChild(group, control("Zoom storyboard out", "−", proc() =
+    vm.zoomStoryboardFromCenter(vm.storyboard.zoom.val / 1.2)))
+  r.appendChild(group, control("Zoom storyboard in", "+", proc() =
+    vm.zoomStoryboardFromCenter(vm.storyboard.zoom.val * 1.2)))
+  r.appendChild(group, control("Fit storyboard", "Fit", proc() = vm.resetStoryboardView()))
+  createRenderEffect proc() =
+    let playing = vm.flowPlayer.playState.val == psPlaying
+    r.setAttribute(playButton, "aria-label", if playing: "Pause flow" else: "Play flow")
+    r.setAttribute(playButton, "aria-pressed", if playing: "true" else: "false")
+    r.setTextContent(playButton, if playing: "Ⅱ" else: "▶")
+    r.setStyle(group, "display",
+      if vm.activeView.val == evStoryboard and vm.surfaceSig.val == sPreview:
+        "inline-flex"
+      else: "none")
+  group
+
 proc renderPreviewChromeBar*[R, E](r: R; vm: EditorVM): E =
   ## Shared preview-pane top toolbar that sits above every view in the
   ## center column. Carries the three reactive chip groups
@@ -4090,6 +4132,7 @@ proc renderPreviewChromeBar*[R, E](r: R; vm: EditorVM): E =
   # status bar, where a message can sit without a toolbar slot standing
   # reserved for the case that almost never happens.
   r.appendChild(toolbar, backendWrapper)
+  r.appendChild(toolbar, renderFlowControls[R, E](r, vm))
   design_review_mount_view.mountHistoryButtonForEditor[R, E](r, toolbar, vm)
 
   # A chooser with one option is not a chooser. A project that declares a
