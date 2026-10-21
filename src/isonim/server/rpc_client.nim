@@ -25,6 +25,7 @@ when not defined(js):
 
 import std/[asyncjs, json, jsffi]
 import policy
+import ../core/nondet as nondet
 import ../routing/client_context
 
 export asyncjs, json, client_context
@@ -43,28 +44,6 @@ proc newRpcError(status: int; body, url: string): ref RpcError =
   result.status = status
   result.body = body
 
-proc rawFetch(httpMethod, url, body: cstring; csrf, context: cstring;
-              contentType: cstring; signal: JsObject): Future[JsObject] =
-  ## Resolves with `{status, text}`; never rejects.  A network failure is
-  ## status 0; an abort is status -1 wherever in the chain it lands: before
-  ## the response headers (`fetch` rejects) or after them, while the body
-  ## is read (`text()` rejects).  The final `catch` covers the whole chain,
-  ## so an `AbortError` never reaches the caller as an exception.
-  {.emit: """
-  var headers = {"X-CSRF-Token": `csrf`, "X-Isonim-Context": `context`};
-  if (`contentType` !== "") headers["Content-Type"] = `contentType`;
-  var init = {method: `httpMethod`, headers: headers, credentials: "same-origin"};
-  if (`body` !== null) init.body = `body`;
-  if (`signal`) init.signal = `signal`;
-  `result` = fetch(`url`, init)
-    .then(function (r) {
-      return r.text().then(function (t) { return {status: r.status, text: t}; });
-    })
-    .catch(function (e) {
-      var aborted = (e && e.name === "AbortError") || (`signal` && `signal`.aborted);
-      return {status: aborted ? -1 : 0, text: String(e)};
-    });
-  """.}
 
 proc neverSettles(): Future[void] =
   ## A future that never completes: awaiting it ends the async proc
@@ -78,7 +57,7 @@ proc requestJson*(httpMethod, url: string; body: string; hasBody: bool;
   ## the context check of `scope`.
   let captured = clientContext()
   let signal = if scope == csNavigation: navigationSignal() else: nil
-  let outcome = await rawFetch(cstring(httpMethod), cstring(url),
+  let outcome = await nondet.browserFetch(cstring(httpMethod), cstring(url),
     (if hasBody: cstring(body) else: nil),
     cstring(csrfToken()), cstring(contextHeaderValue()),
     cstring(if hasBody: contentType else: ""), signal)

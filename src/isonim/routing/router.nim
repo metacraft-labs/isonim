@@ -1,3 +1,4 @@
+import ../core/nondet as nondet
 ## isonim/routing/router.nim
 ##
 ## Signal-based router. Integrates with the History API on JS
@@ -115,10 +116,7 @@ when defined(js):
     {.emit: [result, " = (typeof window !== 'undefined');"].}
 
   proc getWindowPathname(): string =
-    ## Read window.location.pathname.
-    var cs: cstring
-    {.emit: [cs, " = window.location.pathname;"].}
-    result = $cs
+    nondet.location()
 
 proc createRouter*(routes: seq[RouteEntry]; initialPath: string): Router =
   ## Create a router from route definitions with an explicit initial path.
@@ -189,9 +187,9 @@ proc navigate*(router: Router; path: string; replace = false) =
     bumpNavigationGeneration()
     if hasWindow():
       if replace:
-        window.history.replaceState(nil, cstring"", cstring(path))
+        nondet.replaceState(path)
       else:
-        window.history.pushState(nil, cstring"", cstring(path))
+        nondet.pushState(path)
 
   router.currentPath.val = path
 

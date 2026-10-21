@@ -3,7 +3,9 @@
 ## RealClock uses actual system/monotonic time.
 ## TestClock allows manual time advancement for deterministic testing.
 
-import std/[algorithm, sequtils]
+import std/[algorithm, sequtils, tables, math, json, random]
+import nim_everywhere/time as neTime
+import nim_everywhere/platform
 when not defined(js):
   import std/monotimes
 
@@ -15,9 +17,24 @@ type
 
   ClockBase* = ref object of RootObj
     ## Base type for all clocks.
+    dispatchSequence*: uint64
+    lastTimerId: int
+    ## Boundary backend state shared by RealClock and TestClock.
+    seamCalls*: Table[string, int]
+    scripted*: bool
+    reads*: Table[string, seq[JsonNode]]
+    randomState*: Rand
+    bootEnv*: JsonNode
+    storage*: Table[string, string]
+    nativeLocation*: string
+    nextHandle*: int
+    seamTimers*: Table[int, int]
+    frameCancels*: Table[int, proc()]
+    fetchResponse*: proc(request: HttpRequest): neTime.PlatformFuture[HttpResponse]
 
   RealClock* = ref object of ClockBase
     ## Production clock using real system time.
+    platformTimers: Table[int, neTime.TimerHandle]
 
   TestClock* = ref object of ClockBase
     ## Deterministic clock for testing.
@@ -29,26 +46,44 @@ type
 # Current global clock (thread-local)
 var currentClock* {.threadvar.}: ClockBase
 
-proc now*(clock: RealClock): float64 =
+method now*(clock: ClockBase): float64 {.base.} =
+  raise newException(ValueError, "clock backend has no time source")
+
+method now*(clock: RealClock): float64 =
   ## Returns current real time in milliseconds.
   when defined(js):
-    {.emit: "result = performance.now();".}
+    {.emit: [result, " = performance.now();"].}
   else:
     let t = getMonoTime()
     result = t.ticks.float64 / 1_000_000.0
 
-proc now*(clock: TestClock): float64 =
+method now*(clock: TestClock): float64 =
   ## Returns the fake clock's current time.
   clock.currentTime
 
-proc schedule*(clock: RealClock; callback: proc(); delayMs: float64): int =
-  ## Schedules callback after delayMs using real timer.
-  ## Returns callback ID for cancellation.
-  ## For now, executes immediately (real scheduling comes with async integration).
-  callback()
-  return 0
+method schedule*(clock: ClockBase; callback: proc(); delayMs: float64): int {.base.} =
+  raise newException(ValueError, "clock backend has no timer source")
 
-proc schedule*(clock: TestClock; callback: proc(); delayMs: float64): int =
+method cancel*(clock: ClockBase; id: int) {.base.} =
+  raise newException(ValueError, "clock backend has no cancellation source")
+
+method schedule*(clock: RealClock; callback: proc(); delayMs: float64): int =
+  ## Always asynchronous, including zero-delay timers. Raw delegation avoids
+  ## recursion when this clock is installed as the platform hook.
+  inc clock.lastTimerId
+  let id = clock.lastTimerId
+  clock.platformTimers[id] = neTime.scheduleAtRaw(max(0, ceil(delayMs).int), proc() =
+    clock.platformTimers.del(id)
+    inc clock.dispatchSequence
+    callback())
+  id
+
+method cancel*(clock: RealClock; id: int) =
+  if id in clock.platformTimers:
+    neTime.cancelTimer(clock.platformTimers[id])
+    clock.platformTimers.del(id)
+
+method schedule*(clock: TestClock; callback: proc(); delayMs: float64): int =
   ## Schedules callback at currentTime + delayMs.
   ## Does NOT fire until advance() is called.
   let id = clock.nextId
@@ -56,10 +91,10 @@ proc schedule*(clock: TestClock; callback: proc(); delayMs: float64): int =
   let targetTime = clock.currentTime + delayMs
   clock.scheduled.add(ScheduledCallback(id: id, time: targetTime, callback: callback))
   # Keep sorted by time
-  clock.scheduled.sort(proc(a, b: ScheduledCallback): int = cmp(a.time, b.time))
+  clock.scheduled.sort(proc(a, b: ScheduledCallback): int = (if a.time == b.time: cmp(a.id, b.id) else: cmp(a.time, b.time)))
   return id
 
-proc cancel*(clock: TestClock; id: int) =
+method cancel*(clock: TestClock; id: int) =
   ## Cancels a scheduled callback by ID.
   clock.scheduled.keepIf(proc(s: ScheduledCallback): bool = s.id != id)
 
@@ -72,6 +107,7 @@ proc advance*(clock: TestClock; durationMs: float64) =
     let cb = clock.scheduled[0]
     clock.scheduled.delete(0)
     clock.currentTime = cb.time
+    inc clock.dispatchSequence
     cb.callback()
   clock.currentTime = targetTime
 
@@ -84,7 +120,7 @@ proc setTime*(clock: TestClock; t: float64) =
     clock.currentTime = t
 
 proc newTestClock*(startTime: float64 = 0.0): TestClock =
-  TestClock(currentTime: startTime, scheduled: @[], nextId: 1)
+  TestClock(scripted: true, currentTime: startTime, scheduled: @[], nextId: 1)
 
 proc newRealClock*(): RealClock =
   RealClock()

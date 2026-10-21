@@ -17,7 +17,7 @@
 #                  staleReason (client_context.nim) without its navigation
 #                  branch: the response whose navigation changed after its
 #                  body was read is applied.
-#   body-abort     rawFetch (rpc_client.nim) treating only an abort that
+#   body-abort     rawBrowserFetch (nondet.nim) treating only an abort that
 #                  rejects fetch() as a drop: an abort while the body is
 #                  read reaches the caller as an exception.
 #   canonical-first
@@ -168,16 +168,16 @@ run_spec "${WORK}/no-navigation-generation-control.log" \
     cat "${WORK}/no-navigation-generation-control.log"; exit 1; }
 
 # --- body-abort --------------------------------------------------------------
-client_mutant body-abort isonim/server/rpc_client.nim \
-  '  `result` = fetch(`url`, init)
-    .then(function (r) {
-      return r.text().then(function (t) { return {status: r.status, text: t}; });
-    })
-    .catch(function (e) {' \
-  '  `result` = fetch(`url`, init)
-    .then(function (r) {
-      return r.text().then(function (t) { return {status: r.status, text: t}; });
-    }, function (e) {'
+client_mutant body-abort isonim/core/nondet.nim \
+  '    `result` = fetch(`url`, init)
+      .then(function (r) {
+        return r.text().then(function (t) { return {status: r.status, text: t}; });
+      })
+      .catch(function (e) {' \
+  '    `result` = fetch(`url`, init)
+      .then(function (r) {
+        return r.text().then(function (t) { return {status: r.status, text: t}; });
+      }, function (e) {'
 if run_spec "${WORK}/body-abort.log" "while the body is read" \
     ISONIM_FIXTURE_WWW="${WORK}/body-abort/www"; then
   echo "MISSED body-abort: the abort during the body read was dropped anyway"

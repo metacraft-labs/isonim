@@ -177,6 +177,7 @@ test-c:
     nim c -r tests/test_signals.nim
     nim c -r tests/test_effects.nim
     nim c -r tests/test_clock.nim
+    nim c -r tests/test_nondet_seams.nim
     nim c -r tests/test_context.nim
     nim c -r tests/test_rxcore.nim
     nim c -r --out:build/test_keyed_effect_lifetime tests/test_keyed_effect_lifetime.nim
@@ -285,6 +286,8 @@ test-js: build-tailwind
     nim js -r tests/test_signals.nim
     nim js -r tests/test_effects.nim
     nim js -r tests/test_clock.nim
+    nim js tests/test_nondet_seams.nim
+    python3 tools/run_nim_js_test.py tests/test_nondet_seams.js
     nim js -r tests/test_context.nim
     nim js -r tests/test_resource_registry.nim
     nim js -r tests/test_rxcore.nim
@@ -322,7 +325,10 @@ test-signals:
 # Run only clock/scheduler tests
 test-clock:
     nim c -r tests/test_clock.nim
+    nim c -r tests/test_nondet_seams.nim
     nim js -r tests/test_clock.nim
+    nim js tests/test_nondet_seams.nim
+    python3 tools/run_nim_js_test.py tests/test_nondet_seams.js
 
 # Run only context/resource/suspense/transition tests
 test-context:
@@ -1838,6 +1844,14 @@ test-stable-ids: manifest-check
 
 test-stable-id-mutants: build-tailwind
     node tools/test_iid_mutants.mjs
+
+# Platform boundaries include real layout and networking under Chromium.
+test-nondet:
+    python3 tools/test_nondet_mutants.py
+    nim c -r tests/test_nondet_seams.nim
+    nim js tests/test_nondet_seams.nim
+    python3 tools/run_nim_js_test.py tests/test_nondet_seams.js
+    PLAYWRIGHT_CHROMIUM_EXECUTABLE="${PLAYWRIGHT_CHROMIUM_EXECUTABLE:-$(command -v chromium)}" node tests/test_nondet_browser.mjs
 
 # Production browser adapter composition, retained chats and control bridge.
 test-editor-workspace-adapters-gui: editor-build

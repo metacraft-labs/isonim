@@ -25,9 +25,10 @@
 ## Test fixture: ``tests/test_editor_viewmodels.nim`` §"inspector
 ## section writeback".
 
-import std/options
+import std/[options, times, monotimes]
 
 import isonim/core/signals
+import isonim/core/nondet
 import isonim/editor/types
 import isonim/editor/viewmodels
 import isonim/editor/editable_cells
@@ -325,6 +326,7 @@ proc commitInspectorValue*(vm: EditorVM; property, rawValue: string;
   ## What is NOT verbatim, and is the point of the exercise: the old
   ## path discarded both results. Every refusal below was already being
   ## computed and thrown away.
+  let previewStarted = nondet.now()
   let element = vm.inspector.selectedElement.val
   if element.tag.len == 0:
     return refusal("Select an element before editing " & property & ".", scope)
@@ -386,6 +388,9 @@ proc commitInspectorValue*(vm: EditorVM; property, rawValue: string;
 
   # The edit is staged; the browser layer debounces it into a write. Placed
   # after every refusal so a rejected edit never schedules one.
+  if scope != sskLocalInstance:
+    vm.recordEditorTiming(epbkPropertyEditPreview,
+      int(max(0'i64, (nondet.now() - previewStarted).inMilliseconds)), "source-plan:" & property)
   vm.noteCommitForAutoSave()
 
   PropertyCommitOutcome(ok: true, message: "", scope: scope,

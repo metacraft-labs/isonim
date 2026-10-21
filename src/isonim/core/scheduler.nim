@@ -22,12 +22,7 @@ proc requestCallback*(fn: proc(didTimeout: bool); timeoutMs: float64 = 5000.0): 
   ## Schedules a task with optional timeout.
   ## Returns a Task handle for cancellation.
   let clock = currentClock
-  let startTime = if clock != nil and clock of TestClock:
-    TestClock(clock).now()
-  elif clock != nil and clock of RealClock:
-    RealClock(clock).now()
-  else:
-    0.0
+  let startTime = if clock != nil: clock.now() else: 0.0
 
   inc nextTaskId
   let task = Task(
