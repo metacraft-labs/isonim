@@ -50,13 +50,18 @@ var currentClock* {.threadvar.}: ClockBase
 method now*(clock: ClockBase): float64 {.base.} =
   raise newException(ValueError, "clock backend has no time source")
 
+proc rawClockNow(): float64 {.tags: [neTime.RawNondet].} =
+  ## Private Real backend primitive; components use nondet.now instead.
+  {.cast(tags: []).}:
+    when defined(js):
+      {.emit: [result, " = performance.now();"].}
+    else:
+      let t = getMonoTime()
+      result = t.ticks.float64 / 1_000_000.0
+
 method now*(clock: RealClock): float64 =
   ## Returns current real time in milliseconds.
-  when defined(js):
-    {.emit: [result, " = performance.now();"].}
-  else:
-    let t = getMonoTime()
-    result = t.ticks.float64 / 1_000_000.0
+  rawClockNow()
 
 method now*(clock: TestClock): float64 =
   ## Returns the fake clock's current time.
@@ -73,7 +78,7 @@ method schedule*(clock: RealClock; callback: proc(); delayMs: float64): int =
   ## recursion when this clock is installed as the platform hook.
   inc clock.lastTimerId
   let id = clock.lastTimerId
-  clock.platformTimers[id] = neTime.scheduleAtRaw(max(0, ceil(delayMs).int), proc() =
+  clock.platformTimers[id] = neTime.scheduleAtRaw(neTime.rawBackendAccess, max(0, ceil(delayMs).int), proc() =
     clock.platformTimers.del(id)
     inc clock.dispatchSequence
     callback())

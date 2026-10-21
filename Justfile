@@ -1874,6 +1874,14 @@ test-editor-workspace-adapters-gui: editor-build
     cp build/editor/paper-core.min.js build/editor/svgo.browser.js build/editor-workspace-adapters/
     PLAYWRIGHT_CHROMIUM_EXECUTABLE="${PLAYWRIGHT_CHROMIUM_EXECUTABLE:-$(command -v chromium)}" node tests/test_editor_workspace_adapters_gui.mjs
 
+# Include additional site src/ roots with tools/lint_nondet.py directly.
+lint-nondet:
+    python3 tools/test_lint_nondet.py
+    python3 tools/lint_nondet.py --allowlist tools/nondet_allowlist.json src ../nim-everywhere/src
+
+test-strict-nondet:
+    bash tools/check_strict_nondet.sh
+
 # Optional editor preference persistence, including real Chromium denial paths.
 test-editor-nondet-storage:
     nim c -r --out:build/test_editor_nondet_storage tests/test_editor_nondet_storage.nim

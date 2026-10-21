@@ -1,0 +1,506 @@
+[
+  {
+    "path": "isonim/src/isonim/core/clock.nim",
+    "api": "performance.now",
+    "count": 1,
+    "reason": "Trusted Real clock backend; performance.now supplies the clock seam."
+  },
+  {
+    "path": "isonim/src/isonim/editor/browser.nim",
+    "api": "Date.now",
+    "count": 1,
+    "reason": "Editor development shell: mount/hot-reload and debug preference integration. Development hot-reload cache busting or preview transport timing; not page application time."
+  },
+  {
+    "path": "isonim/src/isonim/editor/browser.nim",
+    "api": "addEventListener",
+    "count": 4,
+    "reason": "Editor development shell: mount/hot-reload and debug preference integration. Existing native adapter registrations; counted pending event choke-point migration, not recordable component registration."
+  },
+  {
+    "path": "isonim/src/isonim/editor/browser.nim",
+    "api": "localStorage",
+    "count": 1,
+    "reason": "Editor development shell: mount/hot-reload and debug preference integration. Development-only editor debug switch, not application state."
+  },
+  {
+    "path": "isonim/src/isonim/editor/browser.nim",
+    "api": "setTimeout",
+    "count": 3,
+    "reason": "Editor development shell: deferred mount/focus and source-edit autosave debounce to the editor host. Existing development adapter outside recorded page application scheduling."
+  },
+  {
+    "path": "isonim/src/isonim/editor/browser_vector_adapter.nim",
+    "api": "addEventListener",
+    "count": 8,
+    "reason": "Editor vector-canvas DOM adapter: pointer capture, drag coordinates and focus lifecycle. Existing native adapter registrations; counted pending event choke-point migration, not recordable component registration."
+  },
+  {
+    "path": "isonim/src/isonim/editor/browser_vector_adapter.nim",
+    "api": "layout read",
+    "count": 4,
+    "reason": "Editor vector-canvas DOM adapter: pointer capture, drag coordinates and focus lifecycle. Existing native scroll/client/offset geometry; not represented by the Rect seam and not claimed replayable."
+  },
+  {
+    "path": "isonim/src/isonim/editor/control_browser.nim",
+    "api": "addEventListener",
+    "count": 4,
+    "reason": "Editor developer control API: host HTTP bridge and DOM inspection. Existing native adapter registrations; counted pending event choke-point migration, not recordable component registration."
+  },
+  {
+    "path": "isonim/src/isonim/editor/control_browser.nim",
+    "api": "fetch",
+    "count": 2,
+    "reason": "Editor developer control API: host HTTP bridge and DOM inspection. Local editor host protocol, not a page application fetch; not claimed replayable."
+  },
+  {
+    "path": "isonim/src/isonim/editor/control_browser.nim",
+    "api": "getComputedStyle",
+    "count": 1,
+    "reason": "Editor developer control API: host HTTP bridge and DOM inspection. Computed style/focus inspection is outside the current Rect seam; this adapter is not claimed replayable."
+  },
+  {
+    "path": "isonim/src/isonim/editor/control_browser.nim",
+    "api": "layout read",
+    "count": 2,
+    "reason": "Editor developer control API: host HTTP bridge and DOM inspection. Existing native scroll/client/offset geometry; not represented by the Rect seam and not claimed replayable."
+  },
+  {
+    "path": "isonim/src/isonim/editor/control_browser.nim",
+    "api": "setTimeout",
+    "count": 2,
+    "reason": "Editor developer control API: host HTTP bridge and DOM inspection. Owned DOM/preview lifecycle debounce; existing adapter outside recorded application scheduling."
+  },
+  {
+    "path": "isonim/src/isonim/editor/design_review/browser_agent_client.nim",
+    "api": "fetch",
+    "count": 3,
+    "reason": "Editor design-review agent host transport. Local editor host protocol, not a page application fetch; not claimed replayable."
+  },
+  {
+    "path": "isonim/src/isonim/editor/design_review/editor_http_client.nim",
+    "api": "fetch",
+    "count": 2,
+    "reason": "Editor design-review local HTTP host transport. Local editor host protocol, not a page application fetch; not claimed replayable."
+  },
+  {
+    "path": "isonim/src/isonim/editor/dom_renderer.nim",
+    "api": "addEventListener",
+    "count": 3,
+    "reason": "Editor canvas DOM renderer: viewport/scroll measurement and input plumbing. Existing native adapter registrations; counted pending event choke-point migration, not recordable component registration."
+  },
+  {
+    "path": "isonim/src/isonim/editor/dom_renderer.nim",
+    "api": "layout read",
+    "count": 6,
+    "reason": "Editor canvas DOM renderer: viewport/scroll measurement and input plumbing. Existing native scroll/client/offset geometry; not represented by the Rect seam and not claimed replayable."
+  },
+  {
+    "path": "isonim/src/isonim/editor/source_browser.nim",
+    "api": "fetch",
+    "count": 1,
+    "reason": "Editor source-file HTTP host adapter. Local editor host protocol, not a page application fetch; not claimed replayable."
+  },
+  {
+    "path": "isonim/src/isonim/editor/streaming_preview.nim",
+    "api": "Date.now",
+    "count": 1,
+    "reason": "Editor remote-preview adapter: WebSocket video/control bridge, decoder timing and canvas input projection. Development hot-reload cache busting or preview transport timing; not page application time."
+  },
+  {
+    "path": "isonim/src/isonim/editor/streaming_preview.nim",
+    "api": "WebSocket",
+    "count": 9,
+    "reason": "Editor remote-preview adapter: WebSocket video/control bridge, decoder timing and canvas input projection. Remote preview streaming/control protocol, not a page application fetch; not claimed replayable."
+  },
+  {
+    "path": "isonim/src/isonim/editor/streaming_preview.nim",
+    "api": "addEventListener",
+    "count": 19,
+    "reason": "Editor remote-preview adapter: WebSocket video/control bridge, decoder timing and canvas input projection. Existing native adapter registrations; counted pending event choke-point migration, not recordable component registration."
+  },
+  {
+    "path": "isonim/src/isonim/editor/streaming_preview.nim",
+    "api": "getBoundingClientRect",
+    "count": 4,
+    "reason": "Editor remote-preview adapter: WebSocket video/control bridge, decoder timing and canvas input projection. Existing host/iframe geometry adapter; not claimed replayable."
+  },
+  {
+    "path": "isonim/src/isonim/editor/streaming_preview.nim",
+    "api": "layout read",
+    "count": 10,
+    "reason": "Editor remote-preview adapter: WebSocket video/control bridge, decoder timing and canvas input projection. Existing native scroll/client/offset geometry; not represented by the Rect seam and not claimed replayable."
+  },
+  {
+    "path": "isonim/src/isonim/editor/streaming_preview.nim",
+    "api": "performance.now",
+    "count": 2,
+    "reason": "Editor remote-preview adapter: WebSocket video/control bridge, decoder timing and canvas input projection. Preview timing/fit throttling in the native DOM adapter; not claimed replayable."
+  },
+  {
+    "path": "isonim/src/isonim/editor/streaming_preview.nim",
+    "api": "requestAnimationFrame",
+    "count": 1,
+    "reason": "Editor remote-preview adapter: WebSocket video/control bridge, decoder timing and canvas input projection. DOM layout/focus/scroll placement loop; existing adapter outside recorded application scheduling."
+  },
+  {
+    "path": "isonim/src/isonim/editor/streaming_preview.nim",
+    "api": "setTimeout",
+    "count": 2,
+    "reason": "Editor remote-preview adapter: WebSocket video/control bridge, decoder timing and canvas input projection. Owned DOM/preview lifecycle debounce; existing adapter outside recorded application scheduling."
+  },
+  {
+    "path": "isonim/src/isonim/editor/views/canvas_mount.nim",
+    "api": "getBoundingClientRect",
+    "count": 6,
+    "reason": "Editor preview-canvas overlay adapter: selection geometry and resize handles. Existing host/iframe geometry adapter; not claimed replayable."
+  },
+  {
+    "path": "isonim/src/isonim/editor/views/canvas_mount.nim",
+    "api": "layout read",
+    "count": 6,
+    "reason": "Editor preview-canvas overlay adapter: selection geometry and resize handles. Existing native scroll/client/offset geometry; not represented by the Rect seam and not claimed replayable."
+  },
+  {
+    "path": "isonim/src/isonim/editor/views/chat_activity.nim",
+    "api": "addEventListener",
+    "count": 2,
+    "reason": "Editor activity-panel DOM scroll adapter. Existing native adapter registrations; counted pending event choke-point migration, not recordable component registration."
+  },
+  {
+    "path": "isonim/src/isonim/editor/views/chat_panel.nim",
+    "api": "addEventListener",
+    "count": 3,
+    "reason": "Editor chat-panel DOM adapter: mounted scroll restoration and follow positioning. Existing native adapter registrations; counted pending event choke-point migration, not recordable component registration."
+  },
+  {
+    "path": "isonim/src/isonim/editor/views/chat_panel.nim",
+    "api": "layout read",
+    "count": 6,
+    "reason": "Editor chat-panel DOM adapter: mounted scroll restoration and follow positioning. Existing native scroll/client/offset geometry; not represented by the Rect seam and not claimed replayable."
+  },
+  {
+    "path": "isonim/src/isonim/editor/views/chat_panel.nim",
+    "api": "requestAnimationFrame",
+    "count": 2,
+    "reason": "Editor chat-panel DOM adapter: mounted scroll restoration and follow positioning. DOM layout/focus/scroll placement loop; existing adapter outside recorded application scheduling."
+  },
+  {
+    "path": "isonim/src/isonim/editor/views/component_detail.nim",
+    "api": "addEventListener",
+    "count": 3,
+    "reason": "Editor component-detail iframe adapter: load/input integration and embedded document sizing. Existing native adapter registrations; counted pending event choke-point migration, not recordable component registration."
+  },
+  {
+    "path": "isonim/src/isonim/editor/views/component_detail.nim",
+    "api": "layout read",
+    "count": 10,
+    "reason": "Editor component-detail iframe adapter: load/input integration and embedded document sizing. Existing native scroll/client/offset geometry; not represented by the Rect seam and not claimed replayable."
+  },
+  {
+    "path": "isonim/src/isonim/editor/views/component_edit.nim",
+    "api": "addEventListener",
+    "count": 4,
+    "reason": "Editor component iframe/host bridge: fit measurement, load debounce and geometry inspection. Existing native adapter registrations; counted pending event choke-point migration, not recordable component registration."
+  },
+  {
+    "path": "isonim/src/isonim/editor/views/component_edit.nim",
+    "api": "getComputedStyle",
+    "count": 1,
+    "reason": "Editor component iframe/host bridge: fit measurement, load debounce and geometry inspection. Computed style/focus inspection is outside the current Rect seam; this adapter is not claimed replayable."
+  },
+  {
+    "path": "isonim/src/isonim/editor/views/component_edit.nim",
+    "api": "layout read",
+    "count": 5,
+    "reason": "Editor component iframe/host bridge: fit measurement, load debounce and geometry inspection. Existing native scroll/client/offset geometry; not represented by the Rect seam and not claimed replayable."
+  },
+  {
+    "path": "isonim/src/isonim/editor/views/component_edit.nim",
+    "api": "performance.now",
+    "count": 1,
+    "reason": "Editor component iframe/host bridge: fit measurement, load debounce and geometry inspection. Preview timing/fit throttling in the native DOM adapter; not claimed replayable."
+  },
+  {
+    "path": "isonim/src/isonim/editor/views/component_edit.nim",
+    "api": "setTimeout",
+    "count": 1,
+    "reason": "Editor component iframe/host bridge: fit measurement, load debounce and geometry inspection. Owned DOM/preview lifecycle debounce; existing adapter outside recorded application scheduling."
+  },
+  {
+    "path": "isonim/src/isonim/editor/views/design_review_mount.nim",
+    "api": "addEventListener",
+    "count": 1,
+    "reason": "Editor design-review preview iframe load bridge. Existing native adapter registrations; counted pending event choke-point migration, not recordable component registration."
+  },
+  {
+    "path": "isonim/src/isonim/editor/views/gallery_overlay.nim",
+    "api": "addEventListener",
+    "count": 6,
+    "reason": "Editor gallery native dialog lifecycle and anchor geometry adapter. Existing native adapter registrations; counted pending event choke-point migration, not recordable component registration."
+  },
+  {
+    "path": "isonim/src/isonim/editor/views/preview_mount.nim",
+    "api": "addEventListener",
+    "count": 1,
+    "reason": "Editor project-preview iframe load bridge. Existing native adapter registrations; counted pending event choke-point migration, not recordable component registration."
+  },
+  {
+    "path": "isonim/src/isonim/editor/views/shell.nim",
+    "api": "addEventListener",
+    "count": 30,
+    "reason": "Editor shell preview iframe sizing and native resize/drag/input lifecycle. Existing native adapter registrations; counted pending event choke-point migration, not recordable component registration."
+  },
+  {
+    "path": "isonim/src/isonim/editor/views/shell.nim",
+    "api": "getBoundingClientRect",
+    "count": 6,
+    "reason": "Editor shell preview iframe sizing and native resize/drag/input lifecycle. Existing host/iframe geometry adapter; not claimed replayable."
+  },
+  {
+    "path": "isonim/src/isonim/editor/views/shell.nim",
+    "api": "layout read",
+    "count": 13,
+    "reason": "Editor shell preview iframe sizing and native resize/drag/input lifecycle. Existing native scroll/client/offset geometry; not represented by the Rect seam and not claimed replayable."
+  },
+  {
+    "path": "isonim/src/isonim/editor/views/shell.nim",
+    "api": "requestAnimationFrame",
+    "count": 1,
+    "reason": "Editor shell preview iframe sizing and native resize/drag/input lifecycle. DOM layout/focus/scroll placement loop; existing adapter outside recorded application scheduling."
+  },
+  {
+    "path": "isonim/src/isonim/editor/views/shell.nim",
+    "api": "setInterval",
+    "count": 1,
+    "reason": "Editor shell preview iframe sizing and native resize/drag/input lifecycle. Preview iframe auto-fit fallback polling; existing adapter outside recorded application scheduling."
+  },
+  {
+    "path": "isonim/src/isonim/editor/views/shell.nim",
+    "api": "setTimeout",
+    "count": 1,
+    "reason": "Editor shell preview iframe sizing and native resize/drag/input lifecycle. Owned DOM/preview lifecycle debounce; existing adapter outside recorded application scheduling."
+  },
+  {
+    "path": "isonim/src/isonim/editor/views/storyboard.nim",
+    "api": "addEventListener",
+    "count": 4,
+    "reason": "Editor storyboard canvas native pan/zoom and component iframe sizing. Existing native adapter registrations; counted pending event choke-point migration, not recordable component registration."
+  },
+  {
+    "path": "isonim/src/isonim/editor/views/storyboard.nim",
+    "api": "getBoundingClientRect",
+    "count": 1,
+    "reason": "Editor storyboard canvas native pan/zoom and component iframe sizing. Existing host/iframe geometry adapter; not claimed replayable."
+  },
+  {
+    "path": "isonim/src/isonim/editor/views/storyboard.nim",
+    "api": "layout read",
+    "count": 8,
+    "reason": "Editor storyboard canvas native pan/zoom and component iframe sizing. Existing native scroll/client/offset geometry; not represented by the Rect seam and not claimed replayable."
+  },
+  {
+    "path": "isonim/src/isonim/editor/views/view_lifecycle.nim",
+    "api": "addEventListener",
+    "count": 1,
+    "reason": "Editor mounted-DOM lifecycle adapter: owned timers/frames and visible keyboard-owner dispatch. Existing native adapter registrations; counted pending event choke-point migration, not recordable component registration."
+  },
+  {
+    "path": "isonim/src/isonim/editor/views/view_lifecycle.nim",
+    "api": "getComputedStyle",
+    "count": 1,
+    "reason": "Editor mounted-DOM lifecycle adapter: owned timers/frames and visible keyboard-owner dispatch. Computed style/focus inspection is outside the current Rect seam; this adapter is not claimed replayable."
+  },
+  {
+    "path": "isonim/src/isonim/editor/views/view_lifecycle.nim",
+    "api": "requestAnimationFrame",
+    "count": 1,
+    "reason": "Editor mounted-DOM lifecycle adapter: owned timers/frames and visible keyboard-owner dispatch. DOM layout/focus/scroll placement loop; existing adapter outside recorded application scheduling."
+  },
+  {
+    "path": "isonim/src/isonim/editor/views/view_lifecycle.nim",
+    "api": "setTimeout",
+    "count": 1,
+    "reason": "Editor mounted-DOM lifecycle adapter: owned timers/frames and visible keyboard-owner dispatch. Owned DOM/preview lifecycle debounce; existing adapter outside recorded application scheduling."
+  },
+  {
+    "path": "isonim/src/isonim/editor/views/widgets/anchored_popover.js",
+    "api": "addEventListener",
+    "count": 2,
+    "reason": "Editor inspector top-layer DOM backend: anchor geometry, focus visibility and scroll containment. Existing native adapter registrations; counted pending event choke-point migration, not recordable component registration."
+  },
+  {
+    "path": "isonim/src/isonim/editor/views/widgets/anchored_popover.js",
+    "api": "getBoundingClientRect",
+    "count": 4,
+    "reason": "Editor inspector top-layer DOM backend: anchor geometry, focus visibility and scroll containment. Existing host/iframe geometry adapter; not claimed replayable."
+  },
+  {
+    "path": "isonim/src/isonim/editor/views/widgets/anchored_popover.js",
+    "api": "getComputedStyle",
+    "count": 2,
+    "reason": "Editor inspector top-layer DOM backend: anchor geometry, focus visibility and scroll containment. Computed style/focus inspection is outside the current Rect seam; this adapter is not claimed replayable."
+  },
+  {
+    "path": "isonim/src/isonim/editor/views/widgets/anchored_popover.js",
+    "api": "layout read",
+    "count": 13,
+    "reason": "Editor inspector top-layer DOM backend: anchor geometry, focus visibility and scroll containment. Existing native scroll/client/offset geometry; not represented by the Rect seam and not claimed replayable."
+  },
+  {
+    "path": "isonim/src/isonim/editor/views/widgets/anchored_popover.js",
+    "api": "requestAnimationFrame",
+    "count": 1,
+    "reason": "Editor inspector top-layer DOM backend: anchor geometry, focus visibility and scroll containment. DOM layout/focus/scroll placement loop; existing adapter outside recorded application scheduling."
+  },
+  {
+    "path": "isonim/src/isonim/editor/views/widgets/anchored_popover.nim",
+    "api": "addEventListener",
+    "count": 3,
+    "reason": "Editor inspector top-layer DOM backend: native popover event bridge. Existing native adapter registrations; counted pending event choke-point migration, not recordable component registration."
+  },
+  {
+    "path": "isonim/src/isonim/editor/views/widgets/choice_group.nim",
+    "api": "addEventListener",
+    "count": 1,
+    "reason": "Editor inspector choice-control native keyboard adapter. Existing native adapter registrations; counted pending event choke-point migration, not recordable component registration."
+  },
+  {
+    "path": "isonim/src/isonim/editor/views/widgets/color_popover.nim",
+    "api": "addEventListener",
+    "count": 17,
+    "reason": "Editor inspector color-control DOM backend: pointer capture and plane/slider geometry. Existing native adapter registrations; counted pending event choke-point migration, not recordable component registration."
+  },
+  {
+    "path": "isonim/src/isonim/editor/views/widgets/color_popover.nim",
+    "api": "getBoundingClientRect",
+    "count": 1,
+    "reason": "Editor inspector color-control DOM backend: pointer capture and plane/slider geometry. Existing host/iframe geometry adapter; not claimed replayable."
+  },
+  {
+    "path": "isonim/src/isonim/editor/views/widgets/color_popover.nim",
+    "api": "layout read",
+    "count": 2,
+    "reason": "Editor inspector color-control DOM backend: pointer capture and plane/slider geometry. Existing native scroll/client/offset geometry; not represented by the Rect seam and not claimed replayable."
+  },
+  {
+    "path": "isonim/src/isonim/editor/views/widgets/property_actions.nim",
+    "api": "addEventListener",
+    "count": 1,
+    "reason": "Editor inspector property-action native keyboard adapter. Existing native adapter registrations; counted pending event choke-point migration, not recordable component registration."
+  },
+  {
+    "path": "isonim/src/isonim/editor/views/widgets/property_row.nim",
+    "api": "addEventListener",
+    "count": 14,
+    "reason": "Editor inspector property-control DOM backend: numeric scrubbing and vector/boolean keyboard input. Existing native adapter registrations; counted pending event choke-point migration, not recordable component registration."
+  },
+  {
+    "path": "isonim/src/isonim/editor/views/widgets/property_row.nim",
+    "api": "getBoundingClientRect",
+    "count": 1,
+    "reason": "Editor inspector property-control DOM backend: numeric scrubbing and vector/boolean keyboard input. Existing host/iframe geometry adapter; not claimed replayable."
+  },
+  {
+    "path": "isonim/src/isonim/editor/views/widgets/property_row.nim",
+    "api": "layout read",
+    "count": 8,
+    "reason": "Editor inspector property-control DOM backend: numeric scrubbing and vector/boolean keyboard input. Existing native scroll/client/offset geometry; not represented by the Rect seam and not claimed replayable."
+  },
+  {
+    "path": "isonim/src/isonim/editor/views/widgets/section_layout.nim",
+    "api": "addEventListener",
+    "count": 1,
+    "reason": "Editor inspector section native keyboard adapter. Existing native adapter registrations; counted pending event choke-point migration, not recordable component registration."
+  },
+  {
+    "path": "isonim/src/isonim/editor/views/widgets/variable_inline_editor.nim",
+    "api": "getBoundingClientRect",
+    "count": 1,
+    "reason": "Editor inspector inline-variable control DOM backend: anchor geometry. Existing host/iframe geometry adapter; not claimed replayable."
+  },
+  {
+    "path": "isonim/src/isonim/editor/views/widgets/variable_inline_editor.nim",
+    "api": "layout read",
+    "count": 2,
+    "reason": "Editor inspector inline-variable control DOM backend: anchor geometry. Existing native scroll/client/offset geometry; not represented by the Rect seam and not claimed replayable."
+  },
+  {
+    "path": "isonim/src/isonim/editor/views/widgets/variable_picker.nim",
+    "api": "addEventListener",
+    "count": 1,
+    "reason": "Editor inspector variable-picker DOM backend: anchor geometry and keyboard navigation. Existing native adapter registrations; counted pending event choke-point migration, not recordable component registration."
+  },
+  {
+    "path": "isonim/src/isonim/editor/views/widgets/variable_picker.nim",
+    "api": "getBoundingClientRect",
+    "count": 1,
+    "reason": "Editor inspector variable-picker DOM backend: anchor geometry and keyboard navigation. Existing host/iframe geometry adapter; not claimed replayable."
+  },
+  {
+    "path": "isonim/src/isonim/editor/views/widgets/variable_picker.nim",
+    "api": "layout read",
+    "count": 2,
+    "reason": "Editor inspector variable-picker DOM backend: anchor geometry and keyboard navigation. Existing native scroll/client/offset geometry; not represented by the Rect seam and not claimed replayable."
+  },
+  {
+    "path": "isonim/src/isonim/web/hmr_css_watch.nim",
+    "api": "Date.now",
+    "count": 1,
+    "reason": "HMR development transport/cache busting and retry/load lifecycle; absent from release page runtime."
+  },
+  {
+    "path": "isonim/src/isonim/web/hmr_css_watch.nim",
+    "api": "addEventListener",
+    "count": 2,
+    "reason": "HMR development transport/cache busting and retry/load lifecycle; absent from release page runtime."
+  },
+  {
+    "path": "isonim/src/isonim/web/hmr_css_watch.nim",
+    "api": "setTimeout",
+    "count": 1,
+    "reason": "HMR development transport/cache busting and retry/load lifecycle; absent from release page runtime."
+  },
+  {
+    "path": "isonim/src/isonim/web/hmr_fs_watch.nim",
+    "api": "setTimeout",
+    "count": 1,
+    "reason": "HMR development transport/cache busting and retry/load lifecycle; absent from release page runtime."
+  },
+  {
+    "path": "isonim/src/isonim/web/hmr_livereload.nim",
+    "api": "Date.now",
+    "count": 1,
+    "reason": "HMR development transport/cache busting and retry/load lifecycle; absent from release page runtime."
+  },
+  {
+    "path": "isonim/src/isonim/web/hmr_livereload.nim",
+    "api": "WebSocket",
+    "count": 1,
+    "reason": "HMR development transport/cache busting and retry/load lifecycle; absent from release page runtime."
+  },
+  {
+    "path": "isonim/src/isonim/web/hmr_transport.nim",
+    "api": "Date.now",
+    "count": 1,
+    "reason": "HMR development transport/cache busting and retry/load lifecycle; absent from release page runtime."
+  },
+  {
+    "path": "isonim/src/isonim/web/worker.nim",
+    "api": "setTimeout",
+    "count": 1,
+    "reason": "Existing worker setTimeout0 startup/yield primitive; Worker usage separately remains a refusal warning."
+  },
+  {
+    "path": "nim-everywhere/src/nim_everywhere/http.nim",
+    "api": "fetch",
+    "count": 1,
+    "reason": "Trusted platform implementation behind the installed backend hook; raw delegation avoids recursion."
+  },
+  {
+    "path": "nim-everywhere/src/nim_everywhere/time.nim",
+    "api": "setTimeout",
+    "count": 1,
+    "reason": "Trusted platform implementation behind the installed backend hook; raw delegation avoids recursion."
+  }
+]

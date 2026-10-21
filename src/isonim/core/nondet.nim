@@ -8,6 +8,8 @@ when defined(js): import std/jsffi
 import ./clock
 import nim_everywhere/[backend, async_compat, platform]
 import nim_everywhere/http as neHttp
+import nim_everywhere/raw_nondet
+export raw_nondet
 export clock, async_compat
 
 type
@@ -17,7 +19,6 @@ type
   StorageEffect* = object of RootEffect
   LayoutEffect* = object of RootEffect
   DomEventEffect* = object of RootEffect
-  RawNondet* = object of RootEffect
   Rect* = object
     x*, y*, width*, height*: float64
   NondetBackend* = ClockBase
@@ -151,7 +152,7 @@ proc fetch*(request: HttpRequest): PlatformFuture[HttpResponse] {.tags: [NetEffe
     if b.scripted and b.fetchResponse == nil:
       raise newException(ValueError, "missing scripted fetch")
     let pending = if b.fetchResponse != nil: b.fetchResponse(request)
-      else: neHttp.fetchHttpRaw(request)
+      else: neHttp.fetchHttpRaw(rawBackendAccess, request)
     when defined(js):
       return settled(pending, proc() = inc b.dispatchSequence)
     else:
