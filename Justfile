@@ -179,6 +179,7 @@ test-c:
     nim c -r tests/test_clock.nim
     nim c -r tests/test_context.nim
     nim c -r tests/test_rxcore.nim
+    nim c -r --out:build/test_keyed_effect_lifetime tests/test_keyed_effect_lifetime.nim
     nim c -r tests/test_dsl.nim
     nim c -r tests/test_ssr.nim
     nim c -r tests/test_streaming.nim
@@ -270,6 +271,7 @@ test-js: build-tailwind
     nim js -r --out:build/test_editor_control.js tests/test_editor_control.nim
     nim js -r tests/test_choice_row_activation.nim
     nim js -r tests/test_loop_accessors.nim
+    nim js -r --out:build/test_keyed_effect_lifetime.js tests/test_keyed_effect_lifetime.nim
     nim js -r tests/test_signals.nim
     nim js -r tests/test_effects.nim
     nim js -r tests/test_clock.nim

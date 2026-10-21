@@ -22,11 +22,18 @@ proc forEachKeyed*[T, R, N](
   var currentItems: seq[T] = @[]
   var itemSignals: seq[Signal[T]] = @[]
   var indexSignals: seq[Signal[int]] = @[]
+  var itemDisposers: seq[proc()] = @[]
+  let listOwner = getOwner()
+
+  # Row lifetimes follow reconciliation, not the tracking effect's reruns.
+  # Each row has its own root; retained rows keep subscriptions and removed
+  # rows release them. The list's owner releases all remaining rows on unmount.
+  onCleanup proc() =
+    for dispose in itemDisposers: dispose()
+    itemDisposers.setLen(0)
 
   createRenderEffect proc() =
     let newItems = each()
-
-    # Build map from item value -> old index
     var oldItemMap = initTable[T, int]()
     for i, item in currentItems:
       oldItemMap[item] = i
@@ -34,34 +41,56 @@ proc forEachKeyed*[T, R, N](
     var newNodes: NativeSeq[N] = newNativeSeq[N]()
     var newItemSignals: seq[Signal[T]] = @[]
     var newIndexSignals: seq[Signal[int]] = @[]
+    var newDisposers: seq[proc()] = @[]
+    var retained = newSeq[bool](currentItems.len)
+    var created: seq[proc()] = @[]
+    var reconciled = false
+    try:
+      for i, item in newItems:
+        if item in oldItemMap:
+          let oldIdx = oldItemMap[item]
+          newNodes.add(currentNodes[oldIdx])
+          newItemSignals.add(itemSignals[oldIdx])
+          newIndexSignals.add(indexSignals[oldIdx])
+          newDisposers.add(itemDisposers[oldIdx])
+          retained[oldIdx] = true
+          `val=`(indexSignals[oldIdx], i)
+          oldItemMap.del(item)
+        else:
+          var node: N
+          var itemSig: Signal[T]
+          var idxSig: Signal[int]
+          var itemDispose: proc()
+          runWithOwner(listOwner, proc() =
+            createRoot proc(dispose: proc()) =
+              itemDispose = dispose
+              created.add(dispose)
+              itemSig = createSignal(item)
+              idxSig = createSignal(i)
+              proc accessor[V](signal: Signal[V]): proc(): V =
+                # Accessors escape the render callback; capture each signal
+                # in its own invocation rather than a shared loop variable.
+                result = proc(): V = signal.val
+              node = body(accessor(itemSig), accessor(idxSig))
+          )
+          newNodes.add(node)
+          newItemSignals.add(itemSig)
+          newIndexSignals.add(idxSig)
+          newDisposers.add(itemDispose)
 
-    for i, item in newItems:
-      if item in oldItemMap:
-        let oldIdx = oldItemMap[item]
-        # Reuse existing node and update signals
-        newNodes.add(currentNodes[oldIdx])
-        newItemSignals.add(itemSignals[oldIdx])
-        newIndexSignals.add(indexSignals[oldIdx])
-        # Update index value (item is same by identity)
-        `val=`(indexSignals[oldIdx], i)
-        # Remove from map so duplicate items get new nodes
-        oldItemMap.del(item)
-      else:
-        # Create new node
-        let itemSig = createSignal(item)
-        let idxSig = createSignal(i)
-        proc accessor[V](signal: Signal[V]): proc(): V =
-          # Accessors escape through body; a loop-local let is shared.
-          result = proc(): V = signal.val
-        let node = body(accessor(itemSig), accessor(idxSig))
-        newNodes.add(node)
-        newItemSignals.add(itemSig)
-        newIndexSignals.add(idxSig)
-
-    reconcileArrays(renderer, parent, currentNodes, newNodes)
+      reconcileArrays(renderer, parent, currentNodes, newNodes)
+      reconciled = true
+    finally:
+      # A constructor can fail after earlier rows were built in this pass.
+      # None of those new roots may escape without a reconciliation owner.
+      if not reconciled:
+        for dispose in created: dispose()
+    for i, dispose in itemDisposers:
+      if not retained[i]: dispose()
     currentItems = newItems
     itemSignals = newItemSignals
     indexSignals = newIndexSignals
+    itemDisposers = newDisposers
 
 proc indexEach*[T, R, N](
     renderer: R;
