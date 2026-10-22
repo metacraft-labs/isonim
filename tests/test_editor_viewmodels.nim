@@ -7482,6 +7482,26 @@ suite "Editor ViewModels (the selection-header actions)":
       check vm.inspector.revealSectionRequest.val == before + 2
       dispose()
 
+  test "a history traversal asks the view to refocus the remembered control":
+    ## The browser runtime calls this on `popstate` with the control the
+    ## entry was stamped with. A counter, so returning to the same control
+    ## twice refocuses it twice; an empty id forgets without asking.
+    createRoot proc(dispose: proc()) =
+      let vm = indicatorVm()
+      let before = vm.inspector.focusRestoreRequest.val
+      vm.inspector.rememberInspectorFocus("section-search")
+      check vm.inspector.focusRestoreRequest.val == before
+      vm.inspector.requestInspectorFocusRestore("""["property-row","pad-top","Edit Pad top"]""")
+      check vm.inspector.focusedControlId.val ==
+        """["property-row","pad-top","Edit Pad top"]"""
+      check vm.inspector.focusRestoreRequest.val == before + 1
+      vm.inspector.requestInspectorFocusRestore("""["property-row","pad-top","Edit Pad top"]""")
+      check vm.inspector.focusRestoreRequest.val == before + 2
+      vm.inspector.requestInspectorFocusRestore("")
+      check vm.inspector.focusedControlId.val == ""
+      check vm.inspector.focusRestoreRequest.val == before + 2
+      dispose()
+
   test "a section opened this way survives the next selection":
     ## The per-kind defaults close Source for most elements. Someone who
     ## pressed the button asked for it, and a default that overrules the

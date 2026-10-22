@@ -248,8 +248,8 @@
   {
     "path": "isonim/src/isonim/editor/views/shell.nim",
     "api": "addEventListener",
-    "count": 30,
-    "reason": "Editor shell preview iframe sizing and native resize/drag/input lifecycle. Existing native adapter registrations; counted pending event choke-point migration, not recordable component registration."
+    "count": 35,
+    "reason": "Editor shell preview iframe sizing and native resize/drag/input lifecycle. Existing native adapter registrations, plus the resize handles' pointer capture and the history focus restore's user-input disarm; counted pending event choke-point migration, not recordable component registration."
   },
   {
     "path": "isonim/src/isonim/editor/views/shell.nim",

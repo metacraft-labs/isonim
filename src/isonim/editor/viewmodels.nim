@@ -148,6 +148,15 @@ type
       ## the first time it is seen" rule, and for the same reason: a default
       ## that re-asserts itself is not a default, it is an override.
     focusedControlId*: Signal[string]
+      ## The inspector control that last held keyboard focus, as the key the
+      ## view derives from it (``data-isonim-focus-id``, or the property row
+      ## and the control's accessible name). Kept after focus leaves the
+      ## inspector, so a browser-history entry can be stamped with it when
+      ## the editor navigates away and the control refocused on Back.
+    focusRestoreRequest*: Signal[int]
+      ## Bumped when ``focusedControlId`` should be given keyboard focus
+      ## again (browser-history traversal back to an entry that recorded
+      ## one). A counter for the same reason as ``revealSectionRequest``.
     commandPaletteHooksReady*: Signal[bool]
     expandedLayerIds*: Signal[seq[string]]
     hoveredElementId*: Signal[string]
@@ -4279,6 +4288,13 @@ proc expandRelevantSections*(inspector: InspectorVM) =
 
 proc rememberInspectorFocus*(inspector: InspectorVM; id: string) =
   inspector.focusedControlId.val = id
+
+proc requestInspectorFocusRestore*(inspector: InspectorVM; id: string) =
+  ## Asks the mounted inspector to focus the control ``id`` names. An empty
+  ## id only forgets the remembered control: there is nothing to restore.
+  inspector.focusedControlId.val = id
+  if id.len > 0:
+    inspector.focusRestoreRequest.val = inspector.focusRestoreRequest.val + 1
 
 proc clearSelection*(inspector: InspectorVM) =
   inspector.selectedElement.val = ElementRef()
@@ -12007,6 +12023,7 @@ proc createInspectorVM*(designSystemSchema: Signal[DesignSystemSchema] = nil;
     sectionsUserSet: createSignal[seq[InspectorSection]](@[]),
     revealSectionRequest: createSignal(0),
     focusedControlId: focusedControlId,
+    focusRestoreRequest: createSignal(0),
     commandPaletteHooksReady: commandPaletteHooksReady,
     expandedLayerIds: expandedLayerIds,
     hoveredElementId: hoveredElementId,

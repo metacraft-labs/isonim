@@ -319,13 +319,33 @@ proc encodeParam(value: string): string =
   {.emit: [encoded, " = encodeURIComponent(", raw, ")"].}
   $encoded
 
-proc writeRouteUrl(url: string; replace: bool) =
+proc writeRouteUrl(vm: EditorVM; url: string; replace: bool) =
+  ## Writes the editor route. A push first stamps the entry being left with
+  ## the inspector control that last held focus there, so that a traversal
+  ## back to it can return focus to that control (``restoreRouteFocus``).
+  ## The new entry starts remembering only what is focused now: a control
+  ## focused under an older entry is not carried forward.
   let next = url.cstring
   if replace:
-    {.emit: ["window.history.replaceState({ isonimEditor: true }, '', ", next,
+    {.emit: ["window.history.replaceState(Object.assign({}, window.history.state, { isonimEditor: true }), '', ", next,
         ")"].}
   else:
+    let leaving = vm.inspector.focusedControlId.val.cstring
+    {.emit: ["window.history.replaceState(Object.assign({}, window.history.state, { isonimEditor: true, isonimInspectorFocus: ", leaving, " }), '');"].}
     {.emit: ["window.history.pushState({ isonimEditor: true }, '', ", next, ")"].}
+    vm.inspector.rememberInspectorFocus(focusedInspectorControlKey())
+
+proc restoreRouteFocus(vm: EditorVM) =
+  ## After ``popstate``: focus the inspector control the entry was stamped
+  ## with when the editor left it. An entry without a stamp (never left by
+  ## a push, or left with nothing focused in the inspector) restores
+  ## nothing and keeps remembering what is focused now.
+  var stamped: cstring
+  {.emit: [stamped, " = (window.history.state && typeof window.history.state.isonimInspectorFocus === 'string') ? window.history.state.isonimInspectorFocus : '';"].}
+  if stamped.len > 0:
+    vm.inspector.requestInspectorFocusRestore($stamped)
+  else:
+    vm.inspector.rememberInspectorFocus(focusedInspectorControlKey())
 
 proc deferRouteWrite(cb: proc()): int =
   {.emit: [result, " = setTimeout(", cb, ", 0);"].}
@@ -703,7 +723,7 @@ proc syncEditorRouteNow(vm: EditorVM; replace: bool) =
     lastSyncedRoute = current
     return
 
-  writeRouteUrl(next, replace)
+  writeRouteUrl(vm, next, replace)
   lastSyncedRoute = next
 
 proc scheduleEditorRouteSync(vm: EditorVM) =
@@ -788,6 +808,7 @@ proc installEditorHistorySync(vm: EditorVM) =
     applyEditorRoute(vm)
     lastSyncedRoute = currentRouteUrl()
     applyingRoute = false
+    restoreRouteFocus(vm)
 
   addPopstateListener(onPopstate)
   onCleanup proc() =
