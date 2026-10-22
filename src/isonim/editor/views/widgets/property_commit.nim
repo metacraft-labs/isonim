@@ -176,14 +176,17 @@ proc localPreviewRefusal(elementId, domPath, property: string): string =
     let path = cstring(domPath)
     let prop = cstring(property)
     {.emit: [reason, """ = (function(id,path,property) {
-      if (typeof document === 'undefined') return '';
+      if (typeof document === 'undefined' || (!id && !path)) return '';
       for (const frame of document.querySelectorAll('iframe')) {
         try {
+          // View-mode/unbridged frames cannot refuse a local declaration.
+          // Check the capability before querying targets or forcing layout.
+          if (typeof frame.contentWindow.__isonimLocalDeclarationRefusal !== 'function') continue;
           const doc = frame.contentDocument;
           if (!doc || !frame.getClientRects().length) continue;
           const target = (id && doc.querySelector('[data-isonim-element-id="' + CSS.escape(id) + '"]')) ||
             (path && doc.querySelector(path));
-          if (target && typeof frame.contentWindow.__isonimLocalDeclarationRefusal === 'function')
+          if (target)
             return frame.contentWindow.__isonimLocalDeclarationRefusal(id,path,property);
         } catch(e) {}
       }
@@ -456,8 +459,7 @@ proc inspectorRowWiring*(vm: EditorVM; property: string): InspectorRowWiring =
   let message = createSignal("")
   let rejected = createSignal(0)
 
-  proc currentChoices(): seq[SourceScopeChoice] =
-    let found = vm.inspectorProperty(capturedProperty)
+  proc currentChoices(found: Option[PropertyInfo]): seq[SourceScopeChoice] =
     if found.isNone: return @[]
     result = vm.sourceScopeChoices(found.get)
     if not vm.hasAsyncSourceProject:
@@ -472,19 +474,22 @@ proc inspectorRowWiring*(vm: EditorVM; property: string): InspectorRowWiring =
             choice.editable = false
             choice.reason = reason
 
-  proc effectiveScope(): SourceScopeChoiceKind =
-    let choices = currentChoices()
+  proc effectiveScope(choices: seq[SourceScopeChoice];
+      found: Option[PropertyInfo]): SourceScopeChoiceKind =
     if choices.len == 0:
       return sskLocalInstance
     if userPicked.val:
       for choice in choices:
         if choice.kind == selected.val:
           return selected.val
-    let found = vm.inspectorProperty(capturedProperty)
     if found.isNone:
       return sskLocalInstance
     let idx = defaultScopeIndex(choices, found.get)
     if idx >= 0 and idx < choices.len: choices[idx].kind else: sskLocalInstance
+
+  proc effectiveScope(): SourceScopeChoiceKind =
+    let found = vm.inspectorProperty(capturedProperty)
+    effectiveScope(currentChoices(found), found)
 
   proc commit(value: string) =
     let outcome = commitInspectorValue(vm, capturedProperty, value,
@@ -509,16 +514,22 @@ proc inspectorRowWiring*(vm: EditorVM; property: string): InspectorRowWiring =
   proc scopeOptions(): seq[CompactChoiceOption] =
     let found = vm.inspectorProperty(capturedProperty)
     let prop = if found.isSome: found.get else: PropertyInfo()
-    let choices = currentChoices()
+    # One snapshot for this operation, not a cache across renders or commits.
+    let choices = currentChoices(found)
     if choices.len == 0:
       return @[]
-    let active = effectiveScope()
+    let active = effectiveScope(choices, found)
     var selectedIndex = -1
     for i in 0 ..< choices.len:
       if choices[i].kind == active:
         selectedIndex = i
         break
     result = @[]
+    # Every chip refers to the same selection/story. Signal reads return
+    # value snapshots on JS; do not copy the complete element per option.
+    let targetId = vm.inspector.selectedElement.val.id
+    let story = vm.selectedStory.val
+    let storyLabel = story.group & " / " & story.name
     for i in orderedScopeIndexes(choices, selectedIndex):
       let choice = choices[i]
       let kind = choice.kind
@@ -549,8 +560,8 @@ proc inspectorRowWiring*(vm: EditorVM; property: string): InspectorRowWiring =
           ("data-source-scope-schema", choice.schemaKey),
           ("data-source-scope-token", prop.tokenName),
           ("data-source-scope-count", $choice.usageCount),
-          ("data-source-scope-target", vm.inspector.selectedElement.val.id),
-          ("data-source-scope-story", vm.selectedStory.val.group & " / " & vm.selectedStory.val.name)] &
+          ("data-source-scope-target", targetId),
+          ("data-source-scope-story", storyLabel)] &
           refusalAttrs,
         onChoose: scopeChoiceHandler(choice))
 
@@ -602,8 +613,10 @@ proc inspectorRowWiring*(vm: EditorVM; property: string): InspectorRowWiring =
     commitRejected: rejected,
     scopeOptions: scopeOptions,
     selectedSourceScope: proc(): Option[SourceScopeChoice] =
-      let active = effectiveScope()
-      for choice in currentChoices():
+      let found = vm.inspectorProperty(capturedProperty)
+      let choices = currentChoices(found)
+      let active = effectiveScope(choices, found)
+      for choice in choices:
         if choice.kind == active: return some(choice)
       none(SourceScopeChoice),
     commit: commit, commitAsync: asyncCommit,

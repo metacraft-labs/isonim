@@ -4,7 +4,7 @@
 ## Actual source transactions are covered by the registered native/GUI suites.
 ## Phase G — section_source widget unit test.
 
-import std/[options, tables, unittest]
+import std/[options, sequtils, strutils, tables, unittest]
 
 import isonim/core/[signals, computation, owner]
 import isonim/editor/types
@@ -236,4 +236,62 @@ suite "Phase G section_source":
         vm.designSystemSchema.val=DesignSystemSchema(nodes: @[node],sourceOwnership: @[requiredPath])
         check scope.textContent=="Unknown"
         check resolveDesignSourceOwnership(vm.designSystemSchema.val,element,"variant").nodeKey=="owner"
+      dispose()
+
+  test "impact summary keeps mapped owners fresh without hypothetical scopes":
+    createRoot do(dispose: proc()):
+      let r = MockRenderer()
+      let root = r.createElement("div")
+      let vm = createEditorVM()
+      mountSectionSource[MockRenderer, MockNode](r, root, vm)
+      let impact = findByAttr(root, "data-design-system-impact", "true")
+      var node = DesignSchemaNode(key: "classes.card.padding",
+        kind: dsnClassDefinition, name: "card", property: "padding",
+        value: "16px", sourceSpan: SourceSpan(file: "card.css", line: 1),
+        components: @["Card"], usageCount: 7)
+      vm.designSystemSchema.val = DesignSystemSchema(nodes: @[node])
+      vm.inspector.selectedElement.val = ElementRef(id: "card", tag: "div",
+        properties: @[PropertyInfo(name: "padding", value: "16px",
+          sourceFile: "card.css", sourceLine: 1,
+          schemaKey: node.key, sharedCount: 7, directStyleAllowed: true)])
+      # General consumers still receive hypothetical scopes and their refusal
+      # diagnostics; only the Source summary asks for declared owners.
+      check vm.sharedDesignPropertyEditors().anyIt(
+        it.sourceScope.schemaKey.len == 0 and it.diagnostics.len > 0)
+      check impact.attributes["data-shared-design-editor-count"] == "1"
+      check impact.textContent.contains("padding | Spacing | Shared class")
+      check impact.textContent.contains("7 mapped uses")
+      node.usageCount = 12
+      vm.designSystemSchema.val = DesignSystemSchema(nodes: @[node])
+      check impact.textContent.contains("12 mapped uses")
+      vm.inspector.selectedElement.val = ElementRef(id: "other", tag: "div",
+        properties: @[PropertyInfo(name: "background-color", value: "#112233",
+          sourceFile: "other.css", sourceLine: 1,
+          schemaKey: "classes.other.color", directStyleAllowed: true)])
+      check impact.attributes["data-shared-design-editor-count"] == "0"
+      check not impact.textContent.contains("padding")
+      node = DesignSchemaNode(key: "classes.other.color",
+        kind: dsnClassDefinition, name: "other", property: "background-color",
+        value: "#112233", sourceSpan: SourceSpan(file: "other.css", line: 1),
+        components: @["Other"], usageCount: 3)
+      vm.designSystemSchema.val = DesignSystemSchema(nodes: @[node])
+      check impact.attributes["data-shared-design-editor-count"] == "1"
+      check impact.textContent.contains("background-color | Color | Shared class")
+      check impact.textContent.contains("3 mapped uses")
+      # A declared owner with an unsupported family still needs its visible
+      # diagnostic card; mapped-only is not an editable-only filter.
+      node.key = "classes.other.clip"
+      node.property = "clip-path"
+      node.value = "inset(0)"
+      vm.designSystemSchema.val = DesignSystemSchema(nodes: @[node])
+      vm.inspector.selectedElement.val = ElementRef(id: "clip", tag: "div",
+        properties: @[PropertyInfo(name: "clip-path", value: "inset(0)",
+          sourceFile: "other.css", sourceLine: 1,
+          schemaKey: node.key, directStyleAllowed: true)])
+      check impact.attributes["data-shared-design-editor-count"] == "1"
+      check impact.textContent.contains("clip-path | Unsupported | Shared class")
+      let diagnostics = vm.sharedDesignPropertyEditors(mappedOnly = true)
+      check diagnostics.len == 1
+      check diagnostics[0].status == sdesUnsupported
+      check diagnostics[0].diagnostics.len > 0
       dispose()

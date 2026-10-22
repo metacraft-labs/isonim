@@ -6687,22 +6687,28 @@ proc sourceScopeChoices*(editor: EditorVM; prop: PropertyInfo): seq[
   if not editor.workspaceEditAdapter.isNil and not editor.hasAsyncSourceProject:
     let request = PropertyEditRequest(property: prop.name, newValue: prop.value,
       kind: pekCss, scope: pesShared, origin: peoInspector)
-    let choices = result
     for choice in result.mitems:
       if choice.kind == sskLocalInstance or not choice.editable:
         continue
+      # Admission reads plan identity, destination and removal capability,
+      # not disclosure metadata. Actual edit plans retain the full choices;
+      # copying that graph into each read-only probe only to discard it is
+      # unnecessary (see sourcePlanAdmissionRefusal/workspacePlanKeys).
       let refusal = editor.sourcePlanAdmissionRefusal(
-        prop.sharedScopePlan(request, choices, choice))
+        prop.sharedScopePlan(request, @[], choice))
       if refusal.len > 0:
         choice.editable = false
         choice.reason = refusal
 
-proc sourceScopeImpacts*(schema: DesignSystemSchema; element: ElementRef;
-    prop: PropertyInfo): seq[SourceScopeImpact] =
-  for choice in sourceScopeChoices(schema, element, prop):
+func sourceScopeImpacts(choices: seq[SourceScopeChoice]): seq[SourceScopeImpact] =
+  for choice in choices:
     if choice.kind != sskLocalInstance and
         (choice.schemaKey.len > 0 or choice.usageCount > 0):
       result.add choice.impact
+
+proc sourceScopeImpacts*(schema: DesignSystemSchema; element: ElementRef;
+    prop: PropertyInfo): seq[SourceScopeImpact] =
+  sourceScopeImpacts(sourceScopeChoices(schema, element, prop))
 
 proc sourceScopeImpacts*(editor: EditorVM; prop: PropertyInfo): seq[
     SourceScopeImpact] =
@@ -6891,7 +6897,6 @@ func sharedScopePlan(prop: PropertyInfo; request: PropertyEditRequest;
     result.tokenName = result.schemaKey
   if choice.kind != sskLocalInstance:
     result.scope = pesShared
-  result.sourceScopeChoices = choices
   result.originDetail = "shared-design:" & choice.kind.sourceScopeChoiceLabel() &
     ":" & result.schemaKey
   result.previewBefore = result.property & ": " & result.oldValue
@@ -6900,8 +6905,8 @@ func sharedScopePlan(prop: PropertyInfo; request: PropertyEditRequest;
     result.property & ":" & $choice.kind
 
 proc sharedDesignEditorFor(editor: EditorVM; prop: PropertyInfo;
-    choice: SourceScopeChoice; proposedValue = "";
-    removal = false): SharedDesignPropertyEditor =
+    choice: SourceScopeChoice; choices: seq[SourceScopeChoice];
+    proposedValue = ""; removal = false): SharedDesignPropertyEditor =
   ## ``removal`` plans an empty value (Reset). Without it an empty proposal
   ## means "no proposal" and the current value stands in.
   let valueText =
@@ -6933,7 +6938,7 @@ proc sharedDesignEditorFor(editor: EditorVM; prop: PropertyInfo;
       line: if choice.sourceLine > 0: choice.sourceLine else: prop.sourceLine,
       property: prop.name)
 
-  let plan = prop.sharedScopePlan(request, editor.sourceScopeChoices(prop), choice)
+  let plan = prop.sharedScopePlan(request, choices, choice)
   result = SharedDesignPropertyEditor(
     property: prop.name,
     category: category,
@@ -6957,13 +6962,23 @@ proc sharedDesignEditorFor(editor: EditorVM; prop: PropertyInfo;
         @[],
     diagnostics: diagnostics)
 
-proc sharedDesignPropertyEditors*(editor: EditorVM): seq[
+proc sharedDesignPropertyEditors*(editor: EditorVM; mappedOnly = false): seq[
     SharedDesignPropertyEditor] =
+  ## Build from one fresh scope snapshot per property. The source summary only
+  ## displays declared owners, so omit its hypothetical scopes before making
+  ## their plans/previews rather than constructing and discarding them later.
+  ## Ordinary callers retain all scopes, including unsupported diagnostics.
+  var mappedKeys: seq[string]
+  if mappedOnly:
+    for node in editor.designSystemSchema.val.nodes:
+      mappedKeys.add node.key
   for prop in editor.inspector.selectedElement.val.properties:
-    for choice in editor.sourceScopeChoices(prop):
-      if choice.kind == sskLocalInstance:
+    let choices = editor.sourceScopeChoices(prop)
+    for choice in choices:
+      if choice.kind == sskLocalInstance or
+          (mappedOnly and choice.schemaKey notin mappedKeys):
         continue
-      let candidate = editor.sharedDesignEditorFor(prop, choice)
+      let candidate = editor.sharedDesignEditorFor(prop, choice, choices)
       if candidate.status != sdesUnsupported or candidate.diagnostics.len > 0:
         result.add candidate
 
@@ -7020,7 +7035,7 @@ proc planSharedDesignEdit*(editor: EditorVM; property, newValue: string;
     return SharedDesignEditResult(status: pesRejected,
       diagnostics: scopeDiagnostics)
 
-  let editorVm = editor.sharedDesignEditorFor(prop, choice, newValue,
+  let editorVm = editor.sharedDesignEditorFor(prop, choice, choices, newValue,
     removal = newValue.strip.len == 0 and prop.value.strip.len > 0)
   if editorVm.status != sdesEditable or editorVm.diagnostics.len > 0:
     return SharedDesignEditResult(status: pesRejected, editor: editorVm,
@@ -11928,13 +11943,15 @@ proc createInspectorVM*(designSystemSchema: Signal[DesignSystemSchema] = nil;
   let propertyEditors = createMemo[seq[CSSPropertyEditorVM]](proc(): seq[
       CSSPropertyEditorVM] =
     result = @[]
-    for prop in selectedElement.val.properties:
+    # Every row belongs to this memo's one selection/schema snapshot. Reuse
+    # both it and its choices instead of copying/re-resolving them per row.
+    let element = selectedElement.val
+    let schema = schemaSignal.val
+    for prop in element.properties:
       let value = parseCssPropertyValue(prop.name, prop.value)
       let category = cssPropertyCategory(prop.name)
-      let choices = sourceScopeChoices(schemaSignal.val,
-        selectedElement.val, prop)
-      let impacts = sourceScopeImpacts(schemaSignal.val,
-        selectedElement.val, prop)
+      let choices = sourceScopeChoices(schema, element, prop)
+      let impacts = sourceScopeImpacts(choices)
       result.add CSSPropertyEditorVM(
         property: prop.name,
         category: category,

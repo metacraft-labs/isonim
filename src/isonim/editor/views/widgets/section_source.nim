@@ -165,15 +165,9 @@ proc mountSectionSource*[R, E](r: R; parent: E; vm: EditorVM) =
          overflow_wrap = "anywhere")
   r.appendChild(parent, impact)
   createRenderEffect proc() =
-    var editors: seq[SharedDesignPropertyEditor]
-    let schema = vm.designSystemSchema.val
-    for candidate in vm.sharedDesignPropertyEditors():
-      # Unmapped hypothetical scopes are not affected uses. Their refusal
-      # remains on the row; the impact panel lists actual declared owners.
-      for node in schema.nodes:
-        if node.key == candidate.sourceScope.schemaKey:
-          editors.add candidate
-          break
+    # Unmapped hypothetical scopes remain on their rows. Ask for actual
+    # owners before building their source plans and impact previews.
+    let editors = vm.sharedDesignPropertyEditors(mappedOnly = true)
     let previews = vm.sharedDesignCommitPreviews()
     r.setAttribute(impact, "data-shared-design-editor-count", $editors.len)
     r.setAttribute(impact, "data-shared-design-commit-preview-count", $previews.len)

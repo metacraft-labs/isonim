@@ -2000,8 +2000,10 @@ proc mountPropertyRow*[R, E](r: R; parent: E;
       result = proc() =
         if inner != nil: inner()
         commitValue()
+    var initialOptionCount = 0
     proc wrappedScopeOptions(): seq[CompactChoiceOption] =
       result = scopeOptionsThunk()
+      initialOptionCount = result.len
       for option in result.mitems:
         option.onChoose = thenCommit(option.onChoose)
     let strip = renderCompactChoiceRow[R, E](r, "",
@@ -2012,8 +2014,9 @@ proc mountPropertyRow*[R, E](r: R; parent: E;
     # inspector still resolves the control in the new one.
     r.setAttribute(strip.root, "data-inspector-scope-selector", "true")
     r.setAttribute(strip.root, "data-compact-choice-strip", "true")
-    r.setAttribute(strip.root, "data-source-scope-count",
-      $scopeOptionsThunk().len)
+    # The strip has just resolved its initial options. Resolving the whole
+    # scope/admission graph a second time solely to count it duplicates work.
+    r.setAttribute(strip.root, "data-source-scope-count", $initialOptionCount)
     r.appendChild(scopeSlot, strip.root)
 
   # ------------------------------------------------------------------------- #

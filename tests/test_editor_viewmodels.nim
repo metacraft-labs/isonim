@@ -5465,6 +5465,11 @@ suite "Editor ViewModels (M27 workspace file writes)":
         check planned.editor.value.canonical == item[1]
         check planned.sourceEdit.planKind == item[4]
         check planned.sourceEdit.sourceScope == item[2]
+        # Admission probes may omit disclosure graphs internally; public
+        # actual plans must retain the complete fresh choices and impacts.
+        let currentProp = vm.inspector.selectedElement.val.properties.filterIt(
+          it.name == item[0])[0]
+        check planned.sourceEdit.sourceScopeChoices == vm.sourceScopeChoices(currentProp)
         check planned.editor.commitPreview.sourceDiff.contains("+ " & item[0])
         check planned.editor.commitPreview.affectedComponents == @["Card"]
         check planned.editor.commitPreview.affectedStories == @[story]
@@ -6719,6 +6724,53 @@ suite "Editor ViewModels (cross-surface integration)":
       check wiring.commitMessage.val == ""
       check vm.inspector.pendingSourceEdits.val.len == 1
       check vm.inspector.pendingSourceEdits.val[0].newValue == "26px"
+      dispose()
+
+  test "section_row_operations_refresh_permissions_schema_and_selection":
+    createRoot proc(dispose: proc()) =
+      let root = tempWorkspaceDir("scope-snapshot-freshness")
+      defer: removeDir(root)
+      let firstFile = root / "first.nim"
+      let secondFile = root / "second.nim"
+      atomicWrite(firstFile, "card-title.font-size=20px\n")
+      atomicWrite(secondFile, "card-title.font-size=20px\n")
+      let firstTree = cardTreeJson.replace("SRC", firstFile)
+      let vm = writebackVm(root, firstFile, firstTree)
+      let wiring = vm.inspectorRowWiring("font-size")
+      check wiring.scopeOptions().anyIt(it.enabled)
+      vm.workspacePermissions.val = EditorWorkspacePermissions(readSource: true,
+        writeSource: false)
+      wiring.commit("24px")
+      check wiring.commitMessage.val.contains("read-only")
+      check vm.inspector.pendingSourceEdits.val.len == 0
+      check readFile(firstFile) == "card-title.font-size=20px\n"
+      vm.workspacePermissions.val = EditorWorkspacePermissions(readSource: true,
+        writeSource: true)
+      # Adapter schema is deliberately changed without a signal. Act-time
+      # admission must still read it afresh, not a prior render's projection.
+      vm.workspaceEditAdapter.schema = @[]
+      wiring.commit("24px")
+      check wiring.commitMessage.val.len > 0
+      check vm.inspector.pendingSourceEdits.val.len == 0
+      let secondTree = cardTreeJson.replace("SRC", secondFile)
+      var second = titleSelection(secondFile, secondTree)
+      second.id = "second-title"
+      discard vm.selectInspectorElement(second)
+      vm.workspaceEditAdapter.schema = cardSchema(secondFile)
+      let options = wiring.scopeOptions()
+      check options.anyIt(it.enabled)
+      for option in options:
+        check option.dataAttrs.anyIt(it == ("data-source-scope-target", "second-title"))
+      let expectedChoices = vm.sourceScopeChoices(
+        vm.inspector.selectedElement.val.properties.filterIt(it.name == "font-size")[0])
+      wiring.commit("26px")
+      check wiring.commitMessage.val == ""
+      check vm.inspector.pendingSourceEdits.val.len == 1
+      check vm.inspector.pendingSourceEdits.val[0].file == secondFile
+      check vm.inspector.pendingSourceEdits.val[0].sourceScopeChoices == expectedChoices
+      check vm.applyWorkspaceFileEdits().ok
+      check readFile(firstFile) == "card-title.font-size=20px\n"
+      check readFile(secondFile) == "card-title.font-size=26px\n"
       dispose()
 
   test "section_row_each_scope_chip_chooses_its_own_scope":
