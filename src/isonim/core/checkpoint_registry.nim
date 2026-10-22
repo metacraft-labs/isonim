@@ -3,7 +3,7 @@
 ## JS uses WeakRef because JS object lifetime is managed by the browser GC.
 when not defined(isonimRecordable):
   {.error: "checkpoint_registry requires -d:isonimRecordable".}
-import std/[strutils, typetraits, hashes, macros]
+import std/[strutils, typetraits, hashes, macros, os]
 when defined(js): import std/jsffi
 
 type
@@ -49,12 +49,22 @@ proc mix*(state: var uint32; value: string) =
   state = (state xor 255'u32) * 16777619'u32
 
 macro declaredHash(call: typed): untyped =
-  ## The stdlib's ref/proc/pointer overloads hash identity. A user overload
-  ## explicitly defines the value contract, including for reference types.
+  ## User declarations establish a value contract. Generic stdlib wrappers
+  ## instead need recursive member classification; their hash may delegate to
+  ## an identity hash. Nongeneric stdlib value contracts (e.g. JSON) still count.
+  if call.kind notin {nnkCall, nnkCommand} or call[0].kind != nnkSym:
+    return newLit(false)
+  let implementation = call[0].getImpl
   let standardSource = getImpl(bindSym"Hash").lineInfoObj.filename
-  result = newLit(call.kind in {nnkCall, nnkCommand} and
-    call[0].kind == nnkSym and
-    call[0].getImpl.lineInfoObj.filename != standardSource)
+  let standardRoot = getImpl(bindSym"RootObj").lineInfoObj.filename.parentDir & DirSep
+  let source = implementation.lineInfoObj.filename
+  let inStandardLibrary = source.startsWith(standardRoot)
+  # Nim 2.2.4 preserves instantiated generic parameters in declaration metadata
+  # at slot 5; uninstantiated routines use slot 2. Do not inspect the hash body.
+  let generic = (implementation[2].kind == nnkGenericParams and implementation[2].len > 0) or
+    (implementation[5].kind == nnkBracket and implementation[5].len > 1 and
+      implementation[5][1].kind == nnkGenericParams and implementation[5][1].len > 0)
+  result = newLit(source != standardSource and (not inStandardLibrary or not generic))
 
 template hasDeclaredHash(T: typedesc): bool =
   mixin hash
@@ -74,7 +84,40 @@ macro checkpointTypeIdentity(T: typedesc): untyped =
     result.add("]")
   result = newLit(key(T.getTypeInst))
 
-proc stableStandardType[T](seen: seq[string] = @[]): bool {.compileTime.} =
+proc stableStandardType[T](seen: seq[string] = @[]): bool {.compileTime.}
+
+macro stableObjectFields(T: typedesc): untyped =
+  ## Typed object metadata retains all case branches, unlike fields(default(T)).
+  ## Expand inherited declarations themselves: a base's custom hash is not the
+  ## hash of its inherited fields inside a standard-derived-object hash.
+  ## This private helper expands only in stableStandardType's scope; `visited`
+  ## is that classifier's traversal state, shared with tuple/sequence checks.
+  var checks: seq[NimNode]
+  proc inspect(node: NimNode) =
+    case node.kind
+    of nnkObjectTy:
+      inspect(node[1])
+      inspect(node[2])
+    of nnkOfInherit:
+      for base in node: inspect(base.getTypeImpl)
+    of nnkRecList:
+      for field in node: inspect(field)
+    of nnkRecCase:
+      inspect(node[0])
+      for branch in node[1..^1]: inspect(branch[^1])
+    of nnkIdentDefs:
+      checks.add(newCall(newTree(nnkBracketExpr, bindSym"stableStandardType",
+        node[^2].copyNimTree), ident"visited"))
+    of nnkEmpty:
+      discard
+    else:
+      checks.add(newLit(false))
+  inspect(T.getTypeInst[1].getTypeImpl)
+  result = newLit(true)
+  for check in checks:
+    result = newTree(nnkInfix, ident"and", result, check)
+
+proc stableStandardType[T](seen: seq[string]): bool {.compileTime.} =
   const identity = checkpointTypeIdentity(T)
   # A repeated value type closes a structural cycle. Other fields on every
   # first visit still get checked, including identity fields in mutual cycles.
@@ -86,7 +129,9 @@ proc stableStandardType[T](seen: seq[string] = @[]): bool {.compileTime.} =
     false
   elif distinctBase(T) isnot T:
     stableStandardType[distinctBase(T)](visited)
-  elif T is tuple or T is object:
+  elif T is object:
+    stableObjectFields(T)
+  elif T is tuple:
     var sample: T
     result = true
     for field in fields(sample):

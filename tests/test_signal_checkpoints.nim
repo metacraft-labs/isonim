@@ -2,9 +2,9 @@
 ## physical sleeps; browser coverage separately exercises actual task ordering.
 ## The schedule-failure subclass injects a single exception and otherwise uses
 ## real TestClock scheduling, to cover rollback without sleeps or fake timers.
-import std/[unittest, hashes, json]
+import std/[unittest, hashes, json, sets, tables, strutils]
 import isonim/core/[signals, owner, graph, types, computation, batch, checkpoints, nondet]
-from ./fixtures/checkpoint_hash/hashes import HashValue, hash
+from ./fixtures/checkpoint_hash/hashes import HashValue, GenericHashValue, hash
 
 type
   Opaque = ref object
@@ -36,6 +36,48 @@ type
   RecursiveB = object
     children: seq[RecursiveA]
     identity: Opaque
+  VariantIdentity = object
+    case kind: bool
+    of false: scalar: int
+    of true: identity: pointer
+  PureVariant = object
+    case kind: bool
+    of false: scalar: int
+    of true: text: string
+  VariantBase[T] = object of RootObj
+    inherited: T
+  GenericVariant[T] = object of VariantBase[int]
+    case kind: bool
+    of false: scalar: int
+    of true: alternative: T
+  InheritedVariant[T] = object of VariantBase[T]
+    case kind: bool
+    of false: scalar: int
+    of true: text: string
+  PureCaseTree = object
+    case leaf: bool
+    of false: children: seq[PureCaseTree]
+    of true: scalar: int
+  MutualCaseA = object
+    children: seq[MutualCaseB]
+  MutualCaseB = object
+    case leaf: bool
+    of false: children: seq[MutualCaseA]
+    of true: identity: pointer
+  UserVariant = object
+    content: int
+    case kind: bool
+    of false: discard
+    of true: identity: pointer
+  ContractBase = object of RootObj
+    content: int
+    identity: pointer
+  ContractDerived = object of ContractBase
+    extra: int
+  ContractAggregate = object
+    base: ContractBase
+proc hash(value: UserVariant): Hash = Hash(value.content * 23)
+proc hash(value: ContractBase): Hash = Hash(value.content * 29)
 # This fixture chooses length equality; Nim 2.2.4 cannot infer noSideEffect for
 # its generic equality through these mutually recursive sequence types.
 func `==`(a, b: RecursiveA): bool = a.children.len == b.children.len
@@ -109,7 +151,88 @@ proc scriptRun(changed = false): seq[SignalCheckpoint] =
   session.stop()
   checkpoints
 
+proc checkValueDifference[T](first, second: T) =
+  # Direct contributions have no signal writes at all. A write-count change
+  # therefore cannot mask accidental rejection of either value-hash contract.
+  let before = stableContribution(first)
+  let after = stableContribution(second)
+  check before.startsWith("value:")
+  check after.startsWith("value:")
+  check before != after
+
 suite "signal checkpoints":
+  test "standard HashSet wrappers exclude identity and preserve scalar and user members":
+    var cell = 42
+    let address = cast[pointer](addr cell)
+    check stableContribution(toHashSet([address])) == "writes"
+    checkValueDifference(toHashSet([1]), toHashSet([2]))
+    checkValueDifference(toHashSet([HashedRef(content:1)]), toHashSet([HashedRef(content:2)]))
+
+  test "standard OrderedSet wrappers exclude identity and preserve scalar and user members":
+    var cell = 42
+    let address = cast[pointer](addr cell)
+    check stableContribution(toOrderedSet([address])) == "writes"
+    checkValueDifference(toOrderedSet([1]), toOrderedSet([2]))
+    checkValueDifference(toOrderedSet([HashedRef(content:1)]), toOrderedSet([HashedRef(content:2)]))
+
+  test "standard Table wrappers exclude identity keys and values with value controls":
+    var cell = 42
+    let address = cast[pointer](addr cell)
+    check stableContribution({1: address}.toTable) == "writes"
+    check stableContribution({address: 1}.toTable) == "writes"
+    checkValueDifference({1: 1}.toTable, {1: 2}.toTable)
+    checkValueDifference({1: HashedRef(content:1)}.toTable, {1: HashedRef(content:2)}.toTable)
+    checkValueDifference({HashedRef(content:1): 1}.toTable, {HashedRef(content:2): 1}.toTable)
+
+  test "standard OrderedTable wrappers exclude identity keys and values with value controls":
+    var cell = 42
+    let address = cast[pointer](addr cell)
+    check stableContribution({1: address}.toOrderedTable) == "writes"
+    check stableContribution({address: 1}.toOrderedTable) == "writes"
+    checkValueDifference({1: 1}.toOrderedTable, {1: 2}.toOrderedTable)
+    checkValueDifference({1: HashedRef(content:1)}.toOrderedTable, {1: HashedRef(content:2)}.toOrderedTable)
+    checkValueDifference({HashedRef(content:1): 1}.toOrderedTable, {HashedRef(content:2): 1}.toOrderedTable)
+
+  test "standard CountTable wrappers exclude identity and preserve scalar and user members":
+    var cell = 42
+    let address = cast[pointer](addr cell)
+    check stableContribution([address].toCountTable) == "writes"
+    checkValueDifference([1].toCountTable, [2].toCountTable)
+    checkValueDifference([1].toCountTable, [1, 1].toCountTable)
+    checkValueDifference([HashedRef(content:1)].toCountTable, [HashedRef(content:2)].toCountTable)
+
+  test "generic user hash contracts in a module named hashes remain explicit":
+    checkValueDifference(GenericHashValue[pointer](content:1), GenericHashValue[pointer](content:2))
+
+  test "nongeneric standard JsonNode hash remains a declared value contract":
+    checkValueDifference(%*{"content":1}, %*{"content":2})
+
+  test "case value types conservatively exclude identity-bearing alternatives":
+    var cell = 42
+    check stableContribution(VariantIdentity(kind:true, identity:cast[pointer](addr cell))) == "writes"
+    checkValueDifference(PureVariant(kind:false, scalar:1), PureVariant(kind:false, scalar:2))
+    checkValueDifference(PureVariant(kind:true, text:"one"), PureVariant(kind:true, text:"two"))
+
+  test "case field metadata preserves instantiated generics and flattened inheritance":
+    var cell = 42
+    let address = cast[pointer](addr cell)
+    check stableContribution(GenericVariant[pointer](kind:true, alternative:address)) == "writes"
+    check stableContribution(InheritedVariant[pointer](kind:true, inherited:address, text:"value")) == "writes"
+    checkValueDifference(GenericVariant[string](kind:true, alternative:"one"), GenericVariant[string](kind:true, alternative:"two"))
+    checkValueDifference(InheritedVariant[int](kind:true, inherited:1, text:"same"), InheritedVariant[int](kind:true, inherited:2, text:"same"))
+    check stableContribution(ContractDerived(content:1, identity:address, extra:1)) == "writes"
+    checkValueDifference(ContractAggregate(base:ContractBase(content:1, identity:address)), ContractAggregate(base:ContractBase(content:2, identity:address)))
+
+  test "recursive case values retain value hashes while mutual identity cases fall back":
+    checkValueDifference(PureCaseTree(leaf:false, children: @[PureCaseTree(leaf:true, scalar:1)]), PureCaseTree(leaf:false, children: @[PureCaseTree(leaf:true, scalar:2)]))
+    var cell = 42
+    check stableContribution(MutualCaseA(children: @[MutualCaseB(leaf:true, identity:cast[pointer](addr cell))])) == "writes"
+
+  test "explicit user case hash overrides identity-bearing branch representation":
+    var cell = 42
+    let address = cast[pointer](addr cell)
+    checkValueDifference(UserVariant(kind:true, content:1, identity:address), UserVariant(kind:true, content:2, identity:address))
+
   test "native current contribution owns value through last-reference release and errors":
     when not defined(js):
       for failing in [false, true]:

@@ -88,7 +88,9 @@ with tempfile.TemporaryDirectory(prefix='signal-checkpoint-mutants-') as tempora
     path.write_text(original)
     mutations = [
         ('snapshot', '  for entry in snapshot:', '  for entry in registrations:', '[FAILED] metadata snapshot', 'xr_m5_mutant_snapshot.log'),
-        ('hash-source', 'call[0].getImpl.lineInfoObj.filename != standardSource', 'call[0].getImpl.lineInfoObj.filename.split("/")[^1] != standardSource.split("/")[^1]', '[FAILED] user hashes module keeps existing value hash semantics', 'xr_m5_mutant_hash_source.log'),
+        ('hash-source', 'source != standardSource', 'source.split("/")[^1] != standardSource.split("/")[^1]', '[FAILED] user hashes module keeps existing value hash semantics', 'xr_m5_mutant_hash_source.log'),
+        ('standard-wrapper', 'source != standardSource and (not inStandardLibrary or not generic)', 'source != standardSource', '[FAILED] standard HashSet wrappers exclude identity and preserve scalar and user members', 'xr_m5_mutant_standard_wrapper.log'),
+        ('case-fields', '  elif T is object:\n    stableObjectFields(T)\n  elif T is tuple:', '  elif T is tuple or T is object:', '[FAILED] case value types conservatively exclude identity-bearing alternatives', 'xr_m5_mutant_case_fields.log'),
         ('recursive', 'if identity in seen: return true', 'if identity in seen: return false', '[FAILED] recursive value hashes terminate while mutual identity cycles use write counts', 'xr_m5_mutant_recursive.log'),
     ]
     for name, old, new, expected, log in mutations:
