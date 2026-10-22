@@ -6,18 +6,6 @@
 import std/[os, osproc, tempfiles, unittest, strtabs, strutils, monotimes, times, net]
 import ../tools/isonim_review/local_harbor
 
-if (paramCount() == 3 and paramStr(1) == "--own-producer-build") or
-    (paramCount() == 4 and paramStr(1) == "--own-producer-build-cancel"):
-  let environment = newStringTable(modeCaseSensitive)
-  for key, value in envPairs(): environment[key] = value
-  try:
-    echo buildLocalHarbor(paramStr(2), paramStr(3), environment, proc(): bool =
-      paramCount() == 4 and fileExists(paramStr(4)))
-  except CatchableError as failure:
-    stderr.writeLine(failure.msg)
-    quit(1)
-  quit(0)
-
 proc main() =
   let root = createTempDir("isonim-repro-test-", "")
   defer: removeDir(root)
@@ -154,20 +142,118 @@ package testHarbor:
         writeFile(producer / "build.sh", original)
         check execProcess(buildLocalHarbor(producer, consumer, env)).strip() == "LOCAL_V2"
 
-    test "absent owning launcher preserves an imported executable declaration":
-      let originalRecipe = readFile(producer / "repro.nim")
-      # Repro's package macro consumes its body before nested user macros
-      # expand. Emit the complete package through the imported macro so the
-      # actual compiler presents the package DSL a real executable declaration.
-      let importsEnd = originalRecipe.find("package testHarbor:")
-      let packageBody = originalRecipe[importsEnd .. ^1]
-      writeFile(producer / "export_declaration.nim", "import std/macros\n" &
-        "macro harborDeclaration*(): untyped =\n  result = parseStmt(" &
-        escape(packageBody) & ")\n")
-      writeFile(producer / "repro.nim", originalRecipe[0 ..< importsEnd] &
-        "import export_declaration\nharborDeclaration()\n")
-      defer: writeFile(producer / "repro.nim", originalRecipe)
-      check execProcess(buildLocalHarbor(producer, consumer, env)).strip() == "LOCAL_V2"
+    test "editor consumer state stays outside the selected producer checkout":
+      # The production entry point (prepareLocalHarbor) declares its consumer
+      # in harborConsumerDir. Keep it out of Harbor's checkout, stable per
+      # canonical checkout, and shared by a symlinked spelling of the same one.
+      putEnv("XDG_CACHE_HOME", root / "cache")
+      let owned = harborConsumerDir(producer)
+      let relative = relativePath(owned, expandFilename(producer))
+      check relative == ".." or relative.startsWith(".." & $DirSep)
+      check owned == harborConsumerDir(producer)
+      check owned != harborConsumerDir(root / "consumer")
+      when defined(posix):
+        let alias = root / "consumer-alias-workspace" / "agent-harbor"
+        createDir(alias.parentDir)
+        createSymlink(producer, alias)
+        check harborConsumerDir(alias) == owned
+      # `owned` stays for the stale-consumer cleanup case below; the whole
+      # temporary root (including this redirected cache) is removed at exit.
+      let binary = buildLocalHarbor(producer, owned, env)
+      check execProcess(binary).strip() == "LOCAL_V2"
+      check expandFilename(readFile(owned / "harbor-executable").strip()) == binary
+      check not dirExists(producer / ".repro" / "isonim-runtime")
+
+    test "producer without an executable export fails without any fallback":
+      # This is the state of a Harbor checkout whose repro.nim declares no
+      # `ah` export: the editor must report it rather than build Harbor itself.
+      putEnv("XDG_CACHE_HOME", root / "cache")  # Never the developer's cache.
+      let bare = root / "bare-harbor"
+      createDir(bare / "build" / "bin")
+      writeFile(bare / "repro.nim", """
+import repro_project_dsl
+import repro_dsl_stdlib/packages/sh
+package bareHarbor:
+  defaultToolProvisioning "path"
+  uses:
+    "sh"
+""")
+      # A stale producer-looking output and an installed ah are both present.
+      writeFile(bare / "build" / "bin" / "ah", "#!/bin/sh\nprintf 'STALE_POISON\\n'\n")
+      setFilePermissions(bare / "build" / "bin" / "ah", {fpUserRead, fpUserWrite, fpUserExec})
+      let bareConsumer = harborConsumerDir(bare)
+      try:
+        discard buildLocalHarbor(bare, bareConsumer, env)
+        check false
+      except IOError as e:
+        # The editor's own message names the missing export, the selected
+        # checkout and the opt-out; Reprobuild's diagnostic precedes it.
+        check e.msg.startsWith("Local Agent Harbor build failed")
+        check "`ah` executable export" in e.msg
+        check expandFilename(bare) in e.msg or bare in e.msg
+        check "ISONIM_LOCAL_HARBOR=0" in e.msg
+        check "No installed or previously built Harbor is used" in e.msg
+      check not fileExists(bareConsumer / "harbor-executable")
+      check not dirExists(bare / ".repro" / "isonim-runtime")
+
+    test "stale consumer cleanup removes only editor state for vanished checkouts":
+      # Self-contained: every consumer below is written by the real
+      # buildLocalHarbor path (interrupted before Repro runs to completion,
+      # after its override is published), except two foreign directories.
+      let area = root / "cleanup"
+      let consumers = area / "consumers"
+      createDir(consumers)
+      proc declare(checkout, consumer: string) =
+        try:
+          discard buildLocalHarbor(checkout, consumer, env, proc(): bool = true)
+          check false
+        except IOError as e:
+          check e.msg == "Local Agent Harbor build interrupted"
+        require fileExists(consumer / ".repro" / "develop-overrides.toml")
+      let live = consumers / "live"
+      declare(producer, live)
+      let extra = StaleConsumerRemovalLimit + 1
+      var stale: seq[string]
+      for i in 0 ..< extra:
+        let checkout = area / ("gone-" & $i)
+        createDir(checkout)
+        let consumer = consumers / ("stale-" & $i)
+        declare(checkout, consumer)
+        removeDir(checkout)
+        stale.add consumer
+      # Foreign directories the editor did not write: one whose override has
+      # only a dangling local_path (no schema or `ah` package markers), one
+      # with no override at all.
+      let foreignDangling = consumers / "foreign-dangling"
+      createDir(foreignDangling / ".repro")
+      writeFile(foreignDangling / ".repro" / "develop-overrides.toml",
+        "local_path = \"/missing\"\n")
+      let foreignEmpty = consumers / "foreign-empty"
+      createDir(foreignEmpty)
+      # Each marker is required on its own: an override for a vanished
+      # checkout that lacks either one is not the editor's.
+      let foreignNoPackage = consumers / "foreign-no-package"
+      createDir(foreignNoPackage / ".repro")
+      writeFile(foreignNoPackage / ".repro" / "develop-overrides.toml",
+        "schema = \"reprobuild.workspace.develop-overrides.v1\"\n\n" &
+        "[[override]]\npackage = \"other\"\nlocal_path = \"/missing\"\n")
+      let foreignNoSchema = consumers / "foreign-no-schema"
+      createDir(foreignNoSchema / ".repro")
+      writeFile(foreignNoSchema / ".repro" / "develop-overrides.toml",
+        "[[override]]\npackage = \"ah\"\nlocal_path = \"/missing\"\n")
+      check removeStaleHarborConsumers(consumers, removeLimit = 0).len == 0
+      check removeStaleHarborConsumers(consumers, keep = stale[0],
+        removeLimit = 1) == @[stale[1]]
+      # The bound holds per call; sorted visiting reaches every stale entry
+      # on later calls.
+      let first = removeStaleHarborConsumers(consumers)
+      check first.len == StaleConsumerRemovalLimit
+      let second = removeStaleHarborConsumers(consumers)
+      check first.len + second.len == extra - 1
+      check removeStaleHarborConsumers(consumers).len == 0
+      for consumer in stale: check not dirExists(consumer)
+      check dirExists(live) and dirExists(foreignDangling) and dirExists(foreignEmpty)
+      check dirExists(foreignNoPackage) and dirExists(foreignNoSchema)
 
     test "failed selected build refuses stale and installed binaries":
       writeFile(producer / "build.sh", "exit 42\n")

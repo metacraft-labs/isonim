@@ -34,6 +34,7 @@ import unittest
 from helpers.editor_context_evidence import resolve_context, identity as context_identity
 import urllib.error
 import urllib.request
+from helpers.harbor_consumer import resolved_harbor_executable
 from helpers.editor_process_observer import (
     process_observer, optional_sibling_available, capture_owned, reap_owned,
     require_exit,
@@ -196,6 +197,7 @@ os.execv(provider, [provider, '--scenario', scenarios[index], '--disable-followe
         try:
             harbor_url = None
             base = None
+            seen = []  # Startup diagnostics, including the Reprobuild consumer report.
             deadline = time.monotonic() + 15
             while time.monotonic() < deadline:
                 self.assertIsNone(child.poll(), 'daemon exited; inspect daemon.log')
@@ -203,12 +205,12 @@ os.execv(provider, [provider, '--scenario', scenarios[index], '--disable-followe
                     line = lines.get(timeout=.2)
                 except queue.Empty:
                     continue
+                seen.append(line)
                 match = re.search(r'IsoNim: using (.+) via REST at (http://127\.0\.0\.1:\d+)', line)
                 if match:
                     executable = Path(match[1]).resolve()
                     self.assertTrue(executable.is_relative_to(HARBOR.resolve()), 'must use this workspace producer export')
-                    exported = (HARBOR / '.repro/isonim-runtime/harbor-executable').read_text().strip()
-                    self.assertEqual(executable, Path(exported).resolve())
+                    self.assertEqual(executable, resolved_harbor_executable('\n'.join(seen), HARBOR))
                     harbor_url = match[2]
                 match = re.match(r'READY (\d+)\s*$', line)
                 if match:
@@ -240,17 +242,25 @@ os.execv(provider, [provider, '--scenario', scenarios[index], '--disable-followe
                         self.assertFalse(health['postgres_reachable'])
                         self.assertFalse(health['schema_version_current'])
                     self.assertLess(time.monotonic()-started,1,'owned preparation blocked unrelated HTTP')
-                    try: line=lines.get(timeout=.1)
+                    # Drain every line already emitted before the next probe.
+                    # The daemon logs each probe and Reprobuild reports progress,
+                    # so reading one line per probe falls behind the stream and
+                    # can reach the selection line only after the bound expires.
+                    try: batch=[lines.get(timeout=.1)]
                     except queue.Empty:
                         if pending.done(): first_draft=pending.result()
                         continue
-                    match=re.search(r'IsoNim: using (.+) via REST at (http://127\.0\.0\.1:\d+)',line)
-                    if match:
-                        executable=Path(match[1]).resolve()
-                        self.assertTrue(executable.is_relative_to(HARBOR.resolve()))
-                        exported=(HARBOR/'.repro/isonim-runtime/harbor-executable').read_text().strip()
-                        self.assertEqual(executable,Path(exported).resolve())
-                        harbor_url=match[2]
+                    while True:
+                        try: batch.append(lines.get_nowait())
+                        except queue.Empty: break
+                    for line in batch:
+                        seen.append(line)
+                        match=re.search(r'IsoNim: using (.+) via REST at (http://127\.0\.0\.1:\d+)',line)
+                        if match:
+                            executable=Path(match[1]).resolve()
+                            self.assertTrue(executable.is_relative_to(HARBOR.resolve()))
+                            self.assertEqual(executable,resolved_harbor_executable('\n'.join(seen),HARBOR))
+                            harbor_url=match[2]
                 first_draft=pending.result()
             self.assertIsNotNone(harbor_url,'automatic local producer REST selection was not used')
             self.harbor_url = harbor_url

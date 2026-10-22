@@ -1,8 +1,15 @@
 ## Optional workspace-local Agent Harbor runtime for every editor daemon.
-## Detect the sibling relative to this editor binary, build via the producer's
-## entry point, and use its reported output path. No checkout is required for
-## standalone installations or developers without access to Agent Harbor.
-import std/[monotimes, os, osproc, strutils, strtabs, net, httpclient, tempfiles, json, times]
+## Detect the sibling relative to this editor binary, obtain its exported `ah`
+## executable through Reprobuild, and use the path Reprobuild resolves. No
+## checkout is required for standalone installations or developers without
+## access to Agent Harbor.
+##
+## Reprobuild owns producer resolution, source invalidation and the producer's
+## build (see the editor spec, "Workspace-local build and service lifecycle",
+## and reprobuild-pm/spec/Cross-Repo-Source-Consumption.md). This module only
+## declares the consumer edge; it never selects a producer entry point, guesses
+## an output path, hashes Harbor's sources or writes into the Harbor checkout.
+import std/[algorithm, hashes, monotimes, os, osproc, strutils, strtabs, net, httpclient, tempfiles, json, times]
 when defined(posix): import std/posix
 import ./config
 import ../../src/isonim/editor/shutdown_policy
@@ -213,8 +220,6 @@ proc writeBuildInput(path, contents: string) =
   finally:
     if fileExists(temporary): removeFile(temporary)
 
-const HarborProducerScript = staticRead("harbor_producer.py")
-
 proc resolveSelectedHarborExecutable*(repo, binary: string;
     failureMessage = "Unexpected local Harbor executable"): string =
   # Compare canonical filesystem paths. Repro may report a canonical path for
@@ -226,88 +231,89 @@ proc resolveSelectedHarborExecutable*(repo, binary: string;
   let relative = relativePath(executablePath, sourcePath)
   if relative == ".." or relative.startsWith(".." & $DirSep) or relative.isAbsolute:
     raise newException(IOError, failureMessage)
-  let selection = sourcePath / ".repro" / "isonim-runtime" / "producer-interface.json"
-  let staged = relative.startsWith(".repro" & $DirSep & "isonim-runtime" & $DirSep & "produced" & $DirSep)
-  let selectedOwnProducer = fileExists(selection) and
-    parseJson(readFile(selection))["interface"].getStr == "own"
-  if staged or selectedOwnProducer:
-    # The producer's external cache is never admitted directly. The embedded
-    # verifier pins private receipt bytes, source state and canonical stage.
-    let python = if startupEnumerationPython.len > 0: startupEnumerationPython else: findExe("python3")
-    let verification = execCmdEx(quoteShell(python) & " -c " &
-      quoteShell(HarborProducerScript) & " verify " & quoteShell(sourcePath) & " " &
-      quoteShell(executablePath))
-    if verification.exitCode != 0:
-      raise newException(IOError, failureMessage & ": " & verification.output.strip())
   result = executablePath
+
+const
+  HarborConsumerOverride = ".repro" / "develop-overrides.toml"
+  HarborOverrideSchema = "schema = \"reprobuild.workspace.develop-overrides.v1\""
+  HarborOverridePackage = "package = \"ah\""
+    ## The two markers every override this module writes carries. Cleanup
+    ## treats a directory as editor-owned only when both are present.
+  StaleConsumerRemovalLimit* = 8
+    ## Upper bound on stale consumers removed per preparation, so a large
+    ## backlog never delays Harbor startup. Entries are visited in sorted order
+    ## and removed ones disappear, so every stale entry is reached eventually.
+
+proc consumerCheckout(consumer: string): string =
+  ## The checkout an editor-owned consumer directory selects, read back from
+  ## the develop override this module wrote there. Empty when the record is
+  ## absent, unreadable or lacks the schema and `ah` package markers.
+  let path = consumer / HarborConsumerOverride
+  if not fileExists(path): return ""
+  var lines: seq[string]
+  try: lines = readFile(path).splitLines()
+  except IOError: return ""
+  if HarborOverrideSchema notin lines or HarborOverridePackage notin lines:
+    return ""
+  for line in lines:
+    if line.startsWith("local_path = "):
+      try:
+        let node = parseJson(line["local_path = ".len .. ^1])
+        if node.kind == JString and node.getStr.len > 0:
+          return absolutePath(node.getStr, consumer)
+      except CatchableError: discard
+  ""
+
+proc removeStaleHarborConsumers*(root: string; keep = "";
+    removeLimit = StaleConsumerRemovalLimit): seq[string] =
+  ## Cleanup of editor-owned consumer state. A consumer is stale only when its
+  ## own override (schema and `ah` package markers present) names a checkout
+  ## that no longer exists. Consumers whose checkout exists, directories the
+  ## editor did not write, unreadable entries and `keep` are left alone.
+  ## Inspection reads one small record per entry in sorted order; at most
+  ## `removeLimit` stale entries are removed per call, so repeated calls reach
+  ## every stale entry. Returns the removed directories.
+  if not dirExists(root) or removeLimit <= 0: return
+  var entries: seq[string]
+  for kind, entry in walkDir(root):
+    if kind == pcDir and entry != keep: entries.add entry
+  entries.sort()
+  for entry in entries:
+    if result.len >= removeLimit: break
+    let checkout = consumerCheckout(entry)
+    if checkout.len == 0 or dirExists(checkout): continue
+    try:
+      removeDir(entry)
+      result.add entry
+    except OSError as e:
+      stderr.writeLine("IsoNim: could not remove stale Harbor consumer " & entry & ": " & e.msg)
+
+proc harborConsumerDir*(repo: string): string =
+  ## Editor-owned Reprobuild consumer project for one selected Harbor checkout.
+  ## It lives in the user's cache rather than in either checkout: the producer
+  ## checkout belongs to Harbor, and an installed editor may have no checkout of
+  ## its own. A stable per-checkout location keeps Repro's provider and
+  ## interface caches warm across editor starts. The canonical checkout path is
+  ## the key, so a symlinked sibling shares its target's consumer; the readable
+  ## basename is only for developers inspecting the cache.
+  let canonical = expandFilename(repo)
+  result = getCacheDir("isonim") / "harbor-consumer" /
+    (canonical.extractFilename & "-" & toHex(hash(canonical).uint64))
+
+proc harborBuildFailure*(repo: string; code: int): string =
+  ## Actionable message for a failed Reprobuild build of the selected checkout.
+  ## The editor does not parse Reprobuild's diagnostics (they are printed above
+  ## this message); it names the contract the checkout must meet and the
+  ## opt-out. The commonest cause is a checkout that does not export `ah`.
+  "Local Agent Harbor build failed (exit " & $code & "): Reprobuild could not " &
+    "obtain the `ah` executable export of the selected Agent Harbor checkout " &
+    repo & ". Its repro.nim must declare an `ah` executable export; " &
+    "Reprobuild's diagnostics above name the cause. Set ISONIM_LOCAL_HARBOR=0 " &
+    "to keep the configured agent instead. No installed or previously built " &
+    "Harbor is used as a fallback."
 
 proc buildLocalHarbor*(repo, buildDir: string; env: StringTableRef;
     shouldStop: proc(): bool = nil): string =
-  let canonicalRepo = expandFilename(repo)
-  for directory in [canonicalRepo / ".repro",
-      canonicalRepo / ".repro" / "isonim-runtime"]:
-    if dirExists(directory) and expandFilename(directory) != directory:
-      raise newException(IOError, "Escaping Harbor stage parent")
-  createDir(buildDir)
-  let interfacePath = buildDir / "producer-interface.json"
-  if fileExists(interfacePath): removeFile(interfacePath)
-  var query: LocalHarbor
-  query.startOwnedProcess("python3", workingDir = repo, env = env,
-    args = @["-c", HarborProducerScript, "select", repo, interfacePath])
-  try:
-    while query.process.running:
-      if shouldStop != nil and shouldStop():
-        raise newException(IOError, "Local Agent Harbor build interrupted")
-      sleep(100)
-    if query.process.waitForExit() != 0 or not fileExists(interfacePath):
-      raise newException(IOError, "Local Agent Harbor producer plan failed; refusing an installed fallback")
-  finally: query.stop()
-  if parseJson(readFile(interfacePath))["interface"].getStr == "own":
-    createDir(buildDir)
-    setFilePermissions(buildDir, {fpUserRead, fpUserWrite, fpUserExec})
-    let publication = buildDir / "harbor-executable"
-    if fileExists(publication): removeFile(publication)
-    stderr.writeLine("IsoNim: building workspace Agent Harbor through its own Repro environment from " & repo)
-    let stage = expandFilename(repo) / ".repro" / "isonim-runtime" / "produced"
-    let reproDirectory = expandFilename(repo) / ".repro"
-    if dirExists(reproDirectory) and expandFilename(reproDirectory) != reproDirectory:
-      raise newException(IOError, "Escaping Harbor stage root")
-    createDir(stage.parentDir)
-    if expandFilename(stage.parentDir) != stage.parentDir:
-      raise newException(IOError, "Escaping Harbor stage parent")
-    if dirExists(stage) and expandFilename(stage) != stage:
-      raise newException(IOError, "Escaping Harbor stage")
-    # Existing directories must already be private. Never repair a poisoned
-    # stage before the owning producer can reject it.
-    if dirExists(stage):
-      let admission = execCmdEx("python3 -c " & quoteShell(HarborProducerScript) &
-        " stage " & quoteShell(repo) & " " & quoteShell(stage), env = env)
-      if admission.exitCode != 0:
-        raise newException(IOError, admission.output.strip())
-    else:
-      createDir(stage)
-      setFilePermissions(stage, {fpUserRead, fpUserWrite, fpUserExec})
-    let transient = createTempDir("pending-", "", stage)
-    setFilePermissions(transient, {fpUserRead, fpUserWrite, fpUserExec})
-    # The parent knows the exact transient before spawning. Even cancellation
-    # reclaims only its own unfinished copy, after the owned descendants stop.
-    defer:
-      if dirExists(transient): removeDir(transient)
-    var producer: LocalHarbor
-    producer.startOwnedProcess("python3", workingDir = repo, env = env,
-      args = @["-c", HarborProducerScript, "build", repo, publication, transient])
-    defer: producer.stop()
-    while producer.process.running:
-      if shouldStop != nil and shouldStop():
-        raise newException(IOError, "Local Agent Harbor build interrupted")
-      sleep(100)
-    let code = producer.process.waitForExit()
-    if code != 0:
-      raise newException(IOError, "Local Agent Harbor build failed (exit " & $code & "); refusing an installed fallback")
-    if not fileExists(publication):
-      raise newException(IOError, "Owning producer did not report an Agent Harbor executable")
-    return resolveSelectedHarborExecutable(repo, readFile(publication).strip(),
-      "Owning producer selected an unexpected Harbor executable")
   # This private dependency belongs only to the selected runtime, never the
   # public editor package. The build consumer asks Repro to resolve the local
   # producer and materialize its executable export before launching anything.
@@ -345,7 +351,7 @@ finally:
     if os.path.exists(temporary):
         os.unlink(temporary)
 """)
-  let overridePath = buildDir / ".repro" / "develop-overrides.toml"
+  let overridePath = buildDir / HarborConsumerOverride
   var createdAt = ""
   if fileExists(overridePath):
     for line in readFile(overridePath).splitLines():
@@ -354,10 +360,11 @@ finally:
   if createdAt.len == 0:
     createdAt = $(%(now().utc.format("yyyy-MM-dd'T'HH:mm:ss'Z'")))
   writeBuildInput(overridePath,
-    "schema = \"reprobuild.workspace.develop-overrides.v1\"\n\n" &
-    "[[override]]\npackage = \"ah\"\nlocal_path = " &
-    $(%relativePath(repo, buildDir)) & "\nstate = \"editable\"\ncreated_at = " & createdAt & "\n")
-  stderr.writeLine("IsoNim: building workspace Agent Harbor with Reprobuild from " & repo)
+    HarborOverrideSchema & "\n\n" &
+    "[[override]]\n" & HarborOverridePackage & "\nlocal_path = " &
+    $(%relativePath(expandFilename(repo), buildDir)) & "\nstate = \"editable\"\ncreated_at = " & createdAt & "\n")
+  stderr.writeLine("IsoNim: building workspace Agent Harbor with Reprobuild from " & repo &
+    " (consumer " & buildDir & ")")
   var build: LocalHarbor
   build.startOwnedProcess("repro", workingDir = buildDir,
     args = @["build", "--daemon=off"], env = env)
@@ -368,7 +375,7 @@ finally:
     sleep(100)
   let code = build.process.waitForExit()
   if code != 0:
-    raise newException(IOError, "Local Agent Harbor build failed (exit " & $code & "); refusing an installed fallback")
+    raise newException(IOError, harborBuildFailure(repo, code))
   let artifactFile = buildDir / "harbor-executable"
   if not fileExists(artifactFile):
     raise newException(IOError, "Reprobuild did not report an Agent Harbor executable")
@@ -398,7 +405,10 @@ proc prepareLocalHarbor*(cfg: var ReviewConfig;
   env.del("CARGO_TARGET_DIR")
   env.del("RUSTC_WORKSPACE_WRAPPER")
   result.stateDir = createPrivateDirectory("isonim-harbor-")
-  let binary = buildLocalHarbor(repo, repo / ".repro" / "isonim-runtime", env, shouldStop)
+  let consumer = harborConsumerDir(repo)
+  for removed in removeStaleHarborConsumers(consumer.parentDir, keep = consumer):
+    stderr.writeLine("IsoNim: removed stale Harbor consumer " & removed)
+  let binary = buildLocalHarbor(repo, consumer, env, shouldStop)
   if shouldStop != nil and shouldStop():
     raise newException(IOError, "Local Agent Harbor startup interrupted")
   result.executable = binary

@@ -1328,6 +1328,8 @@ package isonim:
         # FakeBridge / fake-acp helpers) are declared inputs alongside
         # ``src`` so a fixture/migration edit invalidates the affected
         # design-review edges.
+        # The Harbor build test imports the editor's local_harbor consumer
+        # module directly, so its sources are a declared input of that edge.
         extraInputs = @["src", "db", "tests/helpers", "isonim.nimble"] &
           (if s.stem == "test_design_review_harbor_build":
             @["tools/isonim_review"] else: @[]))
@@ -1343,13 +1345,6 @@ package isonim:
         requiredBinaries = req,
         registerImplicitName = false)
       testExecuteActions.add(executeEdge)
-      if s.stem == "test_design_review_harbor_build":
-        testExecuteActions.add(pythonUnittest.run(
-          source = "tests/test_design_review_harbor_own_producer.py",
-          actionId = "isonim.dr_execute.harbor_own_producer",
-          after = @[edge.action],
-          extraInputs = @["tools/isonim_review", binary,
-            "tests/test_design_review_harbor_own_producer.py"]))
 
     # --- JS-backend suite (set (A), FUP-E2) --------------------------------
     # Two edges per JS test: a ``nim.js`` BUILD edge (compile the JS back-end

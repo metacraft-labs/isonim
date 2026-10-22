@@ -779,9 +779,6 @@ proc main(): int =
     return 0
 
   case rawArgs[0]
-  of "--internal-harbor-verify":
-    if rawArgs.len != 5: return 2
-    return cmdHarborVerification(rawArgs[1], rawArgs[2], rawArgs[3], rawArgs[4])
   of "--internal-harbor-runtime":
     if rawArgs.len != 3: return 2
     return cmdHarborPreparation(rawArgs[1], rawArgs[2])

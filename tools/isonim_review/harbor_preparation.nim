@@ -10,7 +10,7 @@ const EpochEnvironment = "ISONIM_INTERNAL_HARBOR_EPOCH"
 
 type HarborPreparation* = ref object
   cfg: ReviewConfig
-  runtime, verification: LocalHarbor
+  runtime: LocalHarbor
   future: Future[string]
   directory, epoch, repository: string
   stopping: bool
@@ -39,7 +39,7 @@ proc privateDirectory(path: string) =
 proc resultPath(preparation: HarborPreparation): string =
   preparation.directory / "ready.json"
 
-proc readyResult(preparation: HarborPreparation): tuple[url, executable, bytes: string] =
+proc readyUrl(preparation: HarborPreparation): string =
   privateDirectory(preparation.directory)
   let path = preparation.resultPath()
   var info: Stat
@@ -47,8 +47,7 @@ proc readyResult(preparation: HarborPreparation): tuple[url, executable, bytes: 
       info.st_uid != getuid() or info.st_nlink != 1 or
       (info.st_mode and Mode(0o777)) != Mode(0o600):
     raise newException(IOError, "Invalid Harbor preparation result")
-  let bytes = readFile(path)
-  let data = parseJson(bytes)
+  let data = parseJson(readFile(path))
   if data.kind != JObject or data.len != 4:
     raise newException(IOError, "Stale or malformed Harbor preparation result")
   for key in ["epoch", "pid", "url", "executable"]:
@@ -70,7 +69,8 @@ proc readyResult(preparation: HarborPreparation): tuple[url, executable, bytes: 
       port notin 1 .. 65535:
     raise newException(IOError, "Invalid local Harbor endpoint")
   let executable = data["executable"].getStr
-  result = (url, executable, bytes)
+  discard resolveSelectedHarborExecutable(preparation.repository, executable)
+  result = url
 
 proc prepare(preparation: HarborPreparation): Future[string] {.async, gcsafe.} =
   if preparation.stopping:
@@ -96,50 +96,7 @@ proc prepare(preparation: HarborPreparation): Future[string] {.async, gcsafe.} =
         raise newException(AgentBackendUnavailableError,
           "Local agent preparation failed; inspect the daemon's startup diagnostics")
       if fileExists(preparation.resultPath()):
-        let ready = preparation.readyResult()
-        let verificationPath = preparation.directory / "verified.json"
-        preparation.verification.startOwnedProcess(getAppFilename(),
-          args = @["--internal-harbor-verify", repo, ready.executable, verificationPath, preparation.epoch],
-          env = environment)
-        try:
-          let verifierPid = preparation.verification.process.processID
-          while true:
-            if preparation.stopping or preparation.verification.process == nil:
-              raise newException(AgentBackendUnavailableError, "Editor is closing")
-            if preparation.runtime.process == nil or not preparation.runtime.process.running():
-              raise newException(AgentBackendUnavailableError, "Local agent preparation exited during verification")
-            if not preparation.verification.process.running(): break
-            await sleepAsync(40)
-          let code = preparation.verification.process.peekExitCode()
-          var verifiedInfo: Stat
-          if lstat(verificationPath, verifiedInfo) != 0 or not S_ISREG(verifiedInfo.st_mode) or
-              verifiedInfo.st_uid != getuid() or verifiedInfo.st_nlink != 1 or
-              (verifiedInfo.st_mode and Mode(0o777)) != Mode(0o600):
-            raise newException(IOError, "Invalid Harbor verification result")
-          let verified = parseJson(readFile(verificationPath))
-          if verified.kind != JObject or verified.len != 5:
-            raise newException(IOError, "Stale or malformed Harbor verification result")
-          for key in ["epoch", "pid", "executable", "ok", "reason"]:
-            if not verified.hasKey(key):
-              raise newException(IOError, "Stale or malformed Harbor verification result")
-          if verified{"epoch"}.kind != JString or verified["epoch"].getStr() != preparation.epoch or
-              verified{"pid"}.kind != JInt or verified["pid"].getInt() != verifierPid or
-              verified{"executable"}.kind != JString or verified["executable"].getStr() != ready.executable or
-              verified{"ok"}.kind != JBool or verified{"reason"}.kind != JString:
-            raise newException(IOError, "Stale or malformed Harbor verification result")
-          if code != 0 or not verified["ok"].getBool():
-            raise newException(IOError, verified["reason"].getStr())
-          # The full verifier checked this exact executable. Bind its result to
-          # the still-live generation and unchanged private handoff before any
-          # URL can enter the registry.
-          if preparation.stopping or preparation.runtime.process == nil or not preparation.runtime.process.running():
-            raise newException(AgentBackendUnavailableError, "Editor is closing")
-          if preparation.readyResult() != ready:
-            raise newException(IOError, "Harbor preparation result changed during verification")
-          return ready.url
-        finally:
-          preparation.verification.stop()
-          if fileExists(verificationPath): removeFile(verificationPath)
+        return preparation.readyUrl()
       await sleepAsync(40)
   except CatchableError as failure:
     try: preparation.runtime.stop()
@@ -175,27 +132,8 @@ proc ensureReady*(preparation: HarborPreparation): Future[string] {.async, gcsaf
 proc stop*(preparation: HarborPreparation) =
   if preparation == nil or preparation.stopping: return
   preparation.stopping = true
-  preparation.verification.stop()
   preparation.runtime.stop()
   if preparation.directory.len > 0: removeDir(preparation.directory)
-
-proc runHarborVerificationChild*(repo, executable, output, epoch: string): int =
-  privateDirectory(output.parentDir)
-  var response = %* {"ok": true, "reason": "", "epoch": epoch,
-    "pid": getCurrentProcessId(), "executable": executable}
-  try:
-    discard resolveSelectedHarborExecutable(repo, executable)
-  except CatchableError as error:
-    response["ok"] = %false
-    response["reason"] = %error.msg
-    result = 1
-  let temporary = createTempFile("verified-", ".tmp", output.parentDir)
-  try:
-    try: temporary.cfile.write($response)
-    finally: temporary.cfile.close()
-    moveFile(temporary.path, output)
-  finally:
-    if fileExists(temporary.path): removeFile(temporary.path)
 
 proc runHarborPreparationChild*(repo, directory: string;
     shouldStop: proc(): bool): int =

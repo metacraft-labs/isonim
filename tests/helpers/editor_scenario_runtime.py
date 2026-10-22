@@ -26,6 +26,7 @@ import time
 import urllib.request
 from helpers.editor_preparation_clock import PreparationClock, ClockTrace, SCHEMA, COLD_BOUND_NS
 from helpers.editor_sdk_runtime import materialize
+from helpers.harbor_consumer import resolved_harbor_executable
 from helpers.editor_process_observer import (
     process_observer, optional_sibling_available, capture_owned, reap_owned,
     require_exit,
@@ -342,10 +343,12 @@ class Runtime:
     def discoverHarbor(self,helperPid,ready):
         owned=self.observer.snapshot()
         candidates=[];observations=[]
+        # The service must run exactly the executable Reprobuild resolved for the
+        # editor's consumer edge; the producer, not this test, owns its location.
         selected=Path(ready['executable']).resolve()
-        exported=(HARBOR/'.repro/isonim-runtime/harbor-executable').read_text().strip()
-        if not selected.is_relative_to(HARBOR.resolve()) or Path(exported).resolve()!=selected:
-            raise AssertionError('Actual source-bound owning producer selection differs')
+        if (not selected.is_relative_to(HARBOR.resolve()) or
+            resolved_harbor_executable((self.artifacts/'launcher.log').read_text(),HARBOR)!=selected):
+            raise AssertionError('Actual Reprobuild-resolved Harbor selection differs')
         states=set(Path(tempfile.gettempdir()).glob('isonim-harbor-*'))-self.harborBefore
         for state in states:
             pidfile=state/'server.pid'
@@ -373,9 +376,6 @@ class Runtime:
         url=match[1]
         if ready['url']!=url or Path(ready['executable']).resolve()!=selected:
             raise AssertionError('Actual production producer/REST handoff differs')
-        exported=(HARBOR/'.repro/isonim-runtime/harbor-executable').read_text().strip()
-        if Path(exported).resolve()!=Path(ready['executable']).resolve():
-            raise AssertionError('Actual owning producer export differs')
         self.harborState,self.harborPid,self.harborIdentity=state,pid,identity
         self.harborUrl=url
         actual_binary=Path('/proc')/str(pid)/'exe' if sys.platform=='linux' else Path(identity[3])

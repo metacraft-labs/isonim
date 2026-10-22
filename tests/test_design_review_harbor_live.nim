@@ -2,7 +2,18 @@
 ## are mocked. Invoke explicitly in a workspace containing Agent Harbor; absence
 ## is an error here, while ordinary public editor tests use the real tiny Repro
 ## producer in test_design_review_harbor_build.nim and require no private repo.
-import std/[os, httpclient, unittest, tempfiles, strutils]
+import std/[os, httpclient, unittest, tempfiles, strutils, times]
+
+proc legacyRuntimeState(repo: string): seq[string] =
+  ## Snapshot of `<checkout>/.repro/isonim-runtime`, which earlier editor
+  ## designs wrote into Harbor's checkout. A developer checkout may still hold
+  ## it; this run must neither create nor modify it.
+  let root = repo / ".repro" / "isonim-runtime"
+  if not dirExists(root): return @["<absent>"]
+  for path in walkDirRec(root, yieldFilter = {pcFile, pcLinkToFile, pcDir, pcLinkToDir}):
+    let info = getFileInfo(path, followSymlink = false)
+    result.add relativePath(path, root) & " " & $info.size & " " &
+      $info.lastWriteTime.toUnixFloat
 import ../tools/isonim_review/[config, local_harbor]
 
 suite "workspace Harbor live runtime":
@@ -10,6 +21,7 @@ suite "workspace Harbor live runtime":
     let repo = getEnv("ISONIM_AGENT_HARBOR_SIBLING")
     require repo.len > 0
     require fileExists(repo / "repro.nim")
+    let legacyBefore = legacyRuntimeState(repo)
     let runtimeHome = createTempDir("isonim-live-harbor-home-", "")
     let oldHome = getEnv("AH_HOME")
     let oldDb = getEnv("AH_DAEMON_DB_PATH")
@@ -30,6 +42,11 @@ suite "workspace Harbor live runtime":
     require cfg.agent.harborUrl.len > 0
     require runtime.process != nil
     check getFilePermissions(runtime.stateDir) == {fpUserRead, fpUserWrite, fpUserExec}
+    # The executable is the one Reprobuild resolved for the editor-owned
+    # consumer edge, and no editor state was written into Harbor's checkout.
+    check expandFilename(readFile(harborConsumerDir(repo) / "harbor-executable").strip()) ==
+      runtime.executable
+    check legacyRuntimeState(repo) == legacyBefore
     let client = newHttpClient(timeout = 3000)
     defer: client.close()
     check int(client.get(cfg.agent.harborUrl & "/api/v1/healthz").code) == 200
@@ -62,3 +79,5 @@ suite "workspace Harbor live runtime":
     runtime.stop()
     check int(client.get(thirdCfg.agent.harborUrl & "/api/v1/healthz").code) == 200
     check readFile(inheritedDb) == "parent database must remain untouched"
+    # After all three runtimes: still untouched.
+    check legacyRuntimeState(repo) == legacyBefore

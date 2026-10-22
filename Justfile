@@ -564,9 +564,6 @@ test-design-review-harbor-build:
     mkdir -p build/bin
     nim c -r --out:build/bin/test-design-review-harbor-build --path:src --path:../nim-everywhere/src --path:../nim-acp/src --path:../nim-agent-harbor/src --path:../nim-agents/src --hints:off tests/test_design_review_harbor_build.nim
 
-test-design-review-harbor-own-producer: test-design-review-harbor-build
-    ISONIM_HARBOR_BUILD_DRIVER="$PWD/build/bin/test-design-review-harbor-build" python3 tests/test_design_review_harbor_own_producer.py
-
 
 # Private-repository acceptance: explicitly requires the selected local checkout.
 test-design-review-harbor-live:
@@ -974,7 +971,7 @@ test-editor-preview-generation: build-tailwind
     PLAYWRIGHT_CHROMIUM_EXECUTABLE="${PLAYWRIGHT_CHROMIUM_EXECUTABLE:-$(command -v chromium)}" python3 tools/test_editor_preview_generation_mutants.py
 
 # Run editor ViewModel tests
-test-editor: test-design-review-local-harbor test-design-review-harbor-build test-design-review-harbor-own-producer test-editor-control test-editor-source test-editor-chat-activity test-editor-story-navigation test-editor-preview-generation
+test-editor: test-design-review-local-harbor test-design-review-harbor-build test-editor-control test-editor-source test-editor-chat-activity test-editor-story-navigation test-editor-preview-generation
     nim c -r tests/test_editor_workspace.nim
     nim c -r tests/test_editor_public_api.nim
     nim js --path:src -o:build/test_editor_public_browser_imports.js tests/test_editor_public_browser_imports.nim
