@@ -1,4 +1,9 @@
 ## Tests for IsoNim Editor ViewModels (M0)
+## Headless UI checks use MockRenderer to isolate ViewModel behavior.
+## Workspace transactions use real temporary files and a literal-patch adapter
+## to exercise admission, history and rollback without compiling a project for
+## every transition. Separate source-bridge/browser suites cover compiler/DOM
+## boundaries; these transaction fixtures do not claim that integration coverage.
 
 import std/[options, unittest, strutils, sequtils, os, algorithm]
 import nim_agents
@@ -5254,7 +5259,10 @@ suite "Editor ViewModels (M27 workspace file writes)":
         "component.card.shadow=0 8px 24px #0F172A\n" &
         "component.card.motion=120ms\n" &
         "component.card.padding=18px\n")
-      atomicWrite(classFile, ".card { padding: 16px; }\nfilter=none\n")
+      # The boundary fixture patches literal anchors; keep the unsupported
+      # declaration distinct from the filter's authored value.
+      let originalClass = ".card { padding: 16px; }\nfilter=none\nclip-path=inset(0)\n"
+      atomicWrite(classFile, originalClass)
 
       func sourceSpan(file: string; line: int): SourceSpan =
         SourceSpan(file: file, line: line, column: 1,
@@ -5307,6 +5315,11 @@ suite "Editor ViewModels (M27 workspace file writes)":
             kind: dsnClassDefinition, name: "card-filter",
             property: "filter", value: "none",
             sourceSpan: sourceSpan(classFile, 2), stories: @[story],
+            components: @["Card"], usageCount: 2),
+          DesignSchemaNode(key: "classes.card.clip-path",
+            kind: dsnClassDefinition, name: "card-clip",
+            property: "clip-path", value: "inset(0)",
+            sourceSpan: sourceSpan(classFile, 3), stories: @[story],
             components: @["Card"], usageCount: 2)
         ])
 
@@ -5334,7 +5347,10 @@ suite "Editor ViewModels (M27 workspace file writes)":
           story: story, property: "transition-duration"),
         WorkspaceEditableSchemaEntry(key: "classes.card.filter",
           kind: wskSourceMap, file: classFile, path: "classes.card.filter",
-          story: story, property: "filter")
+          story: story, property: "filter"),
+        WorkspaceEditableSchemaEntry(key: "classes.card.clip-path",
+          kind: wskSourceMap, file: classFile, path: "classes.card.clip-path",
+          story: story, property: "clip-path")
       ]
       let recorder = WorkspaceEditRecorder()
       let adapter = adapterFor(root, workspaceSchema, recorder = recorder)
@@ -5401,13 +5417,29 @@ suite "Editor ViewModels (M27 workspace file writes)":
             origin: poTailwindClass, originDetail: "class:card-filter",
             sourceFile: classFile, sourceLine: 2,
             schemaKey: "classes.card.filter", sharedCount: 2,
+            directStyleAllowed: true),
+          PropertyInfo(name: "clip-path", value: "inset(0)",
+            origin: poTailwindClass, originDetail: "class:card-clip",
+            sourceFile: classFile, sourceLine: 3,
+            schemaKey: "classes.card.clip-path", sharedCount: 2,
             directStyleAllowed: true)
         ]))
 
-      let unsupported = vm.planSharedDesignEdit("filter", "blur(2px)",
+      # filter/blur is supported by the shared class writer. Keep a real
+      # unsupported declaration with valid source ownership as the refusal
+      # control, so missing metadata cannot make this assertion pass.
+      let unsupported = vm.planSharedDesignEdit("clip-path", "circle(50%)",
         sskSharedClass)
       check unsupported.status == pesRejected
+      check unsupported.editor.category == sdecUnsupported
       check unsupported.diagnostics.anyIt(it.message.contains("read-only"))
+      let refused = vm.editSharedDesignProperty("clip-path", "circle(50%)",
+        sskSharedClass)
+      check refused.status == pesRejected
+      check refused.diagnostics.anyIt(it.message.contains("read-only"))
+      check vm.inspector.pendingSourceEdits.val.len == 0
+      check vm.inspector.undoStack.val.len == 0
+      check readFile(classFile) == originalClass
 
       let cases = @[
         ("background-color", "#f8fafc", sskSemanticToken, sdecColor,
@@ -5421,7 +5453,9 @@ suite "Editor ViewModels (M27 workspace file writes)":
         ("box-shadow", "0 10px 30px #0F172A", sskComponentToken,
           sdecShadowElevation, cspTokenUpdate),
         ("transition-duration", "180ms", sskComponentToken, sdecMotion,
-          cspTokenUpdate)
+          cspTokenUpdate),
+        ("filter", "blur(2px)", sskSharedClass, sdecSharedClass,
+          cspStructuredSchemaUpdate)
       ]
       for item in cases:
         let planned = vm.planSharedDesignEdit(item[0], " " & item[1] & " ",
@@ -5448,8 +5482,22 @@ suite "Editor ViewModels (M27 workspace file writes)":
         check edited.status == pesAccepted
         check vm.inspector.pendingSourceEdits.val.anyIt(
           it.property == item[0] and it.sourceScope == item[2])
+        if item[0] == "filter":
+          check vm.inspector.selectedElement.val.properties.anyIt(
+            it.name == "filter" and it.value == "blur(2px)")
+          check edited.sourceEdit.file == classFile
+          check edited.sourceEdit.schemaKey == "classes.card.filter"
+          check edited.sourceEdit.oldValue == "none"
+          check edited.sourceEdit.newValue == "blur(2px)"
+          check readFile(classFile) == originalClass
         check vm.inspector.undoCssPropertyEdit()
+        if item[0] == "filter":
+          check vm.inspector.selectedElement.val.properties.anyIt(
+            it.name == "filter" and it.value == "none")
         check vm.inspector.redoCssPropertyEdit()
+        if item[0] == "filter":
+          check vm.inspector.selectedElement.val.properties.anyIt(
+            it.name == "filter" and it.value == "blur(2px)")
 
       check vm.sharedDesignCommitPreviews().len == cases.len
       check vm.sharedDesignCommitPreviews().allIt(
@@ -5460,6 +5508,19 @@ suite "Editor ViewModels (M27 workspace file writes)":
       check invalid.status == pesRejected
       check invalid.diagnostics.anyIt(it.kind == pedInvalidCssValue)
 
+      # The public writer repeats permission admission even for already
+      # staged source plans. A denied save preserves bytes and pending edits.
+      let originalTokens = readFile(tokenFile)
+      vm.workspacePermissions.val = EditorWorkspacePermissions(readSource: true,
+        writeSource: false)
+      let denied = vm.applyWorkspaceFileEdits()
+      check not denied.ok
+      check denied.diagnostics.anyIt(it.message.contains("read-only"))
+      check readFile(classFile) == originalClass
+      check readFile(tokenFile) == originalTokens
+      check vm.inspector.pendingSourceEdits.val.len == cases.len
+      vm.workspacePermissions.val = EditorWorkspacePermissions(readSource: true,
+        writeSource: true)
       let saved = vm.applyWorkspaceFileEdits()
       check saved.ok
       check readFile(tokenFile).contains("#f8fafc")
@@ -5467,7 +5528,8 @@ suite "Editor ViewModels (M27 workspace file writes)":
       check readFile(tokenFile).contains("16px")
       check readFile(tokenFile).contains("0 10px 30px #0F172A")
       check readFile(tokenFile).contains("180ms")
-      check readFile(classFile).contains("24px")
+      let savedClass = ".card { padding: 24px; }\nfilter=blur(2px)\nclip-path=inset(0)\n"
+      check readFile(classFile) == savedClass
       check vm.inspector.pendingSourceEdits.val.len == 0
       check recorder.reloadedStories.len >= 1
       check recorder.reloadedStories.anyIt(it.group == "Card" and
@@ -5476,10 +5538,18 @@ suite "Editor ViewModels (M27 workspace file writes)":
       discard vm.editSharedDesignProperty("padding", "28px", sskSharedClass)
       check vm.inspector.selectedElement.val.properties.anyIt(
         it.name == "padding" and it.value == "28px")
+      let filterChanged = vm.editSharedDesignProperty("filter", "blur(4px)",
+        sskSharedClass)
+      check filterChanged.status == pesAccepted
+      check vm.inspector.selectedElement.val.properties.anyIt(
+        it.name == "filter" and it.value == "blur(4px)")
       let reverted = vm.runEditorCommand(eckRevert)
       check reverted.status == ecsSucceeded
       check vm.inspector.selectedElement.val.properties.anyIt(
         it.name == "padding" and it.value == "24px")
+      check vm.inspector.selectedElement.val.properties.anyIt(
+        it.name == "filter" and it.value == "blur(2px)")
+      check readFile(classFile) == savedClass
       check vm.inspector.pendingSourceEdits.val.len == 0
       dispose()
 
