@@ -1557,7 +1557,13 @@ test-editor-popup: isonim-review-build editor-popup-build
     "${ISONIM_SCENARIO_NODE:-node}" tests/test_core_owner_hmr.mjs
     "${ISONIM_SCENARIO_NODE:-node}" tests/test_editor_popover_geometry.mjs
     "${ISONIM_SCENARIO_NODE:-node}" tests/test_editor_selection_restore_gui.mjs
+    "${ISONIM_SCENARIO_NODE:-node}" tests/test_editor_history_focus_resize_gui.mjs
     "${ISONIM_SCENARIO_NODE:-node}" tests/test_editor_popup_gui.mjs
+
+# Sidebar drags that cross onto the preview iframe, and inspector focus across
+# browser Back/Forward, in the mounted production editor (also in test-editor-popup).
+test-editor-history-focus-resize: isonim-review-build editor-popup-build
+    "${ISONIM_SCENARIO_NODE:-node}" tests/test_editor_history_focus_resize_gui.mjs
 
 # Explicit required sibling: metacraft-web's production adapter is imported;
 # this never silently skips or substitutes an IsoNim-native writer.

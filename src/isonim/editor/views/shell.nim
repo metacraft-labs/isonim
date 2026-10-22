@@ -2169,6 +2169,17 @@ proc renderSidebar*[R, E](r: R; vm: EditorVM): E =
         var startX = 0;
         var startW = 0;
         var dragging = false;
+        // Capture the pointer for the whole gesture. Without it, the
+        // mousemove/mouseup of a drag that crosses into an iframe (the
+        // preview sits right next to both sidebars) are dispatched to the
+        // iframe's document, so the width never changes and the drag never
+        // ends. With the pointer captured, the compatibility mouse events
+        // target the handle and bubble to this document's listeners.
+        // https://w3c.github.io/pointerevents/#pointer-capture
+        function capturePointer(e) {
+          if (e.button !== 0 || !handle.setPointerCapture) return;
+          try { handle.setPointerCapture(e.pointerId); } catch (_) {}
+        }
         function endDrag() {
           if (!dragging) return;
           dragging = false;
@@ -2193,12 +2204,14 @@ proc renderSidebar*[R, E](r: R; vm: EditorVM): E =
           }
         }
         handle.addEventListener('mousedown', startDrag);
+        handle.addEventListener('pointerdown', capturePointer);
         document.addEventListener('mousemove', moveDrag);
         document.addEventListener('mouseup', endDrag);
         document.addEventListener('mouseleave', endDrag);
         handle.__isonimResizeCleanup = function () {
           endDrag();
           handle.removeEventListener('mousedown', startDrag);
+          handle.removeEventListener('pointerdown', capturePointer);
           document.removeEventListener('mousemove', moveDrag);
           document.removeEventListener('mouseup', endDrag);
           document.removeEventListener('mouseleave', endDrag);
@@ -3211,6 +3224,126 @@ proc mountInspectorSectionBody[R, E](r: R; vm: EditorVM;
     mountSectionExport[R, E](r, body, vm)
   else: discard
 
+when defined(js):
+  # Inspector focus across browser-history traversal. The inspector names
+  # the control that last held focus with a KEY rather than a node, because
+  # the key must survive in ``history.state`` and match a re-rendered row:
+  #
+  # - a control carrying ``data-isonim-focus-id`` is keyed by that id (the
+  #   section search field, the same id ``eckFocusInspector`` records);
+  # - a control inside a property row is keyed by the row's stable
+  #   ``data-property-row`` slug plus the control's accessible name, as
+  #   JSON (``["property-row", slug, name]``), since one row can hold
+  #   several controls (value, unit, binding chip);
+  # - a section header by its ``data-inspector-section-header`` slug.
+  #
+  # Anything else in the inspector has no key and is not remembered.
+  from std/dom import Element, Event
+
+  proc inspectorControlKey*(node: Element): string =
+    ## The focus key of ``node``, or "" when it is not a keyed inspector
+    ## control.
+    var key: cstring
+    {.emit: ["""
+      """, key, """ = (function (node) {
+        if (!node || !node.getAttribute || !node.closest) return '';
+        var tagged = node.getAttribute('data-isonim-focus-id');
+        if (tagged) return tagged;
+        var row = node.closest('[data-property-row]');
+        if (row) {
+          return JSON.stringify(['property-row',
+            row.getAttribute('data-property-row') || '',
+            node.getAttribute('aria-label') || node.tagName.toLowerCase()]);
+        }
+        var header = node.closest('[data-inspector-section-header]');
+        if (header) {
+          return JSON.stringify(['inspector-section',
+            header.getAttribute('data-inspector-section-header') || '']);
+        }
+        return '';
+      })(""", node, """);
+    """].}
+    $key
+
+  proc focusedInspectorControlKey*(): string =
+    ## The focus key of the control focused right now, when it is inside
+    ## the mounted inspector; "" otherwise.
+    var active: Element
+    {.emit: ["""
+      """, active, """ = (typeof document !== 'undefined' && document.activeElement &&
+        document.activeElement.closest &&
+        document.activeElement.closest('[data-sidebar-content="inspector"]'))
+        ? document.activeElement : null;
+    """].}
+    if active.isNil: "" else: inspectorControlKey(active)
+
+  proc focusInspectorControl[E](root: E; key: string) =
+    ## Gives focus to the control under ``root`` whose key is ``key``.
+    ##
+    ## The first attempt runs on the next frame and takes focus from
+    ## wherever it is (the control that navigated away keeps it until
+    ## then). A traversal can also make the inspector re-render the very
+    ## rows it is restoring -- the preview re-reports the selection and the
+    ## row's input is replaced, which drops focus to ``body``. So the
+    ## request stays armed: whenever the inspector's DOM changes while
+    ## focus has fallen to nothing, the control is focused again. The first
+    ## pointer or key input of the user disarms it, as does the next
+    ## request and the inspector's disposal; it never takes focus from a
+    ## control the user chose.
+    let wanted = key.cstring
+    let keyOf = proc(node: Element): cstring = inspectorControlKey(node).cstring
+    {.emit: ["""
+      (function (root, wanted, keyOf) {
+        if (!root || typeof document === 'undefined') return;
+        if (root.__isonimFocusRestoreDisarm) root.__isonimFocusRestoreDisarm();
+        if (!wanted) return;
+        var armed = true;
+        var observer = null;
+        function find() {
+          var candidates = root.querySelectorAll(
+            '[data-isonim-focus-id], [data-property-row] input, ' +
+            '[data-property-row] button, [data-property-row] select, ' +
+            '[data-property-row] textarea, [data-property-row] [tabindex], ' +
+            '[data-inspector-section-header]');
+          for (var i = 0; i < candidates.length; i++) {
+            var node = candidates[i];
+            if (keyOf(node) !== wanted) continue;
+            if (!node.isConnected || node.disabled || !node.getClientRects().length) continue;
+            return node;
+          }
+          return null;
+        }
+        function focusLost() {
+          var active = document.activeElement;
+          return !active || active === document.body || !active.isConnected;
+        }
+        function attempt(takeFocus) {
+          if (!armed) return;
+          var node = find();
+          if (!node || document.activeElement === node) return;
+          if (takeFocus || focusLost()) node.focus({ preventScroll: true });
+        }
+        function disarm() {
+          if (!armed) return;
+          armed = false;
+          if (observer) observer.disconnect();
+          document.removeEventListener('pointerdown', disarm, true);
+          document.removeEventListener('keydown', disarm, true);
+          if (root.__isonimFocusRestoreDisarm === disarm) {
+            root.__isonimFocusRestoreDisarm = null;
+          }
+        }
+        root.__isonimFocusRestoreDisarm = disarm;
+        document.addEventListener('pointerdown', disarm, true);
+        document.addEventListener('keydown', disarm, true);
+        if (typeof MutationObserver === 'function') {
+          observer = new MutationObserver(function () { attempt(false); });
+          observer.observe(root, { childList: true, subtree: true });
+        }
+        globalThis.__isonimFrameView(root, function () { attempt(true); });
+      })(""", root, """, """, wanted, """, """, keyOf, """);
+    """].}
+
 proc renderInspectorPanel*[R, E](r: R; vm: EditorVM): E =
   ## Right sidebar — a selection header above a single-column scroll
   ## surface of inspector section frames.
@@ -3400,6 +3533,37 @@ proc renderInspectorPanel*[R, E](r: R; vm: EditorVM): E =
           overflow_x = "hidden")
 
   let sidebarRoot = result
+
+  # Remember the inspector control that takes focus, and give it focus back
+  # when a browser-history traversal asks for it (``browser.nim`` stamps the
+  # key into the entry the editor leaves, and requests the restore on
+  # ``popstate``). Focus that leaves the inspector does not clear the key:
+  # leaving is exactly what the history entry has to outlive.
+  when isDomViewHost(E):
+    let focusVm = vm
+    # Through the renderer's listener seam: the listener lives on the
+    # sidebar root and goes with it, and the flag keeps a retained callback
+    # inert after the inspector is disposed.
+    var focusMemoryAlive = true
+    r.addEventListener(sidebarRoot, "focusin", proc(ev: Event) =
+      if not focusMemoryAlive: return
+      let key = inspectorControlKey(cast[Element](ev.target))
+      if key.len > 0:
+        focusVm.inspector.rememberInspectorFocus(key))
+    onCleanup proc() =
+      focusMemoryAlive = false
+      {.emit: ["if (", sidebarRoot, ".__isonimFocusRestoreDisarm) ",
+        sidebarRoot, ".__isonimFocusRestoreDisarm();"].}
+
+    var lastFocusRestore = untrack(proc(): int =
+      focusVm.inspector.focusRestoreRequest.val)
+    createRenderEffect proc() =
+      let generation = focusVm.inspector.focusRestoreRequest.val
+      if generation == lastFocusRestore: return
+      lastFocusRestore = generation
+      let key = untrack(proc(): string = focusVm.inspector.focusedControlId.val)
+      focusInspectorControl(sidebarRoot, key)
+
   createRenderEffect proc() =
     let story = vm.selectedStory.val
     r.setAttribute(sidebarRoot, "data-inspector-selection-context",
@@ -3440,6 +3604,17 @@ proc renderInspectorPanel*[R, E](r: R; vm: EditorVM): E =
         var startX = 0;
         var startW = 0;
         var dragging = false;
+        // Capture the pointer for the whole gesture. Without it, the
+        // mousemove/mouseup of a drag that crosses into an iframe (the
+        // preview sits right next to both sidebars) are dispatched to the
+        // iframe's document, so the width never changes and the drag never
+        // ends. With the pointer captured, the compatibility mouse events
+        // target the handle and bubble to this document's listeners.
+        // https://w3c.github.io/pointerevents/#pointer-capture
+        function capturePointer(e) {
+          if (e.button !== 0 || !handle.setPointerCapture) return;
+          try { handle.setPointerCapture(e.pointerId); } catch (_) {}
+        }
         function endDrag() {
           if (!dragging) return;
           dragging = false;
@@ -3466,12 +3641,14 @@ proc renderInspectorPanel*[R, E](r: R; vm: EditorVM): E =
           }
         }
         handle.addEventListener('mousedown', startDrag);
+        handle.addEventListener('pointerdown', capturePointer);
         document.addEventListener('mousemove', moveDrag);
         document.addEventListener('mouseup', endDrag);
         document.addEventListener('mouseleave', endDrag);
         handle.__isonimResizeCleanup = function () {
           endDrag();
           handle.removeEventListener('mousedown', startDrag);
+          handle.removeEventListener('pointerdown', capturePointer);
           document.removeEventListener('mousemove', moveDrag);
           document.removeEventListener('mouseup', endDrag);
           document.removeEventListener('mouseleave', endDrag);
@@ -4872,6 +5049,17 @@ proc renderAiAssistantPanel*[R, E](r: R; vm: EditorVM): E =
         var startX = 0;
         var startW = 0;
         var dragging = false;
+        // Capture the pointer for the whole gesture. Without it, the
+        // mousemove/mouseup of a drag that crosses into an iframe (the
+        // preview sits right next to both sidebars) are dispatched to the
+        // iframe's document, so the width never changes and the drag never
+        // ends. With the pointer captured, the compatibility mouse events
+        // target the handle and bubble to this document's listeners.
+        // https://w3c.github.io/pointerevents/#pointer-capture
+        function capturePointer(e) {
+          if (!live() || e.button !== 0 || !handle.setPointerCapture) return;
+          try { handle.setPointerCapture(e.pointerId); } catch (_) {}
+        }
         function releaseDrag() {
           if (!dragging) return;
           dragging = false;
@@ -4900,12 +5088,14 @@ proc renderAiAssistantPanel*[R, E](r: R; vm: EditorVM): E =
           }
         }
         handle.addEventListener('mousedown', startDrag);
+        handle.addEventListener('pointerdown', capturePointer);
         document.addEventListener('mousemove', moveDrag);
         document.addEventListener('mouseup', endDrag);
         document.addEventListener('mouseleave', endDrag);
         handle.__isonimResizeCleanup = function () {
           releaseDrag();
           handle.removeEventListener('mousedown', startDrag);
+          handle.removeEventListener('pointerdown', capturePointer);
           document.removeEventListener('mousemove', moveDrag);
           document.removeEventListener('mouseup', endDrag);
           document.removeEventListener('mouseleave', endDrag);
