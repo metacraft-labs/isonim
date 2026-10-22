@@ -7,6 +7,7 @@
 ## Port of SolidJS signal.ts dependency graph traversal.
 
 import types
+when defined(isonimRecordable): import checkpoint_registry
 import platform
 
 type ContextTable* = HashMapRef[int, RootRef]
@@ -15,11 +16,16 @@ type
   SignalStateBase* = ref object of RootObj
     ## Type-erased base for signals in the dependency graph.
     ## Allows computations to track dependencies without knowing T.
+    when defined(isonimRecordable):
+      checkpointLease*: SignalLease
     observers*: seq[ComputationBase]
     observerSlots*: seq[int]
 
   OwnerBase* = ref object of RootObj
     ## Base of the disposal tree. Owner tracks child computations and cleanup callbacks.
+    when defined(isonimRecordable):
+      checkpointSignals*: seq[SignalRegistration]
+        ## Metadata only: the owner tree must never keep a signal alive.
     owned*: seq[ComputationBase]     ## Child computations
     cleanups*: seq[proc()]            ## Cleanup callbacks
     owner*: OwnerBase                 ## Parent owner
@@ -121,6 +127,9 @@ proc cleanNode*(node: OwnerBase; dispose: bool = false) =
     cleanNode(child, dispose = true)
   node.owned.setLen(0)
   node.resourceStates.setLen(0)
+  when defined(isonimRecordable):
+    for entry in node.checkpointSignals: entry.active = false
+    node.checkpointSignals.setLen(0)
 
   # Run cleanup callbacks
   for cleanup in node.cleanups:

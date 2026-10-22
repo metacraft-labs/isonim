@@ -14,10 +14,15 @@ type
     id: int
     time: float64      ## Absolute time in ms when callback should fire
     callback: proc()
+    when defined(isonimRecordable):
+      maintenance: bool
 
   ClockBase* = ref object of RootObj
     ## Base type for all clocks.
     dispatchSequence*: uint64
+    when defined(isonimRecordable):
+      randomDrawCount*: uint64
+      checkpointDispatch*: proc()
     lastTimerId: int
     ## Boundary backend state shared by RealClock and TestClock.
     when defined(isonimNondetCoverage):
@@ -46,6 +51,11 @@ type
 
 # Current global clock (thread-local)
 var currentClock* {.threadvar.}: ClockBase
+
+when defined(isonimRecordable):
+  template beginDispatch*(clock: ClockBase) =
+    inc clock.dispatchSequence
+    if clock.checkpointDispatch != nil: clock.checkpointDispatch()
 
 method now*(clock: ClockBase): float64 {.base.} =
   raise newException(ValueError, "clock backend has no time source")
@@ -80,7 +90,8 @@ method schedule*(clock: RealClock; callback: proc(); delayMs: float64): int =
   let id = clock.lastTimerId
   clock.platformTimers[id] = neTime.scheduleAtRaw(neTime.rawBackendAccess, max(0, ceil(delayMs).int), proc() =
     clock.platformTimers.del(id)
-    inc clock.dispatchSequence
+    when defined(isonimRecordable): beginDispatch(clock)
+    else: inc clock.dispatchSequence
     callback())
   id
 
@@ -113,7 +124,10 @@ proc advance*(clock: TestClock; durationMs: float64) =
     let cb = clock.scheduled[0]
     clock.scheduled.delete(0)
     clock.currentTime = cb.time
-    inc clock.dispatchSequence
+    when defined(isonimRecordable):
+      if not cb.maintenance: beginDispatch(clock)
+    else:
+      inc clock.dispatchSequence
     cb.callback()
   clock.currentTime = targetTime
 
@@ -130,3 +144,18 @@ proc newTestClock*(startTime: float64 = 0.0): TestClock =
 
 proc newRealClock*(): RealClock =
   RealClock()
+
+when defined(isonimRecordable):
+  proc scheduleCheckpointMaintenance*(clock: ClockBase; cb: proc(); delayMs: float64): proc() =
+    ## Private scheduler lane: never a real dispatch and never instrumented.
+    if clock of TestClock:
+      let test = TestClock(clock)
+      let id = test.schedule(cb, delayMs)
+      for scheduled in test.scheduled.mitems:
+        if scheduled.id == id: scheduled.maintenance = true
+      result = proc() = test.cancel(id)
+    elif clock of RealClock:
+      let handle = neTime.scheduleAtRaw(neTime.rawBackendAccess, max(0, ceil(delayMs).int), cb)
+      result = proc() = neTime.cancelTimer(handle)
+    else:
+      raise newException(ValueError, "checkpoint maintenance requires RealClock or TestClock")

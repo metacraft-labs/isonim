@@ -125,7 +125,8 @@ proc requestFrame*(cb: proc()): int {.tags: [ClockEffect].} =
         let id = b.nextHandle
         let nativeId = rawFrame(proc() =
           b.frameCancels.del(id)
-          inc b.dispatchSequence
+          when defined(isonimRecordable): beginDispatch(b)
+          else: inc b.dispatchSequence
           cb())
         b.frameCancels[id] = proc() = rawCancelFrame(nativeId)
         return id
@@ -134,14 +135,24 @@ proc random*(): uint64 {.tags: [RandomEffect].} =
   {.cast(tags: []).}:
     note("random")
     let b = backend()
-    if b.scripted: return uint64(b.read("random").getBiggestInt())
-    b.randomState.next()
+    when defined(isonimRecordable):
+      result = if b.scripted: uint64(b.read("random").getBiggestInt())
+        else: b.randomState.next()
+      inc b.randomDrawCount
+    else:
+      if b.scripted: return uint64(b.read("random").getBiggestInt())
+      b.randomState.next()
 proc randomFloat*(): float64 {.tags: [RandomEffect].} =
   {.cast(tags: []).}:
     note("randomFloat")
     let b = backend()
-    if b.scripted: return b.read("randomFloat").getFloat()
-    b.randomState.rand(1.0)
+    when defined(isonimRecordable):
+      result = if b.scripted: b.read("randomFloat").getFloat()
+        else: b.randomState.rand(1.0)
+      inc b.randomDrawCount
+    else:
+      if b.scripted: return b.read("randomFloat").getFloat()
+      b.randomState.rand(1.0)
 when defined(js):
   proc settled[T](future: Future[T]; cb: proc()): Future[T]
       {.importjs: "(function(f,cb){return f.then(function(v){cb();return v;},function(e){cb();throw e;});})(#,#)".}
@@ -154,15 +165,19 @@ proc fetch*(request: HttpRequest): PlatformFuture[HttpResponse] {.tags: [NetEffe
     let pending = if b.fetchResponse != nil: b.fetchResponse(request)
       else: neHttp.fetchHttpRaw(rawBackendAccess, request)
     when defined(js):
-      return settled(pending, proc() = inc b.dispatchSequence)
+      return settled(pending, proc() =
+        when defined(isonimRecordable): beginDispatch(b)
+        else: inc b.dispatchSequence)
     else:
       let wrapped = newFuture[HttpResponse]("nondet fetch settlement")
       pending.onComplete(
         proc(value: HttpResponse) =
-          inc b.dispatchSequence
+          when defined(isonimRecordable): beginDispatch(b)
+          else: inc b.dispatchSequence
           wrapped.complete(value),
         proc(message: string) =
-          inc b.dispatchSequence
+          when defined(isonimRecordable): beginDispatch(b)
+          else: inc b.dispatchSequence
           wrapped.fail(newException(CatchableError, message)))
       wrapped
 proc install*(b: NondetBackend) =
@@ -303,9 +318,13 @@ when defined(js):
           req.headers.add(HttpHeader(name: "Content-Type", value: $contentType))
         for m in HttpMethod:
           if m.httpMethodName() == $httpMethod: req.httpMethod = m
-        return settled(scriptedRpc(b.fetchResponse(req)), proc() = inc b.dispatchSequence)
+        return settled(scriptedRpc(b.fetchResponse(req)), proc() =
+          when defined(isonimRecordable): beginDispatch(b)
+          else: inc b.dispatchSequence)
       settled(rawBrowserFetch(httpMethod, url, body, csrf, context, contentType, signal),
-        proc() = inc b.dispatchSequence)
+        proc() =
+          when defined(isonimRecordable): beginDispatch(b)
+          else: inc b.dispatchSequence)
 
 when defined(js):
   proc hasBrowserWindow(): bool {.importjs: "(typeof window !== 'undefined')".}
@@ -397,7 +416,8 @@ when defined(js):
     {.cast(tags: []).}:
       result = rawListen(node, event.cstring, handler, capture, proc(): int =
         let selected = backend()
-        inc selected.dispatchSequence
+        when defined(isonimRecordable): beginDispatch(selected)
+        else: inc selected.dispatchSequence
         int(selected.dispatchSequence), proc(): float64 = backend().now(),
         proc(dispose: ListenerDisposer) =
           if getOwner() != nil: onCleanup(dispose))

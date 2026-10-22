@@ -1920,3 +1920,17 @@ test-listen: build-tailwind
 # Parent lifecycle owns both SSR adoption and fallback-render roots.
 test-hydration-owner: build-tailwind
     bash tools/check_hydration_owner.sh
+
+# Optional signal checkpoints: real native/JS graph, actual Chromium, mutations.
+test-signal-checkpoints:
+    nim c -r -d:isonimRecordable tests/test_signal_checkpoints.nim
+    nim c -r --mm:arc -d:isonimRecordable --out:build/checkpoints_arc tests/test_signal_checkpoints.nim
+    nim js -d:isonimRecordable -d:isonimStrictNondet --out:build/test_signal_checkpoints.js tests/test_signal_checkpoints.nim
+    python3 tools/run_nim_js_test.py build/test_signal_checkpoints.js
+    nim js -d:isonimRecordable -d:isonimStrictNondet --out:build/checkpoints_browser.js tests/fixtures/checkpoints_browser.nim
+    PLAYWRIGHT_CHROMIUM_EXECUTABLE="${PLAYWRIGHT_CHROMIUM_EXECUTABLE:-$(command -v chromium)}" node tests/test_signal_checkpoints_browser.mjs
+    python3 tools/test_signal_checkpoint_mutants.py
+
+# Exact ordinary-bundle comparison against the checkpoint foundation's parent.
+verify_xr_m5_zero_cost_default parent="d2193dc4935039f5faa0836e0a26eed9e15f1a72":
+    bash tools/verify_signal_checkpoints_zero_cost.sh {{parent}}
