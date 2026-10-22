@@ -25,12 +25,19 @@ proc clearValue(el: Element) {.importjs: "#.value = ''".}
 proc setChecked(el: Element; on: bool) {.importjs: "#.checked = #".}
 proc preventDefault(ev: Event) {.importjs: "#.preventDefault()".}
 
+# Test-only observation of what the application actually sees before it changes
+# the store; it neither changes checked state nor feeds application decisions.
+proc noteCheckedAtHandler(el: Element)
+  {.importjs: "(globalThis.hydrationCheckboxReads || (globalThis.hydrationCheckboxReads=[])).push(#.checked)".}
+
 proc taskItem(r: WebRenderer; store: TaskStore; id: int): Element =
   var checkbox: Element
   result = ui(r):
     li(class = (if store.task(id).done: "completed" else: "")):
       input(`type` = "checkbox", ref = checkbox,
-            onclick = proc() = store.toggleTask(id))
+            onclick = proc() =
+              noteCheckedAtHandler(checkbox)
+              store.toggleTask(id))
       span: text store.task(id).text
       button(class = "remove", onclick = proc() = store.removeTask(id)):
         text "\xC3\x97"

@@ -262,7 +262,9 @@ SPEC_PROJECT=ssr-hydration run_spec "${WORK}/no-data-hk-control.log" "without Ja
 # --- redispatch-replay -------------------------------------------------------
 # The client replaying a recorded event by re-dispatching the original (a
 # trusted MouseEvent click): the checkbox's activation behaviour runs a
-# second time, so the replay test sees the click applied twice.
+# second time, so the application observes false at handler entry. A later
+# queued input snapshot can repair final DOM state; the independent handler
+# observation keeps this mutation discriminating without changing that test.
 client_mutant redispatch-replay isonim/web/hydration.nim \
   '      target.dispatchEvent(replay);' '      target.dispatchEvent(""", ev, """);'
 if SPEC_PROJECT=ssr-hydration run_spec "${WORK}/redispatch-replay.log" "event replay" \
@@ -272,7 +274,11 @@ if SPEC_PROJECT=ssr-hydration run_spec "${WORK}/redispatch-replay.log" "event re
 else
   grep -q "2 failed" "${WORK}/redispatch-replay.log" ||
     { cat "${WORK}/redispatch-replay.log"; exit 1; }
-  echo "caught redispatch-replay: the click recorded before hydration was not replayed exactly once"
+  grep -q "hydrationCheckboxReads" "${WORK}/redispatch-replay.log" ||
+    { cat "${WORK}/redispatch-replay.log"; exit 1; }
+  grep -q 'false,' "${WORK}/redispatch-replay.log" ||
+    { cat "${WORK}/redispatch-replay.log"; exit 1; }
+  echo "caught redispatch-replay: original checkbox state was false at handler entry"
   caught=$((caught + 1))
 fi
 SPEC_PROJECT=ssr-hydration run_spec "${WORK}/redispatch-replay-control.log" "toggle task" \

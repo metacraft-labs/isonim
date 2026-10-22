@@ -234,6 +234,17 @@ for (const [mode, path] of [
       await expect(page.locator('button:has-text("Clear completed")')).toHaveCount(0);
     });
 
+    test("event replay observes original checkbox state at handler entry", async ({ page }) => {
+      const gate = await holdClient(page);
+      await gotoServerRendered(page, path);
+      await page.click('.task-list li:first-child input[type="checkbox"]');
+      gate.release();
+      await waitHydrated(page);
+      // Later queued input-state restoration can repair final DOM state even
+      // after a second activation. The callback must see the original state.
+      expect(await page.evaluate(() => (window as any).hydrationCheckboxReads)).toEqual([true]);
+    });
+
     test("event replay during hydration", async ({ page }) => {
       const gate = await holdClient(page);
       await gotoServerRendered(page, path);

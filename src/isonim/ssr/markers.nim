@@ -94,6 +94,9 @@ type
 const defaultHydrationEvents* = @["click", "input"]
   ## The events the bootstrap records before hydration by default.
 
+const recordingHydrationEvents* = @["click", "input", "change", "submit", "keydown"]
+  ## Expanded capture list for recording sessions.
+
 proc generateHydrationScript*(eventNames: seq[string] = defaultHydrationEvents;
                               nonce: string = ""): string =
   ## Generates the inline <script> that initializes window._$HY.
@@ -109,4 +112,19 @@ proc generateHydrationScript*(eventNames: seq[string] = defaultHydrationEvents;
   for i, name in eventNames:
     if i > 0: result.add "\",\""
     result.add name
-  result.add "\"].forEach((o=>document.addEventListener(o,(o=>{if(!e.events)return;let s=t(o.composedPath&&o.composedPath()[0]||o.target);s&&!e.completed.has(s)&&e.events.push([s,o])}))))})(_$HY={events:[],completed:new WeakSet,r:{},fe(){}});</script><!--xs-->"
+  result.add """"].forEach(type=>document.addEventListener(type,ev=>{
+    if(!e.events)return;
+    const target=ev.composedPath&&ev.composedPath()[0]||ev.target;
+    const el=t(target);
+    if(!el||e.completed.has(el))return;
+    const snapshot={};
+    for(const key of ['key','code','ctrlKey','shiftKey','altKey','metaKey','clientX','clientY','button']){
+      const v=ev[key]; if(['string','number','boolean'].includes(typeof v))snapshot[key]=v;
+    }
+    if(target){
+      if(typeof target.value==='string')snapshot.value=target.value;
+      else if(target.isContentEditable)snapshot.textContent=target.textContent;
+      if(typeof target.checked==='boolean')snapshot.checked=target.checked;
+    }
+    e.events.push([el,ev,snapshot]);
+  }));})(_$HY={events:[],completed:new WeakSet,r:{},fe(){}});</script><!--xs-->"""

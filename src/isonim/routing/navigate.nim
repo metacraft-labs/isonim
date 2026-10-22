@@ -3,7 +3,6 @@
 ## Navigation helpers: global navigate() and Link component.
 
 import router
-import match
 
 export router.navigate
 
@@ -14,20 +13,19 @@ proc navigate*(path: string; replace = false) =
 
 when defined(js):
   import ../web/dom_api
+  import ../web/web_renderer
+  import ../dsl/ui
+  import ../rxcore
 
   proc Link*(parent: Node; href: string; text: string) =
     ## Link component. Renders an <a> that navigates via the router
-    ## (no page reload) on click.
-    let a = document.createElement(cstring"a")
-    a.setAttribute(cstring"href", cstring(href))
-    let textNode = document.createTextNode(cstring(text))
-    discard a.appendChild(textNode)
-
+    ## (no page reload) on click. Stable builds use ordinary component scopes;
+    ## repeated programmatic calls need withStableKey/withStableInstance.
+    let r = WebRenderer()
     let capturedHref = href
-    a.addEventListener(cstring"click", proc(e: Event) =
-      # Prevent default browser navigation
-      {.emit: [e, ".preventDefault();"].}
-      navigate(capturedHref)
-    )
-
+    let a = ui(r):
+      a(href = href, onclick = proc(e: Event) =
+        {.emit: [e, ".preventDefault();"].}
+        navigate(capturedHref)):
+        text(text)
     discard parent.appendChild(a)

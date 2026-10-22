@@ -206,15 +206,24 @@ proc runHydrationEvents*() =
   {.emit: [length, " = ", sharedConfig.events, ".length;"].}
 
   for i in 0 ..< length:
-    var el, ev: JsObject
+    var el, ev, snapshot: JsObject
     {.emit: [el, " = ", sharedConfig.events, "[", i, "][0];"].}
     {.emit: [ev, " = ", sharedConfig.events, "[", i, "][1];"].}
+    {.emit: [snapshot, " = ", sharedConfig.events, "[", i, "][2] || {};"].}
     {.emit: ["""
       var target = (""", ev, """.target && """, ev, """.target.nodeType === 1) ? """, ev, """.target : """, el, """;
+      var saved = """, snapshot, """;
+      if ('value' in saved) target.value = saved.value;
+      if ('checked' in saved) target.checked = saved.checked;
+      if ('textContent' in saved) target.textContent = saved.textContent;
       var replay = """, ev, """;
       if (typeof Event === 'function' && """, ev, """ instanceof Event) {
         replay = new Event(""", ev, """.type, {bubbles: """, ev, """.bubbles,
           cancelable: """, ev, """.cancelable, composed: """, ev, """.composed});
+        for (var key of ['key','code','ctrlKey','shiftKey','altKey','metaKey','clientX','clientY','button']) {
+          if (key in saved) Object.defineProperty(replay, key, {value: saved[key]});
+        }
+        Object.defineProperty(replay, 'isonimSnapshot', {value: saved});
         Object.defineProperty(replay, 'isonimReplayOf', {value: """, ev, """});
       }
       target.dispatchEvent(replay);

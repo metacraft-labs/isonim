@@ -21,6 +21,8 @@ import isonim/web/dom_api
 import isonim/web/hydration
 import isonim/rxcore
 import isonim/core/boundary_meter
+import isonim/core/nondet
+import std/jsffi
 export boundary_meter
 
 type
@@ -112,20 +114,18 @@ proc addEventListener*(r: WebRenderer; node: Element; event: string;
                         handler: proc()) =
   ## Attach a click (or other) event listener to a real DOM element.
   ## Wraps the no-arg handler into the EventHandler signature expected
-  ## by `dom_api.addEventListener`.
+  ## by the listener boundary.
   noteOp(boAddEventListener, 2, event)
   let wrappedHandler: EventHandler = proc(ev: Event) =
     handler()
-  dom_api.addEventListener(Node(node), cstring(event), wrappedHandler)
+  discard nondet.listen(cast[JsObject](node), event, wrappedHandler)
 
 proc addEventListener*(r: WebRenderer; node: Element; event: string;
                         handler: proc(ev: Event)) =
-  ## Overload for handlers that consume the browser `Event`. Unlike the
-  ## no-arg form, this passes through to `dom_api.addEventListener`
-  ## without wrapping — Nim's overload resolution selects this one when
-  ## the DSL emits a handler whose argument type is `Event`.
+  ## Event-consuming overload. Preserve the original callback identity at
+  ## the boundary, so repeated native registrations remain deduplicated.
   noteOp(boAddEventListener, 2, event)
-  dom_api.addEventListener(Node(node), cstring(event), EventHandler(handler))
+  discard nondet.listen(cast[JsObject](node), event, EventHandler(handler))
 
 # ---------------------------------------------------------------------------
 # Navigation helpers (match MockRenderer interface)

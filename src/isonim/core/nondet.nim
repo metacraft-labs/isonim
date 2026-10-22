@@ -314,3 +314,90 @@ when defined(js):
     # environment before navigation or later viewport changes can alter it.
     discard backend()
     discard env()
+
+when defined(js):
+  import ../web/dom_api
+  import ./owner
+
+  # Weak target ownership permits detached trees and their handlers to die.
+  # Records contain scalar copies only; the hook never receives a DOM object.
+  {.emit: """
+  var isonimEventListeners = (function() {
+  const isonimListeners = new WeakMap();
+  let isonimListenerHook = null;
+  function isonimEventSnapshot(ev) {
+    const el = ev.target;
+    const p = {};
+    if ((ev.type === 'input' || ev.type === 'change') && el) {
+      const editable = el.localName === 'input' || el.localName === 'textarea' || el.isContentEditable;
+      if (editable) {
+        const value = String(el.isContentEditable ? el.textContent : el.value);
+        p.value = el.getAttribute('data-isonim-record') === 'true' ? value : '*'.repeat(value.length);
+      }
+      if (typeof el.checked === 'boolean') p.checked = el.checked;
+    }
+    const original = ev.isonimReplayOf || ev;
+    const saved = ev.isonimSnapshot || original;
+    for (const key of ['key', 'code', 'ctrlKey', 'shiftKey', 'altKey', 'metaKey', 'clientX', 'clientY', 'button']) {
+      const value = saved[key];
+      if (typeof value === 'string' || typeof value === 'number' || typeof value === 'boolean') p[key] = value;
+    }
+    return p;
+  }
+  function isonimListen(node, type, handler, capture, nextSequence, eventTime, registered) {
+    let entries = isonimListeners.get(node);
+    if (!entries) isonimListeners.set(node, entries = []);
+    const prior = entries.find(e => e.type === type && e.handler === handler && e.capture === capture);
+    if (prior) return prior.dispose;
+    const entry = {type, handler, capture, targetIid: node === window ? 'win' : node === document ? 'doc' : node.getAttribute('data-iid') || ''};
+    entry.wrapped = function(ev) {
+      const seq = nextSequence();
+      const hook = isonimListenerHook;
+      let record;
+      if (hook) {
+        record = {seq, type, targetIid: entry.targetIid, timeStamp: ev.isonimReplayOf ? ev.isonimReplayOf.timeStamp : eventTime(),
+          payload: isonimEventSnapshot(ev), finalized: false};
+        if (ev.isonimReplayOf) record.phase = 'prehydration';
+        try { hook(record); } catch (error) { console.error('isonim listener hook:', error); }
+      }
+      try { return handler.call(this, ev); }
+      finally { if (record) { record.payload.defaultPrevented = ev.defaultPrevented; record.finalized = true; } }
+    };
+    let active = true;
+    entry.dispose = function() {
+      if (!active) return;
+      active = false;
+      node.removeEventListener(type, entry.wrapped, capture);
+      const at = entries.indexOf(entry);
+      if (at >= 0) entries.splice(at, 1);
+      if (!entries.length) isonimListeners.delete(node);
+    };
+    entries.push(entry);
+    node.addEventListener(type, entry.wrapped, capture);
+    registered(entry.dispose);
+    return entry.dispose;
+  }
+  return {listen: isonimListen, setHook: function(hook) { isonimListenerHook = hook; }};
+  })();
+  """.}
+  proc setListenerHook*(hook: proc(record: JsObject)) =
+    ## Observe handler entry. Retain records until `finalized` before serializing.
+    ## Passing nil disables observation without changing callback semantics.
+    {.emit: ["isonimEventListeners.setHook(", hook, ");"].}
+  type ListenerDisposer* = proc()
+  proc rawListen(node: JsObject; event: cstring; handler: EventHandler;
+      capture: bool; nextSequence: proc(): int; eventTime: proc(): float64;
+      registered: proc(dispose: ListenerDisposer)): ListenerDisposer
+      {.importjs: "isonimEventListeners.listen(#,#,#,#,#,#,#)", tags: [RawNondet].}
+  proc listen*(node: JsObject; event: string; handler: EventHandler;
+      capture = false): ListenerDisposer {.discardable, tags: [DomEventEffect].} =
+    ## Register at the original DOM target; returns idempotent removal.
+    ## Native target/currentTarget, propagation and capture semantics survive.
+    ## A duplicate shares cancellation but keeps its first reactive owner.
+    {.cast(tags: []).}:
+      result = rawListen(node, event.cstring, handler, capture, proc(): int =
+        let selected = backend()
+        inc selected.dispatchSequence
+        int(selected.dispatchSequence), proc(): float64 = backend().now(),
+        proc(dispose: ListenerDisposer) =
+          if getOwner() != nil: onCleanup(dispose))

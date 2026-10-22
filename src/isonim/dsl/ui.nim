@@ -55,6 +55,10 @@ import ./stable_ids
 # have to know the module exists.
 import ../ssr/markers
 
+proc recordDirective(value: bool): string =
+  ## A typed privacy directive: false is explicit, never HTML presence.
+  if value: "true" else: "false"
+
 var gensymCounter {.compileTime.} = 0
 
 const frameworkSourceRoot = block:
@@ -712,7 +716,9 @@ proc processNode(rendererSym: NimNode; node: NimNode;
       let arg = node[i]
       if arg.kind == nnkExprEqExpr and arg[0].kind != nnkRefTy:
         let attrName = attrNameStr(arg[0])
-        if isEventHandler(attrName) or isHydrationFlag(attrName) or
+        if attrName.toLowerAscii == "data-isonim-record":
+          error("use the typed record = true/false directive", arg)
+        if attrName == "record" or isEventHandler(attrName) or isHydrationFlag(attrName) or
             (stableIdsEnabled and attrName == "key"):
           continue
         if isStyleProperty(attrName):
@@ -785,10 +791,16 @@ proc processNode(rendererSym: NimNode; node: NimNode;
         else:
           # attr = value
           let attrName = attrNameStr(arg[0])
+          if attrName.toLowerAscii == "data-isonim-record":
+            error("use the typed record = true/false directive", arg)
           let attrVal = arg[1]
-          collectAttrBindings(styleBindings, attrName, attrVal)
+          if attrName != "record":
+            collectAttrBindings(styleBindings, attrName, attrVal)
 
-          if stableIdsEnabled and attrName == "key":
+          if attrName == "record":
+            stmts.add(newCall(newDotExpr(rendererSym, ident"setAttribute"),
+              elSym, newLit("data-isonim-record"), newCall(bindSym"recordDirective", attrVal)))
+          elif stableIdsEnabled and attrName == "key":
             discard
           elif isHydrationFlag(attrName):
             # `hydrate = true` is a server-side request for a key; the
@@ -1162,10 +1174,17 @@ proc ssrNodeExpr(node: NimNode; stmts: NimNode): NimNode {.compileTime.} =
           # `ref = x` binds the client's element; there is none on the server.
           continue
         let attrName = attrNameStr(arg[0])
+        if attrName.toLowerAscii == "data-isonim-record":
+          error("use the typed record = true/false directive", arg)
         let attrVal = arg[1]
-        collectAttrBindings(styleBindings, attrName, attrVal)
+        if attrName != "record":
+          collectAttrBindings(styleBindings, attrName, attrVal)
 
-        if stableIdsEnabled and attrName == "key":
+        if attrName == "record":
+          tagParts.add(newStrLitNode(" data-isonim-record=\""))
+          tagParts.add(newCall(bindSym"recordDirective", attrVal))
+          tagParts.add(newStrLitNode("\""))
+        elif stableIdsEnabled and attrName == "key":
           discard
         elif isEventHandler(attrName):
           # Event handlers are ignored in SSR
@@ -1509,9 +1528,17 @@ proc collectNode(node: NimNode; ops: var seq[StreamOp]) {.compileTime.} =
         if arg[0].kind == nnkRefTy:
           continue  # `ref = x` binds the client's element
         let attrName = attrNameStr(arg[0])
+        if attrName.toLowerAscii == "data-isonim-record":
+          error("use the typed record = true/false directive", arg)
         let attrVal = arg[1]
 
-        if stableIdsEnabled and attrName == "key":
+        if attrName == "record":
+          openTag.add(" data-isonim-record=\"")
+          pendingOps.add(StreamOp(kind: sokStatic, text: openTag))
+          openTag = "\""
+          pendingOps.add(StreamOp(kind: sokEscapedAttr,
+            expr: newCall(bindSym"recordDirective", attrVal)))
+        elif stableIdsEnabled and attrName == "key":
           discard
         elif isEventHandler(attrName):
           discard # Ignored in SSR

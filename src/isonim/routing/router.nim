@@ -10,7 +10,6 @@ import ../core/nondet as nondet
 
 import ../core/[signals, computation]
 when defined(js):
-  import ../core/owner
   import client_context
 import match, params, outlet
 export params, outlet
@@ -104,11 +103,8 @@ when defined(js):
   proc replaceState(h: History; state: JsRoot; title: cstring; url: cstring)
     {.importcpp: "#.replaceState(#, #, #)".}
 
-  proc addEventListener(w: WindowObj; event: cstring; handler: proc(e: JsRoot))
-    {.importcpp: "#.addEventListener(#, #)".}
-
-  proc removeEventListener(w: WindowObj; event: cstring; handler: proc(e: JsRoot))
-    {.importcpp: "#.removeEventListener(#, #)".}
+  import std/jsffi
+  import ../web/dom_api as eventDom
 
 when defined(js):
   proc hasWindow(): bool =
@@ -164,16 +160,13 @@ proc createRouter*(routes: seq[RouteEntry]): Router =
   when defined(js):
     if hasWindow():
       # Listen for browser back/forward
-      let popstateHandler = proc(e: JsRoot) =
+      let popstateHandler = proc(e: eventDom.Event) =
         # A navigation: responses to navigation-scoped requests sent
         # before it are dropped (URL-Schema.md §5.4).
         bumpNavigationGeneration()
         router.currentPath.val = getWindowPathname()
 
-      window.addEventListener(cstring"popstate", popstateHandler)
-
-      onCleanup proc() =
-        window.removeEventListener(cstring"popstate", popstateHandler)
+      discard nondet.listen(cast[JsObject](window), "popstate", popstateHandler)
 
   result = router
 

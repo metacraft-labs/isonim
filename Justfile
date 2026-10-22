@@ -1913,6 +1913,9 @@ test-editor-nondet-storage:
     python3 tools/run_nim_js_test.py build/test_editor_nondet_storage.js
     nim js --out:build/editor_storage_browser_fixture.js tests/editor_storage_browser_fixture.nim
     PLAYWRIGHT_CHROMIUM_EXECUTABLE="${PLAYWRIGHT_CHROMIUM_EXECUTABLE:-$(command -v chromium)}" node tools/check_editor_storage_browser.cjs
+# Shared SSR/client event registration and privacy against actual Chromium.
+test-listen: build-tailwind
+    bash tools/check_listen.sh
 
 # Parent lifecycle owns both SSR adoption and fallback-render roots.
 test-hydration-owner: build-tailwind
