@@ -1172,6 +1172,64 @@ suite "CHRM-M2 chrome-bar cluster unification":
       check findByAttr(modeCluster, "data-choice-group-pill", "4") == nil
       dispose()
 
+  test "chrome-bar pills carry their canonical accessible names":
+    ## The segmented pills' accessible names are a contract, not
+    ## incidental output: consumers (metacraft-web's editor suite) and
+    ## assistive technology reach the controls by role and name. A
+    ## viewport pill is "Preview viewport <label>", a mode pill
+    ## "Switch to <mode> mode" and a backend pill
+    ## "Preview backend <label>", while the pill keeps its plain label
+    ## in ``data-choice-group-label``. The viewport names are checked
+    ## on the first mount and again after a Web -> TUI -> Web switch,
+    ## because that switch rebuilds the viewport pills through a second
+    ## mount path.
+    proc checkViewportNames(bar: MockNode; backend: PreviewBackend) =
+      let cluster = findByAttr(bar, "data-toolbar-cluster", "viewport")
+      require cluster != nil
+      for vp in pinnedViewports(backend):
+        let pill = findByAttr(cluster, "data-preview-viewport", vp.slug)
+        require pill != nil
+        check pill.attributes.getOrDefault("aria-label") ==
+          "Preview viewport " & vp.label
+        check pill.attributes.getOrDefault("data-choice-group-label") ==
+          vp.label
+
+    createRoot do (dispose: proc()):
+      let r = MockRenderer()
+      let vm = createEditorVM()
+      vm.selectedStory.val = StoryRef(group: "Components", name: "Sample",
+        kind: skComponent, index: 0)
+      let bar = renderPreviewChromeBar[MockRenderer, MockNode](r, vm)
+
+      check pinnedViewports(pbWeb).mapIt(it.label) ==
+        @["Desktop", "Laptop", "Tablet", "Phone"]
+      checkViewportNames(bar, pbWeb)
+
+      let modeCluster = findByAttr(bar, "data-toolbar-cluster", "mode")
+      require modeCluster != nil
+      for label in ["Spec", "View", "Comment", "Edit"]:
+        let slug = label.toLowerAscii
+        let pill = findByAttr(modeCluster, "data-preview-mode", slug)
+        require pill != nil
+        check pill.attributes.getOrDefault("aria-label") ==
+          "Switch to " & slug & " mode"
+        check pill.attributes.getOrDefault("data-choice-group-label") == label
+
+      let backendCluster = findByAttr(bar, "data-toolbar-cluster", "backend")
+      require backendCluster != nil
+      for backend in [pbWeb, pbTui, pbGpui, pbFreya, pbCocoa, pbAndroid]:
+        let pill = findByAttr(backendCluster,
+          "data-preview-backend", backendId(backend))
+        require pill != nil
+        check pill.attributes.getOrDefault("aria-label") ==
+          "Preview backend " & backendLabel(backend)
+
+      vm.changePlatform(pbTui)
+      checkViewportNames(bar, pbTui)
+      vm.changePlatform(pbWeb)
+      checkViewportNames(bar, pbWeb)
+      dispose()
+
 # ---------------------------------------------------------------------------
 # M-EVP-4: Sidebar story-row selection state — indigo accent marker.
 # ---------------------------------------------------------------------------

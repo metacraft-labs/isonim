@@ -66,7 +66,9 @@ async function expectNoPendingSourceEdits(page) {
 // The per-view "Open selected component in edit mode" / "Switch to … mode"
 // buttons were removed with the per-view inner top bars (M-EVP-6, 00c9fe0):
 // the single chrome bar's mode cluster (Spec | View | Comment | Edit) is the
-// only mode control (editor spec "Preview-pane chrome layout", item 5).
+// only mode control (editor spec "Preview-pane chrome layout", item 5). Its
+// pills now carry the "Switch to … mode" accessible names themselves; see
+// `modeButton` below.
 function modeChip(page, mode: "Spec" | "View" | "Comment" | "Edit") {
   return page.locator(`[data-toolbar-cluster="mode"] [data-choice-group-label="${mode}"]`);
 }
@@ -74,6 +76,43 @@ function modeChip(page, mode: "Spec" | "View" | "Comment" | "Edit") {
 async function switchMode(page, mode: "Spec" | "View" | "Comment" | "Edit") {
   await modeChip(page, mode).click();
   await expect(modeChip(page, mode)).toHaveAttribute("aria-pressed", "true");
+}
+
+// The canonical chrome's segmented pills carry host-supplied accessible names
+// (IsoNim a9913b4, "preserve canonical chrome control metadata"): a viewport
+// pill is named "Preview viewport <label>" and a mode pill
+// "Switch to <mode> mode", while the pill still shows the plain label. These
+// role queries are the path assistive technology takes to the controls.
+// `expectChromePill` pins the visible label and the domain slug behind such a
+// name, so the accessible name, what is shown and what is selected cannot
+// drift apart unnoticed.
+type ViewportLabel = "Desktop" | "Laptop" | "Tablet" | "Phone";
+
+function viewportButton(page, label: ViewportLabel) {
+  return page.locator('[data-toolbar-cluster="viewport"]')
+    .getByRole("button", { name: `Preview viewport ${label}`, exact: true });
+}
+
+function modeButton(page, mode: "Spec" | "View" | "Comment" | "Edit") {
+  return page.locator('[data-toolbar-cluster="mode"]')
+    .getByRole("button", { name: `Switch to ${mode.toLowerCase()} mode`, exact: true });
+}
+
+async function expectChromePill(pill, label: string, slugAttribute: string, slug: string,
+                                rendering: "text" | "icon") {
+  await expect(pill).toHaveAttribute("data-choice-group-label", label);
+  // A text pill (the viewport cluster) shows its label; an icon-only pill
+  // (the mode cluster) shows a glyph and surfaces the label as its tooltip.
+  // The caller states which one it expects, so a cluster that silently
+  // switches rendering fails here instead of being followed.
+  if (rendering === "icon") {
+    await expect(pill).toHaveAttribute("data-choice-group-has-icon", "true");
+    await expect(pill).toHaveAttribute("title", label);
+  } else {
+    await expect(pill).not.toHaveAttribute("data-choice-group-has-icon", /.*/);
+    await expect(pill).toHaveText(label);
+  }
+  await expect(pill).toHaveAttribute(slugAttribute, slug);
 }
 
 async function openTopbarInEditMode(page) {
@@ -542,29 +581,25 @@ test.describe("metacraft-web IsoNim editor consumer", () => {
     await expect(dashboardStory).toBeVisible();
     await expect(dashboardStory).toHaveAttribute("aria-current", "true");
 
-    await expect(
-      page.locator('[data-toolbar-cluster="viewport"]').getByRole("button", { name: "Desktop", exact: true }),
-    ).toHaveAttribute("aria-pressed", "true");
+    for (const [label, slug] of [
+      ["Desktop", "desktop"], ["Laptop", "laptop"], ["Tablet", "tablet"], ["Phone", "phone"],
+    ] as [ViewportLabel, string][]) {
+      await expectChromePill(viewportButton(page, label), label, "data-preview-viewport", slug, "text");
+    }
+    await expect(viewportButton(page, "Desktop")).toHaveAttribute("aria-pressed", "true");
 
-    await page.locator('[data-toolbar-cluster="viewport"]').getByRole("button", { name: "Tablet", exact: true }).click();
-    await expect(
-      page.locator('[data-toolbar-cluster="viewport"]').getByRole("button", { name: "Tablet", exact: true }),
-    ).toHaveAttribute("aria-pressed", "true");
-    await expect(
-      page.locator('[data-toolbar-cluster="viewport"]').getByRole("button", { name: "Desktop", exact: true }),
-    ).toHaveAttribute("aria-pressed", "false");
+    await viewportButton(page, "Tablet").click();
+    await expect(viewportButton(page, "Tablet")).toHaveAttribute("aria-pressed", "true");
+    await expect(viewportButton(page, "Desktop")).toHaveAttribute("aria-pressed", "false");
     await expect(frame).toHaveCSS("width", "1024px");
     await expect(frame).toHaveCSS("height", "768px");
 
-    await page.locator('[data-toolbar-cluster="viewport"]').getByRole("button", { name: "Phone", exact: true }).click();
-    await expect(
-      page.locator('[data-toolbar-cluster="viewport"]').getByRole("button", { name: "Phone", exact: true }),
-    ).toHaveAttribute("aria-pressed", "true");
+    await viewportButton(page, "Phone").click();
+    await expect(viewportButton(page, "Phone")).toHaveAttribute("aria-pressed", "true");
     await expect(frame).toHaveCSS("width", "390px");
     await expect(frame).toHaveCSS("height", "844px");
 
-    await page.locator('[data-toolbar-cluster="viewport"]')
-      .getByRole("button", { name: "Desktop", exact: true }).click();
+    await viewportButton(page, "Desktop").click();
     await expect(frame).toHaveCSS("width", "1440px");
 
     await expect(page).toHaveURL(/view=page/);
@@ -582,13 +617,12 @@ test.describe("metacraft-web IsoNim editor consumer", () => {
     await expect(page.locator(".editor-sidebar")).toBeVisible();
     await expect(page.locator(".editor-chat")).toBeVisible();
 
-    await page.locator('[data-toolbar-cluster="mode"]').getByRole("button", { name: "Edit", exact: true }).click();
-    await expect(
-      page.locator('[data-toolbar-cluster="mode"]').getByRole("button", { name: "Edit", exact: true }),
-    ).toHaveAttribute("aria-pressed", "true");
-    await expect(
-      page.locator('[data-toolbar-cluster="mode"]').getByRole("button", { name: "View", exact: true }),
-    ).toHaveAttribute("aria-pressed", "false");
+    for (const mode of ["Spec", "View", "Comment", "Edit"] as const) {
+      await expectChromePill(modeButton(page, mode), mode, "data-preview-mode", mode.toLowerCase(), "icon");
+    }
+    await modeButton(page, "Edit").click();
+    await expect(modeButton(page, "Edit")).toHaveAttribute("aria-pressed", "true");
+    await expect(modeButton(page, "View")).toHaveAttribute("aria-pressed", "false");
     await expect(page.locator('[data-sidebar-content="inspector"]')).toBeVisible();
     await expect(page.locator('[data-sidebar-content="ai-assistant"]')).toHaveCount(0);
     await expect(page.locator('[data-inspector-section-header]').first()).toBeVisible();
@@ -2199,9 +2233,8 @@ test.describe("metacraft-web IsoNim editor consumer", () => {
     await page.getByRole("button", {
       name: "Select story Operational components / Topbar", exact: true,
     }).click();
-    const mode = page.locator('[data-toolbar-cluster="mode"]');
-    await mode.getByRole("button", { name: "View", exact: true }).click();
-    await mode.getByRole("button", { name: "Edit", exact: true }).click();
+    await modeButton(page, "View").click();
+    await modeButton(page, "Edit").click();
     const editFrame = page.frameLocator('iframe[title="Editable component preview"]');
     const topbar = editFrame.getByTestId("component-topbar");
     const title = topbar.locator("h1.bo-title");
@@ -2299,9 +2332,9 @@ test.describe("metacraft-web IsoNim editor consumer", () => {
     await expect(titleCrumb).toHaveCount(0);
     await expect(headerCrumb).toHaveAttribute("data-breadcrumb-state", "selected");
     // Layers and its query remain available in all four actual mode choices.
-    for (const choice of ["View", "Comment", "Spec", "Edit"]) {
-      await mode.getByRole("button", { name: choice, exact: true }).click();
-      await expect(mode.getByRole("button", { name: choice, exact: true })).toHaveAttribute("aria-pressed", "true");
+    for (const choice of ["View", "Comment", "Spec", "Edit"] as const) {
+      await modeButton(page, choice).click();
+      await expect(modeButton(page, choice)).toHaveAttribute("aria-pressed", "true");
       await expect(layerSearch).toBeVisible();
       await layerSearch.fill("component-topbar");
       await expect(headerLayerRow).toBeVisible();
@@ -2471,8 +2504,7 @@ test.describe("metacraft-web IsoNim editor consumer", () => {
       await undoInspectorHistoryTo(page, startHistory);
 
       await page.goto("/");
-      const phone = page.locator('[data-toolbar-cluster="viewport"]')
-        .getByRole("button", { name: "Phone", exact: true });
+      const phone = viewportButton(page, "Phone");
       await phone.click();
       await expect(phone).toHaveAttribute("aria-pressed", "true");
       const mobile = await openTopbarInEditMode(page);
@@ -3057,7 +3089,7 @@ test.describe("metacraft-web IsoNim editor consumer", () => {
         .getByTestId("back-office-app"),
     ).toBeVisible();
 
-    await page.locator('[data-toolbar-cluster="viewport"]').getByRole("button", { name: "Phone", exact: true }).click();
+    await viewportButton(page, "Phone").click();
     await expect(page).toHaveURL(/viewport=phone/);
     await expect(page.getByLabel("Preview device frame")).toHaveCSS(
       "width",
