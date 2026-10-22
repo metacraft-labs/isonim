@@ -931,6 +931,12 @@ editor-quick:
 editor-screenshot-list:
     node tools/editor-screenshot.mjs --list
 
+# Coherent synchronous story navigation and ownership, on both targets.
+test-editor-story-navigation: build-tailwind
+    nim c -r --out:build/test_editor_story_navigation tests/test_editor_story_navigation.nim
+    nim js --out:build/test_editor_story_navigation.js tests/test_editor_story_navigation.nim
+    python3 tools/run_nim_js_test.py build/test_editor_story_navigation.js
+
 # Real component preview document generations preserve selection restoration.
 test-editor-preview-generation: build-tailwind
     mkdir -p build/editor-generation
@@ -939,7 +945,7 @@ test-editor-preview-generation: build-tailwind
     PLAYWRIGHT_CHROMIUM_EXECUTABLE="${PLAYWRIGHT_CHROMIUM_EXECUTABLE:-$(command -v chromium)}" python3 tools/test_editor_preview_generation_mutants.py
 
 # Run editor ViewModel tests
-test-editor: test-design-review-local-harbor test-design-review-harbor-build test-design-review-harbor-own-producer test-editor-control test-editor-source test-editor-chat-activity test-editor-preview-generation
+test-editor: test-design-review-local-harbor test-design-review-harbor-build test-design-review-harbor-own-producer test-editor-control test-editor-source test-editor-chat-activity test-editor-story-navigation test-editor-preview-generation
     nim c -r tests/test_editor_workspace.nim
     nim c -r tests/test_editor_public_api.nim
     nim js --path:src -o:build/test_editor_public_browser_imports.js tests/test_editor_public_browser_imports.nim

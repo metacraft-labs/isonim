@@ -7,7 +7,7 @@
 import isonim/core/nondet as nondet
 import std/[algorithm, hashes, json, math, options, sequtils, strutils, tables]
 from std/unicode import runeLen, runeSubStr
-import isonim/core/[signals, computation]
+import isonim/core/[signals, computation, batch]
 import isonim/viewmodel
 import isonim/editor/types
 import isonim/editor/html_classes
@@ -2314,30 +2314,35 @@ proc selectStory*(editor: EditorVM; story: StoryRef): bool {.discardable.} =
   if not editor.hasStory(story):
     return false
 
-  let nextView = viewForStory(story)
-  # M-EVP-8: selecting a non-vector-symbol story while the vector editor
-  # is open closes it before routing to the new view. Selecting the same
-  # vector-symbol story keeps the editor open (no-op on the target /
-  # usages).
-  if editor.activeView.val == evVectorEditor and story.kind != skVectorSymbol:
-    editor.vectorEditorTarget.val = none(StoryRef)
-    editor.vectorEditorUsages.val = @[]
-    editor.vectorEditorUsageIndex.val = 0
-  # Track the prior view so the back affordance has a target. Skip the
-  # snapshot when we're already in the vector editor — the snapshot
-  # taken at ``openVectorEditor`` time is the one we want to restore.
-  if editor.activeView.val != evVectorEditor and
-      editor.activeView.val != nextView:
-    editor.previousView.val = editor.activeView.val
+  # These fields describe one navigation. Publish a coherent state before
+  # observers rebuild surfaces/controls, rather than rendering each partial
+  # story, surface and schema update. Outermost batches flush synchronously;
+  # enclosing callers retain their own batch boundary.
+  batch proc() =
+    let nextView = viewForStory(story)
+    # M-EVP-8: selecting a non-vector-symbol story while the vector editor
+    # is open closes it before routing to the new view. Selecting the same
+    # vector-symbol story keeps the editor open (no-op on the target /
+    # usages).
+    if editor.activeView.val == evVectorEditor and story.kind != skVectorSymbol:
+      editor.vectorEditorTarget.val = none(StoryRef)
+      editor.vectorEditorUsages.val = @[]
+      editor.vectorEditorUsageIndex.val = 0
+    # Track the prior view so the back affordance has a target. Skip the
+    # snapshot when we're already in the vector editor — the snapshot
+    # taken at ``openVectorEditor`` time is the one we want to restore.
+    if editor.activeView.val != evVectorEditor and
+        editor.activeView.val != nextView:
+      editor.previousView.val = editor.activeView.val
 
-  editor.selectedStory.val = story
-  editor.activeView.val = nextView
-  editor.applyFoundationStoryScope(story)
-  discard editor.ensureComponentPropertySchemaForSelectedStory()
-  editor.storyboard.selectedItem.val = editor.findCanvasItem(story)
-  editor.syncFlowStep(story)
-  editor.recordEditorTiming(epbkStorySelection, 1,
-    "story-selection:" & story.group & "/" & story.name)
+    editor.selectedStory.val = story
+    editor.activeView.val = nextView
+    editor.applyFoundationStoryScope(story)
+    discard editor.ensureComponentPropertySchemaForSelectedStory()
+    editor.storyboard.selectedItem.val = editor.findCanvasItem(story)
+    editor.syncFlowStep(story)
+    editor.recordEditorTiming(epbkStorySelection, 1,
+      "story-selection:" & story.group & "/" & story.name)
   # RS-M12: publish the ``select-story`` packet to the active bridge.
   # On the JS target, ``canvas_mount.attachIfNeeded``'s reactive
   # effect ALSO fires `sendCurrentStory` on its next tick — the
