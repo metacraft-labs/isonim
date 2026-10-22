@@ -257,8 +257,15 @@ suite "Phase G section_layout":
         let patch = patchCssInNimConst(content, "styles", "#panel", plan.property, plan.newValue)
         WorkspacePatchResult(ok: patch.ok, patch: WorkspaceFilePatch(file: schema.file, afterContent: patch.content))
       vm.workspaceEditAdapter = adapter
+      # The property's own shared-class owner (keyed by its schema key, so
+      # both selected elements below have it). A shared-class `display` is a
+      # family with no shared writer yet (`sharedDesignCategory`), so the
+      # visible default scope refuses a mode until the user picks the local
+      # instance. (Keyed `unrelated.display` before 2026-10-22, when any node
+      # of the property was offered to every element; scope choices now come
+      # from the element's own ownership.)
       vm.designSystemSchema.val = DesignSystemSchema(nodes: @[DesignSchemaNode(
-        key: "unrelated.display", kind: dsnClassDefinition, property: "display",
+        key: "style.display", kind: dsnClassDefinition, property: "display",
         sourceSpan: SourceSpan(file: source, line: 1))])
       mountSectionLayout[MockRenderer, MockNode](r, root, vm)
       let none = findByAttr(root, "data-layout-mode", "none")
@@ -338,9 +345,14 @@ suite "Phase G section_layout":
       vm.sourceAdapterReady.val = true
       vm.workspacePermissions.val = EditorWorkspacePermissions(readSource: true, writeSource: true)
       vm.selectedStory.val = StoryRef(group: "Card", name: "first", kind: skComponent)
+      # The panel's display is mapped to the shared class by an ownership
+      # entry for this element; scope choices come from the element's own
+      # ownership, so the other elements selected below have no such owner.
       vm.designSystemSchema.val = DesignSystemSchema(ownerPackage: "Ui kit", nodes: @[
         DesignSchemaNode(key: "classes.panel", name: "Panel layout", kind: dsnClassDefinition,
-          property: "display", usageCount: 3, sourceSpan: SourceSpan(file: "shared-styles.nim", line: 12))])
+          property: "display", usageCount: 3, sourceSpan: SourceSpan(file: "shared-styles.nim", line: 12))],
+        sourceOwnership: @[DesignSourceOwnership(elementSourceKey: "panel",
+          property: "display", nodeKey: "classes.panel")])
       vm.inspector.selectedElement.val = ElementRef(id: "panel", tag: "div", properties: @[
         PropertyInfo(name: "display", value: "block", authoredValue: "block", schemaKey: "local.panel",
           sourceFile: "component.nim", sourceLine: 4, directStyleAllowed: true)])

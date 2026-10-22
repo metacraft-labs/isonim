@@ -741,6 +741,17 @@ type
     riskLevel*: SourceScopeRiskLevel
     impact*: SourceScopeImpact
     reason*: string
+    authorsValue*: bool
+      ## This scope's owner is known to set the property's current value:
+      ## its schema node is keyed by the property's own identity (schema
+      ## key, token, variant key), or is the element's own (by its schema
+      ## key or a source-ownership edge) and declares a value for the
+      ## property, or the property's provenance names this scope (a class,
+      ## token or compiled declaration). False for the local instance, for
+      ## an owner that could hold the property but declares none, and for a
+      ## node offered only as part of the owner component's design chain.
+      ## The row's default scope is the one that authors the value
+      ## (`property_commit.defaultScopeIndex`).
 
   SharedDesignEditorCategory* = enum
     sdecColor
@@ -1629,10 +1640,14 @@ type
       schema: WorkspaceEditableSchemaEntry): string {.closure.}
       ## Optional: the writer's own statement, without a write, of why it
       ## cannot change ``plan``'s declaration for this entry alone (a rule
-      ## shared by a selector list), or "". Asked when an edit is committed
-      ## (and when Reset's menu opens), never from a tracked render effect,
-      ## so a refusal the writer can know at the act is made there (editor
-      ## spec "Saving").
+      ## shared by a selector list, a rule that does not style the selected
+      ## element), or "". Asked when an edit is committed, when Reset's menu
+      ## opens or Reset's availability is shown, and -- untracked, so it
+      ## never subscribes a render effect -- for each shared source scope the
+      ## inspector offers, so a scope the writer refuses is shown disabled
+      ## with this reason instead of being offered and refused at the commit
+      ## (editor spec "Saving"). It must therefore read no file and be cheap:
+      ## a statement from what the adapter already holds.
 
   # --- Design-system schema and source ownership ---
   DesignSchemaNodeKind* = enum

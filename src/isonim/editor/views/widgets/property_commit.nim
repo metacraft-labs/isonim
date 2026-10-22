@@ -94,29 +94,56 @@ proc inspectorProperty*(vm: EditorVM; property: string): Option[PropertyInfo] =
 
 proc defaultScopeIndex*(choices: seq[SourceScopeChoice];
     prop: PropertyInfo): int =
-  ## VERBATIM from ``renderPropertyInput`` (component_edit.nim ~1905):
+  ## The scope a row commits at until the user picks one.
   ##
-  ##   var selectedScopeIndex = 0
-  ##   for i in 0 ..< scopeChoices.len:
-  ##     if scopeChoices[i].kind != sskLocalInstance and
-  ##         scopeChoices[i].editable and
-  ##         (prop.sharedCount > 0 or prop.tokenName.len > 0 or
-  ##          prop.schemaKey.len > 0):
-  ##       selectedScopeIndex = i
-  ##       break
+  ## 1. The scope whose owner authors the property's current value
+  ##    (`SourceScopeChoice.authorsValue`), preferring one keyed by the
+  ##    property's own identity. When the project cannot write that scope --
+  ##    its writer refuses it, no schema entry represents it -- the default
+  ##    is the head of the list (the local instance), never some other owner
+  ##    the value would silently be rerouted to. A scope the project cannot
+  ##    write is never the default (editor spec "Saving").
+  ## 2. When no choice states that it authors the value, a property whose
+  ##    provenance says a shared abstraction set it -- a shared-use count, a
+  ##    token, or a project schema key it was authored under -- defaults to
+  ##    the first editable non-local scope.
+  ## 3. Otherwise, and in particular for a value captured off the rendered
+  ##    preview with no provenance (`capturedWithoutProvenance`), the head of
+  ##    the list. The capture keys every property ``<element key>.<property>``
+  ##    so that a project writer can tell which element an edit is for; that
+  ##    key says nothing about who set the value, and a shared owner that
+  ##    merely could hold the property is offered, not pre-selected.
   ##
-  ## Reads as: a property that is shared, token-backed or schema-owned
-  ## defaults to the first editable non-local scope; everything else
-  ## defaults to whatever is first (in practice the local instance).
-  ##
-  ## The original also counted ``editableScopeCount`` in the same loop
-  ## and never read it; that dead local is the one thing not carried
-  ## over. The rule itself is unchanged.
+  ## Transcribed from the retired ``renderPropertyInput``
+  ## (component_edit.nim), which accepted ``prop.schemaKey.len > 0`` on its
+  ## own and took the first editable non-local scope. Once a consumer project
+  ## declared an honest shared owner for a captured property (a class rule
+  ## that styles the element but declares none of its padding), every edit of
+  ## that row was pre-selected as a shared-rule edit and a local edit was
+  ## written into the project's stylesheet (isonim-pm issue 2026-09-26-the-
+  ## consumer-editor-spec-tests-the-inspector-that-was-demolished, "Default
+  ## scope").
   result = 0
+  var authored = -1
   for i in 0 ..< choices.len:
-    if choices[i].kind != sskLocalInstance and choices[i].editable and
-        (prop.sharedCount > 0 or prop.tokenName.len > 0 or
-         prop.schemaKey.len > 0):
+    if choices[i].kind == sskLocalInstance or not choices[i].authorsValue:
+      continue
+    if choices[i].schemaKey.len > 0 and choices[i].schemaKey in [
+        prop.schemaKey, prop.tokenName, prop.variantKey]:
+      authored = i
+      break
+    if authored < 0:
+      authored = i
+  if authored >= 0:
+    return if choices[authored].editable: authored else: 0
+  let provenanceNamesShared = prop.sharedCount > 0 or
+    prop.tokenName.len > 0 or
+    (prop.schemaKey.len > 0 and
+      not prop.originDetail.capturedWithoutProvenance)
+  if not provenanceNamesShared:
+    return
+  for i in 0 ..< choices.len:
+    if choices[i].kind != sskLocalInstance and choices[i].editable:
       return i
 
 proc orderedScopeIndexes*(choices: seq[SourceScopeChoice];
@@ -557,6 +584,7 @@ proc inspectorRowWiring*(vm: EditorVM; property: string): InspectorRowWiring =
         dataAttrs: @[("data-source-scope-editable",
           if editable: "true" else: "false"),
           ("data-source-scope-kind", $kind),
+          ("data-source-scope-label", kind.sourceScopeApplyLabel()),
           ("data-source-scope-schema", choice.schemaKey),
           ("data-source-scope-token", prop.tokenName),
           ("data-source-scope-count", $choice.usageCount),

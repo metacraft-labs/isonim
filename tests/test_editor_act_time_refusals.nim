@@ -95,9 +95,12 @@ func pad(edge, value: string): PropertyInfo =
     directStyleAllowed: true)
 
 func radius(value: string): PropertyInfo =
-  ## Shaped like the consumer's captured topbar corner radius: mapped to a
-  ## component-token schema node, which is therefore the default scope while
-  ## it is considered writable.
+  ## Mapped by its own schema key to a component-token schema node, which is
+  ## therefore the default scope while it is considered writable. (The
+  ## consumer's captured topbar corner radius reached `panel.radius` only
+  ## through the former first-node-of-the-property fallback, and is now
+  ## offered no component token at all; this fixture keeps the owned but
+  ## unrepresentable case the consumer report was about.)
   PropertyInfo(name: "border-radius", value: value, origin: poThemeToken,
     originDetail: "panel radius capped for operational UI",
     sourceFile: ComponentFile, sourceLine: 1,

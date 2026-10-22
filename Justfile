@@ -1718,6 +1718,17 @@ test-editor-act-time-refusals:
     nim js -d:nodejs --out:build/test_editor_act_time_refusals.js tests/test_editor_act_time_refusals.nim
     python3 tools/run_nim_js_test.py build/test_editor_act_time_refusals.js
 
+# Which shared source scope a property row offers, commits at by default and
+# lets Reset at, once a project declares an honest shared owner for a value
+# captured off the preview: only the element's own owners are offered, a
+# captured unauthored value defaults to the local instance, a scope the
+# writer refuses is disabled with its reason, and Detach overrides locally.
+# Native and strict executed Node JS.
+test-editor-shared-scope-ownership: build-tailwind
+    nim c -r --out:build/test_editor_shared_scope_ownership tests/test_editor_shared_scope_ownership.nim
+    nim js -d:nodejs --out:build/test_editor_shared_scope_ownership.js tests/test_editor_shared_scope_ownership.nim
+    python3 tools/run_nim_js_test.py build/test_editor_shared_scope_ownership.js
+
 # The inspector's section search, its property Copy / Paste / Reset menu
 # (row More button and right-click) and the colour picker's typed RGB / HSL
 # fields committing on Enter. Native and strict executed Node JS.
@@ -1741,7 +1752,7 @@ test-editor-reset-removal: build-tailwind
 test-editor-example-reset-gui: editor-build
     PLAYWRIGHT_CHROMIUM_EXECUTABLE="${PLAYWRIGHT_CHROMIUM_EXECUTABLE:-$(command -v chromium)}" "${ISONIM_SCENARIO_NODE:-node}" tests/test_editor_example_reset_gui.mjs
 
-test-editor-c4a: test-editor-selection-keys test-editor-source-write-receipts test-editor-save-pipeline test-editor-act-time-refusals test-editor-inspector-controls test-editor-reset-removal test-editor-c4a-headless test-editor-c4a-compounds test-editor-c4a-properties test-editor-c4a-remaining test-editor-inline-preview test-editor-c4a-gestures test-editor-c4a-color test-editor-c4a-grip
+test-editor-c4a: test-editor-selection-keys test-editor-source-write-receipts test-editor-save-pipeline test-editor-act-time-refusals test-editor-shared-scope-ownership test-editor-inspector-controls test-editor-reset-removal test-editor-c4a-headless test-editor-c4a-compounds test-editor-c4a-properties test-editor-c4a-remaining test-editor-inline-preview test-editor-c4a-gestures test-editor-c4a-color test-editor-c4a-grip
 
 # Source ownership presentation; real native/JS signals and shell, no transports.
 test-editor-source-labels: build-tailwind

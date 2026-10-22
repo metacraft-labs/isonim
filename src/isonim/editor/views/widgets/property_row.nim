@@ -2000,12 +2000,64 @@ proc mountPropertyRow*[R, E](r: R; parent: E;
       result = proc() =
         if inner != nil: inner()
         commitValue()
+    # Detach (editor spec "Inspector UI for Shared Properties": a shared
+    # property shows "[Detach]", which "breaks the element out of the shared
+    # value and gives it an inline override"; "Edit Routing -- Detach from
+    # token": only this element changes). Choosing the local-instance chip
+    # already re-commits the row's current value there, which is exactly
+    # that override, so Detach is that chip's own action, offered by name
+    # while the row commits at a shared scope and the local instance can be
+    # written. It is updated from the strip's own option snapshot below
+    # rather than by a second scope computation per row.
+    var detachNode: E
+    var detachAction: proc() = nil
+    let detachEl = ui(r):
+      tdiv(
+        ref = detachNode,
+        role = "button",
+        tabindex = "0",
+        `data-property-row-detach` = "true",
+        display = "none",
+        align_items = "center",
+        height = prInputHeight,
+        padding = "0 4px",
+        color = prMoreColor,
+        font_size = "10px",
+        cursor = "pointer",
+        user_select = "none",
+        white_space = "nowrap"):
+        text "Detach"
+    proc detach() =
+      if detachAction != nil: detachAction()
+    r.addEventListener(detachNode, "click", proc() = detach())
+    bindChoiceKeyboard(r, detachNode, true, proc() = detach())
+    proc scopeAttr(option: CompactChoiceOption; name: string): string =
+      for (key, value) in option.dataAttrs:
+        if key == name: return value
     var initialOptionCount = 0
     proc wrappedScopeOptions(): seq[CompactChoiceOption] =
       result = scopeOptionsThunk()
       initialOptionCount = result.len
-      for option in result.mitems:
+      var shared = -1
+      var local = -1
+      for i, option in result.mpairs:
         option.onChoose = thenCommit(option.onChoose)
+        let kind = option.scopeAttr("data-source-scope-kind")
+        if kind == $sskLocalInstance:
+          if option.enabled: local = i
+        elif option.selected and kind.len > 0:
+          shared = i
+      if shared >= 0 and local >= 0:
+        detachAction = result[local].onChoose
+        let label = "Detach " & cfg.cssProperty & " from " &
+          result[shared].scopeAttr("data-source-scope-label")
+        r.setAttribute(detachNode, "aria-label", label)
+        r.setAttribute(detachNode, "title", label)
+        r.setStyle(detachNode, "display", "inline-flex")
+      else:
+        detachAction = nil
+        r.setStyle(detachNode, "display", "none")
+    r.appendChild(scopeSlot, detachEl)
     let strip = renderCompactChoiceRow[R, E](r, "",
       "Choose source scope for " & rowName, wrappedScopeOptions,
       visibleLimit = 1, labelWidth = "0", minHeight = prInputHeight)

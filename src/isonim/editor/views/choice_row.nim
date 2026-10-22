@@ -107,7 +107,9 @@ when defined(js):
 proc choiceKey[E](ev: E): string =
   ev.key
 
-proc bindChoiceKeyboard[R, E](r: R; node: E; enabled: bool; choose: proc()) =
+proc bindChoiceKeyboard*[R, E](r: R; node: E; enabled: bool; choose: proc()) =
+  ## Enter or Space on ``node`` runs ``choose`` while ``enabled`` (a
+  ## `role="button"` element gets no keyboard activation of its own).
   mixin preventDefault
   # The click path is installed by the DSL. Keydown needs the event payload:
   # a no-argument callback would also choose while tabbing through the strip.

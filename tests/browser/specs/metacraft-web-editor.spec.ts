@@ -243,6 +243,18 @@ function currentTopbarPaddingMarker() {
   return matches.length > 0 ? matches[matches.length - 1][1].trim() : "0px";
 }
 
+// The Topbar's shared class is the top-level `.bo-topbar` rule of
+// metacraft-design's tokens.nim (metacraft-web `ClassRuleOwner`): its
+// unindented `.bo-topbar {` line through the first unindented `}`. An indented
+// `.bo-topbar {` belongs to an `@media` block and is not this rule.
+function topLevelTopbarRule(tokens: string): string {
+  const lines = tokens.split("\n");
+  const open = lines.findIndex((line) => line === ".bo-topbar {");
+  if (open < 0) return "";
+  const close = lines.findIndex((line, i) => i > open && line === "}");
+  return close < 0 ? "" : lines.slice(open, close + 1).join("\n");
+}
+
 test.describe("metacraft-web IsoNim editor consumer", () => {
   // Current case1 keeps the real consumer file/preview/CAS responsibility.
   // The frontend is compiled; consumer post-write compile callbacks are
@@ -1021,11 +1033,26 @@ test.describe("metacraft-web IsoNim editor consumer", () => {
   // local-instance padding edit with its preview, a shared-class edit with
   // its preview, its reversal to the local value, and Detach. Save/Revert
   // became automatic saving and Undo.
+  //
+  // Re-authored 2026-10-22 with the Topbar's honest shared owner offered
+  // (metacraft-web `.bo-topbar`, isonim-pm issue 2026-09-26-the-consumer-
+  // editor-spec-tests-the-inspector-that-was-demolished): each scope's write
+  // is checked where it lands -- the local edit as the element's own
+  // components.nim marker, the shared edit in tokens.nim's top-level
+  // `.bo-topbar` rule, and Detach as a new local marker carrying the shared
+  // value while the rule keeps it.
   test("e2e_style_manager_scope_choices_update_real_preview", async ({
     page,
   }) => {
     await page.goto("/");
     const workspaceBefore = snapshotDevWorkspace();
+    const tokensBefore = readFileSync(devBridgeTokenFile, "utf8");
+    const componentsBefore = readFileSync(devBridgeSourceFile, "utf8");
+    const ruleBefore = topLevelTopbarRule(tokensBefore);
+    const appendMarker = (text: string, value: string) => text.replace(/\s+$/, "") +
+      "\n# isonim-editor dom.component-topbar.padding-top padding-top=" + value + "\n";
+    const ruleWith = (value: string) => tokensBefore.replace(ruleBefore,
+      ruleBefore.replace(/\n\}$/, "\n  padding-top: " + value + ";\n}"));
     try {
 
       const { topbar } = await openTopbarInEditMode(page);
@@ -1071,6 +1098,9 @@ test.describe("metacraft-web IsoNim editor consumer", () => {
       // count is relative rather than exactly one edit.
       await expect.poll(history).toBeGreaterThan(startHistory);
       await expectNoPendingSourceEdits(page);
+      const afterLocal = appendMarker(componentsBefore, "20px");
+      expect(readFileSync(devBridgeSourceFile, "utf8")).toBe(afterLocal);
+      expect(readFileSync(devBridgeTokenFile, "utf8")).toBe(tokensBefore);
       const localHistory = await history();
 
       const sharedScope = row.locator(
@@ -1089,12 +1119,20 @@ test.describe("metacraft-web IsoNim editor consumer", () => {
       await expect.poll(history).toBeGreaterThan(localHistory);
       const sharedHistory = await history();
       await expectNoPendingSourceEdits(page);
+      // The shared write lands in the rule that styles the Topbar, not as a
+      // marker of the element.
+      expect(readFileSync(devBridgeTokenFile, "utf8")).toBe(ruleWith("24px"));
+      expect(readFileSync(devBridgeSourceFile, "utf8")).toBe(afterLocal);
       await pressHistoryShortcut(page);
       await expect
         .poll(() => topbar.evaluate((node) => getComputedStyle(node).paddingTop))
         .toBe("20px");
       await expect.poll(history).toBe(sharedHistory - 1);
       await expectNoPendingSourceEdits(page);
+      // Choosing the shared scope re-committed 20px there before 24px was
+      // typed; undo puts that back.
+      expect(readFileSync(devBridgeTokenFile, "utf8")).toBe(ruleWith("20px"));
+      expect(readFileSync(devBridgeSourceFile, "utf8")).toBe(afterLocal);
       // Detach (spec "Inspector UI for Shared Properties" [Detach],
       // "Edit Routing — Detach from token"): back on the shared value, detach
       // gives only this element an inline override.
@@ -1111,9 +1149,17 @@ test.describe("metacraft-web IsoNim editor consumer", () => {
       await expect
         .poll(() => topbar.evaluate((node) => getComputedStyle(node).paddingTop))
         .toBe("24px");
-      await expect.poll(history).toBeGreaterThan(sharedHistory - 1);
+      await expect.poll(history).toBeGreaterThan(sharedHistory);
       await expectNoPendingSourceEdits(page);
+      // Only this element changed: its own marker now carries the value; the
+      // shared rule keeps it for every other use.
+      expect(readFileSync(devBridgeSourceFile, "utf8"))
+        .toBe(appendMarker(afterLocal, "24px"));
+      expect(readFileSync(devBridgeTokenFile, "utf8")).toBe(ruleWith("24px"));
       await undoInspectorHistoryTo(page, startHistory);
+      await expectNoPendingSourceEdits(page);
+      expect(readFileSync(devBridgeSourceFile, "utf8")).toBe(componentsBefore);
+      expect(readFileSync(devBridgeTokenFile, "utf8")).toBe(tokensBefore);
     } finally {
       await restoreDevWorkspace(page, workspaceBefore);
     }
@@ -1127,44 +1173,86 @@ test.describe("metacraft-web IsoNim editor consumer", () => {
   // clarity"). Retained: a SHARED-scope edit that discloses other affected
   // uses, the real source write, reload verification in View mode, revert
   // and reverted reload.
+  //
+  // Re-authored 2026-10-22 to follow the owning file. The rule that styles
+  // the Topbar, and that metacraft-web declares as its shared class, is the
+  // top-level `.bo-topbar` rule of metacraft-design's tokens.nim; the case
+  // used to poll components.nim for a `padding-top=28px` marker, which is
+  // the LOCAL instance's writer (isonim-pm issue 2026-09-26-the-consumer-
+  // editor-spec-tests-the-inspector-that-was-demolished, "File assertion").
+  // The shared write must land in that rule and only there: the rule gains
+  // exactly one `padding-top: 28px;` declaration, every other dev-workspace
+  // copy (components.nim included) is byte-identical, the reloaded Topbar
+  // renders it, and the revert restores every copy byte for byte and the
+  // Topbar's own padding.
   test("e2e_metacraft_shared_scope_save_reload_verify_and_revert", async ({
     page,
   }) => {
     await page.goto("/?writeBridge=1");
     await expectWritableBridge(page);
-    const beforeText = readFileSync(devBridgeSourceFile, "utf8");
+    const workspaceBefore = snapshotDevWorkspace();
+    const tokensBefore = readFileSync(devBridgeTokenFile, "utf8");
+    const componentsBefore = readFileSync(devBridgeSourceFile, "utf8");
+    const ruleBefore = topLevelTopbarRule(tokensBefore);
+    expect(ruleBefore).toContain(".bo-topbar {");
+    expect(ruleBefore).not.toContain("padding");
 
-    const { topbar } = await openTopbarInEditMode(page);
-    await selectTopbarElement(page, topbar);
-
-    const row = page.locator('[data-property-row="pad-top"]');
-    const padTop = propertyRowInput(page, "pad-top");
-    await expect(padTop).toBeVisible();
-    // The per-row scope picker shows the first choices inline and the rest
-    // behind its "More" disclosure.
-    const sharedScope = row.locator(
-      '[aria-label="Apply shared class scope for padding-top"]').first();
-    await expect(sharedScope).toHaveAttribute("aria-disabled", "false");
-    if (!(await sharedScope.isVisible())) {
-      await row.locator('[aria-label^="More Choose source scope for "]').first().click();
-    }
-    await sharedScope.click();
-    await expect(sharedScope).toHaveAttribute("aria-pressed", "true");
-    await expect(page.getByText(
-      "Changes the shared source definition; other mapped uses may change.",
-    ).first()).toBeVisible();
-
-    let afterText = beforeText;
+    // Everything after the snapshot is inside the try: choosing a scope
+    // already commits there, so a failure before the typed edit must still
+    // restore every copy.
+    let afterText = tokensBefore;
+    let originalPadding = "";
     try {
+      const { topbar } = await openTopbarInEditMode(page);
+      await selectTopbarElement(page, topbar);
+      originalPadding = await topbar.evaluate(
+        (node) => getComputedStyle(node).paddingTop);
+      expect(originalPadding).not.toBe("28px");
+
+      const row = page.locator('[data-property-row="pad-top"]');
+      const padTop = propertyRowInput(page, "pad-top");
+      await expect(padTop).toBeVisible();
+      // A captured, unauthored value is the element's: the local instance is
+      // the default scope until the shared one is chosen.
+      await expect(row.locator(
+        '[aria-label="Apply local instance scope for padding-top"]').first())
+        .toHaveAttribute("aria-pressed", "true");
+      // The per-row scope picker shows the first choices inline and the rest
+      // behind its "More" disclosure.
+      const sharedScope = row.locator(
+        '[aria-label="Apply shared class scope for padding-top"]').first();
+      await expect(sharedScope).toHaveAttribute("aria-disabled", "false");
+      await expect(sharedScope).toHaveAttribute("data-source-scope-schema",
+        "dom.component-topbar");
+      if (!(await sharedScope.isVisible())) {
+        await row.locator('[aria-label^="More Choose source scope for "]').first().click();
+      }
+      await sharedScope.click();
+      await expect(sharedScope).toHaveAttribute("aria-pressed", "true");
+      await expect(page.getByText(
+        "Changes the shared source definition; other mapped uses may change.",
+      ).first()).toBeVisible();
+
+      // The rule the shared write must produce: the original rule with one
+      // `padding-top: 28px;` declaration added before its closing brace.
+      const ruleAfter = ruleBefore.replace(/\n\}$/, "\n  padding-top: 28px;\n}");
       await padTop.click();
       await padTop.fill("28");
       await padTop.press("Enter");
       await expect
-        .poll(() => readFileSync(devBridgeSourceFile, "utf8"))
-        .toContain("padding-top=28px");
+        .poll(() => topLevelTopbarRule(readFileSync(devBridgeTokenFile, "utf8")))
+        .toBe(ruleAfter);
       await expectNoPendingSourceEdits(page);
-      afterText = readFileSync(devBridgeSourceFile, "utf8");
-      expect(afterText).not.toBe(beforeText);
+      afterText = readFileSync(devBridgeTokenFile, "utf8");
+      expect(afterText).toBe(tokensBefore.replace(ruleBefore, ruleAfter));
+      // Nothing else was written: no local marker, no other copy changed.
+      expect(readFileSync(devBridgeSourceFile, "utf8")).toBe(componentsBefore);
+      const written = snapshotDevWorkspace();
+      for (let i = 0; i < devWorkspaceFiles.length; i += 1) {
+        if (devWorkspaceFiles[i][1] !== devBridgeTokenFile) {
+          expect(written[i]).toBe(workspaceBefore[i]);
+        }
+      }
 
       await page.reload();
       await page.getByRole("button", { name: "Open Components section" }).click();
@@ -1185,15 +1273,13 @@ test.describe("metacraft-web IsoNim editor consumer", () => {
         )
         .toBe("28px");
       await expect
-        .poll(() => readFileSync(devBridgeSourceFile, "utf8"))
+        .poll(() => readFileSync(devBridgeTokenFile, "utf8"))
         .toBe(afterText);
     } finally {
-      await restoreDevBridgeFile(page, "apps/back-office/src/backoffice_ui/components.nim",
-        devBridgeSourceFile, beforeText);
+      await restoreDevWorkspace(page, workspaceBefore);
     }
-    await expect
-      .poll(() => readFileSync(devBridgeSourceFile, "utf8"))
-      .toBe(beforeText);
+    expect(readFileSync(devBridgeTokenFile, "utf8")).toBe(tokensBefore);
+    expect(readFileSync(devBridgeSourceFile, "utf8")).toBe(componentsBefore);
 
     await page.reload();
     await page.getByRole("button", { name: "Open Components section" }).click();
@@ -1212,7 +1298,7 @@ test.describe("metacraft-web IsoNim editor consumer", () => {
       .poll(() =>
         revertedTopbar.evaluate((node) => getComputedStyle(node).paddingTop),
       )
-      .not.toBe("28px");
+      .toBe(originalPadding);
   });
 
   // Reconciled 2026-10-14: edit entry via the mode cluster, topbar
@@ -2862,6 +2948,18 @@ test.describe("metacraft-web IsoNim editor consumer", () => {
   // refusal now happens where the user chooses: the chip is disabled and
   // carries the reason, the default is a scope the host can write, and an
   // edit at that default is written, with the per-corner rows following it.
+  //
+  // Re-measured 2026-10-22: `panel.radius` is the Panel's token (its node
+  // names Panel, KpiTile and ActionCard), and it reached the Topbar only
+  // through IsoNim's former first-node-of-the-property fallback. Scope
+  // choices now come from the element's own ownership (identity key,
+  // source-ownership edge, or its owner component's chain; isonim-pm issue
+  // 2026-09-26-the-consumer-editor-spec-tests-the-inspector-that-was-
+  // demolished, "Fallback owner"), so the Topbar has no component-token
+  // owner: the chip is still shown, disabled, with that reason and no owner
+  // schema key, and everything else below is unchanged. The refusal of an
+  // owned scope no schema entry can represent ("can safely represent this
+  // edit") is pinned by IsoNim's tests/test_editor_act_time_refusals.nim.
   test("metacraft_unwritable_corner_radius_scope_is_refused_when_chosen_not_at_save", async ({
     page,
   }) => {
@@ -2894,7 +2992,8 @@ test.describe("metacraft-web IsoNim editor consumer", () => {
       await expect(tokenChip).toHaveAttribute("aria-disabled", "true");
       await expect(tokenChip).toHaveAttribute("data-source-scope-editable", "false");
       await expect(tokenChip).toHaveAttribute("title",
-        /No project schema or source map entry can safely represent this edit/);
+        "No project schema owner is currently mapped for this scope.");
+      await expect(tokenChip).toHaveAttribute("data-source-scope-schema", "");
       // Choosing it changes nothing: not the scope, the history or the journal.
       await tokenChip.click({ force: true });
       await expect(tokenChip).toHaveAttribute("aria-pressed", "false");

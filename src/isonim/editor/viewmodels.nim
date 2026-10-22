@@ -1866,6 +1866,24 @@ proc validateCssPropertyValue*(prop: PropertyInfo; request: PropertyEditRequest;
     result.add cssDiagnostic(pedSchemaViolation, prop,
       "Direct style edits are blocked unless the project source map explicitly allows them.")
 
+func capturedWithoutProvenance*(originDetail: string): bool =
+  ## True when ``originDetail`` marks a value read off the rendered preview
+  ## with nothing recording what authored it: the iframe DOM bridge's named
+  ## capture (``iframe-dom:``) or its computed-style capture (``computed:``).
+  ## Both routes overwrite this detail with the authored construct
+  ## (``class:p-4``, a token reference) whenever the element's style
+  ## provenance names one (`style_provenance_decode.withStyleProvenance`,
+  ## `authoredOnlyProperties`), so the prefix survives only on a value nobody
+  ## is known to have written.
+  ##
+  ## Such a value is not text in any file, so it cannot verify a write
+  ## (`sourcePlan`'s expected old value), and it is not evidence that any
+  ## shared owner sets it: the capture gives every property a schema key
+  ## derived from the element (``<element key>.<property>``), which names
+  ## the element, not an owner (`defaultScopeIndex`).
+  originDetail.startsWith("iframe-dom:") or
+    originDetail.startsWith("computed:")
+
 func diagnostic(kind: PropertyEditDiagnosticKind; prop: PropertyInfo;
     message: string): PropertyEditDiagnostic =
   PropertyEditDiagnostic(
@@ -1949,8 +1967,7 @@ proc sourcePlan(prop: PropertyInfo; request: PropertyEditRequest;
     # same capture by a different route and needs the same exemption; it was
     # added later and this was missed, which is exactly the kind of thing two
     # spellings of one idea cost.
-    if prop.originDetail.startsWith("iframe-dom:") or
-       prop.originDetail.startsWith("computed:"): ""
+    if prop.originDetail.capturedWithoutProvenance: ""
     else: prop.value
   let variantSuffix =
     if prop.variantKey.len > 0: ":" & prop.variantKey else: ""
@@ -4760,9 +4777,7 @@ func resolveWorkspaceSchema(adapter: WorkspaceEditAdapter;
   # saying "this file owns whatever you send me". A schema that names its
   # properties individually keeps refusing, which is the stricter contract
   # and still available.
-  let capturedOnly =
-    plan.originDetail.startsWith("iframe-dom:") or
-    plan.originDetail.startsWith("computed:")
+  let capturedOnly = plan.originDetail.capturedWithoutProvenance
   if plan.file.len == 0 or capturedOnly:
     for entry in adapter.schema:
       if entry.property.len == 0:
@@ -6536,6 +6551,136 @@ func sourceScopeSummary(kind: SourceScopeChoiceKind; usageCount: int): string =
   else:
     "updates the mapped project source"
 
+type SourceScopeOwner = object
+  ## The project schema node that owns ``prop`` on the selected element at
+  ## one source scope, as `sourceScopeOwner` decides it.
+  node: DesignSchemaNode
+    ## Empty key: no node owns the property here.
+  ambiguous: bool
+    ## Source-ownership edges for this element and property name different
+    ## nodes of this scope, so which one owns it is not known.
+  authorsValue: bool
+    ## The owner is known to set the value the element shows: the node is
+    ## keyed by the property's own identity, or it is the element's (by key
+    ## or ownership edge) and declares a value for the property. A node
+    ## reached only through its component's design chain does not.
+
+func identityOwnsProperty(node: DesignSchemaNode; element: ElementRef;
+    prop: PropertyInfo): bool =
+  ## The node's key is the property's or the element's own schema identity.
+  node.property == prop.name and node.key in [prop.schemaKey, prop.tokenName,
+    prop.variantKey, element.schemaKey]
+
+func edgeOwner(schema: DesignSystemSchema; ownership: DesignSourceOwnership;
+    element: ElementRef; prop: PropertyInfo): tuple[ok, unverified: bool,
+    node: DesignSchemaNode] =
+  ## The node a `DesignSourceOwnership` edge maps this element's property to,
+  ## matched with the writer's own predicate (`ownershipMatches`).
+  ##
+  ## ``unverified`` (with ``ok`` false and ``node`` set): the edge is scoped
+  ## to a DOM path and the element has none, so the writer's predicate
+  ## accepts it without checking it. That is not evidence that the edge names
+  ## this element (the presentation rule of `designSourceOwnershipIsAmbiguous`),
+  ## so it never makes its node the owner.
+  if not ownership.ownershipMatches(element, prop):
+    return
+  let key = if ownership.nodeKey.len > 0: ownership.nodeKey
+    else: ownership.schemaKey
+  let found = schema.findDesignNode(key)
+  if found.ok and found.node.property == prop.name:
+    if ownership.domPath.len > 0 and element.domPath.len == 0:
+      result = (false, true, found.node)
+    else:
+      result = (true, false, found.node)
+
+func ownerComponents(schema: DesignSystemSchema; element: ElementRef;
+    prop: PropertyInfo): seq[string] =
+  ## The components whose design chain the property belongs to: those named
+  ## by the nodes that own it by identity or by an ownership edge, at any
+  ## scope.
+  func addComponents(into: var seq[string]; node: DesignSchemaNode) =
+    for component in @[node.component] & node.components:
+      if component.len > 0 and component notin into:
+        into.add component
+  for node in schema.nodes:
+    if node.identityOwnsProperty(element, prop):
+      result.addComponents(node)
+  for ownership in schema.sourceOwnership:
+    let owned = schema.edgeOwner(ownership, element, prop)
+    if owned.ok:
+      result.addComponents(owned.node)
+
+func sourceScopeOwner(schema: DesignSystemSchema; element: ElementRef;
+    prop: PropertyInfo; kind: SourceScopeChoiceKind): SourceScopeOwner =
+  ## The node of scope ``kind`` that owns ``prop`` on ``element``, in order:
+  ##
+  ## 1. a node keyed by the property's or the element's own schema identity
+  ##    (schema key, token, variant key);
+  ## 2. the node a `DesignSourceOwnership` edge maps this element's property
+  ##    to (`ownershipMatches`, the writer's resolution predicate) -- edges
+  ##    that name different nodes of this scope, or a DOM-path edge the
+  ##    element's path cannot confirm, make it ambiguous;
+  ## 3. the one node of this scope for the same property that belongs to a
+  ##    component the property's identified owners (1 and 2, any scope)
+  ##    belong to: the rest of that component's design chain -- its token,
+  ##    the semantic token and primitive behind it. The schema records chain
+  ##    membership by component, not which member a rule uses, so when that
+  ##    component has more than one such node here, which one is this
+  ##    element's is not known and the scope is ambiguous rather than given
+  ##    to whichever is listed first.
+  ##
+  ## Nothing else makes a node the owner. A node that only shares the
+  ## property name styles some other element; offering it here offered a
+  ## shared edit of an unrelated rule on every element with that property,
+  ## and a property no identity, edge or component maps has no owner at this
+  ## scope (editor spec "Inspector UI for Shared Properties": the shared path
+  ## names the owner of this property; isonim-pm issue 2026-09-26-the-
+  ## consumer-editor-spec-tests-the-inspector-that-was-demolished, "Fallback
+  ## owner").
+  for node in schema.nodes:
+    if node.kind.sourceScopeKindForNode() == kind and
+        node.identityOwnsProperty(element, prop):
+      result.node = node
+      result.authorsValue = node.value.strip.len > 0 or
+        node.key in [prop.schemaKey, prop.tokenName, prop.variantKey]
+      return
+  # Steps 2 and 3 collect the candidate in a local and set ``result`` once:
+  # returning a fresh `SourceScopeOwner` from inside these loops leaked the
+  # node copies under ORC (LeakSanitizer, 2026-10-22).
+  var owner = DesignSchemaNode()
+  var ambiguous = false
+  for ownership in schema.sourceOwnership:
+    let owned = schema.edgeOwner(ownership, element, prop)
+    if owned.node.kind.sourceScopeKindForNode() != kind or
+        not (owned.ok or owned.unverified):
+      continue
+    if owned.unverified or
+        (owner.key.len > 0 and owner.key != owned.node.key):
+      ambiguous = true
+      break
+    owner = owned.node
+  if not ambiguous and owner.key.len > 0:
+    result.node = owner
+    result.authorsValue = owner.value.strip.len > 0
+    return
+  if not ambiguous:
+    let components = schema.ownerComponents(element, prop)
+    if components.len > 0:
+      for node in schema.nodes:
+        if node.property != prop.name or
+            node.kind.sourceScopeKindForNode() != kind:
+          continue
+        if node.component in components or
+            node.components.anyIt(it in components):
+          if owner.key.len > 0 and owner.key != node.key:
+            ambiguous = true
+            break
+          owner = node
+  if ambiguous:
+    result.ambiguous = true
+  else:
+    result.node = owner
+
 proc sourceScopeChoices*(schema: DesignSystemSchema; element: ElementRef;
     prop: PropertyInfo): seq[SourceScopeChoice] =
   # The choice builder only needs the package name. Capturing ``schema``
@@ -6546,7 +6691,7 @@ proc sourceScopeChoices*(schema: DesignSystemSchema; element: ElementRef;
       file = ""; line = 0; schemaKey = ""; editable = false;
       usageCount = 0; affectedComponents: seq[string] = @[];
       affectedStories: seq[StoryRef] = @[]; reason = "";
-      impact = DesignSchemaImpact()): SourceScopeChoice =
+      impact = DesignSchemaImpact(); authorsValue = false): SourceScopeChoice =
     let risk = if prop.nativeSourceToken and kind == sskSemanticToken: ssrHigh else: sourceScopeRisk(impact, usageCount)
     let label = kind.sourceScopeChoiceLabel()
     let owner =
@@ -6575,7 +6720,7 @@ proc sourceScopeChoices*(schema: DesignSystemSchema; element: ElementRef;
       editable: editable, usageCount: scopeImpact.usageCount,
       affectedComponents: scopeImpact.affectedComponents,
       affectedStories: scopeImpact.affectedStories, riskLevel: risk,
-      impact: scopeImpact, reason: reason)
+      impact: scopeImpact, reason: reason, authorsValue: authorsValue)
 
   result.add makeChoice(sskLocalInstance, "Selected instance",
     if prop.sourceFile.len > 0: prop.sourceFile else: element.sourceFile,
@@ -6602,21 +6747,17 @@ proc sourceScopeChoices*(schema: DesignSystemSchema; element: ElementRef;
       result.add makeChoice(kind, ownerLabel = prop.originDetail,
         file = prop.sourceFile, line = prop.sourceLine, schemaKey = prop.schemaKey,
         editable = true, usageCount = prop.sharedCount,
-        reason = "This edit changes the shared source declaration.")
+        reason = "This edit changes the shared source declaration.",
+        authorsValue = true)
       continue
-    var best = DesignSchemaNode()
-    for node in schema.nodes:
-      if node.property != prop.name:
-        continue
-      if node.kind.sourceScopeKindForNode() != kind:
-        continue
-      if best.key.len == 0 or node.key in [
-          prop.schemaKey, prop.tokenName, prop.variantKey, element.schemaKey]:
-        best = node
-        if node.key in [prop.schemaKey, prop.tokenName, prop.variantKey,
-            element.schemaKey]:
-          break
-    if best.key.len == 0:
+    let owner = schema.sourceScopeOwner(element, prop, kind)
+    let best = owner.node
+    if owner.ambiguous:
+      result.add makeChoice(kind, reason = "Multiple " &
+        kind.sourceScopeChoiceLabel() & " owners are mapped to this " &
+        "property on the selected element; choose a source-backed schema " &
+        "key first.")
+    elif best.key.len == 0:
       let propSuggestsKind =
         (kind == sskStoryFixture and prop.schemaKey.startsWith("fixtures.")) or
         (kind == sskComponentSchemaApi and
@@ -6643,7 +6784,10 @@ proc sourceScopeChoices*(schema: DesignSystemSchema; element: ElementRef;
           schemaKey = prop.schemaKey,
           editable = prop.hasSource or prop.directStyleAllowed,
           usageCount = prop.sharedCount,
-          reason = "Property source map exposes this scope without a full schema node.")
+          reason = "Property source map exposes this scope without a full schema node.",
+          # Offered only because the property's own provenance names this
+          # scope (its schema key, token or shared-use count).
+          authorsValue = true)
       else:
         result.add makeChoice(kind, reason =
           "No project schema owner is currently mapped for this scope.")
@@ -6663,7 +6807,11 @@ proc sourceScopeChoices*(schema: DesignSystemSchema; element: ElementRef;
         affectedComponents = best.components,
         affectedStories = best.stories,
         reason = "Source-backed " & kind.sourceScopeChoiceLabel().toLowerAscii(),
-        impact = impact)
+        impact = impact,
+        # A node that only could hold the property (a rule with no such
+        # declaration, another member of the component's chain) does not
+        # author what the element shows.
+        authorsValue = owner.authorsValue)
 
 func sharedScopePlan(prop: PropertyInfo; request: PropertyEditRequest;
     choices: seq[SourceScopeChoice]; choice: SourceScopeChoice): SourceEditPlan
@@ -6687,6 +6835,8 @@ proc sourceScopeChoices*(editor: EditorVM; prop: PropertyInfo): seq[
   if not editor.workspaceEditAdapter.isNil and not editor.hasAsyncSourceProject:
     let request = PropertyEditRequest(property: prop.name, newValue: prop.value,
       kind: pekCss, scope: pesShared, origin: peoInspector)
+    let offered = result
+    let writer = editor.workspaceEditAdapter.editRefusal
     for choice in result.mitems:
       if choice.kind == sskLocalInstance or not choice.editable:
         continue
@@ -6694,8 +6844,19 @@ proc sourceScopeChoices*(editor: EditorVM; prop: PropertyInfo): seq[
       # not disclosure metadata. Actual edit plans retain the full choices;
       # copying that graph into each read-only probe only to discard it is
       # unnecessary (see sourcePlanAdmissionRefusal/workspacePlanKeys).
-      let refusal = editor.sourcePlanAdmissionRefusal(
+      var refusal = editor.sourcePlanAdmissionRefusal(
         prop.sharedScopePlan(request, @[], choice))
+      # Then the writer's own statement (`WorkspaceEditAdapter.editRefusal`),
+      # which the commit asks too (`writerEditRefusal`). It may need the
+      # plan's choices -- the selected element is the local-instance
+      # choice's identity -- so this probe carries the ones offered. It
+      # reads no file (its contract), and is asked untracked so a writer that
+      # happens to read a signal cannot subscribe the caller's render to it.
+      # A scope the writer refuses is shown disabled with the writer's reason
+      # and is never the default (editor spec "Saving").
+      if refusal.len == 0 and not writer.isNil:
+        let plan = prop.sharedScopePlan(request, offered, choice)
+        refusal = untrack(proc(): string = editor.writerEditRefusal(plan))
       if refusal.len > 0:
         choice.editable = false
         choice.reason = refusal
@@ -6838,19 +6999,6 @@ func firstChoiceOfKind(choices: seq[SourceScopeChoice];
     if choice.kind == kind:
       return choice
 
-func matchingSourceScopeNodes(schema: DesignSystemSchema; element: ElementRef;
-    prop: PropertyInfo; kind: SourceScopeChoiceKind): seq[DesignSchemaNode] =
-  for node in schema.nodes:
-    if node.property == prop.name and node.kind.sourceScopeKindForNode() == kind:
-      result.add node
-
-func exactSourceScopeNode(nodes: seq[DesignSchemaNode]; element: ElementRef;
-    prop: PropertyInfo): DesignSchemaNode =
-  for node in nodes:
-    if node.key in [prop.schemaKey, prop.tokenName, prop.variantKey,
-        element.schemaKey]:
-      return node
-
 func sourceScopeDiagnosticsForChoice(schema: DesignSystemSchema;
     element: ElementRef; prop: PropertyInfo; choice: SourceScopeChoice;
     requestedKind: SourceScopeChoiceKind): seq[PropertyEditDiagnostic] =
@@ -6861,12 +7009,9 @@ func sourceScopeDiagnosticsForChoice(schema: DesignSystemSchema;
       file: prop.sourceFile, line: prop.sourceLine, property: prop.name)
     return
 
-  let nodes = matchingSourceScopeNodes(schema, element, prop, requestedKind)
-  if nodes.len > 1 and exactSourceScopeNode(nodes, element, prop).key.len == 0:
-    result.add PropertyEditDiagnostic(kind: pedSchemaViolation,
-      message: "Multiple " & requestedKind.sourceScopeChoiceLabel() &
-        " owners match this property; choose a source-backed schema key first.",
-      file: prop.sourceFile, line: prop.sourceLine, property: prop.name)
+  # Which node owns the property here, and whether that is ambiguous, was
+  # decided when the choice was built (`sourceScopeOwner`); an ambiguous or
+  # unowned scope is a non-editable choice carrying its reason.
   if not choice.editable:
     result.add PropertyEditDiagnostic(kind: pedSchemaViolation,
       message:
@@ -7060,7 +7205,7 @@ proc propertyResetRefusal*(editor: EditorVM; property: string;
   ##
   ## ``checkWrite = false`` skips the one question that reads source files
   ## (whether the write finds exactly one declaration). Every other answer
-  ## is the same. A control that re-evaluates reactively uses it, and asks
+  ## is the same, the writer's `editRefusal` included. A control that re-evaluates reactively uses it, and asks
   ## the full question untracked when the user reaches for the control: in
   ## a bridge-backed project every file read is a request.
   let element = editor.inspector.selectedElement.val
@@ -7120,8 +7265,15 @@ proc propertyResetRefusal*(editor: EditorVM; property: string;
         if d.message.len > 0: return d.message
       return "This scope has no source-backed writer in the project schema."
     plan = planned.sourceEdit
-  if checkWrite: editor.sourcePlanCommitRefusal(plan)
-  else: editor.sourcePlanAdmissionRefusal(plan)
+  if checkWrite:
+    return editor.sourcePlanCommitRefusal(plan)
+  # Without the file read, still every question the commit asks that reads
+  # no file -- the writer's own statement included (`writerEditRefusal`), so
+  # a reactively shown Reset (a Fill entry's Delete) is not offered where the
+  # writer would refuse the removal for this element.
+  result = editor.sourcePlanAdmissionRefusal(plan)
+  if result.len == 0:
+    result = untrack(proc(): string = editor.writerEditRefusal(plan))
 
 proc editSharedDesignProperty*(editor: EditorVM; property, newValue: string;
     sourceScope: SourceScopeChoiceKind): SharedDesignEditResult {.discardable.} =
@@ -7151,11 +7303,23 @@ proc editSharedDesignProperty*(editor: EditorVM; property, newValue: string;
   for i, prop in afterElement.properties:
     if prop.name == property:
       afterElement.properties[i].value = plan.newValue
-      afterElement.properties[i].sourceFile = plan.file
-      afterElement.properties[i].sourceLine = plan.line
-      afterElement.properties[i].schemaKey = plan.schemaKey
-      afterElement.properties[i].tokenName = plan.tokenName
-      afterElement.properties[i].originDetail = plan.originDetail
+      # A property keyed by its element (`<element key>.<property>`, the
+      # preview capture's key) keeps its identity, location and origin --
+      # its token too, which the schema resolution also keys on --
+      # they are what its local-instance scope writes to, and they say how
+      # its value was read. Moving them to the shared plan's file, key and
+      # origin made every later "local" edit of the row -- and Detach,
+      # which is one -- write into the shared rule, expecting the shared
+      # value as text in the element's own file, instead of giving this
+      # element its own override (editor spec "Edit Routing").
+      let elementOwned = beforeElement.schemaKey.len > 0 and
+        prop.schemaKey == beforeElement.schemaKey & "." & prop.name
+      if not elementOwned:
+        afterElement.properties[i].sourceFile = plan.file
+        afterElement.properties[i].sourceLine = plan.line
+        afterElement.properties[i].schemaKey = plan.schemaKey
+        afterElement.properties[i].tokenName = plan.tokenName
+        afterElement.properties[i].originDetail = plan.originDetail
       break
   afterElement = afterElement.withShorthandSides(property, plan.newValue)
 
