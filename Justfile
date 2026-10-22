@@ -1775,12 +1775,22 @@ test-editor-reset-removal: build-tailwind
     nim js -d:nodejs --out:build/test_editor_reset_removal.js tests/test_editor_reset_removal.nim
     python3 tools/run_nim_js_test.py build/test_editor_reset_removal.js
 
+# A section's raw CSS (editor spec "Universal Patterns": Raw CSS toggle): the
+# toggle between rows and CSS text, commits through the section's rows and the
+# editor example's real writer, act-time refusals (invalid text, a property
+# of another section, a writer-refused scope, a read-only workspace), undo
+# across writes. Native and strict executed Node JS.
+test-editor-section-raw-css: build-tailwind
+    nim c -r --out:build/test_editor_section_raw_css tests/test_editor_section_raw_css.nim
+    nim js -d:nodejs --out:build/test_editor_section_raw_css.js tests/test_editor_section_raw_css.nim
+    python3 tools/run_nim_js_test.py build/test_editor_section_raw_css.js
+
 # Reset, set, undo, undo in the packaged editor example: its real example
 # writer, served from build/editor, physical pointer and keyboard input.
 test-editor-example-reset-gui: editor-build
     PLAYWRIGHT_CHROMIUM_EXECUTABLE="${PLAYWRIGHT_CHROMIUM_EXECUTABLE:-$(command -v chromium)}" "${ISONIM_SCENARIO_NODE:-node}" tests/test_editor_example_reset_gui.mjs
 
-test-editor-c4a: test-editor-selection-keys test-editor-source-write-receipts test-editor-save-pipeline test-editor-act-time-refusals test-editor-shared-scope-ownership test-editor-inspector-controls test-editor-reset-removal test-editor-c4a-headless test-editor-c4a-compounds test-editor-c4a-properties test-editor-c4a-remaining test-editor-inline-preview test-editor-c4a-gestures test-editor-c4a-color test-editor-c4a-grip
+test-editor-c4a: test-editor-selection-keys test-editor-source-write-receipts test-editor-save-pipeline test-editor-act-time-refusals test-editor-shared-scope-ownership test-editor-inspector-controls test-editor-reset-removal test-editor-section-raw-css test-editor-c4a-headless test-editor-c4a-compounds test-editor-c4a-properties test-editor-c4a-remaining test-editor-inline-preview test-editor-c4a-gestures test-editor-c4a-color test-editor-c4a-grip
 
 # Source ownership presentation; real native/JS signals and shell, no transports.
 test-editor-source-labels: build-tailwind

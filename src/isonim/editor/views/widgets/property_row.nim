@@ -68,6 +68,7 @@ import isonim/editor/views/widgets/color_popover
 import isonim/editor/views/widgets/variable_chip
 import isonim/editor/views/widgets/property_actions
 import isonim/editor/views/widgets/inspector_search
+import isonim/editor/views/widgets/section_raw_css
 
 # --------------------------------------------------------------------------- #
 #  Public types.
@@ -202,6 +203,12 @@ type
     resetReason*: proc(): string {.closure.}
       ## Why Reset cannot run now, or "" when it can (see
       ## `InspectorRowWiring.resetReason`). Nil disables Reset with a reason.
+    sourceWiring*: InspectorRowWiring
+      ## The wiring the fields above were taken from, registered with the
+      ## enclosing inspector section while the row is mounted so that the
+      ## section's raw CSS commits through this very row
+      ## (`section_raw_css.registerSectionCssRow`). Zeroed for a row that is
+      ## not wired to the source pipeline.
 
 # --------------------------------------------------------------------------- #
 #  Visual contract — pulled from the spec's editing-control reference.
@@ -556,7 +563,8 @@ proc propertyRowNumeric*(name: string;
     commitMessage: wiring.commitMessage,
     commitRejected: wiring.commitRejected,
     onCommitValue: wiring.commit, onAsyncCommitValue: wiring.commitAsync,
-    clipboard: wiring.clipboard, resetReason: wiring.resetReason)
+    clipboard: wiring.clipboard, resetReason: wiring.resetReason,
+    sourceWiring: wiring)
 
 proc propertyRowColor*(name: string;
                        value: Signal[string];
@@ -582,7 +590,8 @@ proc propertyRowColor*(name: string;
     commitMessage: wiring.commitMessage,
     commitRejected: wiring.commitRejected,
     onCommitValue: wiring.commit, onAsyncCommitValue: wiring.commitAsync,
-    clipboard: wiring.clipboard, resetReason: wiring.resetReason)
+    clipboard: wiring.clipboard, resetReason: wiring.resetReason,
+    sourceWiring: wiring)
 
 proc propertyRowChoice*(name: string;
                         value: Signal[string];
@@ -608,7 +617,8 @@ proc propertyRowChoice*(name: string;
     commitMessage: wiring.commitMessage,
     commitRejected: wiring.commitRejected,
     onCommitValue: wiring.commit, onAsyncCommitValue: wiring.commitAsync,
-    clipboard: wiring.clipboard, resetReason: wiring.resetReason)
+    clipboard: wiring.clipboard, resetReason: wiring.resetReason,
+    sourceWiring: wiring)
 
 proc propertyRowText*(name: string;
                       value: Signal[string];
@@ -633,7 +643,8 @@ proc propertyRowText*(name: string;
     commitMessage: wiring.commitMessage,
     commitRejected: wiring.commitRejected,
     onCommitValue: wiring.commit, onAsyncCommitValue: wiring.commitAsync,
-    clipboard: wiring.clipboard, resetReason: wiring.resetReason)
+    clipboard: wiring.clipboard, resetReason: wiring.resetReason,
+    sourceWiring: wiring)
 
 proc propertyRowBoolean*(name: string;
                          value: Signal[bool];
@@ -658,7 +669,8 @@ proc propertyRowBoolean*(name: string;
     commitMessage: wiring.commitMessage,
     commitRejected: wiring.commitRejected,
     onCommitValue: wiring.commit, onAsyncCommitValue: wiring.commitAsync,
-    clipboard: wiring.clipboard, resetReason: wiring.resetReason)
+    clipboard: wiring.clipboard, resetReason: wiring.resetReason,
+    sourceWiring: wiring)
 
 # --------------------------------------------------------------------------- #
 #  Mount.
@@ -1954,6 +1966,9 @@ proc mountPropertyRow*[R, E](r: R; parent: E;
   # name and properties by label ... highlight the matched rows"). The row
   # registers its label and CSS property with the section it is mounted in.
   let search = registerInspectorSearchText(cfg.name & " " & cfg.cssProperty)
+  # The section's raw CSS commits each declaration through the row that
+  # edits its property (editor spec "Universal Patterns": Raw CSS toggle).
+  registerSectionCssRow(cfg.sourceWiring)
   if search != nil:
     let searchable = cfg.name & " " & cfg.cssProperty
     createRenderEffect proc() =

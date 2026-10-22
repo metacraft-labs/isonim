@@ -21,6 +21,7 @@ import isonim/editor/viewmodels
 import isonim/editor/views/choice_row
 import isonim/editor/views/widgets/property_commit
 import isonim/editor/views/widgets/property_row
+import isonim/editor/views/widgets/section_raw_css
 import isonim/editor/views/widgets/section_position
 
 const
@@ -154,6 +155,10 @@ proc mountSectionLayout*[R, E](r: R; parent: E; vm: EditorVM) =
   var scopeElement = ""
   var scopesMounted = false
   let mountOwner = getOwner()
+  # The mode wirings are re-created per selection under a root of their own;
+  # the section's raw CSS registry is looked up here, where the section
+  # provides it.
+  let sectionCss = useInspectorSectionCss()
   onCleanup(proc() =
     if disposeScopes != nil: disposeScopes())
   proc mountScopeDetails(property: string; wiring: InspectorRowWiring) =
@@ -198,6 +203,8 @@ proc mountSectionLayout*[R, E](r: R; parent: E; vm: EditorVM) =
         disposeScopes = dispose
         displayWiring = vm.inspectorRowWiring("display")
         directionWiring = vm.inspectorRowWiring("flex-direction")
+        sectionCss.registerSectionCssRow(displayWiring)
+        sectionCss.registerSectionCssRow(directionWiring)
         for (property, wiring) in [("display", displayWiring), ("flex-direction", directionWiring)]:
           let strip = renderCompactChoiceRow[R, E](r, property,
             "Choose layout source scope for " & property, wiring.scopeOptions,

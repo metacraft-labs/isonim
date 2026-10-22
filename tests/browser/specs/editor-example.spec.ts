@@ -1647,6 +1647,132 @@ test.describe("IsoNim packaged editor example", () => {
     await expectStableVisualSnapshot(page, "m43-vector-editor.png");
   });
 
+  // Editor spec "Universal Patterns": "Raw CSS toggle — switch to raw CSS
+  // text editing for any section", and its clause on what the raw CSS shows,
+  // commits and refuses; "Saving" for act-time refusals, the automatic write
+  // and undo across writes. The packaged example's own writer
+  // (demo_workspace.demoVectorEditAdapter) writes the foundation source the
+  // page exposes as window.__isonimDemoSources. Physical pointer and keyboard
+  // input; nothing is mocked.
+  test("e2e_section_raw_css_toggle_commits_refuses_and_undoes", async ({
+    page,
+  }) => {
+    await page.setViewportSize(desktop);
+    await openDestinationComponentEdit(page);
+    await markPreviewSelected(page);
+    const selected = page
+      .frameLocator('iframe[title="Editable component preview"]')
+      .locator('[data-isonim-selected="true"]')
+      .first();
+    const undoCount = () =>
+      page.evaluate(() => (window as any).__isonimEditorVm.inspector.undoStack.value.length);
+    const effects = page.locator('[data-inspector-section-header="effects"]');
+    if ((await effects.getAttribute("aria-expanded")) !== "true") await effects.click();
+    const field = page.getByRole("textbox", { name: "Edit raw CSS for Effects section" });
+    const toggle = page.getByRole("button", { name: "Show raw CSS for Effects section" });
+    const rows = page.locator('[data-inspector-section-rows="effects"]');
+    const message = page.locator('[data-section-raw-css-message="effects"]');
+    // On its rows, the section ends with an empty raw CSS entry.
+    await expect(field).toBeVisible();
+    await expect(field).toHaveValue("");
+    await expect(toggle).toHaveAttribute("aria-pressed", "false");
+    await expect(rows).toBeVisible();
+    await expect(page.locator('[data-property-row-css-property="filter"]').first()).toBeVisible();
+
+    // The toggle switches the section to its declarations as CSS text.
+    await toggle.click();
+    await expect(toggle).toHaveAttribute("aria-pressed", "true");
+    await expect(rows).toBeHidden();
+    await expect(field).toHaveValue(
+      "filter: none;\ntransform: none;\ntransition-duration: 0s;\n");
+
+    // Edit the text: two changed declarations, one unchanged. Enter commits;
+    // both are written inside the rule that owns them, and each is an edit.
+    const original = await demoSourceContent(page, demoFoundationSource);
+    expect(original).toContain(" transform: none; transition-duration: 0s;");
+    const start = await undoCount();
+    await field.fill("filter: none;\ntransform: translateX(8px) scale(1.02);\ntransition-duration: 180ms;");
+    await field.press("Enter");
+    await expect.poll(() => pendingSourceEdits(page)).toBe(0);
+    await expect(page.locator("[data-save-error]")).toBeHidden();
+    const written = original
+      .replace(" transform: none;", " transform: translateX(8px) scale(1.02);")
+      .replace(" transition-duration: 0s;", " transition-duration: 180ms;");
+    await expect.poll(() => demoSourceContent(page, demoFoundationSource)).toBe(written);
+    expect(await undoCount()).toBe(start + 2);
+    await expect.poll(() => selected.evaluate((node) => getComputedStyle(node).transform))
+      .not.toBe("none");
+    await expect.poll(() => selected.evaluate((node) => getComputedStyle(node).transitionDuration))
+      .toBe("0.18s");
+    await expect(field).toHaveValue(
+      "filter: none;\ntransform: translateX(8px) scale(1.02);\ntransition-duration: 180ms;\n");
+    await expect(message).toBeHidden();
+
+    // Invalid text is refused at the commit with the reason; nothing moves,
+    // and Escape gives the field back to the model.
+    await field.fill("filter brightness(2)");
+    await field.press("Enter");
+    await expect(message).toBeVisible();
+    await expect(message).toContainText("is not a declaration");
+    await expect(field).toHaveAttribute("aria-invalid", "true");
+    await field.fill("transform: scale(2); filter: glow(4px)");
+    await field.press("Enter");
+    await expect(message).toContainText("Filter values must use supported CSS filter functions");
+    expect(await undoCount()).toBe(start + 2);
+    expect(await pendingSourceEdits(page)).toBe(0);
+    expect(await demoSourceContent(page, demoFoundationSource)).toBe(written);
+    await field.press("Escape");
+    await expect(message).toBeHidden();
+    await expect(field).toHaveValue(
+      "filter: none;\ntransform: translateX(8px) scale(1.02);\ntransition-duration: 180ms;\n");
+
+    // A scope no project schema entry can write is refused at the act: the
+    // card's heading is captured off the preview, and no rule of the
+    // example's writer owns its gap.
+    await page
+      .frameLocator('iframe[title="Editable component preview"]')
+      .locator('[data-testid="component-edit-preview"] h1')
+      .first()
+      .click({ force: true });
+    const layout = page.locator('[data-inspector-section-header="layout"]');
+    if ((await layout.getAttribute("aria-expanded")) !== "true") await layout.click();
+    const layoutField = page.getByRole("textbox", { name: "Edit raw CSS for Layout section" });
+    await layoutField.fill("gap: 4px");
+    await layoutField.press("Enter");
+    const layoutMessage = page.locator('[data-section-raw-css-message="layout"]');
+    await expect(layoutMessage).toBeVisible();
+    await expect(layoutMessage).toContainText(
+      "gap: No project schema or source map entry can safely represent this edit.");
+    expect(await undoCount()).toBe(start + 2);
+    expect(await pendingSourceEdits(page)).toBe(0);
+    expect(await demoSourceContent(page, demoFoundationSource)).toBe(written);
+
+    // Undo across the write, one declaration at a time, to the exact bytes.
+    await markPreviewSelected(page);
+    await page.evaluate(() => (document.activeElement as HTMLElement | null)?.blur());
+    await page.keyboard.press("ControlOrMeta+Z");
+    await expect.poll(undoCount).toBe(start + 1);
+    await expect.poll(() => pendingSourceEdits(page)).toBe(0);
+    await expect.poll(() => demoSourceContent(page, demoFoundationSource)).toBe(
+      original.replace(" transform: none;", " transform: translateX(8px) scale(1.02);"));
+    await page.keyboard.press("ControlOrMeta+Z");
+    await expect.poll(undoCount).toBe(start);
+    await expect.poll(() => pendingSourceEdits(page)).toBe(0);
+    await expect.poll(() => demoSourceContent(page, demoFoundationSource)).toBe(original);
+    await expect.poll(() => selected.evaluate((node) => getComputedStyle(node).transform))
+      .toBe("none");
+    await expect(field).toHaveValue(
+      "filter: none;\ntransform: none;\ntransition-duration: 0s;\n");
+
+    // Toggling back shows the rows and the empty entry again.
+    await toggle.click();
+    await expect(toggle).toHaveAttribute("aria-pressed", "false");
+    await expect(rows).toBeVisible();
+    await expect(field).toHaveValue("");
+    await expect(page.locator('[data-property-row-css-property="filter"]').first()).toBeVisible();
+    await expect(page.locator("[data-save-error]")).toBeHidden();
+  });
+
   test("m52_shared_design_editor_preview_save_and_revert", async ({ page }) => {
     await page.setViewportSize(desktop);
     await openDestinationComponentEdit(page);

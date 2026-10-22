@@ -31,6 +31,7 @@ import isonim/editor/views/widgets/variable_chip
 import isonim/editor/views/widgets/property_row  # measureAnchorRect (VBIND-M2)
 import isonim/editor/views/widgets/property_actions
 import isonim/editor/views/widgets/inspector_search
+import isonim/editor/views/widgets/section_raw_css
 
 type
   FillEntry* = object
@@ -84,6 +85,10 @@ proc mountSectionFill*[R, E](r: R; parent: E; vm: EditorVM) =
   let boxFillWiring = vm.inspectorRowWiring("background-color")
   proc fillWiringNow(): InspectorRowWiring =
     if fillProperty() == "color": textFillWiring else: boxFillWiring
+  # The fill rows are hand-built, so they register their wirings with the
+  # section's raw CSS themselves (`property_row` does it for its rows).
+  registerSectionCssRow(boxFillWiring)
+  registerSectionCssRow(textFillWiring)
 
   # Selection identity precedes asynchronously delivered computed properties.
   # Track the actual fill-bearing input as well as ID so hydration/reload of the

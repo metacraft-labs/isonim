@@ -934,8 +934,11 @@ test.describe("metacraft-web IsoNim editor consumer", () => {
       await expectNoPendingSourceEdits(page);
       // Copy the fill value (spec "Universal Patterns": right-click property
       // -> Copy; the fill entry has no More slot) and paste it into the
-      // Stroke Color row through its More (⫶) menu.
-      await page.locator('[data-fill-row="0"]').click({ button: "right" });
+      // Stroke Color row through its More (⫶) menu. The right-click is on
+      // the entry's swatch: the entry's centre is its hex field, where "right-
+      // click keeps the browser's own cut, copy and paste menu; the property
+      // menu opens outside editable fields" (same spec section).
+      await page.locator('[data-fill-row-swatch="0"]').click({ button: "right" });
       await page.getByRole("menuitem", { name: "Copy property" }).click();
       { const stroke = page.locator('[data-inspector-section-header="stroke"]'); if ((await stroke.getAttribute("aria-expanded")) !== "true") await stroke.click(); } // Stroke is collapsed by default (spec "Section catalogue").
       await page.getByRole("button", { name: "More actions for Color" }).click();
@@ -1842,7 +1845,11 @@ test.describe("metacraft-web IsoNim editor consumer", () => {
     await expect(header("layout")).toBeVisible();
     await expect(propertyRowInput(page, "pad-top")).toBeVisible();
     await expect(page.getByLabel("Show box model controls")).toBeVisible();
-    await expect(page.getByLabel("Show raw CSS controls")).toBeVisible();
+    // Raw CSS is per section ("Universal Patterns": "Raw CSS toggle — switch
+    // to raw CSS text editing for any section"), so every CSS section has a
+    // toggle and the tab-era name "Show raw CSS controls" cannot name one of
+    // them; the Layout section's is "Show raw CSS for Layout section".
+    await expect(page.getByLabel("Show raw CSS for Layout section")).toBeVisible();
 
     const noOverflow = () => inspector.evaluate(
       (node) => node.scrollWidth <= node.clientWidth + 1);

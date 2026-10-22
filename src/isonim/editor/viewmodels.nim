@@ -136,6 +136,12 @@ type
       ## Patterns"). One per editor, so a value copied on one element
       ## pastes onto another.
     expandedSections*: Signal[seq[InspectorSection]]
+    rawCssSections*: Signal[seq[InspectorSection]]
+      ## Sections switched to raw CSS text editing by their Raw CSS toggle
+      ## (editor spec "Universal Patterns": "Raw CSS toggle -- switch to raw
+      ## CSS text editing for any section"). A section listed here shows its
+      ## declarations as CSS text in place of its rows. Per editor session;
+      ## every section starts on its rows.
     sectionsUserSet*: Signal[seq[InspectorSection]]
     revealSectionRequest*: Signal[int]
       ## Bumped when something asks for the Source section to be scrolled
@@ -4172,6 +4178,20 @@ proc toggleSectionExpanded*(inspector: InspectorVM; section: InspectorSection) =
     inspector.sectionsUserSet.val = touched
   inspector.setSectionExpanded(section, section notin inspector.expandedSections.val)
 
+proc sectionShowsRawCss*(inspector: InspectorVM;
+    section: InspectorSection): bool =
+  ## Whether ``section`` is switched to raw CSS text editing. Reactive.
+  section in inspector.rawCssSections.val
+
+proc toggleSectionRawCss*(inspector: InspectorVM; section: InspectorSection) =
+  ## The section's Raw CSS toggle: switch between its rows and its
+  ## declarations as CSS text.
+  var next = inspector.rawCssSections.val
+  let at = next.find(section)
+  if at >= 0: next.delete(at)
+  else: next.add section
+  inspector.rawCssSections.val = next
+
 proc applyKindDefaultExpansion*(inspector: InspectorVM; element: ElementRef) =
   ## Re-seed the untouched sections for what is now selected.
   ##
@@ -7189,6 +7209,35 @@ proc planSharedDesignEdit*(editor: EditorVM; property, newValue: string;
   SharedDesignEditResult(status: pesAccepted, editor: editorVm,
     sourceEdit: editorVm.commitPreview.plan)
 
+proc plannedInspectorCommit(editor: EditorVM; property, value: string;
+    scope: SourceScopeChoiceKind; localFallback: string):
+    tuple[plan: SourceEditPlan; refusal: string] =
+  ## The source plan a row commit of ``value`` at ``scope`` would stage,
+  ## planned WITHOUT staging it -- the same planning `commitInspectorValue`
+  ## reaches through `editCssProperty` (local instance) or
+  ## `editSharedDesignProperty` (any shared scope) -- or the refusal that
+  ## planning gives. ``localFallback`` is the message for a local refusal
+  ## that carries no diagnostic text. Shared by Reset's availability
+  ## (`propertyResetRefusal`, an empty value) and the act-time check of a
+  ## commit that is made of several edits (`propertyValueCommitRefusal`).
+  if scope == sskLocalInstance:
+    let prepared = editor.inspector.preparePropertyEdit(PropertyEditRequest(
+      property: property, newValue: value, kind: pekCss, scope: pesLocal,
+      origin: peoInspector))
+    if prepared.outcome.status != pesAccepted:
+      for d in prepared.outcome.diagnostics:
+        if d.message.len > 0: return (SourceEditPlan(), d.message)
+      return (SourceEditPlan(), localFallback)
+    return (prepared.transaction.sourceEdit, "")
+  let planned = editor.planSharedDesignEdit(property,
+    normalizePrimitiveInputValue(property, value), scope)
+  if planned.status != pesAccepted:
+    for d in planned.diagnostics:
+      if d.message.len > 0: return (SourceEditPlan(), d.message)
+    return (SourceEditPlan(),
+      "This scope has no source-backed writer in the project schema.")
+  (planned.sourceEdit, "")
+
 proc propertyResetRefusal*(editor: EditorVM; property: string;
     scope: SourceScopeChoiceKind; checkWrite = true): string =
   ## Why Reset cannot run for ``property`` at ``scope`` now, or "" when it can.
@@ -7248,23 +7297,10 @@ proc propertyResetRefusal*(editor: EditorVM; property: string;
     return ""
   if editor.workspaceEditAdapter.isNil:
     return "No source edit adapter is ready to remove this declaration."
-  var plan: SourceEditPlan
-  if scope == sskLocalInstance:
-    let prepared = editor.inspector.preparePropertyEdit(PropertyEditRequest(
-      property: property, newValue: "", kind: pekCss, scope: pesLocal,
-      origin: peoInspector))
-    if prepared.outcome.status != pesAccepted:
-      for d in prepared.outcome.diagnostics:
-        if d.message.len > 0: return d.message
-      return "This " & property & " declaration cannot be removed."
-    plan = prepared.transaction.sourceEdit
-  else:
-    let planned = editor.planSharedDesignEdit(property, "", scope)
-    if planned.status != pesAccepted:
-      for d in planned.diagnostics:
-        if d.message.len > 0: return d.message
-      return "This scope has no source-backed writer in the project schema."
-    plan = planned.sourceEdit
+  let planned = editor.plannedInspectorCommit(property, "", scope,
+    "This " & property & " declaration cannot be removed.")
+  if planned.refusal.len > 0: return planned.refusal
+  let plan = planned.plan
   if checkWrite:
     return editor.sourcePlanCommitRefusal(plan)
   # Without the file read, still every question the commit asks that reads
@@ -7274,6 +7310,55 @@ proc propertyResetRefusal*(editor: EditorVM; property: string;
   result = editor.sourcePlanAdmissionRefusal(plan)
   if result.len == 0:
     result = untrack(proc(): string = editor.writerEditRefusal(plan))
+
+proc propertyValueCommitRefusal*(editor: EditorVM; property, value: string;
+    scope: SourceScopeChoiceKind): string =
+  ## Why a row commit of ``value`` for ``property`` at ``scope`` would be
+  ## refused at the act, or "" when it would be admitted -- asked WITHOUT
+  ## staging anything.
+  ##
+  ## Editor spec "Saving": a refusal the editor can know at the act is made
+  ## at the act, so a refused change never reaches the preview, the history
+  ## or the journal. One row commits one edit and is checked by making it.
+  ## A commit made of several edits -- a section's raw CSS
+  ## (`section_raw_css`) -- has to know that every one of them would be
+  ## admitted before it makes the first, or a refusal of the third would
+  ## leave the first two applied. This asks each the questions its own
+  ## commit asks (`commitInspectorValue`, then `editInspectorProperty` or
+  ## `editSharedDesignProperty`): the selection exposes the property, the
+  ## workspace is writable, the value validates, a project schema or source
+  ## map entry represents the plan, and the project's writer does not refuse
+  ## it (`editRefusal`). It reads no file.
+  ##
+  ## A native source project (`inspectorSourceCommit`) admits its own
+  ## writes; only the value's validation is asked here, and the worker
+  ## decides the rest under the project lock.
+  let element = editor.inspector.selectedElement.val
+  if element.tag.len == 0:
+    return "Select an element before editing " & property & "."
+  var found = false
+  for candidate in element.properties:
+    if candidate.name == property:
+      found = true
+      break
+  if not found:
+    return "The selected element does not expose " & property & "."
+  if not editor.workspacePermissions.val.writeSource:
+    return "This workspace is read-only for source changes."
+  if editor.hasAsyncSourceProject or editor.inspectorSourceCommit != nil:
+    let prepared = editor.inspector.preparePropertyEdit(PropertyEditRequest(
+      property: property, newValue: value, kind: pekCss,
+      scope: if scope == sskLocalInstance: pesLocal else: pesShared,
+      origin: peoInspector))
+    if prepared.outcome.status != pesAccepted:
+      for d in prepared.outcome.diagnostics:
+        if d.message.len > 0: return d.message
+      return "This edit to " & property & " was rejected."
+    return ""
+  let planned = editor.plannedInspectorCommit(property, value, scope,
+    "This edit to " & property & " was rejected.")
+  if planned.refusal.len > 0: return planned.refusal
+  editor.sourcePlanCommitRefusal(planned.plan)
 
 proc editSharedDesignProperty*(editor: EditorVM; property, newValue: string;
     sourceScope: SourceScopeChoiceKind): SharedDesignEditResult {.discardable.} =
@@ -12206,6 +12291,7 @@ proc createInspectorVM*(designSystemSchema: Signal[DesignSystemSchema] = nil;
     sectionSearch: sectionSearch,
     propertyClipboard: createSignal(PropertyClipboardEntry()),
     expandedSections: expandedSections,
+    rawCssSections: createSignal[seq[InspectorSection]](@[]),
     sectionsUserSet: createSignal[seq[InspectorSection]](@[]),
     revealSectionRequest: createSignal(0),
     focusedControlId: focusedControlId,

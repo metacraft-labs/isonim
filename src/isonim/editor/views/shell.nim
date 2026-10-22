@@ -28,6 +28,7 @@ import isonim/editor/views/design_review_mount as design_review_mount_view
 import isonim/editor/views/widgets as editor_widgets
 import isonim/editor/views/widgets/inspector_search
 import isonim/editor/views/widgets/exposed_css_rows
+import isonim/editor/views/widgets/section_raw_css
 from isonim/core/context import provide
 import isonim/editor/design_review/brief_format
 import isonim/editor/design_review/brief_index
@@ -2745,6 +2746,13 @@ proc renderPreviewPane*[R, E](r: R; vm: EditorVM): E =
   # ``pane.children.len``) remain stable.
   pane
 
+const inspectorRawCssSections* = ["position", "layout", "appearance",
+    "fill", "stroke", "effects", "typography"]
+  ## The sections whose rows edit CSS declarations, and so carry a raw CSS
+  ## field and Raw CSS toggle. Selection colours, Source, Component
+  ## properties, State and Export edit no section-owned declarations as CSS
+  ## text (State and Component properties edit signals and schema values).
+
 const inspectorPlaceholderSections* = [
   ("position",             "Position"),
   ("layout",               "Layout"),
@@ -3483,9 +3491,27 @@ proc renderInspectorPanel*[R, E](r: R; vm: EditorVM): E =
     let section = inspectorSectionFromAttr(slug)
     let search = createInspectorSectionSearch(proc(): string =
       normalizedSearchQuery(vm.inspector.sectionSearch.val))
+    # A section that edits CSS ends with its raw CSS field and Raw CSS
+    # toggle (editor spec "Universal Patterns": "Raw CSS toggle — switch to
+    # raw CSS text editing for any section"). Its rows mount into a host of
+    # their own, which the toggle hides while the section shows raw CSS, and
+    # register their wirings with the section's registry so the raw CSS
+    # commits through them.
+    let editsCss = slug in inspectorRawCssSections
+    let cssRows = createInspectorSectionCss()
+    var rowsHost = frame.body
+    if editsCss:
+      rowsHost = ui(r):
+        tdiv(`data-inspector-section-rows` = slug,
+             display = "flex", flex_direction = "column", min_width = "0")
+      r.appendChild(frame.body, rowsHost)
     createRoot proc(dispose: proc()) =
       provide(inspectorSectionSearchContext, search)
-      mountInspectorSectionBody[R, E](r, vm, slug, frame.body)
+      provide(inspectorSectionCssContext, cssRows)
+      mountInspectorSectionBody[R, E](r, vm, slug, rowsHost)
+      if editsCss:
+        mountSectionRawCss[R, E](r, frame.body, rowsHost, vm, cssRows,
+          section, slug, displayName)
       if panelOwner != nil:
         runWithOwner(panelOwner, proc() = onCleanup(dispose))
     let row = frame.row

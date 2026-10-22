@@ -212,7 +212,7 @@
       "mockOnly": false,
       "placeholderUi": false,
       "browserBehavior": ["pointer", "focus"],
-      "implementation": "Typed CSS value parsing, primitive-control normalization, math-expression/unit handling, source-plan selection, validation, shared-scope handling, undo/redo, dirty state, save staging, raw CSS section editing, cascade origin indicators, copy/paste/reset property actions, numeric select-all/arrow/scrub/unit controls, color swatches/formats/variable/token/contrast affordances, gradient stop/angle/type controls, shadow layer/crosshair/inset/elevation controls, typography style/responsive/truncate/wrap controls, border-radius linked-corner controls, and Bezier/reduced-motion motion controls with live iframe preview and source commits.",
+      "implementation": "Typed CSS value parsing, primitive-control normalization, math-expression/unit handling, source-plan selection, validation, shared-scope handling, undo/redo, dirty state, save staging, per-section raw CSS editing (each CSS section's Raw CSS toggle switches between its rows and its declarations as CSS text; a raw commit is checked as a whole and commits each changed declaration through its row's source pipeline), cascade origin indicators, copy/paste/reset property actions, numeric select-all/arrow/scrub/unit controls, color swatches/formats/variable/token/contrast affordances, gradient stop/angle/type controls, shadow layer/crosshair/inset/elevation controls, typography style/responsive/truncate/wrap controls, border-radius linked-corner controls, and Bezier/reduced-motion motion controls with live iframe preview and source commits.",
       "knownLimitations": "M49 validates a bounded long-tail matrix only for property rows with headless, browser, visual, and Metacraft consumer evidence. Other long-tail rows stay marked consumer-unvalidated, browser-limited, or read-only until their browser and consumer coverage exists. Exhaustive browser eyedropper behavior, freeform color-plane drag serialization, container-query editing, and pseudo-state workflow editing remain future work.",
       "headlessTests": [
         {
@@ -238,6 +238,18 @@
         {
           "name": "long_tail_property_schema_and_source_plans",
           "file": "tests/test_editor_viewmodels.nim"
+        },
+        {
+          "name": "the toggle switches a section between its rows and its declarations as text",
+          "file": "tests/test_editor_section_raw_css.nim"
+        },
+        {
+          "name": "the section's text commits each changed declaration as one write, undone one by one",
+          "file": "tests/test_editor_section_raw_css.nim"
+        },
+        {
+          "name": "invalid text is refused at the commit with the reason, and nothing changes",
+          "file": "tests/test_editor_section_raw_css.nim"
         }
       ],
       "playwrightRequired": true,
@@ -261,6 +273,10 @@
         {
           "name": "metacraft_long_tail_properties_validate_real_components",
           "file": "tests/browser/specs/metacraft-web-editor.spec.ts"
+        },
+        {
+          "name": "e2e_section_raw_css_toggle_commits_refuses_and_undoes",
+          "file": "tests/browser/specs/editor-example.spec.ts"
         }
       ],
       "screenshotVisualAssertions": {
@@ -295,7 +311,8 @@
           "status": "covered",
           "evidence": [
             "tests/browser/specs/editor-example.spec.ts:e2e_editor_edit_buttons_keyboard_and_pointer",
-            "tests/browser/specs/editor-example.spec.ts:e2e_editor_visual_baselines_cover_all_primary_modes"
+            "tests/browser/specs/editor-example.spec.ts:e2e_editor_visual_baselines_cover_all_primary_modes",
+            "tests/browser/specs/editor-example.spec.ts:e2e_section_raw_css_toggle_commits_refuses_and_undoes"
           ]
         },
         "metacraftWeb": {
@@ -310,6 +327,7 @@
         "src/isonim/editor/types.nim",
         "src/isonim/editor/viewmodels.nim",
         "src/isonim/editor/views/component_edit.nim",
+        "src/isonim/editor/views/widgets/section_raw_css.nim",
         "docs/editor-long-tail-property-evidence.md",
         "tests/test_editor_viewmodels.nim",
         "tests/browser/specs/metacraft-web-editor.spec.ts"
