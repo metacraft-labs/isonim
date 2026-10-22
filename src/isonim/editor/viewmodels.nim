@@ -6517,6 +6517,10 @@ func sourceScopeSummary(kind: SourceScopeChoiceKind; usageCount: int): string =
 
 proc sourceScopeChoices*(schema: DesignSystemSchema; element: ElementRef;
     prop: PropertyInfo): seq[SourceScopeChoice] =
+  # The choice builder only needs the package name. Capturing ``schema``
+  # here makes the JS backend deep-copy the complete project schema into
+  # its closure for every property row and every capability refresh.
+  let ownerPackage = schema.ownerPackage
   proc makeChoice(kind: SourceScopeChoiceKind; ownerLabel = "";
       file = ""; line = 0; schemaKey = ""; editable = false;
       usageCount = 0; affectedComponents: seq[string] = @[];
@@ -6526,7 +6530,7 @@ proc sourceScopeChoices*(schema: DesignSystemSchema; element: ElementRef;
     let label = kind.sourceScopeChoiceLabel()
     let owner =
       if ownerLabel.len > 0: ownerLabel
-      elif schema.ownerPackage.len > 0: schema.ownerPackage
+      elif ownerPackage.len > 0: ownerPackage
       else: "Project"
     let summary = if prop.nativeSourceToken and kind == sskSemanticToken:
       "Known direct matches: " & $usageCount & ". Inherited or unsupported references may also change."
