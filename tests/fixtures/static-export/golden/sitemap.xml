@@ -1,0 +1,8 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<urlset xmlns="http://www.sitemaps.org/schemas/sitemap/0.9">
+  <url><loc>https://example.org/</loc><lastmod>2026-10-21T08:30:00Z</lastmod></url>
+  <url><loc>https://example.org/about/</loc></url>
+  <url><loc>https://example.org/posts/2026/a-z</loc><lastmod>2026-10-01</lastmod></url>
+  <url><loc>https://example.org/posts/hello-world</loc><lastmod>2026-10-21</lastmod></url>
+  <url><loc>https://example.org/tags/r&amp;d</loc></url>
+</urlset>

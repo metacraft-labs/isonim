@@ -101,6 +101,20 @@
           unset _own_repo_root
         '';
 
+        # IsoNim's own Nim sources, and nothing else, for the static-site
+        # builder below: a change elsewhere in the repository does not rebuild
+        # every site built with it.
+        isonimSrc = pkgs.lib.fileset.toSource {
+          root = ./.;
+          fileset = ./src;
+        };
+        # `lib.<system>.buildStaticSite`: compile a site's exporter against
+        # isonim/static and run it in the sandbox (nix/static-site.nix).
+        buildStaticSite = import ./nix/static-site.nix {
+          inherit (pkgs) lib stdenv nim;
+          inherit isonimSrc;
+        };
+
         # The repo's pre-commit hooks. Entering the default dev shell from inside
         # this repository writes the (gitignored) .pre-commit-config.yaml symlink
         # and installs them; CI's shared lint workflow runs the same set from this
@@ -195,6 +209,22 @@
         # in ``isonim-examples/Justfile`` via ``nix build --print-out-paths
         # ~/metacraft/isonim#editor-vendor`` + ``cp -L``.
         packages.editor-vendor = pkgs.callPackage ./nix/editor-vendor.nix { };
+
+        lib.buildStaticSite = buildStaticSite;
+
+        # The builder exercised end to end on a fixture site. `nix build
+        # .#checks.<system>.static-site-fixture --rebuild` checks that a second
+        # build is byte-identical (`just test-static-site-nix`).
+        checks.static-site-fixture = buildStaticSite {
+          name = "isonim-static-site-fixture";
+          src = pkgs.lib.fileset.toSource {
+            root = ./tests/fixtures/static-site-nix;
+            fileset = ./tests/fixtures/static-site-nix;
+          };
+          exporter = "site.nim";
+          sourceDateEpoch = self.lastModified;
+          env.ISONIM_SITE_REVISION = self.shortRev or self.dirtyShortRev or "unknown";
+        };
       }
     );
 }

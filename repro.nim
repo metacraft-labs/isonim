@@ -441,6 +441,10 @@ const isonimTestSpecs: seq[IsonimTestSpec] = @[
   spec("test_server_functions"),
   spec("test_data_loading"),
   spec("test_file_routes"),
+  # --- isonim/static: static export, sitemap, robots, head, script policy ---
+  spec("test_static_export"),
+  spec("test_static_script_policy"),
+  spec("test_static_metadata"),
   spec("test_http_types"),
   spec("test_form_actions"),
   spec("test_third_party"),
@@ -576,6 +580,9 @@ const isonimJsTestSpecs: seq[string] = @[
   "test_web_components_advanced", "test_third_party", "poc_monaco_host",
   "test_accessibility", "test_router", "test_server_functions",
   "test_data_loading",
+  # isonim/static: the script policy and SEO head are pure (dual-backend).
+  "test_static_script_policy",
+  "test_static_metadata",
   # Per-item captures and activation are contracts on both backends.
   "test_choice_row_activation", "test_loop_accessors",
   # JS-back-end-only (``{.error.}`` head unless ``defined(js)``).
@@ -848,7 +855,7 @@ package isonim:
         # ``src`` + the nimble file are declared inputs so the monitor
         # tracks the transitively imported ``src/isonim/**`` module tree
         # (the reactive core / DSL / editor modules the tests pull in).
-        extraInputs = @["src", "isonim.nimble"] & (if stem == "test_editor_renderer_boundaries": @["tests/test_editor_source_scope_labels.nim", "tests/test_editor_shell_chat_lifetime.nim", "tests/helpers/editor_source_scope_label_cases.nim"] else: @[]) & (if stem == "test_editor_source_scope_labels": @["tests/helpers/editor_source_scope_label_cases.nim"] else: @[]))
+        extraInputs = @["src", "isonim.nimble"] & (if stem == "test_editor_renderer_boundaries": @["tests/test_editor_source_scope_labels.nim", "tests/test_editor_shell_chat_lifetime.nim", "tests/helpers/editor_source_scope_label_cases.nim"] else: @[]) & (if stem == "test_editor_source_scope_labels": @["tests/helpers/editor_source_scope_label_cases.nim"] else: @[]) & (if stem == "test_static_export": @["tests/fixtures/static-export"] else: @[]))
       buildActions.add(edge.action)
       # ``registerImplicitName = false``: the BUILD edge already owns the
       # binary basename as the implicit target name; the explicit

@@ -163,6 +163,24 @@ build-tailwind:
     [ -d node_modules ] || yarn install --frozen-lockfile
     node tools/tailwind-extract.mjs
 
+# The hermetic static-site builder (`lib.<system>.buildStaticSite`,
+# nix/static-site.nix) on its fixture: build it in the Nix sandbox, then
+# `--rebuild`, which fails unless the second build is byte-identical. Needs
+# nix (and the fixture committed: a flake sees only tracked files), so it is
+# not part of `just test`.
+test-static-site-nix:
+    #!/usr/bin/env bash
+    set -euo pipefail
+    system="$(nix eval --raw --impure --expr builtins.currentSystem)"
+    check=".#checks.$system.static-site-fixture"
+    out="$(nix build --no-link --print-out-paths "$check")"
+    nix build --no-link --rebuild "$check"
+    for f in index.html about/index.html posts/hello-world/index.html sitemap.xml robots.txt build.json; do
+      test -s "$out/$f" || { echo "static-site-fixture: $f missing in $out" >&2; exit 1; }
+    done
+    grep -q "<lastmod>" "$out/sitemap.xml"
+    echo "static-site-fixture: $out, rebuilt byte-identical"
+
 # Run all tests (both JS and C targets)
 test: test-c test-js
 
@@ -214,6 +232,12 @@ test-c:
     nim c -r tests/test_content_highlight.nim
     nim c -r tests/test_content_directives.nim
     nim c -r tests/test_theming_dtcg.nim
+    # isonim/static: the static-site primitives (export, sitemap, robots, SEO
+    # head, script policy, CSP, assets, build.json). The exporter writes
+    # files, so its suite is C-only; the script policy and head are pure.
+    nim c -r tests/test_static_export.nim
+    nim c -r tests/test_static_script_policy.nim
+    nim c -r --out:build/tests/test_static_metadata --nimcache:build/nimcache/test_static_metadata tests/test_static_metadata.nim
     nim c -r tests/test_http_types.nim
     nim c -r tests/test_streaming_stress.nim
     nim c -r tests/test_third_party.nim
@@ -316,6 +340,9 @@ test-js: build-tailwind
     nim js -r tests/test_content_anchors.nim
     nim js -r tests/test_content_highlight.nim
     nim js -r tests/test_content_directives.nim
+    # isonim/static (see test-c).
+    nim js -r tests/test_static_script_policy.nim
+    nim js -r --out:build/tests/test_static_metadata.js --nimcache:build/nimcache/test_static_metadata_js tests/test_static_metadata.nim
     # The Web Worker target's message codec and build guard (IFP-M3).
     nim js -r tests/test_web_worker.nim
 
