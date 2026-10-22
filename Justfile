@@ -288,6 +288,8 @@ test-js: build-tailwind
     nim js -r tests/test_clock.nim
     nim js tests/test_nondet_seams.nim
     python3 tools/run_nim_js_test.py tests/test_nondet_seams.js
+    nim js --out:build/nondet_partial_window_boot.js tests/fixtures/nondet_partial_window_boot.nim
+    "${ISONIM_SCENARIO_NODE:-node}" tests/test_nondet_partial_window.mjs
     nim js -r tests/test_context.nim
     nim js -r tests/test_resource_registry.nim
     nim js -r tests/test_rxcore.nim
@@ -1898,6 +1900,8 @@ test-nondet:
     nim c -r tests/test_nondet_seams.nim
     nim js tests/test_nondet_seams.nim
     python3 tools/run_nim_js_test.py tests/test_nondet_seams.js
+    nim js --out:build/nondet_partial_window_boot.js tests/fixtures/nondet_partial_window_boot.nim
+    "${ISONIM_SCENARIO_NODE:-node}" tests/test_nondet_partial_window.mjs
     PLAYWRIGHT_CHROMIUM_EXECUTABLE="${PLAYWRIGHT_CHROMIUM_EXECUTABLE:-$(command -v chromium)}" node tests/test_nondet_browser.mjs
 
 # Production browser adapter composition, retained chats and control bridge.
