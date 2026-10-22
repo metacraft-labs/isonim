@@ -23,7 +23,7 @@
 ## re-exports this module); the AST types are the same types, so every
 ## consumer of either path sees one `Block` and one `InlineSpan`.
 
-import std/strutils
+import std/[strutils, algorithm]
 import ./anchors
 type
   InlineKind* = enum
@@ -38,6 +38,14 @@ type
              ## link), or "" when unresolved -- an unresolved symref renders
              ## as plain code and is FLAGGED by the reference checker
              ## (`references.checkPageReferences`) with source provenance.
+    ikStrike
+    ikFootnoteRef
+
+  LinkOrigin* = enum
+    loUnspecified ## Programmatically constructed span; `text` supplies its label.
+    loExplicit ## `[label](destination)` or `![alt](destination)`.
+    loAngleAutolink
+    loBareAutolink
 
   InlineSpan* = object
     ## One inline run within a paragraph/list-item/admonition-paragraph.
@@ -47,6 +55,13 @@ type
     kind*: InlineKind
     text*: string
     href*: string
+    title*: string ## Optional link/image title, separate from the destination.
+    linkOrigin*: LinkOrigin
+    labelSource*: string ## Original explicit label, including escape intent.
+    children*: seq[InlineSpan] ## Parsed contents of `ikStrike`.
+    footnoteNumber*: int ## Zero until a document resolves its definitions.
+    referenceId*: string ## Unique anchor for this footnote occurrence.
+    escaped*: bool ## Literal punctuation, not another consumer's emphasis run.
     isRelative*: bool ## True when the original markdown target was a
                       ## relative path (content link or asset), not an
                       ## absolute URL or same-page fragment -- the flag
@@ -55,6 +70,22 @@ type
   ListKind* = enum
     lkUnordered
     lkOrdered
+
+  TaskState* = enum
+    tsNone, tsUnchecked, tsChecked
+
+  DiffLineKind* = enum
+    dlAdded, dlRemoved
+
+  DiffLine* = object
+    line*: int ## One-based line in the original, unmodified code.
+    kind*: DiffLineKind
+
+  FenceAttributes* = object
+    title*: string
+    highlightLines*: seq[int]
+    diff*: bool
+    diffLines*: seq[DiffLine]
 
   AdmonitionKind* = enum
     akNote
@@ -107,6 +138,10 @@ type
                ## of `@field` lines (WebFlow `.support-form` / `.user-form`).
                ## Added at the END of the enum so every existing `BlockKind`
                ## ordinal is preserved (several modules `case` on it).
+    bkBlockquote
+    bkFigure
+    bkFootnotes
+    bkExcerptBreak
 
   CardItem* = object
     ## metacraft-theme-parity M2: one `:::card title="…" icon="…" href="…"`
@@ -174,23 +209,25 @@ type
     blocks*: seq[Block]
 
   Block* = object
-    ## One parsed body-level markdown block. Headings carry a stable
-    ## `headingId` (`anchors.nextId`) rather than inline spans -- heading
-    ## text is rendered plain, keeping anchor generation simple and the
-    ## heading tree trivially derivable from the flat block list.
+    ## One parsed body-level markdown block. Headings retain their original
+    ## text for legacy consumers and context-resolved spans for semantic
+    ## rendering. Their stable ID is assigned once by the document parser.
     case kind*: BlockKind
     of bkHeading:
       level*: int
       headingText*: string
       headingId*: string
+      headingSpans*: seq[InlineSpan] ## Resolved with the document's source context.
     of bkParagraph:
       spans*: seq[InlineSpan]
     of bkList:
       listKind*: ListKind
       items*: seq[seq[InlineSpan]]
+      tasks*: seq[TaskState] ## Empty for legacy lists; otherwise parallels items.
     of bkCodeFence:
       lang*: string
       code*: string
+      fenceAttrs*: FenceAttributes
     of bkAdmonition:
       admonitionKind*: AdmonitionKind
       bodyParagraphs*: seq[seq[InlineSpan]]
@@ -259,6 +296,22 @@ type
       formMethod*: string
       formSubmit*: string
       formFields*: seq[FormField]
+    of bkBlockquote:
+      quoteBlocks*: seq[Block]
+    of bkFigure:
+      figureImage*: InlineSpan
+      caption*: seq[InlineSpan]
+    of bkFootnotes:
+      footnotes*: seq[Footnote]
+    of bkExcerptBreak:
+      discard
+
+  Footnote* = object
+    label*: string
+    number*: int
+    id*: string
+    blocks*: seq[Block]
+    referenceIds*: seq[string]
 
   HeadingNode* = object
     ## One node of the document's heading tree, nested by heading level
@@ -273,6 +326,26 @@ type
   MarkdownDoc* = object
     blocks*: seq[Block]
     headingTree*: seq[HeadingNode]
+    excerpt*: seq[Block]
+
+  ParseContext = ref object
+    anchors: AnchorIdRegistry
+    definitions: seq[Footnote]
+    footnotes: bool
+
+func `==`*(a, b: InlineSpan): bool =
+  ## Explicit recursive equality keeps the public value API usable on Nim
+  ## 2.2: its synthesized object/seq equality can infer a spurious side effect
+  ## when an individual recursive span is compared before a seq of spans.
+  if a.kind != b.kind or a.text != b.text or a.href != b.href or
+      a.title != b.title or a.isRelative != b.isRelative or
+      a.linkOrigin != b.linkOrigin or a.labelSource != b.labelSource or
+      a.footnoteNumber != b.footnoteNumber or a.referenceId != b.referenceId or
+      a.escaped != b.escaped or a.children.len != b.children.len:
+    return false
+  for i in 0 ..< a.children.len:
+    if a.children[i] != b.children[i]: return false
+  true
 
 # --- Relative link / asset-reference normalization ----------------------
 
@@ -323,6 +396,12 @@ proc resolveRelativePath*(baseDir, target: string): string =
   segments.join("/")
 
 proc isExternalOrAbsoluteLink(href: string): bool =
+  let colon = href.find(':')
+  if colon > 0 and href[0] in Letters:
+    var scheme = true
+    for ch in href[1 ..< colon]:
+      if ch notin Letters + Digits + {'+', '-', '.'}: scheme = false
+    if scheme: return true
   href.len == 0 or href.startsWith("http://") or href.startsWith("https://") or
     href.startsWith("//") or href.startsWith("#") or href.startsWith("/") or
     href.startsWith("mailto:")
@@ -420,78 +499,305 @@ proc spansText*(spans: seq[InlineSpan]): string =
   ## for consumers/tests that don't need per-span structure.
   for s in spans: result.add s.text
 
+proc tickRun(text: string; start: int): int =
+  var stop = start
+  while stop < text.len and text[stop] == '`': inc stop
+  stop - start
+
+proc codeSpanEnd(text: string; start, width: int): int =
+  ## CommonMark 0.31.2 §6.1: delimiters are maximal runs of equal length.
+  ## https://spec.commonmark.org/0.31.2/#code-spans
+  var pos = start + width
+  while pos < text.len:
+    if text[pos] == '`':
+      let size = tickRun(text, pos)
+      if size == width: return pos
+      pos += size
+    else: inc pos
+  -1
+
+proc codeSpanText(text: string): string =
+  result = text.replace("\r\n", " ").replace('\r', ' ').replace('\n', ' ')
+  if result.len >= 2 and result[0] == ' ' and result[^1] == ' ' and
+      result.strip(chars = {' '}).len > 0:
+    result = result[1 ..< result.len - 1]
+
+proc closingBracket(text: string; start: int): int =
+  ## Code binds more tightly than link labels, so a bracket inside a matched
+  ## code span must not close the label. Escapes and nested brackets obey the
+  ## same boundary rule without attempting a separate inline parser here.
+  var depth = 0
+  var i = start
+  while i < text.len:
+    if text[i] == '\\' and i + 1 < text.len:
+      i += 2
+      continue
+    if text[i] == '`':
+      let width = tickRun(text, i)
+      let close = codeSpanEnd(text, i, width)
+      if close >= 0:
+        i = close + width
+        continue
+      i += width
+      continue
+    if text[i] == '[': inc depth
+    elif text[i] == ']':
+      if depth == 0: return i
+      dec depth
+    inc i
+  -1
+
+proc unescapePunctuation(text: string): string =
+  var i = 0
+  while i < text.len:
+    if text[i] == '\\' and i + 1 < text.len and text[i + 1] in PunctuationChars:
+      inc i
+    result.add text[i]
+    inc i
+
+proc linkTarget(text: string; start: int): tuple[stop: int, href, title: string] =
+  ## Read after `(`, preserving balanced destination parentheses and keeping
+  ## the optional quoted title out of the URL. Failure leaves source literal.
+  result.stop = -1
+  var i = start
+  while i < text.len and text[i] in Whitespace: inc i
+  let begin = i
+  if i < text.len and text[i] == '<':
+    inc i
+    let content = i
+    while i < text.len and text[i] != '>':
+      if text[i] in {'\n', '\r', '<'}: return
+      if text[i] == '\\' and i + 1 < text.len: inc i
+      inc i
+    if i == text.len: return
+    result.href = unescapePunctuation(text[content ..< i])
+    inc i
+  else:
+    var depth = 0
+    while i < text.len:
+      if text[i] == '\\' and i + 1 < text.len:
+        i += 2
+        continue
+      if text[i] == '(':
+        inc depth
+      elif text[i] == ')':
+        if depth == 0: break
+        dec depth
+      elif text[i] in Whitespace: break
+      inc i
+    if depth != 0: return
+    result.href = unescapePunctuation(text[begin ..< i])
+  let beforeSpace = i
+  while i < text.len and text[i] in Whitespace: inc i
+  if i > beforeSpace and i < text.len and text[i] in {'"', '\'', '('}:
+    let closer = if text[i] == '(': ')' else: text[i]
+    inc i
+    let titleStart = i
+    while i < text.len and text[i] != closer:
+      if text[i] == '\\' and i + 1 < text.len: inc i
+      inc i
+    if i == text.len: return
+    result.title = unescapePunctuation(text[titleStart ..< i])
+    inc i
+    while i < text.len and text[i] in Whitespace: inc i
+  if i < text.len and text[i] == ')': result.stop = i + 1
+
+proc emailAddress(text: string; requireDot = true): bool =
+  let at = text.find('@')
+  if at <= 0 or at == text.high or text.find('@', at + 1) >= 0: return false
+  for c in text[0 ..< at]:
+    if c notin Letters + Digits + {'!', '#', '$', '%', '&', '\'', '*', '+', '-', '/', '=', '?', '^', '_', '`', '{', '|', '}', '~', '.'}: return false
+  let domain = text[at + 1 .. ^1]
+  if requireDot and '.' notin domain: return false
+  for part in domain.split('.'):
+    if part.len == 0 or part[0] == '-' or part[^1] == '-': return false
+    for c in part:
+      if c notin Letters + Digits + {'-'}: return false
+  true
+
+proc autoTarget(text: string): string =
+  if text.len == 0: return ""
+  for c in text:
+    if c in Whitespace or c in {'<', '>'}: return ""
+  if emailAddress(text, requireDot = false): return "mailto:" & text
+  let colon = text.find(':')
+  if colon >= 2 and colon <= 32 and text[0] in Letters:
+    for c in text[1 ..< colon]:
+      if c notin Letters + Digits + {'+', '-', '.'}: return ""
+    return text
+
+proc bareAutolink(text: string; start: int): tuple[stop: int, href: string] =
+  result.stop = start
+  if start > 0 and text[start - 1] notin Whitespace + {'(', '[', '*', '_', '~'}: return
+  var stop = start
+  while stop < text.len and text[stop] notin Whitespace + {'<', '>', '"', '\'', '`'}:
+    inc stop
+  # GFM excludes terminal punctuation and unmatched closing parentheses.
+  while stop > start:
+    if text[stop - 1] in {'.', ',', ':', ';', '!', '?', ']', '}'}:
+      dec stop
+    elif text[stop - 1] == ')' and text[start ..< stop].count(')') > text[start ..< stop].count('('):
+      dec stop
+    else: break
+  let value = text[start ..< stop]
+  if value.startsWith("http://") or value.startsWith("https://") or value.startsWith("www."):
+    let hostStart = if value.startsWith("www."): 0 else: value.find("://") + 3
+    let hostEnd = value.find('/', hostStart)
+    let host = if hostEnd < 0: value[hostStart .. ^1] else: value[hostStart ..< hostEnd]
+    if host.len == 0 or (value.startsWith("www.") and host.count('.') < 2): return
+    result = (stop, if value.startsWith("www."): "http://" & value else: value)
+  elif emailAddress(value): result = (stop, "mailto:" & value)
+
+proc explicitLink(text: string; start: int):
+    tuple[stop: int, label, href, title: string, image: bool] =
+  ## One recognition path for both the parser and its delimiter scanner: only
+  ## a complete link/image protects its label, destination and title from an
+  ## enclosing strike. A malformed construct remains ordinary inline input.
+  result.stop = -1
+  result.image = text.continuesWith("![", start)
+  if not result.image and text[start] != '[': return
+  let content = start + (if result.image: 2 else: 1)
+  let close = closingBracket(text, content)
+  if close < 0 or close + 1 >= text.len or text[close + 1] != '(': return
+  let target = linkTarget(text, close + 2)
+  if target.stop < 0: return
+  result.stop = target.stop
+  result.label = text[content ..< close]
+  result.href = target.href
+  result.title = target.title
+
+proc opaqueInlineEnd(text: string; start: int): int =
+  ## A complete already-recognized inline token owns its internal punctuation.
+  ## Reuse the token recognizers so strike cannot mistake a URL/title/code's
+  ## `~~` for its own closing delimiter, while incomplete syntax stays literal.
+  if text[start] == '`':
+    let width = tickRun(text, start)
+    let close = codeSpanEnd(text, start, width)
+    if close >= 0: return close + width
+  if text.continuesWith("[[sym:", start):
+    let close = text.find("]]", start + 6)
+    if close >= 0: return close + 2
+  if text.continuesWith("[^", start):
+    let close = text.find(']', start + 2)
+    if close > start + 2 and text[start + 2 ..< close].find(Whitespace) < 0:
+      return close + 1
+  let link = explicitLink(text, start)
+  if link.stop >= 0: return link.stop
+  if text[start] == '<':
+    let close = text.find('>', start + 1)
+    if close >= 0 and autoTarget(text[start + 1 ..< close]).len > 0:
+      return close + 1
+  let auto = bareAutolink(text, start)
+  if auto.stop > start:
+    # Bare links have no explicit closing bracket. A terminal pair can close
+    # the enclosing strike; interior pairs stay in the URL. Authors can use
+    # an angle/explicit link when the URL itself must end with two tildes.
+    if auto.stop >= start + 3 and text.continuesWith("~~", auto.stop - 2) and
+        text[auto.stop - 3] != '~': return auto.stop - 2
+    return auto.stop
+  start
+
 proc parseInlineSpans*(text: string; sourceRelPath: string = "";
                         resolveContentPath: proc(contentRelPath: string): string {.closure.} = nil;
                         resolveSymbol: proc(sym: string): string {.closure.} = nil): seq[InlineSpan] =
-  ## Scans one already-joined line of body text for `![alt](src)`,
-  ## `[text](href)`, `` `code` ``, and `[[sym:Symbol]]` markers, normalizing
-  ## every link/image target against `sourceRelPath` (see
-  ## `normalizeRelativeLink` for what `resolveContentPath` does) and
-  ## resolving every `[[sym:...]]` cross-reference through `resolveSymbol`
-  ## (M8 deliverable 2: returns the symbol-anchor href, or "" for an unknown
-  ## symbol). Any marker left unterminated (no matching closer) degrades
-  ## gracefully to plain text rather than raising, since hand-authored
-  ## markdown will eventually contain a stray backtick or bracket.
+  ## Inline syntax is deliberately bounded: code, links/images with optional
+  ## titles, symbol refs, strike and footnote refs, plus angle/bare autolinks.
+  ## Unknown and unmatched syntax remains literal; raw HTML is never trusted.
   var i = 0
   var plain = ""
   template flushPlain() =
     if plain.len > 0:
       result.add InlineSpan(kind: ikText, text: plain)
       plain = ""
-
   while i < text.len:
-    if text[i] == '[' and text.continuesWith("[[sym:", i):
+    if text[i] in {'\n', '\r'}:
+      plain = plain.strip(leading = false, trailing = true)
+      plain.add ' '
+      if text[i] == '\r' and i + 1 < text.len and text[i + 1] == '\n': inc i
+      inc i
+      while i < text.len and text[i] in {' ', '\t'}: inc i
+      continue
+    if text[i] == '\\' and i + 1 < text.len and text[i + 1] in PunctuationChars:
+      flushPlain()
+      result.add InlineSpan(kind: ikText, text: $text[i + 1], escaped: true)
+      i += 2
+      continue
+    if text[i] == '`':
+      let width = tickRun(text, i)
+      let close = codeSpanEnd(text, i, width)
+      if close >= 0:
+        flushPlain()
+        result.add InlineSpan(kind: ikCode, text: codeSpanText(text[i + width ..< close]))
+        i = close + width
+      else:
+        plain.add text[i ..< i + width]
+        i += width
+      continue
+    if text.continuesWith("[[sym:", i):
       let close = text.find("]]", i + 6)
       if close >= 0:
         flushPlain()
         let query = text[i + 6 ..< close].strip()
         let href = if resolveSymbol != nil: resolveSymbol(query) else: ""
-        result.add InlineSpan(kind: ikSymRef, text: query, href: href,
-                              isRelative: href.len > 0)
+        result.add InlineSpan(kind: ikSymRef, text: query, href: href, isRelative: href.len > 0)
         i = close + 2
         continue
-      plain.add text[i]
-      inc i
-    elif text[i] == '!' and i + 1 < text.len and text[i + 1] == '[':
-      let closeBracket = text.find(']', i + 2)
-      if closeBracket >= 0 and closeBracket + 1 < text.len and text[closeBracket + 1] == '(':
-        let closeParen = text.find(')', closeBracket + 2)
-        if closeParen >= 0:
+    if text.continuesWith("[^", i):
+      let close = text.find(']', i + 2)
+      if close > i + 2:
+        let label = text[i + 2 ..< close]
+        if label.find({' ', '\t', '\n', '\r'}) < 0:
           flushPlain()
-          let alt = text[i + 2 ..< closeBracket]
-          let src = text[closeBracket + 2 ..< closeParen]
-          let (normHref, isRel) = normalizeRelativeLink(src, sourceRelPath, resolveContentPath)
-          result.add InlineSpan(kind: ikImage, text: alt, href: normHref, isRelative: isRel)
-          i = closeParen + 1
+          result.add InlineSpan(kind: ikFootnoteRef, text: label)
+          i = close + 1
           continue
-      plain.add text[i]
-      inc i
-    elif text[i] == '[':
-      let closeBracket = text.find(']', i + 1)
-      if closeBracket >= 0 and closeBracket + 1 < text.len and text[closeBracket + 1] == '(':
-        let closeParen = text.find(')', closeBracket + 2)
-        if closeParen >= 0:
-          flushPlain()
-          let linkText = text[i + 1 ..< closeBracket]
-          let href = text[closeBracket + 2 ..< closeParen]
-          let (normHref, isRel) = normalizeRelativeLink(href, sourceRelPath, resolveContentPath)
-          result.add InlineSpan(kind: ikLink, text: linkText, href: normHref, isRelative: isRel)
-          i = closeParen + 1
+    let link = explicitLink(text, i)
+    if link.stop >= 0:
+      flushPlain()
+      let (href, relative) = normalizeRelativeLink(link.href, sourceRelPath, resolveContentPath)
+      result.add InlineSpan(kind: (if link.image: ikImage else: ikLink),
+        text: unescapePunctuation(link.label), href: href, title: link.title,
+        isRelative: relative, linkOrigin: loExplicit, labelSource: link.label)
+      i = link.stop
+      continue
+    if text.continuesWith("~~", i) and (i == 0 or text[i - 1] != '~') and
+        i + 2 < text.len and text[i + 2] notin Whitespace + {'~'}:
+      var close = i + 2
+      while close < text.len:
+        if text[close] == '\\' and close + 1 < text.len:
+          close += 2
           continue
-      plain.add text[i]
-      inc i
-    elif text[i] == '`':
-      let closeTick = text.find('`', i + 1)
-      if closeTick >= 0:
+        let endToken = opaqueInlineEnd(text, close)
+        if endToken > close:
+          close = endToken
+          continue
+        if text.continuesWith("~~", close) and text[close - 1] notin Whitespace + {'~'} and
+            (close + 2 == text.len or text[close + 2] != '~'): break
+        inc close
+      if close > i + 2 and close + 1 < text.len:
         flushPlain()
-        result.add InlineSpan(kind: ikCode, text: text[i + 1 ..< closeTick])
-        i = closeTick + 1
+        let children = parseInlineSpans(text[i + 2 ..< close], sourceRelPath, resolveContentPath, resolveSymbol)
+        result.add InlineSpan(kind: ikStrike, text: spansText(children), children: children)
+        i = close + 2
         continue
-      plain.add text[i]
-      inc i
-    else:
-      plain.add text[i]
-      inc i
+    if text[i] == '<':
+      let close = text.find('>', i + 1)
+      if close >= 0:
+        let value = text[i + 1 ..< close]
+        let href = autoTarget(value)
+        if href.len > 0:
+          flushPlain()
+          result.add InlineSpan(kind: ikLink, text: value, href: href, linkOrigin: loAngleAutolink)
+          i = close + 1
+          continue
+    let auto = bareAutolink(text, i)
+    if auto.stop > i:
+      flushPlain()
+      result.add InlineSpan(kind: ikLink, text: text[i ..< auto.stop], href: auto.href, linkOrigin: loBareAutolink)
+      i = auto.stop
+      continue
+    plain.add text[i]
+    inc i
   flushPlain()
 
 # --- Block-level parsing --------------------------------------------------
@@ -541,7 +847,10 @@ proc isComponentTagLine(line: string): bool =
   ## immediately by an uppercase letter (the JSX-style Capitalized-name
   ## convention that distinguishes a component from ordinary lowercase
   ## HTML like `<div>`/`<br/>`, which stays plain markdown text).
-  line.len >= 2 and line[0] == '<' and line[1] in {'A' .. 'Z'}
+  if line.len < 2 or line[0] != '<' or line[1] notin {'A' .. 'Z'}: return false
+  let endAngle = line.find('>')
+  if endAngle > 0 and autoTarget(line[1 ..< endAngle]).len > 0: return false
+  true
 
 proc parseComponentProps(attrs: string): seq[ComponentProp] =
   ## Parses the attribute run of a component tag (everything between the
@@ -840,16 +1149,88 @@ proc parseFormFields(bodyLines: seq[string]): seq[FormField] =
       options: options,
       required: props.getBool("required"))
 
+proc fenceWidth(line: string): int =
+  if line.len == 0 or line[0] notin {'`', '~'}: return 0
+  while result < line.len and line[result] == line[0]: inc result
+  if result < 3: result = 0
+
+proc closesFence(line: string; marker: char; width: int): bool =
+  let s = line.strip()
+  s.len >= width and s[0] == marker and fenceWidth(s) >= width and
+    s[fenceWidth(s) .. ^1].strip().len == 0
+
+proc fenceInfo(info: string; lineCount: int): tuple[lang: string, attrs: FenceAttributes] =
+  var rest = info.strip()
+  let firstSpace = rest.find({' ', '\t', '{'})
+  if rest.len > 0 and rest[0] != '{' and not rest.startsWith("title="):
+    let stop = if firstSpace < 0: rest.len else: firstSpace
+    result.lang = rest[0 ..< stop]
+    rest = rest[stop .. ^1].strip()
+  # Limit expansions to existing lines: a malformed enormous range cannot
+  # allocate arbitrarily, and highlighting a nonexistent line has no effect.
+  var brace = -1
+  var quote = '\0'
+  for pos, ch in rest:
+    if quote != '\0':
+      if ch == quote: quote = '\0'
+    elif ch in {'"', '\''}: quote = ch
+    elif ch == '{':
+      brace = pos
+      break
+  let close = if brace >= 0: rest.find('}', brace + 1) else: -1
+  if close >= 0:
+    for segment in rest[brace + 1 ..< close].split(','):
+      let bounds = segment.strip().split('-')
+      try:
+        let first = parseInt(bounds[0])
+        let last = if bounds.len == 2: parseInt(bounds[1]) else: first
+        if bounds.len <= 2 and first > 0 and last >= first:
+          for n in first .. min(last, lineCount):
+            if n notin result.attrs.highlightLines: result.attrs.highlightLines.add n
+      except ValueError: discard
+    rest = rest[0 ..< brace] & rest[close + 1 .. ^1]
+  result.attrs.highlightLines.sort()
+  let props = parseComponentProps(rest)
+  result.attrs.title = props.getStr("title")
+  result.attrs.diff = props.getBool("diff")
+
+proc footnoteDefinition(line: string): tuple[label, body: string] =
+  if not line.startsWith("[^"): return
+  let close = line.find("]:", 2)
+  if close <= 2: return
+  let label = line[2 ..< close]
+  if label.find({' ', '\t', '\r', '\n'}) >= 0: return
+  (label, line[close + 2 .. ^1].strip())
+
+proc quoteLine(line: string): bool =
+  line.startsWith(">")
+
+proc italicCaption(line: string): bool =
+  line.len > 2 and line[0] in {'*', '_'} and line[^1] == line[0] and
+    line[1] != line[0] and line[^2] != line[0]
+
+proc headingLabel*(spans: seq[InlineSpan]): string =
+  ## Keep heading display compatibility while deriving anchors/ToC from the
+  ## visible link/code text. Unparsed punctuation remains literal; in
+  ## particular snake_case must keep its established snake-case anchor.
+  ## Footnote references are annotations, not part of a heading's stable name.
+  for span in spans:
+    if span.kind == ikStrike: result.add headingLabel(span.children)
+    elif span.kind != ikFootnoteRef: result.add span.text
+
+proc headingLabel*(text: string): string = headingLabel(parseInlineSpans(text))
+
 proc startsAnotherBlock(line: string): bool =
   ## Whether `line` (already stripped) begins a *different* block kind,
   ## so paragraph accumulation knows where to stop even without a
   ## blank-line separator.
-  line.startsWith("```") or line.startsWith(":::") or
+  fenceWidth(line) >= 3 or line.startsWith(":::") or
+    quoteLine(line) or line == "<!--more-->" or footnoteDefinition(line).label.len > 0 or
     isUnorderedListItem(line) or isOrderedListItem(line) or
     isTableRow(line) or headingMarkerLevel(line) > 0 or
     isComponentTagLine(line)
 
-proc parseMarkdownBlocks*(body: string; sourceRelPath: string = "";
+proc parseBlocks(body: string; ctx: ParseContext; sourceRelPath: string = "";
                            resolveContentPath: proc(contentRelPath: string): string {.closure.} = nil;
                            resolveSymbol: proc(sym: string): string {.closure.} = nil;
                            isComponentKnown: proc(name: string): bool {.closure.} = nil;
@@ -868,7 +1249,6 @@ proc parseMarkdownBlocks*(body: string; sourceRelPath: string = "";
   ## so a plugin can define its own `:::` block, but AFTER `:::tabs`, which
   ## stays a built-in.
   let lines = body.splitLines()
-  var anchorReg = newAnchorIdRegistry()
   var i = 0
   while i < lines.len:
     let stripped = lines[i].strip()
@@ -876,16 +1256,90 @@ proc parseMarkdownBlocks*(body: string; sourceRelPath: string = "";
       inc i
       continue
 
-    if stripped.startsWith("```"):
-      let lang = stripped[3 .. ^1].strip()
+    let width = fenceWidth(stripped)
+    if width >= 3:
+      let marker = stripped[0]
+      let info = stripped[width .. ^1].strip()
       inc i
       var codeLines: seq[string] = @[]
-      while i < lines.len and lines[i].strip() != "```":
+      while i < lines.len and not closesFence(lines[i], marker, width):
         codeLines.add lines[i]
         inc i
       if i < lines.len: inc i
-      result.add Block(kind: bkCodeFence, lang: lang, code: codeLines.join("\n"))
+      var (lang, attrs) = fenceInfo(info, codeLines.len)
+      if attrs.diff:
+        for index, line in codeLines:
+          if line.len > 0 and line[0] in {'+', '-'}:
+            attrs.diffLines.add DiffLine(line: index + 1,
+              kind: (if line[0] == '+': dlAdded else: dlRemoved))
+      result.add Block(kind: bkCodeFence, lang: lang, code: codeLines.join("\n"), fenceAttrs: attrs)
       continue
+
+    if stripped == "<!--more-->":
+      result.add Block(kind: bkExcerptBreak)
+      inc i
+      continue
+
+    let definition = footnoteDefinition(stripped)
+    if ctx.footnotes and definition.label.len > 0:
+      var bodyLines = @[definition.body]
+      inc i
+      while i < lines.len:
+        if lines[i].startsWith("    "):
+          bodyLines.add lines[i][4 .. ^1]
+          inc i
+        elif lines[i].strip().len == 0 and i + 1 < lines.len and lines[i + 1].startsWith("    "):
+          bodyLines.add ""
+          inc i
+        else: break
+      var duplicate = false
+      for note in ctx.definitions:
+        if note.label == definition.label: duplicate = true
+      if not duplicate:
+        let noteBlocks = parseBlocks(bodyLines.join("\n"), ctx, sourceRelPath,
+          resolveContentPath, resolveSymbol, isComponentKnown, knownDirective, renderDirective)
+        ctx.definitions.add Footnote(label: definition.label, blocks: noteBlocks)
+      continue
+
+    if quoteLine(stripped):
+      var quoteLines: seq[string]
+      while i < lines.len and quoteLine(lines[i].strip()):
+        var line = lines[i].strip(leading = true, trailing = false)[1 .. ^1]
+        if line.len > 0 and line[0] == ' ': line = line[1 .. ^1]
+        quoteLines.add line
+        inc i
+      result.add Block(kind: bkBlockquote, quoteBlocks: parseBlocks(quoteLines.join("\n"), ctx,
+        sourceRelPath, resolveContentPath, resolveSymbol, isComponentKnown, knownDirective, renderDirective))
+      continue
+
+    if stripped == ":::figure":
+      inc i
+      var figureLines: seq[string]
+      while i < lines.len and lines[i].strip() != ":::":
+        if lines[i].strip().len > 0: figureLines.add lines[i].strip()
+        inc i
+      if i < lines.len: inc i
+      let image = if figureLines.len > 0: parseInlineSpans(figureLines[0], sourceRelPath, resolveContentPath, resolveSymbol) else: @[]
+      if image.len == 1 and image[0].kind == ikImage:
+        var caption = figureLines[1 .. ^1].join(" ")
+        if italicCaption(caption): caption = caption[1 ..< caption.len - 1]
+        result.add Block(kind: bkFigure, figureImage: image[0],
+          caption: parseInlineSpans(caption, sourceRelPath, resolveContentPath, resolveSymbol))
+      else:
+        # Malformed author input remains visible, never an empty figure.
+        result.add Block(kind: bkParagraph, spans: parseInlineSpans(figureLines.join(" "), sourceRelPath, resolveContentPath, resolveSymbol))
+      continue
+
+    if stripped.startsWith("!["):
+      let image = parseInlineSpans(stripped, sourceRelPath, resolveContentPath, resolveSymbol)
+      var captionLine = i + 1
+      if captionLine < lines.len and lines[captionLine].strip().len == 0: inc captionLine
+      if image.len == 1 and image[0].kind == ikImage and captionLine < lines.len and italicCaption(lines[captionLine].strip()):
+        let caption = lines[captionLine].strip()
+        result.add Block(kind: bkFigure, figureImage: image[0],
+          caption: parseInlineSpans(caption[1 ..< caption.len - 1], sourceRelPath, resolveContentPath, resolveSymbol))
+        i = captionLine + 1
+        continue
 
     if stripped.startsWith(":::") and stripped[3 .. ^1].strip().toLowerAscii() == "tabs":
       inc i
@@ -896,7 +1350,7 @@ proc parseMarkdownBlocks*(body: string; sourceRelPath: string = "";
       template flushTab() =
         if haveTab:
           tabs.add TabPanel(title: title,
-            blocks: parseMarkdownBlocks(panelLines.join("\n"), sourceRelPath, resolveContentPath, resolveSymbol, isComponentKnown, knownDirective, renderDirective))
+            blocks: parseBlocks(panelLines.join("\n"), ctx, sourceRelPath, resolveContentPath, resolveSymbol, isComponentKnown, knownDirective, renderDirective))
       while i < lines.len and lines[i].strip() != ":::":
         let rawLine = lines[i]
         let lineStripped = rawLine.strip()
@@ -1099,8 +1553,9 @@ proc parseMarkdownBlocks*(body: string; sourceRelPath: string = "";
     let level = headingMarkerLevel(stripped)
     if level > 0:
       let headingText = stripped[level + 1 .. ^1].strip()
-      let headingId = anchorReg.nextId(headingText)
-      result.add Block(kind: bkHeading, level: level, headingText: headingText, headingId: headingId)
+      let headingSpans = parseInlineSpans(headingText, sourceRelPath, resolveContentPath, resolveSymbol)
+      result.add Block(kind: bkHeading, level: level, headingText: headingText,
+        headingSpans: headingSpans)
       inc i
       continue
 
@@ -1117,24 +1572,227 @@ proc parseMarkdownBlocks*(body: string; sourceRelPath: string = "";
     if isUnorderedListItem(stripped) or isOrderedListItem(stripped):
       let ordered = isOrderedListItem(stripped)
       var items: seq[seq[InlineSpan]] = @[]
+      var tasks: seq[TaskState]
+      var hasTasks = false
       while i < lines.len:
         let itemLine = lines[i].strip()
         if itemLine.len == 0: break
         if ordered != isOrderedListItem(itemLine): break
         if not ordered and not isUnorderedListItem(itemLine): break
-        items.add parseInlineSpans(listItemText(itemLine), sourceRelPath, resolveContentPath, resolveSymbol)
+        var content = listItemText(itemLine)
+        var task = tsNone
+        if content.len >= 3 and content[0] == '[' and content[1] in {' ', 'x', 'X'} and content[2] == ']' and (content.len == 3 or content[3] in {' ', '\t'}):
+          task = if content[1] == ' ': tsUnchecked else: tsChecked
+          content = content[3 .. ^1].strip(leading = true, trailing = false)
+          hasTasks = true
+        tasks.add task
+        items.add parseInlineSpans(content, sourceRelPath, resolveContentPath, resolveSymbol)
         inc i
-      result.add Block(kind: bkList, listKind: (if ordered: lkOrdered else: lkUnordered), items: items)
+      result.add Block(kind: bkList, listKind: (if ordered: lkOrdered else: lkUnordered), items: items, tasks: (if hasTasks: tasks else: @[]))
       continue
 
-    var paraLines: seq[string] = @[stripped]
+    var paraLines: seq[string] = @[lines[i].strip(leading = true, trailing = false)]
     inc i
     while i < lines.len:
       let nextStripped = lines[i].strip()
       if nextStripped.len == 0 or startsAnotherBlock(nextStripped): break
-      paraLines.add nextStripped
+      paraLines.add lines[i]
       inc i
-    result.add Block(kind: bkParagraph, spans: parseInlineSpans(paraLines.join(" "), sourceRelPath, resolveContentPath, resolveSymbol))
+    result.add Block(kind: bkParagraph, spans: parseInlineSpans(paraLines.join("\n").strip(), sourceRelPath, resolveContentPath, resolveSymbol))
+
+proc hasFootnoteReference*(spans: seq[InlineSpan]): bool =
+  ## Consumers that retain literal legacy headings can use the same predicate
+  ## for rendering and reference validation when footnotes need real targets.
+  for span in spans:
+    if span.kind == ikFootnoteRef or hasFootnoteReference(span.children): return true
+
+proc visitInlineSpans*(blocks: seq[Block]; visitor: proc(span: InlineSpan) {.closure.};
+                      includeHeadingSpans: proc(heading: Block): bool {.closure.} = nil) =
+  ## Traverse every authored inline location, including nested prose and
+  ## directive bodies. Reference checkers share this traversal with excerpts.
+  proc spans(items: seq[InlineSpan]) =
+    for item in items:
+      visitor(item)
+      spans(item.children)
+  for blk in blocks:
+    case blk.kind
+    of bkHeading:
+      if includeHeadingSpans == nil or includeHeadingSpans(blk): spans(blk.headingSpans)
+    of bkParagraph: spans(blk.spans)
+    of bkList:
+      for item in blk.items: spans(item)
+    of bkAdmonition:
+      for para in blk.bodyParagraphs: spans(para)
+    of bkTabs:
+      for tab in blk.tabs: visitInlineSpans(tab.blocks, visitor, includeHeadingSpans)
+    of bkBlockquote: visitInlineSpans(blk.quoteBlocks, visitor, includeHeadingSpans)
+    of bkFigure:
+      spans(@[blk.figureImage])
+      spans(blk.caption)
+    of bkFootnotes:
+      for note in blk.footnotes: visitInlineSpans(note.blocks, visitor, includeHeadingSpans)
+    of bkCardGrid:
+      for card in blk.cards:
+        for para in card.body: spans(para)
+    of bkFaq:
+      for item in blk.faqItems:
+        for para in item.answer: spans(para)
+    else: discard
+
+proc assignHeadingAnchors(blocks: var seq[Block]; registry: var AnchorIdRegistry) =
+  ## Resolve references before deriving heading names: an undefined footnote
+  ## is visible literal text, while a defined one remains an annotation. Reserve
+  ## every rendered heading before allocating endnote/reference IDs so the
+  ## complete document shares one collision-free namespace.
+  for blk in blocks.mitems:
+    case blk.kind
+    of bkHeading:
+      if blk.headingId.len > 0:
+        blk.headingId = registry.nextRawId(blk.headingId)
+      else:
+        let label = if blk.headingSpans.len > 0: headingLabel(blk.headingSpans)
+                    else: blk.headingText
+        blk.headingId = registry.nextId(label)
+    of bkBlockquote: assignHeadingAnchors(blk.quoteBlocks, registry)
+    of bkTabs:
+      for tab in blk.tabs.mitems: assignHeadingAnchors(tab.blocks, registry)
+    of bkFootnotes:
+      for note in blk.footnotes.mitems: assignHeadingAnchors(note.blocks, registry)
+    else: discard
+
+proc resolveFootnotes(blocks: var seq[Block]; ctx: ParseContext) =
+  var order: seq[int]
+  proc resolveSpans(spans: var seq[InlineSpan]; assignIds: bool) =
+    for span in spans.mitems:
+      if span.kind == ikFootnoteRef and assignIds:
+        let index = order[span.footnoteNumber - 1]
+        let reference = ctx.anchors.nextRawId("fnref-" & $span.footnoteNumber)
+        ctx.definitions[index].referenceIds.add reference
+        span.href = "#" & ctx.definitions[index].id
+        span.referenceId = reference
+      elif span.kind == ikFootnoteRef:
+        var index = -1
+        for n, note in ctx.definitions:
+          if note.label == span.text:
+            index = n
+            break
+        if index < 0:
+          span = InlineSpan(kind: ikText, text: "[^" & span.text & "]")
+        else:
+          if ctx.definitions[index].number == 0:
+            order.add index
+            ctx.definitions[index].number = order.len
+          span.footnoteNumber = ctx.definitions[index].number
+      resolveSpans(span.children, assignIds)
+  proc resolveBlocks(items: var seq[Block]; assignIds = false) =
+    for blk in items.mitems:
+      case blk.kind
+      of bkHeading: resolveSpans(blk.headingSpans, assignIds)
+      of bkParagraph: resolveSpans(blk.spans, assignIds)
+      of bkList:
+        for item in blk.items.mitems: resolveSpans(item, assignIds)
+      of bkAdmonition:
+        for para in blk.bodyParagraphs.mitems: resolveSpans(para, assignIds)
+      of bkTabs:
+        for tab in blk.tabs.mitems: resolveBlocks(tab.blocks, assignIds)
+      of bkBlockquote: resolveBlocks(blk.quoteBlocks, assignIds)
+      of bkFigure: resolveSpans(blk.caption, assignIds)
+      of bkFootnotes:
+        for note in blk.footnotes.mitems: resolveBlocks(note.blocks, assignIds)
+      of bkCardGrid:
+        for card in blk.cards.mitems:
+          for para in card.body.mitems: resolveSpans(para, assignIds)
+      of bkFaq:
+        for item in blk.faqItems.mitems:
+          for para in item.answer.mitems: resolveSpans(para, assignIds)
+      else: discard
+  resolveBlocks(blocks)
+  var n = 0
+  while n < order.len:
+    # Work on a value: a reference discovered here may grow the order list.
+    # Each definition is visited once, even for cyclic note references.
+    let index = order[n]
+    var body = ctx.definitions[index].blocks
+    resolveBlocks(body)
+    ctx.definitions[index].blocks = body
+    inc n
+  if order.len > 0:
+    var notes: seq[Footnote]
+    for index in order: notes.add ctx.definitions[index]
+    blocks.add Block(kind: bkFootnotes, footnotes: notes)
+  assignHeadingAnchors(blocks, ctx.anchors)
+  if order.len > 0:
+    for index in order:
+      ctx.definitions[index].id = ctx.anchors.nextRawId("fn-" & $ctx.definitions[index].number)
+    resolveBlocks(blocks, assignIds = true)
+    for note in blocks[^1].footnotes.mitems:
+      let definition = ctx.definitions[order[note.number - 1]]
+      note.id = definition.id
+      note.referenceIds = definition.referenceIds
+
+proc parseMarkdownBlocks*(body: string; sourceRelPath: string = "";
+                           resolveContentPath: proc(contentRelPath: string): string {.closure.} = nil;
+                           resolveSymbol: proc(sym: string): string {.closure.} = nil;
+                           isComponentKnown: proc(name: string): bool {.closure.} = nil;
+                           knownDirective: proc(name: string): bool {.closure.} = nil;
+                           renderDirective: proc(name, args, body: string): seq[Block] {.closure.} = nil;
+                           footnotes: bool = true): seq[Block] =
+  ## A fresh context per document keeps heading and footnote IDs unique across
+  ## nested containers, without leaking state between parses or backends.
+  ## `footnotes = false` keeps definitions in the text stream for targets
+  ## whose published contract treats notes literally (for example email).
+  let ctx = ParseContext(anchors: newAnchorIdRegistry(), footnotes: footnotes)
+  result = parseBlocks(body, ctx, sourceRelPath, resolveContentPath, resolveSymbol,
+    isComponentKnown, knownDirective, renderDirective)
+  resolveFootnotes(result, ctx)
+
+proc excerptBlocks*(blocks: seq[Block]): seq[Block] =
+  ## The top-level excerpt marker wins; without one use the first paragraph.
+  ## Work on the parsed AST so marker-like code cannot truncate an excerpt.
+  var marked = false
+  for blk in blocks:
+    if blk.kind == bkExcerptBreak:
+      marked = true
+      break
+    if blk.kind != bkFootnotes: result.add blk
+  if not marked:
+    result = @[]
+    for blk in blocks:
+      if blk.kind == bkParagraph:
+        result.add blk
+        break
+  # Keep referenced endnotes self-contained, including transitive references,
+  # but drop backlinks to occurrences outside this excerpt.
+  var refs: seq[string]
+  proc collect(span: InlineSpan) =
+    if span.kind == ikFootnoteRef and span.referenceId notin refs:
+      refs.add span.referenceId
+  visitInlineSpans(result, collect)
+  var notes: seq[Footnote]
+  for blk in blocks:
+    if blk.kind == bkFootnotes: notes = blk.footnotes
+  var selected: seq[int]
+  var changed = true
+  while changed:
+    changed = false
+    for n, note in notes:
+      if n in selected: continue
+      for reference in note.referenceIds:
+        if reference in refs:
+          selected.add n
+          visitInlineSpans(note.blocks, collect)
+          changed = true
+          break
+  if selected.len > 0:
+    var kept: seq[Footnote]
+    for n, note in notes:
+      if n in selected:
+        var copy = note
+        copy.referenceIds = @[]
+        for reference in note.referenceIds:
+          if reference in refs: copy.referenceIds.add reference
+        kept.add copy
+    result.add Block(kind: bkFootnotes, footnotes: kept)
 
 proc buildHeadingTree*(flat: seq[HeadingNode]): seq[HeadingNode] =
   ## Nests a flat, in-order heading list into a tree: a heading becomes
@@ -1169,7 +1827,16 @@ proc parseMarkdownDoc*(body: string; sourceRelPath: string = "";
   ## for the `[[sym:...]]` cross-reference `resolveSymbol` resolves).
   let blocks = parseMarkdownBlocks(body, sourceRelPath, resolveContentPath, resolveSymbol, isComponentKnown, knownDirective, renderDirective)
   var flat: seq[HeadingNode] = @[]
-  for blk in blocks:
-    if blk.kind == bkHeading:
-      flat.add HeadingNode(level: blk.level, text: blk.headingText, id: blk.headingId)
-  MarkdownDoc(blocks: blocks, headingTree: buildHeadingTree(flat))
+  proc headings(items: seq[Block]) =
+    for blk in items:
+      case blk.kind
+      of bkHeading:
+        let label = if blk.headingSpans.len > 0: headingLabel(blk.headingSpans)
+                    else: headingLabel(blk.headingText)
+        flat.add HeadingNode(level: blk.level, text: label, id: blk.headingId)
+      of bkBlockquote: headings(blk.quoteBlocks)
+      of bkTabs:
+        for tab in blk.tabs: headings(tab.blocks)
+      else: discard
+  headings(blocks)
+  MarkdownDoc(blocks: blocks, headingTree: buildHeadingTree(flat), excerpt: excerptBlocks(blocks))

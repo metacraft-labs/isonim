@@ -231,6 +231,7 @@ test-c:
     nim c -r tests/test_content_anchors.nim
     nim c -r tests/test_content_highlight.nim
     nim c -r tests/test_content_directives.nim
+    nim c -r --out:build/tests/test_content_prose --nimcache:build/nimcache/test_content_prose tests/test_content_prose.nim
     nim c -r tests/test_theming_dtcg.nim
     # isonim/static: the static-site primitives (export, sitemap, robots, SEO
     # head, script policy, CSP, assets, build.json). The exporter writes
@@ -340,6 +341,7 @@ test-js: build-tailwind
     nim js -r tests/test_content_anchors.nim
     nim js -r tests/test_content_highlight.nim
     nim js -r tests/test_content_directives.nim
+    nim js -r --out:build/tests/test_content_prose.js --nimcache:build/nimcache/test_content_prose_js tests/test_content_prose.nim
     # isonim/static (see test-c).
     nim js -r tests/test_static_script_policy.nim
     nim js -r --out:build/tests/test_static_metadata.js --nimcache:build/nimcache/test_static_metadata_js tests/test_static_metadata.nim
@@ -1973,3 +1975,12 @@ test-signal-checkpoints:
 # Exact ordinary-bundle comparison against the checkpoint foundation's parent.
 verify_xr_m5_zero_cost_default parent="d2193dc4935039f5faa0836e0a26eed9e15f1a72":
     bash tools/verify_signal_checkpoints_zero_cost.sh {{parent}}
+
+# The shared prose contract, independently selectable on both targets.
+test-content-prose:
+    nim c -r --out:build/tests/test_content_prose --nimcache:build/nimcache/test_content_prose tests/test_content_prose.nim
+    nim js -r --out:build/tests/test_content_prose.js --nimcache:build/nimcache/test_content_prose_js tests/test_content_prose.nim
+
+# Negative control: restore the original code-span logic in an isolated copy.
+test-content-prose-mutation:
+    bash tests/test_content_prose_mutation.sh

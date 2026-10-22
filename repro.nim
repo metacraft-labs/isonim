@@ -376,6 +376,7 @@
 ## for the ``uses:`` declarations to resolve at all ("typed tool provisioning
 ## is required for uses declarations").
 
+import std/strutils
 import repro_project_dsl
 import repro_dsl_stdlib/foreign_env
 
@@ -441,6 +442,14 @@ const isonimTestSpecs: seq[IsonimTestSpec] = @[
   spec("test_server_functions"),
   spec("test_data_loading"),
   spec("test_file_routes"),
+  # Shared content parsers, renderers and token loader.
+  spec("test_content_markdown"),
+  spec("test_content_frontmatter"),
+  spec("test_content_anchors"),
+  spec("test_content_highlight"),
+  spec("test_content_directives"),
+  spec("test_content_prose"),
+  spec("test_theming_dtcg"),
   # --- isonim/static: static export, sitemap, robots, head, script policy ---
   spec("test_static_export"),
   spec("test_static_script_policy"),
@@ -580,6 +589,13 @@ const isonimJsTestSpecs: seq[string] = @[
   "test_web_components_advanced", "test_third_party", "poc_monaco_host",
   "test_accessibility", "test_router", "test_server_functions",
   "test_data_loading",
+  # Pure shared content suites run on both backends.
+  "test_content_markdown",
+  "test_content_frontmatter",
+  "test_content_anchors",
+  "test_content_highlight",
+  "test_content_directives",
+  "test_content_prose",
   # isonim/static: the script policy and SEO head are pure (dual-backend).
   "test_static_script_policy",
   "test_static_metadata",
@@ -832,6 +848,8 @@ package isonim:
     var inspectorFoundationActions: seq[BuildActionDef] = @[]
     var chatLifetimeActions: seq[BuildActionDef] = @[]
     var testExecuteActions: seq[BuildActionDef] = @[]
+    var contentNativeActions: seq[BuildActionDef] = @[]
+    var contentJsActions: seq[BuildActionDef] = @[]
     var popupHeadlessActions: seq[BuildActionDef] = @[]
     var c2HeadlessActions: seq[BuildActionDef] = @[]
     var c3HeadlessActions: seq[BuildActionDef] = @[]
@@ -863,8 +881,11 @@ package isonim:
       if executeToo:
         let executeEdge = edge.testBinary.run(
           actionId = "isonim.test_execute." & stem,
+          extraInputs = (if stem == "test_theming_dtcg": @["../codetracer-design-system/brand/brand.json", "../codetracer-design-system/alias/alias.json", "../codetracer-design-system/mapped/mapped.json"] else: @[]),
           registerImplicitName = false)
         executeActions.add(executeEdge)
+        if stem.startsWith("test_content_") or stem == "test_theming_dtcg":
+          contentNativeActions.add(executeEdge)
         if stem == "test_editor_shell_views": currentShellActions.add(executeEdge)
         if stem == "test_editor_renderer_boundaries": rendererBoundaryActions.add(executeEdge)
         if stem == "test_editor_preview_mount": previewMountActions.add(executeEdge)
@@ -1443,6 +1464,7 @@ package isonim:
     for stem in isonimJsTestSpecs:
       let jsSource = "tests/" & stem & ".nim"
       let jsOut = "build/js-test/" & stem & ".js"
+      let pureContent = stem.startsWith("test_content_")
       let jsCompileEdge = nim.js(
         source = jsSource,
         output = jsOut,
@@ -1458,8 +1480,8 @@ package isonim:
         hintsOff = true,
         warningsOff = true,
         actionId = "isonim.js_build." & stem,
-        after = @[tailwindStylesEdge],
-        extraInputs = @["src", "build/tailwind-styles.json", "isonim.nimble"] & (if stem == "test_editor_renderer_boundaries": @["tests/test_editor_source_scope_labels.nim", "tests/test_editor_shell_chat_lifetime.nim", "tests/helpers/editor_source_scope_label_cases.nim"] else: @[]))
+        after = (if pureContent: @[] else: @[tailwindStylesEdge]),
+        extraInputs = @["src", "isonim.nimble"] & (if pureContent: @[] else: @["build/tailwind-styles.json"]) & (if stem == "test_editor_renderer_boundaries": @["tests/test_editor_source_scope_labels.nim", "tests/test_editor_shell_chat_lifetime.nim", "tests/helpers/editor_source_scope_label_cases.nim"] else: @[]))
       testBuildActions.add(jsCompileEdge)
       jsBuildActions.add(jsCompileEdge)
       let guardedC2 = stem in ["test_effects", "test_editor_widget_property_row", "test_editor_color_popover", "test_editor_section_fill", "test_editor_source_scope_row"]
@@ -1483,6 +1505,7 @@ package isonim:
       if stem in ["test_editor_section_source", "test_editor_source_scope_row", "test_editor_section_component_props"]: sourceLabelActions.add(jsExecuteEdge)
       if stem in ["test_editor_section_appearance", "test_editor_section_component_props", "test_editor_section_layout", "test_editor_section_position", "test_editor_section_stroke", "test_editor_section_effects"]: c4aHeadlessActions.add(jsExecuteEdge)
       jsExecuteActions.add(jsExecuteEdge)
+      if pureContent: contentJsActions.add(jsExecuteEdge)
       if stem in ["test_editor_color_popover", "test_signals"]: popupHeadlessActions.add(jsExecuteEdge)
 
     # FUP-J — JS compile-only stems: a ``nim.js`` BUILD edge with NO node
@@ -1592,6 +1615,19 @@ package isonim:
     discard collect("test-editor-scenarios-stress", @[scenarioStressEdge])
     discard collect("test-editor-scenarios-gui", @[scenarioGuiEdge])
     discard collect("test-editor-scenarios", @[scenarioNativeEdge, scenarioResourcesEdge, scenarioStressEdge, scenarioGuiEdge])
+    # The mutation gate intentionally compiles a disposable modified source
+    # tree at runtime, so it is a test boundary rather than a build prerequisite.
+    let proseMutation = sh.shell(
+      command = "bash tests/test_content_prose_mutation.sh", cacheable = false,
+      actionId = "isonim.content_prose_mutation",
+      extraInputs = @["tests/test_content_prose_mutation.sh", "tests/test_content_prose.nim",
+        "src/isonim/content/markdown.nim", "src/isonim/content/anchors.nim",
+        "src/isonim/content/prose.nim", "src/isonim/ssr/escape.nim"])
+    testExecuteActions.add(proseMutation)
+    discard collect("test-content-prose-mutation", @[proseMutation])
+    discard collect("test-content", contentNativeActions & contentJsActions & @[proseMutation])
+    discard collect("test-content-c", contentNativeActions)
+    discard collect("test-content-js", contentJsActions)
     discard collect("test", testExecuteActions)
     discard collect("test-builds", testBuildActions)
     discard collect("js-test", jsExecuteActions)

@@ -6,9 +6,9 @@
 ## proves the resolver (a) merges a `brand`/`alias`/`mapped` layering,
 ## (b) resolves a 3-level `{alias}` chain across those layers down to the
 ## concrete primitive, (c) errors on a dangling reference, and (d) errors
-## on a cyclic reference -- and, when the codetracer-design-system
-## checkout sits next to this one, that a real 3-level mapped->alias->
-## brand chain resolves to its real hex primitive. No test doubles.
+## on a cyclic reference -- and that the required sibling design-system
+## files resolve a real 3-level mapped->alias->brand chain to its real hex
+## primitive. Missing runtime fixtures fail the suite. No test doubles.
 
 import std/[unittest, os]
 import isonim/theming/dtcg
@@ -120,22 +120,20 @@ suite "isonim/theming/dtcg -- loader and alias resolver":
     expect TokenError:
       discard ts.resolve("a")
 
-  test "resolves a real design-system 3-level chain when the files are present":
-    # Not hermetic: only runs if the sibling codetracer-design-system repo
-    # is checked out next to this one. When present, it proves the
-    # generic loader consumes the REAL DTCG files unchanged and resolves a
+  test "resolves a real design-system 3-level chain":
+    # The declared execute-edge inputs are the real sibling token files.
+    # Missing prerequisites fail the test instead of turning it into a skip.
+    # The generic loader consumes the REAL DTCG files unchanged and resolves a
     # real mapped -> alias -> brand chain to its real primitive.
     let dsRoot = "../codetracer-design-system"
     let brand = dsRoot / "brand" / "brand.json"
     let aliasF = dsRoot / "alias" / "alias.json"
     let mapped = dsRoot / "mapped" / "mapped.json"
-    if fileExists(brand) and fileExists(aliasF) and fileExists(mapped):
-      let ts = loadTokens(brand, aliasF, mapped)
-      # colors.ui.text.primary.headings
-      #   -> {colors.neutral.50} -> {colors.grey.50} -> #f3f3f3
-      check ts.resolve("colors.ui.text.primary.headings") == "#f3f3f3"
-      check ts.categoryOf("colors.ui.text.primary.headings") == tcColor
-      # The merged set carries hundreds of tokens from all three layers.
-      check ts.len > 100
-    else:
-      skip()
+    require fileExists(brand) and fileExists(aliasF) and fileExists(mapped)
+    let ts = loadTokens(brand, aliasF, mapped)
+    # colors.ui.text.primary.headings
+    #   -> {colors.neutral.50} -> {colors.grey.50} -> #f3f3f3
+    check ts.resolve("colors.ui.text.primary.headings") == "#f3f3f3"
+    check ts.categoryOf("colors.ui.text.primary.headings") == tcColor
+    # The merged set carries hundreds of tokens from all three layers.
+    check ts.len > 100

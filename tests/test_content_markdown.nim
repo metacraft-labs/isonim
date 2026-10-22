@@ -187,13 +187,15 @@ suite "isonim/content/markdown -- block and inline parsing":
     let spans = parseInlineSpans("See the [advanced guide](./advanced.md) for more.", "guide/page.md")
     check spans.len == 3
     check spans[1] == InlineSpan(kind: ikLink, text: "advanced guide",
-      href: "/guide/advanced", isRelative: true)
+      href: "/guide/advanced", isRelative: true,
+      linkOrigin: loExplicit, labelSource: "advanced guide")
 
   test "parseInlineSpans normalizes an inline image reference's src to an asset path":
     let spans = parseInlineSpans("See ![the diagram](./diagram.png) above.", "guide/page.md")
     check spans.len == 3
     check spans[1] == InlineSpan(kind: ikImage, text: "the diagram",
-      href: "/guide/diagram.png", isRelative: true)
+      href: "/guide/diagram.png", isRelative: true,
+      linkOrigin: loExplicit, labelSource: "the diagram")
 
 suite "isonim/content/markdown -- :::tabs":
   test "parseMarkdownBlocks translates ':::tabs' / '@tab Title' into an ordered bkTabs block":

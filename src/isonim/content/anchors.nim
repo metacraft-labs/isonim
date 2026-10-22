@@ -12,7 +12,7 @@
 ## isonim-docs (`src/core/anchors.nim`, which now re-exports this
 ## module) so every IsoNim content consumer shares one slug rule.
 
-import std/[strutils, tables]
+import std/[strutils, tables, sets]
 
 proc slugifyHeadingText*(text: string): string =
   ## Lowercases `text` and collapses every run of non `[a-z0-9]`
@@ -37,9 +37,21 @@ type
     ## document, so repeated headings get deduped suffixes in document
     ## order.
     counts: Table[string, int]
+    used: HashSet[string]
 
 proc newAnchorIdRegistry*(): AnchorIdRegistry =
   AnchorIdRegistry(counts: initTable[string, int]())
+
+proc uniqueId(reg: var AnchorIdRegistry; base: string): string =
+  var seen = reg.counts.getOrDefault(base, 0) + 1
+  result = if seen == 1: base else: base & "-" & $seen
+  # An authored suffix can collide with an earlier generated one (A, A,
+  # A-2). Track emitted IDs as well as counts, across all anchor kinds.
+  while result in reg.used:
+    inc seen
+    result = base & "-" & $seen
+  reg.counts[base] = seen
+  reg.used.incl result
 
 proc nextId*(reg: var AnchorIdRegistry; headingText: string): string =
   ## Assigns the next stable anchor ID for `headingText`: the first
@@ -50,9 +62,7 @@ proc nextId*(reg: var AnchorIdRegistry; headingText: string): string =
   ## non-empty ID.
   let slug = slugifyHeadingText(headingText)
   let base = if slug.len > 0: slug else: "section"
-  let seen = reg.counts.getOrDefault(base, 0) + 1
-  reg.counts[base] = seen
-  result = if seen == 1: base else: base & "-" & $seen
+  reg.uniqueId(base)
 
 proc nextRawId*(reg: var AnchorIdRegistry; base: string): string =
   ## Like `nextId`, but dedups on an ALREADY-FORMED `base` WITHOUT
@@ -65,9 +75,7 @@ proc nextRawId*(reg: var AnchorIdRegistry; base: string): string =
   ## in the same document-order, "-2"/"-3"-suffixed way -- only the base
   ## formation differs. An empty base falls back to the literal "sym".
   let b = if base.len > 0: base else: "sym"
-  let seen = reg.counts.getOrDefault(b, 0) + 1
-  reg.counts[b] = seen
-  result = if seen == 1: b else: b & "-" & $seen
+  reg.uniqueId(b)
 
 proc assignHeadingIds*(headingTexts: seq[string]): seq[string] =
   ## Batch convenience form: assigns IDs for an ordered seq of heading
