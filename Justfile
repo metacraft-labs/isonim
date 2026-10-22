@@ -931,8 +931,15 @@ editor-quick:
 editor-screenshot-list:
     node tools/editor-screenshot.mjs --list
 
+# Real component preview document generations preserve selection restoration.
+test-editor-preview-generation: build-tailwind
+    mkdir -p build/editor-generation
+    nim js --out:build/editor-generation/fixture.js tests/test_editor_component_generation_fixture.nim
+    PLAYWRIGHT_CHROMIUM_EXECUTABLE="${PLAYWRIGHT_CHROMIUM_EXECUTABLE:-$(command -v chromium)}" node tests/test_editor_component_generation.mjs
+    PLAYWRIGHT_CHROMIUM_EXECUTABLE="${PLAYWRIGHT_CHROMIUM_EXECUTABLE:-$(command -v chromium)}" python3 tools/test_editor_preview_generation_mutants.py
+
 # Run editor ViewModel tests
-test-editor: test-design-review-local-harbor test-design-review-harbor-build test-design-review-harbor-own-producer test-editor-control test-editor-source test-editor-chat-activity
+test-editor: test-design-review-local-harbor test-design-review-harbor-build test-design-review-harbor-own-producer test-editor-control test-editor-source test-editor-chat-activity test-editor-preview-generation
     nim c -r tests/test_editor_workspace.nim
     nim c -r tests/test_editor_public_api.nim
     nim js --path:src -o:build/test_editor_public_browser_imports.js tests/test_editor_public_browser_imports.nim

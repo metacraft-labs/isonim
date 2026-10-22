@@ -928,7 +928,9 @@ proc renderComponentDetail*[R, E](r: R; vm: EditorVM): E =
       r.setAttribute(projectFrame, "srcdoc",
         requestedPreviewMountDocument(projectFrame, mountState, nextProjectSrcdoc))
       lastProjectSrcdoc = nextProjectSrcdoc
-      detailSrcdocGeneration.val = detailSrcdocGeneration.val + 1
+      # Notify restoration without subscribing this producer to its own
+      # output. Reading .val here would rebuild the document/panel again.
+      detailSrcdocGeneration.update(proc(previous: int): int = previous + 1)
 
     # Mount the project's UI, exactly as the edit view does.
     #

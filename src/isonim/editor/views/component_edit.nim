@@ -1959,7 +1959,9 @@ proc renderComponentEditView*[R, E](r: R; vm: EditorVM): E =
         requestedPreviewMountDocument(projectFrame, mountState, nextSrcdoc))
       # Reloading the frame drops the selection outline, so ask for a restore
       # even when the selected element itself did not change.
-      srcdocGeneration.val = srcdocGeneration.val + 1
+      # This is an output for selection restoration, not a dependency of
+      # the document producer. Preserve notification without self-invalidation.
+      srcdocGeneration.update(proc(previous: int): int = previous + 1)
 
     # Mount the project's UI into the frame, when the project offers one.
     #
