@@ -8,6 +8,9 @@
 ##   * Constraint icon — placeholder square.
 ##   * Gap — numeric, visible only when flex or grid.
 ##   * Padding — four numeric inputs (top / right / bottom / left).
+##   * Visual box model — a disclosure under the padding rows
+##     (``section_box_model``): margin, border, padding and content as
+##     nested rings with a field per margin and padding side.
 ##   * Overflow — segmented choice (visible / hidden / scroll / auto).
 
 import std/[options, strutils]
@@ -22,6 +25,7 @@ import isonim/editor/views/choice_row
 import isonim/editor/views/widgets/property_commit
 import isonim/editor/views/widgets/property_row
 import isonim/editor/views/widgets/section_raw_css
+import isonim/editor/views/widgets/section_box_model
 import isonim/editor/views/widgets/section_position
 
 const
@@ -364,30 +368,40 @@ proc mountSectionLayout*[R, E](r: R; parent: E; vm: EditorVM) =
          `data-layout-padding-host` = "true",
          display = "flex", flex_direction = "column")
   r.appendChild(parent, padHost)
+  # One wiring per padding side, shared by its row and the box model's field
+  # for that side, so a scope chosen on either is the scope both commit at.
+  var padWirings: array[4, InspectorRowWiring]
+  for i, side in boxSides:
+    padWirings[i] = vm.inspectorRowWiring("padding-" & side)
   discard r.mountPropertyRow(padHostEl, propertyRowNumeric(
     name = "Pad top", value = padTop, unit = padTopUnit, units = @[pxUnit],
     bindingReactive = vm.inspectorBindingThunk("padding-top"),
     onBindRequest = vm.inspectorBindRequestHandler("padding-top"),
     onDetachRequest = vm.inspectorDetachRequestHandler("padding-top"),
-    wiring = vm.inspectorRowWiring("padding-top")))
+    wiring = padWirings[0]))
   discard r.mountPropertyRow(padHostEl, propertyRowNumeric(
     name = "Pad right", value = padRight, unit = padRightUnit, units = @[pxUnit],
     bindingReactive = vm.inspectorBindingThunk("padding-right"),
     onBindRequest = vm.inspectorBindRequestHandler("padding-right"),
     onDetachRequest = vm.inspectorDetachRequestHandler("padding-right"),
-    wiring = vm.inspectorRowWiring("padding-right")))
+    wiring = padWirings[1]))
   discard r.mountPropertyRow(padHostEl, propertyRowNumeric(
     name = "Pad bottom", value = padBottom, unit = padBottomUnit, units = @[pxUnit],
     bindingReactive = vm.inspectorBindingThunk("padding-bottom"),
     onBindRequest = vm.inspectorBindRequestHandler("padding-bottom"),
     onDetachRequest = vm.inspectorDetachRequestHandler("padding-bottom"),
-    wiring = vm.inspectorRowWiring("padding-bottom")))
+    wiring = padWirings[2]))
   discard r.mountPropertyRow(padHostEl, propertyRowNumeric(
     name = "Pad left", value = padLeft, unit = padLeftUnit, units = @[pxUnit],
     bindingReactive = vm.inspectorBindingThunk("padding-left"),
     onBindRequest = vm.inspectorBindRequestHandler("padding-left"),
     onDetachRequest = vm.inspectorDetachRequestHandler("padding-left"),
-    wiring = vm.inspectorRowWiring("padding-left")))
+    wiring = padWirings[3]))
+  # ----- Visual box model ------------------------------------------ #
+  # Editor spec "Specialized Editors": "Visual box model". A disclosure under
+  # the padding rows (`Show box model controls`); its padding sides commit
+  # through the rows' wirings above.
+  mountSectionBoxModel[R, E](r, padHostEl, vm, padWirings)
   # ----- Overflow choice ------------------------------------------- #
   discard r.mountPropertyRow(parent, propertyRowChoice(
     name = "Overflow", value = overflow,

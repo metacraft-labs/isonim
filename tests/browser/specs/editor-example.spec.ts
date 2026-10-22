@@ -1773,6 +1773,178 @@ test.describe("IsoNim packaged editor example", () => {
     await expect(page.locator("[data-save-error]")).toBeHidden();
   });
 
+  // Editor spec "Specialized Editors": "Visual box model -- nested
+  // rectangles for margin/padding/content; click any segment to type a value;
+  // click center to set all sides uniformly", and the clause under it (the
+  // Layout section's `Show box model controls` disclosure; each field commits
+  // through its property's row pipeline). The example's writer maps the
+  // card's `padding` shorthand and no side, so the centre writes and a side
+  // is refused at the act with the writer's reason.
+  test("e2e_box_model_edits_margin_and_padding_by_keyboard_and_pointer", async ({
+    page,
+  }) => {
+    await page.setViewportSize(desktop);
+    await openDestinationComponentEdit(page);
+    await markPreviewSelected(page);
+    const selected = page
+      .frameLocator('iframe[title="Editable component preview"]')
+      .locator('[data-isonim-selected="true"]')
+      .first();
+    const undoCount = () =>
+      page.evaluate(() => (window as any).__isonimEditorVm.inspector.undoStack.value.length);
+    const layout = page.locator('[data-inspector-section-header="layout"]');
+    if ((await layout.getAttribute("aria-expanded")) !== "true") await layout.click();
+    const toggle = page.getByRole("button", { name: "Show box model controls" });
+    const box = page.locator('[data-box-model="true"]');
+    const message = page.locator("[data-box-model-message]");
+    const field = (name: string) => page.getByRole("textbox", { name, exact: true });
+    const centre = field("Padding, all sides");
+    const top = field("Padding top");
+
+    // The disclosure, by keyboard and by pointer.
+    await expect(toggle).toHaveAttribute("aria-expanded", "false");
+    await expect(box).toBeHidden();
+    await toggle.focus();
+    await page.keyboard.press("Enter");
+    await expect(toggle).toHaveAttribute("aria-expanded", "true");
+    await expect(box).toBeVisible();
+    await page.keyboard.press(" ");
+    await expect(toggle).toHaveAttribute("aria-expanded", "false");
+    await expect(box).toBeHidden();
+    await toggle.click();
+    await expect(toggle).toHaveAttribute("aria-expanded", "true");
+    await expect(box).toBeVisible();
+
+    // The rings show the selection's box.
+    await expect(top).toHaveValue("18");
+    await expect(centre).toHaveValue("18");
+    await expect(field("Margin left")).toHaveValue("0");
+    await expect(page.locator("[data-box-model-border]")).toHaveText("Border 1");
+
+    // Click the centre and type: every side at once, through the padding
+    // shorthand's own pipeline -- written inside its rule, previewed, one undo
+    // entry.
+    const original = await demoSourceContent(page, demoFoundationSource);
+    expect(original).toContain(".destination-card { padding: 18px; }");
+    const start = await undoCount();
+    await centre.click();
+    expect(await centre.evaluate((node: HTMLInputElement) =>
+      [node.selectionStart, node.selectionEnd])).toEqual([0, 2]);
+    await page.keyboard.type("20+4");
+    await page.keyboard.press("Enter");
+    await expect.poll(() => pendingSourceEdits(page)).toBe(0);
+    await expect(page.locator("[data-save-error]")).toBeHidden();
+    const at24 = original.replace(".destination-card { padding: 18px; }",
+      ".destination-card { padding: 24px; }");
+    await expect.poll(() => demoSourceContent(page, demoFoundationSource)).toBe(at24);
+    expect(await undoCount()).toBe(start + 1);
+    await expect.poll(() => selected.evaluate((node) => getComputedStyle(node).paddingTop))
+      .toBe("24px");
+    await expect(centre).toHaveValue("24");
+    await expect(top).toHaveValue("24");
+    await expect(page.locator('[data-property-row="pad-top"] [data-property-row-input="true"]').first())
+      .toHaveValue("24");
+    await expect(message).toBeHidden();
+
+    // A side the project maps no entry for is refused at the act with the
+    // writer's reason; the field is put back and nothing is written.
+    await top.click();
+    await page.keyboard.type("30");
+    await page.keyboard.press("Enter");
+    await expect(message).toBeVisible();
+    await expect(message).toContainText(
+      "Padding top: No project schema or source map entry can safely represent this edit.");
+    await expect(top).toHaveValue("24");
+    expect(await undoCount()).toBe(start + 1);
+    expect(await demoSourceContent(page, demoFoundationSource)).toBe(at24);
+
+    // Escape restores the committed value without an edit.
+    await centre.click();
+    await page.keyboard.type("99");
+    await page.keyboard.press("Escape");
+    await expect(centre).toHaveValue("24");
+    // ArrowUp steps by one and commits.
+    await page.keyboard.press("ArrowUp");
+    const at25 = original.replace(".destination-card { padding: 18px; }",
+      ".destination-card { padding: 25px; }");
+    await expect.poll(() => demoSourceContent(page, demoFoundationSource)).toBe(at25);
+    expect(await undoCount()).toBe(start + 2);
+    await expect(message).toBeHidden();
+
+    // Drag right on the centre scrubs it: two units a pixel near the row,
+    // one edit on release.
+    await page.evaluate(() => (document.activeElement as HTMLElement | null)?.blur());
+    const rect = await centre.boundingBox();
+    if (!rect) throw new Error("the all-sides padding field has no box");
+    const x = rect.x + rect.width / 2;
+    const y = rect.y + rect.height / 2;
+    await page.mouse.move(x, y);
+    await page.mouse.down();
+    await page.mouse.move(x + 6, y, { steps: 3 });
+    await page.mouse.move(x + 10, y, { steps: 2 });
+    await expect(centre).toHaveValue("45");
+    expect(await undoCount()).toBe(start + 2);
+    await page.mouse.up();
+    const at45 = original.replace(".destination-card { padding: 18px; }",
+      ".destination-card { padding: 45px; }");
+    await expect.poll(() => demoSourceContent(page, demoFoundationSource)).toBe(at45);
+    expect(await undoCount()).toBe(start + 3);
+    await expect.poll(() => selected.evaluate((node) => getComputedStyle(node).paddingLeft))
+      .toBe("45px");
+
+    // Escape during a drag puts back the value from before it.
+    await page.evaluate(() => (document.activeElement as HTMLElement | null)?.blur());
+    await page.mouse.move(x, y);
+    await page.mouse.down();
+    await page.mouse.move(x - 8, y, { steps: 3 });
+    await expect(centre).toHaveValue("29");
+    await page.keyboard.press("Escape");
+    await expect(centre).toHaveValue("45");
+    await page.mouse.up();
+    expect(await undoCount()).toBe(start + 3);
+    expect(await demoSourceContent(page, demoFoundationSource)).toBe(at45);
+
+    // The drag holds pointer capture, so it keeps scrubbing once the pointer
+    // has left the field (40px right of its centre is past its edge); losing
+    // the capture cancels the drag and puts back the value from before it.
+    await page.evaluate(() => (document.activeElement as HTMLElement | null)?.blur());
+    await centre.evaluate((node) => node.addEventListener("pointerdown",
+      (event) => { (window as any).__boxPointerId = (event as PointerEvent).pointerId; },
+      { once: true }));
+    await page.mouse.move(x, y);
+    await page.mouse.down();
+    await page.mouse.move(x + 40, y, { steps: 5 });
+    await expect(centre).toHaveValue("125");
+    expect(await centre.evaluate((node) =>
+      node.hasPointerCapture((window as any).__boxPointerId))).toBe(true);
+    await centre.evaluate((node) =>
+      node.releasePointerCapture((window as any).__boxPointerId));
+    // The browser reports the loss with the next pointer event.
+    await page.mouse.move(x + 44, y);
+    await expect(centre).toHaveValue("45");
+    await page.mouse.up();
+    expect(await undoCount()).toBe(start + 3);
+    expect(await demoSourceContent(page, demoFoundationSource)).toBe(at45);
+
+    // The box fits the panel.
+    const inspector = page.locator('[data-sidebar-content="inspector"]');
+    expect(await inspector.evaluate((node) => node.scrollWidth <= node.clientWidth + 1))
+      .toBe(true);
+
+    // Undo across the writes, to the exact bytes.
+    await page.evaluate(() => (document.activeElement as HTMLElement | null)?.blur());
+    for (const expected of [at25, at24, original]) {
+      await page.keyboard.press("ControlOrMeta+Z");
+      await expect.poll(() => pendingSourceEdits(page)).toBe(0);
+      await expect.poll(() => demoSourceContent(page, demoFoundationSource)).toBe(expected);
+    }
+    expect(await undoCount()).toBe(start);
+    await expect(centre).toHaveValue("18");
+    await expect.poll(() => selected.evaluate((node) => getComputedStyle(node).paddingTop))
+      .toBe("18px");
+    await expect(page.locator("[data-save-error]")).toBeHidden();
+  });
+
   test("m52_shared_design_editor_preview_save_and_revert", async ({ page }) => {
     await page.setViewportSize(desktop);
     await openDestinationComponentEdit(page);

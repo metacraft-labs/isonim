@@ -142,6 +142,11 @@ type
       ## CSS text editing for any section"). A section listed here shows its
       ## declarations as CSS text in place of its rows. Per editor session;
       ## every section starts on its rows.
+    boxModelShown*: Signal[bool]
+      ## Whether the Layout section's visual box model is open (editor spec
+      ## "Specialized Editors": "Visual box model"; its disclosure is the
+      ## `Show box model controls` button). Per editor session; closed when
+      ## the editor opens.
     sectionsUserSet*: Signal[seq[InspectorSection]]
     revealSectionRequest*: Signal[int]
       ## Bumped when something asks for the Source section to be scrolled
@@ -4192,6 +4197,10 @@ proc toggleSectionRawCss*(inspector: InspectorVM; section: InspectorSection) =
   else: next.add section
   inspector.rawCssSections.val = next
 
+proc toggleBoxModel*(inspector: InspectorVM) =
+  ## The Layout section's `Show box model controls` disclosure.
+  inspector.boxModelShown.val = not inspector.boxModelShown.val
+
 proc applyKindDefaultExpansion*(inspector: InspectorVM; element: ElementRef) =
   ## Re-seed the untouched sections for what is now selected.
   ##
@@ -4577,9 +4586,13 @@ const shorthandSideProperties = [
   ("border-radius", ["border-top-left-radius", "border-top-right-radius",
     "border-bottom-right-radius", "border-bottom-left-radius"]),
   ("padding", ["padding-top", "padding-right", "padding-bottom",
-    "padding-left"])]
+    "padding-left"]),
+  # The box model's `Margin, all sides` field commits the margin shorthand
+  # (editor spec "Specialized Editors": "Visual box model"); its side fields
+  # follow it as the padding sides follow `padding`.
+  ("margin", ["margin-top", "margin-right", "margin-bottom", "margin-left"])]
 
-func shorthandSideValues(value: string): seq[string] =
+func shorthandSideValues*(value: string): seq[string] =
   ## The four side values of a simple 1-4 value shorthand, in CSS clockwise
   ## order, or nothing when the value is not that simple (an elliptical
   ## radius with `/`, a function such as `var()` or `calc()`, a keyword list).
@@ -12292,6 +12305,7 @@ proc createInspectorVM*(designSystemSchema: Signal[DesignSystemSchema] = nil;
     propertyClipboard: createSignal(PropertyClipboardEntry()),
     expandedSections: expandedSections,
     rawCssSections: createSignal[seq[InspectorSection]](@[]),
+    boxModelShown: createSignal(false),
     sectionsUserSet: createSignal[seq[InspectorSection]](@[]),
     revealSectionRequest: createSignal(0),
     focusedControlId: focusedControlId,

@@ -212,8 +212,8 @@
       "mockOnly": false,
       "placeholderUi": false,
       "browserBehavior": ["pointer", "focus"],
-      "implementation": "Typed CSS value parsing, primitive-control normalization, math-expression/unit handling, source-plan selection, validation, shared-scope handling, undo/redo, dirty state, save staging, per-section raw CSS editing (each CSS section's Raw CSS toggle switches between its rows and its declarations as CSS text; a raw commit is checked as a whole and commits each changed declaration through its row's source pipeline), cascade origin indicators, copy/paste/reset property actions, numeric select-all/arrow/scrub/unit controls, color swatches/formats/variable/token/contrast affordances, gradient stop/angle/type controls, shadow layer/crosshair/inset/elevation controls, typography style/responsive/truncate/wrap controls, border-radius linked-corner controls, and Bezier/reduced-motion motion controls with live iframe preview and source commits.",
-      "knownLimitations": "M49 validates a bounded long-tail matrix only for property rows with headless, browser, visual, and Metacraft consumer evidence. Other long-tail rows stay marked consumer-unvalidated, browser-limited, or read-only until their browser and consumer coverage exists. Exhaustive browser eyedropper behavior, freeform color-plane drag serialization, container-query editing, and pseudo-state workflow editing remain future work.",
+      "implementation": "Typed CSS value parsing, primitive-control normalization, math-expression/unit handling, source-plan selection, validation, shared-scope handling, undo/redo, dirty state, save staging, per-section raw CSS editing (each CSS section's Raw CSS toggle switches between its rows and its declarations as CSS text; a raw commit is checked as a whole and commits each changed declaration through its row's source pipeline), the Layout section's visual box model (its `Show box model controls` disclosure draws margin, border, padding and content rings with a field per margin and padding side and an all-sides field per shorthand; each field types, evaluates arithmetic, steps by arrow keys and scrubs by drag, and commits through its property row's source pipeline and scope), cascade origin indicators, copy/paste/reset property actions, numeric select-all/arrow/scrub/unit controls, color swatches/formats/variable/token/contrast affordances, gradient stop/angle/type controls, shadow layer/crosshair/inset/elevation controls, typography style/responsive/truncate/wrap controls, border-radius linked-corner controls, and Bezier/reduced-motion motion controls with live iframe preview and source commits.",
+      "knownLimitations": "M49 validates a bounded long-tail matrix only for property rows with headless, browser, visual, and Metacraft consumer evidence. Other long-tail rows stay marked consumer-unvalidated, browser-limited, or read-only until their browser and consumer coverage exists. Exhaustive browser eyedropper behavior, freeform color-plane drag serialization, container-query editing, and pseudo-state workflow editing remain future work. The visual box model's drag handles on the canvas (editor spec \"Specialized Editors\": \"drag handles on canvas for live preview\") are not built: margin and padding are edited only in the inspector's box model fields, and the canvas offers only the selection overlay's single spacing handle; a box-model field scrub, like a row's label scrub, shows its value in the field and reaches the preview when released.",
       "headlessTests": [
         {
           "name": "css_property_editors_parse_validate_and_normalize_values",
@@ -250,6 +250,22 @@
         {
           "name": "invalid text is refused at the commit with the reason, and nothing changes",
           "file": "tests/test_editor_section_raw_css.nim"
+        },
+        {
+          "name": "a typed side commits through its row's pipeline and is written inside the rule",
+          "file": "tests/test_editor_section_box_model.nim"
+        },
+        {
+          "name": "the centre sets every padding side at once with the shorthand",
+          "file": "tests/test_editor_section_box_model.nim"
+        },
+        {
+          "name": "a horizontal drag scrubs and commits once; a press without travel only focuses",
+          "file": "tests/test_editor_section_box_model.nim"
+        },
+        {
+          "name": "a padding side commits at the scope chosen on its row, which the box model shows",
+          "file": "tests/test_editor_section_box_model.nim"
         }
       ],
       "playwrightRequired": true,
@@ -276,6 +292,10 @@
         },
         {
           "name": "e2e_section_raw_css_toggle_commits_refuses_and_undoes",
+          "file": "tests/browser/specs/editor-example.spec.ts"
+        },
+        {
+          "name": "e2e_box_model_edits_margin_and_padding_by_keyboard_and_pointer",
           "file": "tests/browser/specs/editor-example.spec.ts"
         }
       ],

@@ -1785,12 +1785,23 @@ test-editor-section-raw-css: build-tailwind
     nim js -d:nodejs --out:build/test_editor_section_raw_css.js tests/test_editor_section_raw_css.nim
     python3 tools/run_nim_js_test.py build/test_editor_section_raw_css.js
 
+# The Layout section's visual box model (editor spec "Specialized Editors":
+# Visual box model): the disclosure, the rings' values, typed/arrow/scrub
+# commits through the property rows' pipelines and the editor example's real
+# writer, the all-sides shorthands, act-time refusals, scope shared with the
+# padding rows, raw CSS and search coverage, a native project's bridge.
+# Native and strict executed Node JS.
+test-editor-section-box-model: build-tailwind
+    nim c -r --out:build/test_editor_section_box_model tests/test_editor_section_box_model.nim
+    nim js -d:nodejs --out:build/test_editor_section_box_model.js tests/test_editor_section_box_model.nim
+    python3 tools/run_nim_js_test.py build/test_editor_section_box_model.js
+
 # Reset, set, undo, undo in the packaged editor example: its real example
 # writer, served from build/editor, physical pointer and keyboard input.
 test-editor-example-reset-gui: editor-build
     PLAYWRIGHT_CHROMIUM_EXECUTABLE="${PLAYWRIGHT_CHROMIUM_EXECUTABLE:-$(command -v chromium)}" "${ISONIM_SCENARIO_NODE:-node}" tests/test_editor_example_reset_gui.mjs
 
-test-editor-c4a: test-editor-selection-keys test-editor-source-write-receipts test-editor-save-pipeline test-editor-act-time-refusals test-editor-shared-scope-ownership test-editor-inspector-controls test-editor-reset-removal test-editor-section-raw-css test-editor-c4a-headless test-editor-c4a-compounds test-editor-c4a-properties test-editor-c4a-remaining test-editor-inline-preview test-editor-c4a-gestures test-editor-c4a-color test-editor-c4a-grip
+test-editor-c4a: test-editor-selection-keys test-editor-source-write-receipts test-editor-save-pipeline test-editor-act-time-refusals test-editor-shared-scope-ownership test-editor-inspector-controls test-editor-reset-removal test-editor-section-raw-css test-editor-section-box-model test-editor-c4a-headless test-editor-c4a-compounds test-editor-c4a-properties test-editor-c4a-remaining test-editor-inline-preview test-editor-c4a-gestures test-editor-c4a-color test-editor-c4a-grip
 
 # Source ownership presentation; real native/JS signals and shell, no transports.
 test-editor-source-labels: build-tailwind
