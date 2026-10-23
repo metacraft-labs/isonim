@@ -78,6 +78,13 @@ type
       ## lost by the filter's auto-expand behaviour.
     filteredItems*: Memo[seq[StoryGroup]]
 
+  StoryboardCommandKind* = enum
+    sckNone, sckZoomIn, sckZoomOut, sckFit
+
+  StoryboardCommand* = object
+    kind*: StoryboardCommandKind
+    serial*: int ## Distinguishes repeated presses of the same control.
+
   StoryboardVM* = ref object of ViewModel
     ## Canvas showing screen thumbnails connected by flow arrows.
     canvasItems*: Signal[seq[CanvasItem]]
@@ -86,6 +93,10 @@ type
     panX*, panY*: Signal[float] ## Canvas pan offset
     selectedItem*: Signal[int]  ## Index into canvasItems (-1 = none)
     hoveredItem*: Signal[int]
+    command*: Signal[StoryboardCommand]
+      ## The chrome bar's zoom and Fit controls ask the mounted storyboard
+      ## canvas, which alone knows its laid-out size and content extent, to
+      ## zoom about its centre or fit its content (``requestStoryboard``).
 
   PreviewValueRequest* = object
     ## "Put this value on the element in the preview."
@@ -2617,19 +2628,23 @@ proc setRightSidebarTab*(editor: EditorVM; tab: RightSidebarTab) =
   discard editor
   discard tab
 
+const
+  rightPanelMinWidth* = 240
+  rightPanelMaxWidth* = 420
+  leftSidebarMinWidth* = 180
+  leftSidebarMaxWidth* = 420
+  sidebarResizeKeyStep* = 16
+    ## Editor spec "Resizable sidebars": one Arrow key press on a focused
+    ## resize handle moves it by this many pixels.
+  sidebarWidthsStorageKey* = "isonim-editor-sidebar-widths"
+
 func clampRightPanelWidth*(width: int): int =
-  # M-EVP-14 Wave Chrome CR-3: lowered the minimum from 240 → 200 so the
-  # AI inspector rail can shrink below the previous floor. The reviewer
-  # consistently flagged the right-rail as dominating the editor chrome
-  # vs the preview pane; the new floor lets users (and the default
-  # below) reclaim ~40 px of horizontal real estate for the preview.
-  max(200, min(420, width))
-
-proc setRightPanelWidth*(editor: EditorVM; width: int) =
-  editor.rightPanelWidth.val = clampRightPanelWidth(width)
-
-proc adjustRightPanelWidth*(editor: EditorVM; delta: int) =
-  editor.setRightPanelWidth(editor.rightPanelWidth.val + delta)
+  ## Editor spec "Resizable sidebars": the right sidebar is clamped to
+  ## [240, 420]. M-EVP-14 CR-3 had lowered only this floor to 200, but both
+  ## right-sidebar surfaces always rendered a 240 px CSS ``min-width``, so
+  ## a 200..239 value was reported (``data-right-panel-width``) and never
+  ## shown. The VM, the drag shims and the rendered bounds now agree.
+  max(rightPanelMinWidth, min(rightPanelMaxWidth, width))
 
 func clampLeftSidebarWidth*(width: int): int =
   ## 2026-05-28: matches the [180, 420] clamp the sidebar's inline
@@ -2637,10 +2652,41 @@ func clampLeftSidebarWidth*(width: int): int =
   ## resize handle pre-clamps too (so the cursor doesn't run off the
   ## sidebar edge during a drag), but the VM also clamps so headless
   ## tests and programmatic callers can't push the signal out of range.
-  max(180, min(420, width))
+  max(leftSidebarMinWidth, min(leftSidebarMaxWidth, width))
 
-proc setLeftSidebarWidth*(editor: EditorVM; width: int) =
-  editor.leftSidebarWidth.val = clampLeftSidebarWidth(width)
+proc persistSidebarWidths*(editor: EditorVM) =
+  ## Editor spec "Resizable sidebars": both widths persist through the
+  ## platform storage seam. The setters write when a width changed, except
+  ## during a drag (``persist = false``): the drag writes once, on release.
+  ## Storage is optional; a denied or failing store keeps the widths in
+  ## memory. A no-op off the browser, like the other editor preferences.
+  when defined(js):
+    try:
+      nondet.storageSet(sidebarWidthsStorageKey,
+        $(%*{"left": editor.leftSidebarWidth.val,
+             "right": editor.rightPanelWidth.val}))
+    except: discard # Optional preference: storage denial keeps memory state.
+  else:
+    discard editor
+
+proc setRightPanelWidth*(editor: EditorVM; width: int; persist = true) =
+  let next = clampRightPanelWidth(width)
+  if next == editor.rightPanelWidth.val:
+    return
+  editor.rightPanelWidth.val = next
+  if persist:
+    editor.persistSidebarWidths()
+
+proc adjustRightPanelWidth*(editor: EditorVM; delta: int) =
+  editor.setRightPanelWidth(editor.rightPanelWidth.val + delta)
+
+proc setLeftSidebarWidth*(editor: EditorVM; width: int; persist = true) =
+  let next = clampLeftSidebarWidth(width)
+  if next == editor.leftSidebarWidth.val:
+    return
+  editor.leftSidebarWidth.val = next
+  if persist:
+    editor.persistSidebarWidths()
 
 proc adjustLeftSidebarWidth*(editor: EditorVM; delta: int) =
   editor.setLeftSidebarWidth(editor.leftSidebarWidth.val + delta)
@@ -12087,6 +12133,7 @@ proc createStoryboardVM*(): StoryboardVM =
   let panY = createSignal(0.0)
   let selectedItem = createSignal(-1)
   let hoveredItem = createSignal(-1)
+  let command = createSignal(StoryboardCommand())
 
   StoryboardVM(
     canvasItems: canvasItems,
@@ -12095,7 +12142,12 @@ proc createStoryboardVM*(): StoryboardVM =
     panX: panX,
     panY: panY,
     selectedItem: selectedItem,
-    hoveredItem: hoveredItem)
+    hoveredItem: hoveredItem,
+    command: command)
+
+proc requestStoryboard*(storyboard: StoryboardVM; kind: StoryboardCommandKind) =
+  storyboard.command.val = StoryboardCommand(kind: kind,
+    serial: storyboard.command.val.serial + 1)
 
 proc createInspectorVM*(designSystemSchema: Signal[DesignSystemSchema] = nil;
     foundationTokens: Signal[seq[FoundationTokenEntry]] = nil): InspectorVM =
@@ -14065,8 +14117,20 @@ proc createEditorVM*(): EditorVM =
   # the primary surface a user expects to land on), and the prior
   # 220 px width made chat bubbles cramped to the point of unusability.
   # Users can still narrow via the resize affordance back down to the
-  # 200 px floor or widen to the 420 px ceiling.
+  # 240 px floor or widen to the 420 px ceiling.
   let rightPanelWidth = createSignal(320)
+  # Editor spec "Resizable sidebars": widths persisted by an earlier session
+  # are restored, clamped, before the first render. Missing, corrupt or
+  # unavailable storage keeps the defaults.
+  when defined(js):
+    try:
+      let stored = parseJson(nondet.storageGet(sidebarWidthsStorageKey))
+      if stored.kind == JObject:
+        if stored{"left"}.kind == JInt:
+          leftSidebarWidth.val = clampLeftSidebarWidth(stored["left"].getInt)
+        if stored{"right"}.kind == JInt:
+          rightPanelWidth.val = clampRightPanelWidth(stored["right"].getInt)
+    except: discard # Optional preference: defaults stand.
   # Right-sidebar top-level tab — Manual (inspector) vs Assistant
   # (chat). Defaults to Manual; the user toggles between them at
   # the top of the sidebar. Both tabs are always available.

@@ -467,6 +467,7 @@ const isonimTestSpecs: seq[IsonimTestSpec] = @[
   spec("test_editor_renderer_boundaries"),
   spec("test_editor_preview_mount"),
   spec("test_editor_shell_views"),
+  spec("test_editor_shell_controls"),
   spec("test_editor_loop_handlers"),
   spec("test_loop_accessors"),
   spec("test_choice_row_activation"),
@@ -567,6 +568,7 @@ const isonimJsTestSpecs: seq[string] = @[
   "test_editor_renderer_boundaries",
   "test_editor_preview_mount",
   "test_editor_shell_views",
+  "test_editor_shell_controls",
   "test_editor_source_markup",
   "test_editor_section_source",
   "test_editor_section_appearance", "test_editor_section_component_props", "test_editor_section_layout", "test_editor_section_position",
@@ -890,7 +892,7 @@ package isonim:
         executeActions.add(executeEdge)
         if stem.startsWith("test_content_") or stem == "test_theming_dtcg":
           contentNativeActions.add(executeEdge)
-        if stem == "test_editor_shell_views": currentShellActions.add(executeEdge)
+        if stem in ["test_editor_shell_views", "test_editor_shell_controls"]: currentShellActions.add(executeEdge)
         if stem == "test_editor_renderer_boundaries": rendererBoundaryActions.add(executeEdge)
         if stem == "test_editor_preview_mount": previewMountActions.add(executeEdge)
         if stem in ["test_editor_source_markup", "test_editor_source_style_bindings", "test_editor_control_routes"]: inspectorFoundationActions.add(executeEdge)
@@ -1490,14 +1492,14 @@ package isonim:
       jsBuildActions.add(jsCompileEdge)
       let guardedC2 = stem in ["test_effects", "test_editor_widget_property_row", "test_editor_color_popover", "test_editor_section_fill", "test_editor_source_scope_row"]
       let jsExecuteEdge =
-        if stem in ["test_editor_shell_views", "test_editor_renderer_boundaries", "test_editor_preview_mount", "test_editor_source_markup", "test_editor_workspace_refresh", "test_editor_source_write_receipts", "test_editor_save_pipeline", "test_editor_act_time_refusals", "test_editor_inspector_controls", "test_editor_reset_removal", "test_editor_section_raw_css", "test_editor_section_box_model"] or guardedC2 or stem in ["test_editor_chat_view_lifetime", "test_editor_chat_tabs_vm", "test_editor_chat_activity"] or stem == "test_editor_color_picker" or stem in ["test_editor_section_source", "test_editor_section_appearance", "test_editor_section_component_props", "test_editor_section_layout", "test_editor_section_position", "test_editor_section_stroke", "test_editor_section_effects"]:
+        if stem in ["test_editor_shell_views", "test_editor_shell_controls", "test_editor_renderer_boundaries", "test_editor_preview_mount", "test_editor_source_markup", "test_editor_workspace_refresh", "test_editor_source_write_receipts", "test_editor_save_pipeline", "test_editor_act_time_refusals", "test_editor_inspector_controls", "test_editor_reset_removal", "test_editor_section_raw_css", "test_editor_section_box_model"] or guardedC2 or stem in ["test_editor_chat_view_lifetime", "test_editor_chat_tabs_vm", "test_editor_chat_activity"] or stem == "test_editor_color_picker" or stem in ["test_editor_section_source", "test_editor_section_appearance", "test_editor_section_component_props", "test_editor_section_layout", "test_editor_section_position", "test_editor_section_stroke", "test_editor_section_effects"]:
           sh.shell(command = "python3 tools/run_nim_js_test.py " & jsOut, cacheable = false,
             actionId = "isonim.js_execute." & stem, after = @[jsCompileEdge],
             extraInputs = @[jsOut, "tools/run_nim_js_test.py"])
         else:
           node(args = @[jsOut], actionId = "isonim.js_execute." & stem,
             after = @[jsCompileEdge], extraInputs = @[jsOut])
-      if stem == "test_editor_shell_views": currentShellActions.add(jsExecuteEdge)
+      if stem in ["test_editor_shell_views", "test_editor_shell_controls"]: currentShellActions.add(jsExecuteEdge)
       if stem == "test_editor_renderer_boundaries": rendererBoundaryActions.add(jsExecuteEdge)
       if stem == "test_editor_preview_mount": previewMountActions.add(jsExecuteEdge)
       if stem == "test_editor_source_markup": inspectorFoundationActions.add(jsExecuteEdge)

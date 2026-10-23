@@ -5,7 +5,7 @@
 
 import isonim/core/nondet as nondet
 import isonim/editor/views/view_lifecycle
-import std/[json, options, sets, strutils, tables]
+import std/[json, math, options, sets, strutils, tables]
 
 import isonim/core/[signals, computation, owner]
 from isonim/core/batch import untrack
@@ -594,14 +594,85 @@ proc bindStatusPanelButton[R, E](r: R; node: E; vm: EditorVM;
     r.setStyle(node, "background-color", if active: bgSurface else: "transparent")
     r.setStyle(node, "color", if active: textSecondary else: textDim)
 
-proc bindRightPanelWidth[R, E](r: R; node: E; vm: EditorVM) =
+proc bindRightPanelWidth[R, E](r: R; node, handle: E; vm: EditorVM) =
+  ## Mirrors ``vm.rightPanelWidth`` onto the panel and onto its resize
+  ## handle's ``aria-valuenow`` in the one effect the width already had.
   createRenderEffect proc() =
-    let width = $vm.rightPanelWidth.val & "px"
+    let value = vm.rightPanelWidth.val
+    let width = $value & "px"
     r.setStyle(node, "width", width)
     r.setStyle(node, "flex-basis", width)
-    r.setStyle(node, "min-width", "240px")
-    r.setStyle(node, "max-width", "420px")
-    r.setAttribute(node, "data-right-panel-width", $vm.rightPanelWidth.val)
+    r.setStyle(node, "min-width", $rightPanelMinWidth & "px")
+    r.setStyle(node, "max-width", $rightPanelMaxWidth & "px")
+    r.setAttribute(node, "data-right-panel-width", $value)
+    r.setAttribute(handle, "aria-valuenow", $value)
+
+type SidebarResizeSide = enum
+  srsLeftSidebar, srsRightPanel
+
+proc installSidebarResizeKeyboard[R, E](r: R; handle: E; vm: EditorVM;
+    side: SidebarResizeSide) =
+  ## Editor spec "Resizable sidebars": each 4 px resize handle is also a
+  ## WAI-ARIA window splitter -- a focusable vertical ``separator`` whose
+  ## value is the panel width. ArrowLeft / ArrowRight move the handle
+  ## ``sidebarResizeKeyStep`` px in that direction, Home / End set the
+  ## minimum / maximum width, and every other key is left alone. The pointer
+  ## drag itself is the per-handle shim below each call site.
+  mixin preventDefault
+  let minWidth =
+    case side
+    of srsLeftSidebar: leftSidebarMinWidth
+    of srsRightPanel: rightPanelMinWidth
+  let maxWidth =
+    case side
+    of srsLeftSidebar: leftSidebarMaxWidth
+    of srsRightPanel: rightPanelMaxWidth
+  r.setAttribute(handle, "role", "separator")
+  r.setAttribute(handle, "aria-orientation", "vertical")
+  r.setAttribute(handle, "tabindex", "0")
+  r.setAttribute(handle, "aria-label",
+    if side == srsLeftSidebar: "Resize left sidebar" else: "Resize right sidebar")
+  r.setAttribute(handle, "aria-valuemin", $minWidth)
+  r.setAttribute(handle, "aria-valuemax", $maxWidth)
+  var alive = true
+  onCleanup proc() = alive = false
+  let capturedVm = vm
+  proc current(): int =
+    case side
+    of srsLeftSidebar: capturedVm.leftSidebarWidth.val
+    of srsRightPanel: capturedVm.rightPanelWidth.val
+  proc apply(width: int) =
+    case side
+    of srsLeftSidebar: capturedVm.setLeftSidebarWidth(width)
+    of srsRightPanel: capturedVm.setRightPanelWidth(width)
+  r.addEventListener(handle, "keydown", proc(ev: auto) =
+    if not alive:
+      return
+    let key = choiceKey(ev)
+    # Moving the handle left narrows the left sidebar and widens the right.
+    let towardsLeft =
+      if side == srsLeftSidebar: -sidebarResizeKeyStep
+      else: sidebarResizeKeyStep
+    let next =
+      case key
+      of "ArrowLeft": current() + towardsLeft
+      of "ArrowRight": current() - towardsLeft
+      of "Home": minWidth
+      of "End": maxWidth
+      else: -1
+    if next < 0:
+      return
+    when compiles(ev.preventDefault()):
+      ev.preventDefault()
+    elif defined(js):
+      proc prevent(event: typeof(ev)) {.importjs: "#.preventDefault()".}
+      prevent(ev)
+    apply(next))
+  # Keyboard focus is shown on the 4 px strip itself.
+  r.addEventListener(handle, "focus", proc() =
+    r.setStyle(handle, "background-color", accent))
+  r.addEventListener(handle, "blur", proc() =
+    r.setStyle(handle, "background-color", "transparent"))
 
 proc statusPanelButton[R, E](r: R; vm: EditorVM; panel: EditorPanel;
     label, glyph: string): E =
@@ -2132,11 +2203,13 @@ proc renderSidebar*[R, E](r: R; vm: EditorVM): E =
   # signal directly via ``setLeftSidebarWidth``.
   let resizeHandle = ui(r):
     tdiv(`data-resize-handle` = "left-sidebar",
-         `aria-hidden` = "true",
          position = "absolute",
          right = "0", top = "0",
          width = "4px", height = "100%",
          cursor = "col-resize",
+         # A touch or pen drag is not handed to the browser's panning.
+         touch_action = "none",
+         outline = "none",
          background_color = "transparent",
          z_index = "30")
   r.appendChild(sidebar, resizeHandle)
@@ -2147,12 +2220,15 @@ proc renderSidebar*[R, E](r: R; vm: EditorVM): E =
   # panel via ``bindRightPanelWidth``.
   block:
     let captSidebar = sidebar
+    let captHandle = resizeHandle
     createRenderEffect proc() =
       let w = capturedVm.leftSidebarWidth.val
       let wpx = $w & "px"
       r.setStyle(captSidebar, "width", wpx)
       r.setStyle(captSidebar, "flex-basis", wpx)
       r.setAttribute(captSidebar, "data-left-sidebar-width", $w)
+      r.setAttribute(captHandle, "aria-valuenow", $w)
+  r.installSidebarResizeKeyboard(resizeHandle, vm, srsLeftSidebar)
 
   when isDomViewHost(E):
     # Mousedown on the handle records the starting cursor X + sidebar
@@ -2164,60 +2240,86 @@ proc renderSidebar*[R, E](r: R; vm: EditorVM): E =
     # select text.
     let handleEl = resizeHandle
     let sidebarEl = sidebar
+    let persistVm = vm
+    proc persistWidths() = persistVm.persistSidebarWidths()
+    let persistJs = persistWidths
     {.emit: ["""
-      (function (handle, sidebar) {
+      (function (handle, sidebar, persist) {
         if (!handle || typeof document === 'undefined' || !document.addEventListener || !handle.addEventListener) return;
         var startX = 0;
         var startW = 0;
         var dragging = false;
-        // Capture the pointer for the whole gesture. Without it, the
-        // mousemove/mouseup of a drag that crosses into an iframe (the
-        // preview sits right next to both sidebars) are dispatched to the
-        // iframe's document, so the width never changes and the drag never
-        // ends. With the pointer captured, the compatibility mouse events
-        // target the handle and bubble to this document's listeners.
+        var moved = false;
+        // Pointer events with the pointer captured for the whole gesture, so
+        // mouse, touch and pen drags all work. Without the capture the moves
+        // and the release of a drag that crosses into an iframe (the preview
+        // sits right next to both sidebars) are dispatched to the iframe's
+        // document, so the width never changes and the drag never ends.
+        // With it they target the handle and bubble to this document's
+        // listeners. If the handle is detached mid-drag (a mode switch swaps
+        // the right sidebar without disposing it) the capture is lost:
+        // Chromium fires lostpointercapture at the document, and a later
+        // release over the iframe would never reach us, so losing the
+        // capture ends the drag, as does any move with no button held.
         // https://w3c.github.io/pointerevents/#pointer-capture
-        function capturePointer(e) {
-          if (e.button !== 0 || !handle.setPointerCapture) return;
-          try { handle.setPointerCapture(e.pointerId); } catch (_) {}
+        var pointerId = null;
+        function onEnd(e) {
+          if (e && e.pointerId !== undefined && pointerId !== null &&
+              e.pointerId !== pointerId) return;
+          endDrag();
         }
         function endDrag() {
           if (!dragging) return;
           dragging = false;
+          pointerId = null;
           document.body.style.cursor = '';
           document.body.style.userSelect = '';
+          if (moved) { moved = false; persist(); }
         }
         function startDrag(e) {
+          if (e.button !== 0 || e.isPrimary === false) return;
           dragging = true;
+          pointerId = e.pointerId;
+          if (handle.setPointerCapture) {
+            try { handle.setPointerCapture(e.pointerId); } catch (_) {}
+          }
           startX = e.clientX;
-          startW = sidebar.getBoundingClientRect().width;
+          // Start from the width the VM holds (mirrored on aria-valuenow),
+          // not the box, which includes the 1 px border: starting from the
+          // box made every drag, however small, add 1 px.
+          var held = parseInt(handle.getAttribute('aria-valuenow'), 10);
+          startW = isFinite(held) ? held : sidebar.getBoundingClientRect().width;
+          moved = false;
           document.body.style.cursor = 'col-resize';
           document.body.style.userSelect = 'none';
           if (e.preventDefault) e.preventDefault();
         }
         function moveDrag(e) {
-          if (!dragging) return;
+          if (!dragging || e.pointerId !== pointerId) return;
+          if (e.buttons === 0) { endDrag(); return; }
           var delta = e.clientX - startX;
           var w = Math.max(180, Math.min(420, Math.round(startW + delta)));
+          moved = true;
+          // Storage is written once, on release (``persist``), not per move.
           if (window.__isonimEditor &&
               window.__isonimEditor.setLeftSidebarWidth) {
-            window.__isonimEditor.setLeftSidebarWidth(w);
+            window.__isonimEditor.setLeftSidebarWidth(w, { persist: false });
           }
         }
-        handle.addEventListener('mousedown', startDrag);
-        handle.addEventListener('pointerdown', capturePointer);
-        document.addEventListener('mousemove', moveDrag);
-        document.addEventListener('mouseup', endDrag);
-        document.addEventListener('mouseleave', endDrag);
+        handle.addEventListener('pointerdown', startDrag);
+        document.addEventListener('pointermove', moveDrag);
+        document.addEventListener('pointerup', onEnd);
+        document.addEventListener('pointercancel', onEnd);
+        document.addEventListener('lostpointercapture', onEnd);
         handle.__isonimResizeCleanup = function () {
           endDrag();
-          handle.removeEventListener('mousedown', startDrag);
-          handle.removeEventListener('pointerdown', capturePointer);
-          document.removeEventListener('mousemove', moveDrag);
-          document.removeEventListener('mouseup', endDrag);
-          document.removeEventListener('mouseleave', endDrag);
+          handle.removeEventListener('pointerdown', startDrag);
+          document.removeEventListener('pointermove', moveDrag);
+          document.removeEventListener('pointerup', onEnd);
+          document.removeEventListener('pointercancel', onEnd);
+          document.removeEventListener('lostpointercapture', onEnd);
         };
-      })(""", handleEl, """, """, sidebarEl, """);
+      })(""", handleEl, """, """, sidebarEl, """, """, persistJs, """);
     """].}
 
     onCleanup proc() =
@@ -3550,7 +3652,7 @@ proc renderInspectorPanel*[R, E](r: R; vm: EditorVM): E =
           # viewmodels.nim); ``bindRightPanelWidth`` overwrites this
           # static value reactively on first paint. Floor stays at
           # 200 px so the AI inspector rail can still narrow.
-          width = "320px", min_width = "200px", max_width = "420px",
+          width = "320px", min_width = "240px", max_width = "420px",
           height = "100%",
           position = "relative",
           flex_shrink = "0",
@@ -3606,14 +3708,17 @@ proc renderInspectorPanel*[R, E](r: R; vm: EditorVM): E =
   # of section-list growth.
   let rightResizeHandle = ui(r):
     tdiv(`data-resize-handle` = "right-panel",
-         `aria-hidden` = "true",
          position = "absolute",
          left = "0", top = "0",
          width = "4px", height = "100%",
          cursor = "col-resize",
+         # A touch or pen drag is not handed to the browser's panning.
+         touch_action = "none",
+         outline = "none",
          background_color = "transparent",
          z_index = "30")
   r.appendChild(sidebarRoot, rightResizeHandle)
+  r.installSidebarResizeKeyboard(rightResizeHandle, vm, srsRightPanel)
   # Phase B (2026-05-28): selection header sits above the scrollable
   # section list. Append BEFORE the list so the DOM order matches the
   # visual order (header first, then list).
@@ -3624,62 +3729,88 @@ proc renderInspectorPanel*[R, E](r: R; vm: EditorVM): E =
   when isDomViewHost(E):
     let handleEl = rightResizeHandle
     let panelEl = sidebarRoot
+    let persistVm = vm
+    proc persistWidths() = persistVm.persistSidebarWidths()
+    let persistJs = persistWidths
     {.emit: ["""
-      (function (handle, panel) {
+      (function (handle, panel, persist) {
         if (!handle || typeof document === 'undefined' || !document.addEventListener || !handle.addEventListener) return;
         var startX = 0;
         var startW = 0;
         var dragging = false;
-        // Capture the pointer for the whole gesture. Without it, the
-        // mousemove/mouseup of a drag that crosses into an iframe (the
-        // preview sits right next to both sidebars) are dispatched to the
-        // iframe's document, so the width never changes and the drag never
-        // ends. With the pointer captured, the compatibility mouse events
-        // target the handle and bubble to this document's listeners.
+        var moved = false;
+        // Pointer events with the pointer captured for the whole gesture, so
+        // mouse, touch and pen drags all work. Without the capture the moves
+        // and the release of a drag that crosses into an iframe (the preview
+        // sits right next to both sidebars) are dispatched to the iframe's
+        // document, so the width never changes and the drag never ends.
+        // With it they target the handle and bubble to this document's
+        // listeners. If the handle is detached mid-drag (a mode switch swaps
+        // the right sidebar without disposing it) the capture is lost:
+        // Chromium fires lostpointercapture at the document, and a later
+        // release over the iframe would never reach us, so losing the
+        // capture ends the drag, as does any move with no button held.
         // https://w3c.github.io/pointerevents/#pointer-capture
-        function capturePointer(e) {
-          if (e.button !== 0 || !handle.setPointerCapture) return;
-          try { handle.setPointerCapture(e.pointerId); } catch (_) {}
+        var pointerId = null;
+        function onEnd(e) {
+          if (e && e.pointerId !== undefined && pointerId !== null &&
+              e.pointerId !== pointerId) return;
+          endDrag();
         }
         function endDrag() {
           if (!dragging) return;
           dragging = false;
+          pointerId = null;
           document.body.style.cursor = '';
           document.body.style.userSelect = '';
+          if (moved) { moved = false; persist(); }
         }
         function startDrag(e) {
+          if (e.button !== 0 || e.isPrimary === false) return;
           dragging = true;
+          pointerId = e.pointerId;
+          if (handle.setPointerCapture) {
+            try { handle.setPointerCapture(e.pointerId); } catch (_) {}
+          }
           startX = e.clientX;
-          startW = panel.getBoundingClientRect().width;
+          // Start from the width the VM holds (mirrored on aria-valuenow),
+          // not the box, which includes the 1 px border: starting from the
+          // box made every drag, however small, add 1 px.
+          var held = parseInt(handle.getAttribute('aria-valuenow'), 10);
+          startW = isFinite(held) ? held : panel.getBoundingClientRect().width;
+          moved = false;
           document.body.style.cursor = 'col-resize';
           document.body.style.userSelect = 'none';
           if (e.preventDefault) e.preventDefault();
         }
         function moveDrag(e) {
-          if (!dragging) return;
+          if (!dragging || e.pointerId !== pointerId) return;
+          if (e.buttons === 0) { endDrag(); return; }
           // Right panel grows when the cursor moves LEFT (delta < 0
           // means user wants a wider panel). Hence subtract.
           var delta = startX - e.clientX;
-          var w = Math.max(200, Math.min(420, Math.round(startW + delta)));
+          var w = Math.max(240, Math.min(420, Math.round(startW + delta)));
+          moved = true;
+          // Storage is written once, on release (``persist``), not per move.
           if (window.__isonimEditor &&
               window.__isonimEditor.setRightPanelWidth) {
-            window.__isonimEditor.setRightPanelWidth(w);
+            window.__isonimEditor.setRightPanelWidth(w, { persist: false });
           }
         }
-        handle.addEventListener('mousedown', startDrag);
-        handle.addEventListener('pointerdown', capturePointer);
-        document.addEventListener('mousemove', moveDrag);
-        document.addEventListener('mouseup', endDrag);
-        document.addEventListener('mouseleave', endDrag);
+        handle.addEventListener('pointerdown', startDrag);
+        document.addEventListener('pointermove', moveDrag);
+        document.addEventListener('pointerup', onEnd);
+        document.addEventListener('pointercancel', onEnd);
+        document.addEventListener('lostpointercapture', onEnd);
         handle.__isonimResizeCleanup = function () {
           endDrag();
-          handle.removeEventListener('mousedown', startDrag);
-          handle.removeEventListener('pointerdown', capturePointer);
-          document.removeEventListener('mousemove', moveDrag);
-          document.removeEventListener('mouseup', endDrag);
-          document.removeEventListener('mouseleave', endDrag);
+          handle.removeEventListener('pointerdown', startDrag);
+          document.removeEventListener('pointermove', moveDrag);
+          document.removeEventListener('pointerup', onEnd);
+          document.removeEventListener('pointercancel', onEnd);
+          document.removeEventListener('lostpointercapture', onEnd);
         };
-      })(""", handleEl, """, """, panelEl, """);
+      })(""", handleEl, """, """, panelEl, """, """, persistJs, """);
     """].}
 
     onCleanup proc() =
@@ -3705,7 +3836,7 @@ proc renderInspectorPanel*[R, E](r: R; vm: EditorVM): E =
       try: nondet.storageSet("isonim:inspector:expanded", payload)
       except: discard # Preserve optional preferences even for native JS storage errors.
 
-  r.bindRightPanelWidth(result, vm)
+  r.bindRightPanelWidth(result, rightResizeHandle, vm)
 
 proc renderCommandPalette[R, E](r: R; vm: EditorVM): E =
   var listNode: E
@@ -4094,29 +4225,56 @@ proc renderFlowControls[R, E](r: R; vm: EditorVM): E =
         text glyph
     r.makeButton(result, label)
     r.addEventListener(result, "click", action)
-  let playButton = control("Play flow", "▶", proc() =
-    if vm.flowPlayer.playState.val == psPlaying:
-      vm.flowPlayer.pause()
-    else:
-      vm.flowPlayer.play())
-  r.appendChild(group, playButton)
-  r.appendChild(group, control("Stop flow", "■", proc() = discard vm.stopFlow()))
-  r.appendChild(group, control("Previous flow step", "‹", proc() = discard vm.prevFlowStep()))
-  r.appendChild(group, control("Next flow step", "›", proc() = discard vm.nextFlowStep()))
-  r.appendChild(group, control("Zoom storyboard out", "−", proc() =
-    vm.zoomStoryboardFromCenter(vm.storyboard.zoom.val / 1.2)))
-  r.appendChild(group, control("Zoom storyboard in", "+", proc() =
-    vm.zoomStoryboardFromCenter(vm.storyboard.zoom.val * 1.2)))
-  r.appendChild(group, control("Fit storyboard", "Fit", proc() = vm.resetStoryboardView()))
+  # Play enters step-through playback at the current step (its story is
+  # selected); pressed while playing it pauses there.
+  # The playback buttons are hidden when the workspace provides no flow
+  # steps; zoom and Fit stay.
+  let playback = ui(r):
+    span(`data-flow-playback` = "true", display = "inline-flex",
+         align_items = "center", gap = "4px")
+  r.appendChild(group, playback)
+  let playButton = control("Play flow", "▶", proc() = vm.toggleFlowPlayback())
+  r.appendChild(playback, playButton)
+  r.appendChild(playback, control("Stop flow", "■", proc() = discard vm.stopFlow()))
+  r.appendChild(playback, control("Previous flow step", "‹", proc() = discard vm.prevFlowStep()))
+  r.appendChild(playback, control("Next flow step", "›", proc() = discard vm.nextFlowStep()))
+  # Zoom and Fit are carried out by the mounted storyboard canvas, which
+  # knows its laid-out size (zoom is about its centre) and its content
+  # (Fit fits the flow headers and cards).
+  let zoomOut = control("Zoom storyboard out", "−", proc() =
+    vm.storyboard.requestStoryboard(sckZoomOut))
+  r.appendChild(group, zoomOut)
+  let zoomLevel = ui(r):
+    span(`data-storyboard-zoom-level` = "true", min_width = "34px",
+         text_align = "center", font_size = "11px", color = textSecondary):
+      text "100%"
+  r.appendChild(group, zoomLevel)
+  let zoomIn = control("Zoom storyboard in", "+", proc() =
+    vm.storyboard.requestStoryboard(sckZoomIn))
+  r.appendChild(group, zoomIn)
+  r.appendChild(group, control("Fit storyboard", "Fit", proc() =
+    vm.storyboard.requestStoryboard(sckFit)))
   createRenderEffect proc() =
     let playing = vm.flowPlayer.playState.val == psPlaying
     r.setAttribute(playButton, "aria-label", if playing: "Pause flow" else: "Play flow")
     r.setAttribute(playButton, "aria-pressed", if playing: "true" else: "false")
     r.setTextContent(playButton, if playing: "Ⅱ" else: "▶")
-    r.setStyle(group, "display",
-      if vm.activeView.val == evStoryboard and vm.surfaceSig.val == sPreview:
-        "inline-flex"
-      else: "none")
+    r.setStyle(playback, "display",
+      if vm.flowPlayer.totalSteps.val > 0: "inline-flex" else: "none")
+    let shown = vm.activeView.val == evStoryboard and
+      vm.surfaceSig.val == sPreview
+    r.setStyle(group, "display", if shown: "inline-flex" else: "none")
+    # Lets the chrome row compact sooner while this group takes its room
+    # (browser.nim's ``data-flow-controls-shown`` container rules).
+    r.setAttribute(group, "data-flow-controls-shown",
+      if shown: "true" else: "false")
+  createRenderEffect proc() =
+    let zoom = vm.storyboard.zoom.val
+    r.setTextContent(zoomLevel, $int(round(zoom * 100)) & "%")
+    r.setAttribute(zoomOut, "aria-disabled",
+      if zoom <= storyboardMinZoom: "true" else: "false")
+    r.setAttribute(zoomIn, "aria-disabled",
+      if zoom >= storyboardMaxZoom: "true" else: "false")
   group
 
 proc renderPreviewChromeBar*[R, E](r: R; vm: EditorVM): E =
@@ -4988,7 +5146,7 @@ proc renderAiAssistantPanel*[R, E](r: R; vm: EditorVM): E =
          `data-test-id` = "property-panel",
          `data-sidebar-content` = "ai-assistant",
          display = "flex", flex_direction = "column",
-         width = "320px", min_width = "200px", max_width = "420px",
+         width = "320px", min_width = "240px", max_width = "420px",
          height = "100%",
          position = "relative",
          flex_shrink = "0",
@@ -5049,84 +5207,111 @@ proc renderAiAssistantPanel*[R, E](r: R; vm: EditorVM): E =
       let chatPanel = renderChatPanel[R, E](r, vm)
       r.appendChild(chatContentHost, chatPanel)
 
-  # Width binding — mirror the inspector's bindRightPanelWidth so
-  # both right-sidebar surfaces occupy the same horizontal slot.
-  r.bindRightPanelWidth(panelRoot, vm)
-
   # Left-edge drag-resize handle. Symmetrical with the inspector's
   # handle (same data-resize-handle="right-panel" id so the same JS
   # mousemove shim wires both surfaces).
   let aiResizeHandle = ui(r):
     tdiv(`data-resize-handle` = "right-panel",
-         `aria-hidden` = "true",
          position = "absolute",
          left = "0", top = "0",
          width = "4px", height = "100%",
          cursor = "col-resize",
+         # A touch or pen drag is not handed to the browser's panning.
+         touch_action = "none",
+         outline = "none",
          background_color = "transparent",
          z_index = "30")
   r.appendChild(panelRoot, aiResizeHandle)
+  r.installSidebarResizeKeyboard(aiResizeHandle, vm, srsRightPanel)
+  # Width binding — mirror the inspector's bindRightPanelWidth so
+  # both right-sidebar surfaces occupy the same horizontal slot.
+  r.bindRightPanelWidth(panelRoot, aiResizeHandle, vm)
   when isDomViewHost(E):
     let handleEl = aiResizeHandle
     let panelEl = panelRoot
+    let persistVm = vm
+    proc persistWidths() = persistVm.persistSidebarWidths()
+    let persistJs = persistWidths
     {.emit: ["""
-      (function (handle, panel, live) {
+      (function (handle, panel, live, persist) {
         if (!handle || typeof document === 'undefined' || !document.addEventListener || !handle.addEventListener) return;
         var startX = 0;
         var startW = 0;
         var dragging = false;
-        // Capture the pointer for the whole gesture. Without it, the
-        // mousemove/mouseup of a drag that crosses into an iframe (the
-        // preview sits right next to both sidebars) are dispatched to the
-        // iframe's document, so the width never changes and the drag never
-        // ends. With the pointer captured, the compatibility mouse events
-        // target the handle and bubble to this document's listeners.
+        var moved = false;
+        // Pointer events with the pointer captured for the whole gesture, so
+        // mouse, touch and pen drags all work. Without the capture the moves
+        // and the release of a drag that crosses into an iframe (the preview
+        // sits right next to both sidebars) are dispatched to the iframe's
+        // document, so the width never changes and the drag never ends.
+        // With it they target the handle and bubble to this document's
+        // listeners. If the handle is detached mid-drag (a mode switch swaps
+        // the right sidebar without disposing it) the capture is lost:
+        // Chromium fires lostpointercapture at the document, and a later
+        // release over the iframe would never reach us, so losing the
+        // capture ends the drag, as does any move with no button held.
         // https://w3c.github.io/pointerevents/#pointer-capture
-        function capturePointer(e) {
-          if (!live() || e.button !== 0 || !handle.setPointerCapture) return;
-          try { handle.setPointerCapture(e.pointerId); } catch (_) {}
+        var pointerId = null;
+        function onEnd(e) {
+          if (e && e.pointerId !== undefined && pointerId !== null &&
+              e.pointerId !== pointerId) return;
+          endDrag();
         }
         function releaseDrag() {
           if (!dragging) return;
           dragging = false;
+          pointerId = null;
           document.body.style.cursor = '';
           document.body.style.userSelect = '';
+          if (moved) { moved = false; persist(); }
         }
         function endDrag() {
           if (live()) releaseDrag();
         }
         function startDrag(e) {
-          if (!live()) return;
+          if (!live() || e.button !== 0 || e.isPrimary === false) return;
           dragging = true;
+          pointerId = e.pointerId;
+          if (handle.setPointerCapture) {
+            try { handle.setPointerCapture(e.pointerId); } catch (_) {}
+          }
           startX = e.clientX;
-          startW = panel.getBoundingClientRect().width;
+          // Start from the width the VM holds (mirrored on aria-valuenow),
+          // not the box, which includes the 1 px border: starting from the
+          // box made every drag, however small, add 1 px.
+          var held = parseInt(handle.getAttribute('aria-valuenow'), 10);
+          startW = isFinite(held) ? held : panel.getBoundingClientRect().width;
+          moved = false;
           document.body.style.cursor = 'col-resize';
           document.body.style.userSelect = 'none';
           if (e.preventDefault) e.preventDefault();
         }
         function moveDrag(e) {
-          if (!live() || !dragging) return;
+          if (!live() || !dragging || e.pointerId !== pointerId) return;
+          if (e.buttons === 0) { endDrag(); return; }
           var delta = startX - e.clientX;
-          var w = Math.max(200, Math.min(420, Math.round(startW + delta)));
+          var w = Math.max(240, Math.min(420, Math.round(startW + delta)));
+          moved = true;
+          // Storage is written once, on release (``persist``), not per move.
           if (window.__isonimEditor &&
               window.__isonimEditor.setRightPanelWidth) {
-            window.__isonimEditor.setRightPanelWidth(w);
+            window.__isonimEditor.setRightPanelWidth(w, { persist: false });
           }
         }
-        handle.addEventListener('mousedown', startDrag);
-        handle.addEventListener('pointerdown', capturePointer);
-        document.addEventListener('mousemove', moveDrag);
-        document.addEventListener('mouseup', endDrag);
-        document.addEventListener('mouseleave', endDrag);
+        handle.addEventListener('pointerdown', startDrag);
+        document.addEventListener('pointermove', moveDrag);
+        document.addEventListener('pointerup', onEnd);
+        document.addEventListener('pointercancel', onEnd);
+        document.addEventListener('lostpointercapture', onEnd);
         handle.__isonimResizeCleanup = function () {
           releaseDrag();
-          handle.removeEventListener('mousedown', startDrag);
-          handle.removeEventListener('pointerdown', capturePointer);
-          document.removeEventListener('mousemove', moveDrag);
-          document.removeEventListener('mouseup', endDrag);
-          document.removeEventListener('mouseleave', endDrag);
+          handle.removeEventListener('pointerdown', startDrag);
+          document.removeEventListener('pointermove', moveDrag);
+          document.removeEventListener('pointerup', onEnd);
+          document.removeEventListener('pointercancel', onEnd);
+          document.removeEventListener('lostpointercapture', onEnd);
         };
-      })(""", handleEl, """, """, panelEl, """, """, panelCurrent, """);
+      })(""", handleEl, """, """, panelEl, """, """, panelCurrent, """, """, persistJs, """);
     """].}
 
     onCleanup proc() =

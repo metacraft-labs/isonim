@@ -78,11 +78,11 @@ suite "Editor ViewModels (M0)":
       check vm.editMode.val == emComment
       check vm.rightPanelWidth.val == 420
       vm.adjustRightPanelWidth(-300)
-      # M-EVP-14 Wave Chrome CR-3: minimum right-panel width lowered
-      # from 240 → 200 so the AI inspector can shrink past the
-      # previous floor; the adjust-below-clamp delta is now -300 from
-      # the 420 widened state to verify the new 200 px floor.
-      check vm.rightPanelWidth.val == 200
+      # Editor spec "Resizable sidebars": the right sidebar is clamped to
+      # 240..420. M-EVP-14 CR-3 had lowered only the VM floor to 200 while
+      # both right-sidebar surfaces kept rendering a 240 px min-width, so
+      # 200 was reported and never shown; the floor is 240 again.
+      check vm.rightPanelWidth.val == 240
       vm.adjustRightPanelWidth(600)
       check vm.rightPanelWidth.val == 420
 

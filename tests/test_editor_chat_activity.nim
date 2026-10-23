@@ -223,7 +223,9 @@ suite "Chat activity and composition":
     createRoot proc(dispose: proc()) =
       let vm = createEditorVM()
       let panel = renderChatPanel[MockRenderer, MockNode](MockRenderer(), vm)
-      for width in [200, 240, 320, 420]:
+      # Widths inside the right sidebar's 240..420 clamp (editor spec
+      # "Resizable sidebars"); 200 was below it and is now clamped to 240.
+      for width in [240, 300, 320, 420]:
         vm.setRightPanelWidth(width)
         check vm.rightPanelWidth.val == width
         check panel.styles.getOrDefault("width") == "100%"

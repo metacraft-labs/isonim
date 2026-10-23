@@ -3267,23 +3267,463 @@ test.describe("metacraft-web IsoNim editor consumer", () => {
     await page.getByRole("button", { name: "Zoom storyboard in" }).click();
     await expect.poll(inlineTransform).not.toBe("translate(0px, 0px) scale(1)");
 
+    // Fit (editor spec "Canvas Features": "Fit to view — toolbar button zooms
+    // to fit all content"; "Canvas Navigation": "Fit button — Zoom to fit
+    // all cards") brings every flow card inside the canvas. Reconciled
+    // 2026-10-19: this case used to expect Fit to restore the 100% origin
+    // view, which is what the removed toolbar's Fit did; on this consumer's
+    // six cards that leaves four of them outside the canvas, so the oracle is
+    // now the specified one -- every card visible -- and the pan below is
+    // measured from the fitted view.
     await page.getByRole("button", { name: "Fit storyboard" }).click();
-    await expect.poll(inlineTransform).toBe("translate(0px, 0px) scale(1)");
+    await expect.poll(inlineTransform).toMatch(
+      /^translate\(-?[\d.]+px, -?[\d.]+px\) scale\(0\.\d+\)$/,
+    );
+    const canvasBox = await canvas.boundingBox();
+    if (!canvasBox) throw new Error("Flow canvas is not visible");
+    const cards = page.locator('[data-flow-card="true"]');
+    await expect(cards).toHaveCount(6);
+    for (const card of await cards.all()) {
+      const cardBox = await card.boundingBox();
+      if (!cardBox) throw new Error("Flow card has no box");
+      expect(cardBox.x).toBeGreaterThanOrEqual(canvasBox.x);
+      expect(cardBox.y).toBeGreaterThanOrEqual(canvasBox.y);
+      expect(cardBox.x + cardBox.width).toBeLessThanOrEqual(
+        canvasBox.x + canvasBox.width,
+      );
+      expect(cardBox.y + cardBox.height).toBeLessThanOrEqual(
+        canvasBox.y + canvasBox.height,
+      );
+    }
+    const fitted = await inlineTransform();
+    const [, fitX, fitY, fitScale] = fitted
+      .match(/^translate\((-?[\d.]+)px, (-?[\d.]+)px\) scale\(([\d.]+)\)$/)!
+      .map(Number);
 
     const box = await canvas.boundingBox();
     if (!box) throw new Error("Flow canvas is not visible");
-    await page.mouse.move(box.x + 20, box.y + 20);
+    await page.mouse.move(box.x + 8, box.y + 8);
     await page.mouse.down();
-    await page.mouse.move(box.x + 100, box.y + 60);
+    await page.mouse.move(box.x + 88, box.y + 48);
     await page.mouse.up();
-    await expect.poll(inlineTransform).toBe("translate(80px, 40px) scale(1)");
+    await expect
+      .poll(async () => {
+        const [, x, y, scale] = (await inlineTransform())
+          .match(/^translate\((-?[\d.]+)px, (-?[\d.]+)px\) scale\(([\d.]+)\)$/)!
+          .map(Number);
+        return [
+          Math.round((x - fitX) * 1000) / 1000,
+          Math.round((y - fitY) * 1000) / 1000,
+          scale === fitScale,
+        ];
+      })
+      .toEqual([80, 40, true]);
+    const panned = await inlineTransform();
 
     await page.keyboard.down("Control");
     await page.mouse.wheel(0, -240);
     await page.keyboard.up("Control");
+    await expect.poll(inlineTransform).not.toBe(panned);
+  });
+
+  // Editor spec "Canvas Features" / "Canvas Navigation" / "Interactive Play
+  // Mode" (isonim-pm issue 2026-10-14-storyboard-zoom-fit-and-flow-play-
+  // controls-are-specified-but-absent): the storyboard's zoom, Fit and flow
+  // playback controls in the chrome bar, operable by pointer and keyboard;
+  // the current step's annotation on the canvas. Physical input on the
+  // compiled consumer; nothing is mocked.
+  test("e2e_storyboard_flow_controls_zoom_fit_and_playback", async ({ page }) => {
+    await page.goto("/");
+    await page
+      .getByRole("button", { name: "Open User Journeys section" })
+      .click();
+    const canvas = page.locator('[data-figma-canvas="true"]');
+    await expect(canvas).toBeVisible();
+    const content = page.locator('[data-figma-canvas-content="true"]');
+    const inlineTransform = () =>
+      content.evaluate((node) => (node as HTMLElement).style.transform);
+    // The operator's 2026-10-22 decision: the controls live in the chrome bar.
+    const controls = page.locator('[data-preview-chrome-bar="true"] [data-flow-controls="true"]');
+    await expect(controls).toBeVisible();
+    await expect(page.locator('[data-storyboard-controls="true"]')).toHaveCount(0);
+    const annotation = page.locator('[data-storyboard-step-annotation="true"]');
+    // The read-only step caption stays inside the canvas, clear of the minimap.
+    const keepsClear = async () => {
+      const [o, c, m] = await page.evaluate(() => {
+        const box = (n: Element | null) => n!.getBoundingClientRect().toJSON();
+        const canvasNode = document.querySelector('[data-figma-canvas="true"]');
+        const minimap = [...canvasNode!.children].find((n) => n.textContent?.trim() === "minimap") ?? null;
+        return [box(document.querySelector('[data-storyboard-step-annotation="true"]')), box(canvasNode), box(minimap)];
+      });
+      return o.left >= c.left && o.right <= m.left && o.bottom <= c.bottom;
+    };
+    expect(await keepsClear()).toBe(true);
+    const level = controls.locator('[data-storyboard-zoom-level="true"]');
+    const step = annotation.locator('[data-storyboard-step="true"]');
+    const zoomOut = page.getByRole("button", { name: "Zoom storyboard out" });
+    const zoomIn = page.getByRole("button", { name: "Zoom storyboard in" });
+    await expect(level).toHaveText("100%");
+
+    // Zoom keeps the canvas centre in place: 1/1.2 about (w/2, h/2).
+    const size = await canvas.evaluate((node) => [node.clientWidth, node.clientHeight]);
+    await zoomOut.click();
+    await expect(level).toHaveText("83%");
+    const [cx, cy] = [size[0] / 2, size[1] / 2];
+    const z = 1 / 1.2;
     await expect
-      .poll(inlineTransform)
-      .not.toBe("translate(80px, 40px) scale(1)");
+      .poll(async () => {
+        const [, x, y, scale] = (await inlineTransform())
+          .match(/^translate\((-?[\d.]+)px, (-?[\d.]+)px\) scale\(([\d.]+)\)$/)!
+          .map(Number);
+        return [Math.abs(x - (cx - cx * z)) < 0.01, Math.abs(y - (cy - cy * z)) < 0.01, Math.abs(scale - z) < 1e-6];
+      })
+      .toEqual([true, true, true]);
+
+    // Keyboard: the clicked control keeps focus; Tab reaches Zoom in, Enter
+    // and Space activate it.
+    await expect(zoomOut).toBeFocused();
+    await page.keyboard.press("Tab");
+    await expect(zoomIn).toBeFocused();
+    await page.keyboard.press("Enter");
+    await expect(level).toHaveText("100%");
+    await page.keyboard.press("Space");
+    await expect(level).toHaveText("120%");
+    for (let i = 0; i < 12; i += 1) await page.keyboard.press("Enter");
+    await expect(level).toHaveText("400%");
+    await expect(zoomIn).toHaveAttribute("aria-disabled", "true");
+
+    await page.keyboard.press("Tab");
+    await expect(page.getByRole("button", { name: "Fit storyboard" })).toBeFocused();
+    await page.keyboard.press("Enter");
+    const canvasBox = await canvas.boundingBox();
+    if (!canvasBox) throw new Error("Flow canvas is not visible");
+    // The storyboard's content: the six cards and the two flow headers.
+    const boxes = await page
+      .locator('[data-flow-card="true"], [data-flow-header]')
+      .evaluateAll((nodes) => nodes.map((node) => node.getBoundingClientRect().toJSON()));
+    expect(boxes).toHaveLength(8);
+    const left = Math.min(...boxes.map((b) => b.left));
+    const right = Math.max(...boxes.map((b) => b.right));
+    const top = Math.min(...boxes.map((b) => b.top));
+    const bottom = Math.max(...boxes.map((b) => b.bottom));
+    // Inside the canvas with the 24 px margin on the binding axis, centred.
+    expect(left).toBeGreaterThanOrEqual(canvasBox.x + 23.5);
+    expect(right).toBeLessThanOrEqual(canvasBox.x + canvasBox.width - 23.5);
+    expect(top).toBeGreaterThanOrEqual(canvasBox.y);
+    expect(bottom).toBeLessThanOrEqual(canvasBox.y + canvasBox.height);
+    expect(Math.abs(left - canvasBox.x - (canvasBox.x + canvasBox.width - right))).toBeLessThan(1);
+    expect(Math.abs(top - canvasBox.y - (canvasBox.y + canvasBox.height - bottom))).toBeLessThan(1);
+    await expect(level).not.toHaveText("400%");
+    await expect(zoomIn).toHaveAttribute("aria-disabled", "false");
+
+    // Flow playback: Play enters step-through playback at the current step.
+    const play = page.getByRole("button", { name: "Play flow", exact: true });
+    await expect(play).toHaveAttribute("aria-pressed", "false");
+    await expect(step).toHaveText("Step 1 / 6");
+    await play.click();
+    const pause = page.getByRole("button", { name: "Pause flow", exact: true });
+    await expect(pause).toHaveAttribute("aria-pressed", "true");
+    await expect(page).toHaveURL(/story=Operations%20dashboard/);
+    const next = page.getByRole("button", { name: "Next flow step" });
+    await next.focus();
+    await page.keyboard.press("Enter");
+    await expect(step).toHaveText("Step 2 / 6");
+    await expect(page).toHaveURL(/story=Customer%20detail/);
+    await expect(
+      page.getByRole("button", { name: "Select story Back-office pages / Customer detail" }),
+    ).toHaveAttribute("aria-current", "true");
+    // Chrome order: Play, Stop, Previous, Next.
+    await page.keyboard.press("Shift+Tab");
+    await page.keyboard.press("Shift+Tab");
+    await page.keyboard.press("Shift+Tab");
+    await expect(pause).toBeFocused();
+    await page.keyboard.press("Space");
+    await expect(play).toHaveAttribute("aria-pressed", "false");
+    await expect(step).toHaveText("Step 2 / 6");
+    await page.getByRole("button", { name: "Previous flow step" }).click();
+    await page.getByRole("button", { name: "Previous flow step" }).click();
+    await expect(step).toHaveText("Step 6 / 6");
+    await expect(page).toHaveURL(/story=Partner%20settlement%20readiness/);
+
+    // Each flow header (with its Play button) stays above its first card.
+    const headerGaps = await page.evaluate(() =>
+      [...document.querySelectorAll("[data-flow-header]")].map((header) => {
+        const name = header.getAttribute("data-flow-header");
+        const top = header.getBoundingClientRect().top;
+        const below = [...document.querySelectorAll('[data-flow-card="true"]')]
+          .map((card) => card.getBoundingClientRect())
+          .filter((box) => box.top >= top)
+          .sort((a, b) => a.top - b.top)[0];
+        return [name, Math.round((below.top - header.getBoundingClientRect().bottom) * 100) / 100];
+      }));
+    expect(headerGaps).toHaveLength(2);
+    for (const [, gap] of headerGaps) expect(gap as number).toBeGreaterThanOrEqual(0);
+
+    // The current step is annotated with its action.
+    await expect(annotation.locator('[data-storyboard-step-action="true"]')).toHaveText(
+      "Settlement batch export",
+    );
+
+    expect(await keepsClear()).toBe(true);
+    // Each flow has its own Play: it starts at that flow's first step.
+    await page.getByRole("button", { name: "Play flow Partner operations" }).click();
+    await expect(step).toHaveText("Step 4 / 6");
+    await expect(pause).toHaveAttribute("aria-pressed", "true");
+    await expect(annotation.locator('[data-storyboard-step-action="true"]')).toHaveText(
+      "Partner invitation",
+    );
+    // Double-clicking a flow enters playback at its first step.
+    await pause.click();
+    await page.getByRole("button", { name: "Next flow step" }).click();
+    await expect(step).toHaveText("Step 5 / 6");
+    await page
+      .locator('[data-flow-header="Customer and license flows"]')
+      .getByText("Customer and license flows", { exact: true })
+      .dblclick();
+    await expect(step).toHaveText("Step 1 / 6");
+    await expect(pause).toHaveAttribute("aria-pressed", "true");
+    await page.getByRole("button", { name: "Next flow step" }).click();
+    await expect(step).toHaveText("Step 2 / 6");
+    await page.getByRole("button", { name: "Stop flow" }).click();
+    await expect(play).toHaveAttribute("aria-pressed", "false");
+    await expect(step).toHaveText("Step 1 / 6");
+    await expect(page).toHaveURL(/story=Operations%20dashboard/);
+    await expect(canvas).toBeVisible();
+  });
+
+  // Editor spec "Preview-pane chrome layout": every chrome-bar control stays
+  // visible in its single 44 px row while the storyboard's flow controls are
+  // shown, at the desktop (1440) and laptop (1280) window widths with the
+  // default sidebars; on another view the row is unchanged.
+  test("e2e_storyboard_chrome_bar_shows_every_control_at_1280_and_1440", async ({
+    page,
+  }) => {
+    for (const width of [1440, 1280]) {
+      await page.setViewportSize({ width, height: 900 });
+      await page.goto("/");
+      await page.getByRole("button", { name: "Open User Journeys section" }).click();
+      await expect(page.locator('[data-figma-canvas="true"]')).toBeVisible();
+      const chrome = page.locator('[data-preview-chrome-bar="true"]');
+      await expect(chrome.locator('[data-flow-controls="true"]')).toBeVisible();
+      const layout = await chrome.evaluate((bar) => {
+        const box = bar.getBoundingClientRect();
+        const controls = [...bar.querySelectorAll("button, [role=button]")].filter(
+          (node) => (node as HTMLElement).offsetParent !== null,
+        );
+        return {
+          height: Math.round(box.height),
+          scroll: bar.scrollWidth - bar.clientWidth,
+          count: controls.length,
+          outside: controls
+            .filter((node) => {
+              const r = node.getBoundingClientRect();
+              return r.left < box.left - 0.5 || r.right > box.right + 0.5 ||
+                r.top < box.top - 0.5 || r.bottom > box.bottom + 0.5;
+            })
+            .map((node) => node.getAttribute("aria-label") || node.textContent?.trim()),
+        };
+      });
+      expect(layout.height).toBe(44);
+      expect(layout.outside).toEqual([]);
+      expect(layout.scroll).toBeLessThanOrEqual(0);
+      for (const name of ["Toggle left sidebar", "Toggle right sidebar", "Switch to edit mode",
+        "Play flow", "Fit storyboard", "Zoom storyboard in"]) {
+        await expect(page.getByRole("button", { name, exact: true })).toBeInViewport({ ratio: 1 });
+      }
+    }
+  });
+
+  // Editor spec "Resizable sidebars" (isonim-pm issue 2026-10-14-dragging-
+  // the-right-sidebar-resize-handle-does-not-resize-it): both handles are
+  // dragged across the project preview iframe on the root page -- the case
+  // that lost every pointer event to the iframe -- and operated from the
+  // keyboard; widths are clamped and persist across a reload.
+  test("e2e_sidebar_resize_handles_drag_over_preview_keyboard_and_persist", async ({
+    page,
+  }) => {
+    await page.goto("/");
+    await expect(page.locator('[data-sidebar-content="ai-assistant"]')).toBeVisible();
+    const right = page.locator('[data-sidebar-content]:visible [data-resize-handle="right-panel"]');
+    const left = page.locator('[data-resize-handle="left-sidebar"]');
+    const rightWidth = () =>
+      page.locator("[data-sidebar-content]:visible").getAttribute("data-right-panel-width");
+    const leftWidth = () =>
+      page.locator("[data-left-sidebar-width]").getAttribute("data-left-sidebar-width");
+    await expect.poll(rightWidth).toBe("320");
+    await expect.poll(leftWidth).toBe("260");
+    await expect(page.frameLocator('iframe[title="Project preview"]').locator("body")).toBeVisible();
+
+    const drag = async (handle, dx: number) => {
+      const box = await handle.boundingBox();
+      if (!box) throw new Error("resize handle is not visible");
+      const x = box.x + box.width / 2;
+      const y = box.y + box.height / 2;
+      await page.mouse.move(x, y);
+      await page.mouse.down();
+      await page.mouse.move(x + dx, y, { steps: 8 });
+      await page.mouse.up();
+      return { x, y };
+    };
+    const underPath = (x: number, y: number) =>
+      page.evaluate(([px, py]) => {
+        const node = document.elementFromPoint(px, py);
+        return node?.tagName === "IFRAME" ? node.getAttribute("title") : node?.tagName;
+      }, [x, y]);
+
+    // The pointer travels over the project preview iframe.
+    const rightStart = await right.boundingBox();
+    if (!rightStart) throw new Error("right handle is not visible");
+    expect(await underPath(rightStart.x - 40, rightStart.y + rightStart.height / 2)).toBe("Project preview");
+    const stored = () =>
+      page.evaluate(() => JSON.parse(localStorage.getItem("isonim-editor-sidebar-widths") ?? "null"));
+    // Touch and pen drags are not handed to the browser's panning.
+    expect(await right.evaluate((node) => getComputedStyle(node).touchAction)).toBe("none");
+    expect(await left.evaluate((node) => getComputedStyle(node).touchAction)).toBe("none");
+    // The drag resizes live but writes storage once, on release.
+    {
+      const box = await right.boundingBox();
+      if (!box) throw new Error("resize handle is not visible");
+      const x = box.x + box.width / 2;
+      const y = box.y + box.height / 2;
+      await page.mouse.move(x, y);
+      await page.mouse.down();
+      await page.mouse.move(x - 80, y, { steps: 8 });
+      await expect.poll(rightWidth).toBe("400");
+      expect(await stored()).toBeNull();
+      await page.mouse.up();
+    }
+    expect(await stored()).toEqual({ left: 260, right: 400 });
+    expect(await page.evaluate(() => document.body.style.cursor)).toBe("");
+    await expect(right).toHaveAttribute("aria-valuenow", "400");
+    // Clamped at 420 however far the drag goes.
+    await drag(right, -200);
+    await expect.poll(rightWidth).toBe("420");
+
+    const leftStart = await left.boundingBox();
+    if (!leftStart) throw new Error("left handle is not visible");
+    expect(await underPath(leftStart.x + 40, leftStart.y + leftStart.height / 2)).toBe("Project preview");
+    await drag(left, 60);
+    await expect.poll(leftWidth).toBe("320");
+    expect(await stored()).toEqual({ left: 320, right: 420 });
+    await drag(left, -400);
+    await expect.poll(leftWidth).toBe("180");
+
+    // A mode switch mid-drag swaps the right sidebar out (the AI panel or
+    // the Inspector is detached, not disposed). The drag must end there --
+    // the handle loses its pointer capture -- even when the button is then
+    // released over the preview iframe, whose document would receive that
+    // release: the cursor is restored, the width the drag reached is
+    // persisted, and the panel no longer follows a pointer with no button.
+    const dragAcrossModeSwitch = async (modeIndex: number, nextPanel: string) => {
+      await right.focus();
+      await page.keyboard.press("Home");
+      await expect.poll(rightWidth).toBe("240");
+      const box = await right.boundingBox();
+      if (!box) throw new Error("resize handle is not visible");
+      const x = box.x + box.width / 2;
+      const y = box.y + box.height / 2;
+      await page.mouse.move(x, y);
+      await page.mouse.down();
+      // Past the 420 clamp: the pointer ends up over the preview iframe.
+      await page.mouse.move(x - 220, y, { steps: 8 });
+      await expect.poll(rightWidth).toBe("420");
+      expect(await underPath(x - 220, y)).toBe("Project preview");
+      expect(await stored()).toEqual({ left: 180, right: 240 });
+      expect(await page.evaluate(() => document.body.style.cursor)).toBe("col-resize");
+      await page.evaluate((m) => (window as any).__isonimEditor.setEditMode(m), modeIndex);
+      await expect(page.locator(`[data-sidebar-content="${nextPanel}"]`)).toBeVisible();
+      await page.mouse.move(x - 230, y, { steps: 2 });
+      await page.mouse.up();
+      expect(await page.evaluate(() => document.body.style.cursor)).toBe("");
+      expect(await page.evaluate(() => document.body.style.userSelect)).toBe("");
+      expect(await stored()).toEqual({ left: 180, right: 420 });
+      // Hovering back with no button held does not resize.
+      await page.mouse.move(x + 100, y, { steps: 4 });
+      await expect.poll(rightWidth).toBe("420");
+    };
+    await dragAcrossModeSwitch(3, "inspector"); // AI assistant -> Edit
+    await dragAcrossModeSwitch(1, "ai-assistant"); // Inspector -> View
+
+    // A move with no button held ends a drag whose release never arrived
+    // (it went to another document): the drag stops and is persisted.
+    {
+      const box = await left.boundingBox();
+      if (!box) throw new Error("left handle is not visible");
+      const x = box.x + box.width / 2;
+      const y = box.y + box.height / 2;
+      await page.mouse.move(x, y);
+      await page.mouse.down();
+      await page.mouse.move(x + 20, y, { steps: 2 });
+      await expect.poll(leftWidth).toBe("200");
+      await page.evaluate(([px, py]) => {
+        document.dispatchEvent(new PointerEvent("pointermove", {
+          pointerId: 1, pointerType: "mouse", isPrimary: true, buttons: 0,
+          clientX: px + 60, clientY: py, bubbles: true,
+        }));
+      }, [x, y]);
+      expect(await page.evaluate(() => document.body.style.cursor)).toBe("");
+      expect(await stored()).toEqual({ left: 200, right: 420 });
+      await page.mouse.move(x + 60, y, { steps: 2 });
+      await expect.poll(leftWidth).toBe("200");
+      await page.mouse.up();
+      await left.focus();
+      await page.keyboard.press("Home");
+      await expect.poll(leftWidth).toBe("180");
+    }
+
+    // Touch (and pen) drags resize too: the handles listen to pointer
+    // events and set touch-action: none. A real CDP touch gesture.
+    {
+      const box = await left.boundingBox();
+      if (!box) throw new Error("left handle is not visible");
+      const x = Math.round(box.x + box.width / 2);
+      const y = Math.round(box.y + box.height / 2);
+      const cdp = await page.context().newCDPSession(page);
+      const touch = (type: string, tx: number) =>
+        cdp.send("Input.dispatchTouchEvent", {
+          type,
+          touchPoints: type === "touchEnd" ? [] : [{ x: tx, y }],
+        });
+      await touch("touchStart", x);
+      for (let i = 1; i <= 5; i += 1) await touch("touchMove", x + 8 * i);
+      await expect.poll(leftWidth).toBe("220");
+      expect(await stored()).toEqual({ left: 180, right: 420 });
+      await touch("touchEnd", x + 40);
+      await expect.poll(stored).toEqual({ left: 220, right: 420 });
+      expect(await page.evaluate(() => document.body.style.cursor)).toBe("");
+      await cdp.detach();
+    }
+
+    // Keyboard: focusable vertical separators carrying the width.
+    await expect(right).toHaveAttribute("role", "separator");
+    await expect(right).toHaveAttribute("aria-orientation", "vertical");
+    await expect(right).toHaveAttribute("aria-valuemin", "240");
+    await expect(right).toHaveAttribute("aria-valuemax", "420");
+    await right.focus();
+    await page.keyboard.press("End");
+    await expect.poll(rightWidth).toBe("420");
+    await page.keyboard.press("ArrowRight");
+    await expect.poll(rightWidth).toBe("404");
+    await page.keyboard.press("Home");
+    await expect.poll(rightWidth).toBe("240");
+    await page.keyboard.press("ArrowLeft");
+    await page.keyboard.press("ArrowLeft");
+    await expect.poll(rightWidth).toBe("272");
+    await expect(right).toHaveAttribute("aria-valuenow", "272");
+    await left.focus();
+    await page.keyboard.press("End");
+    await expect.poll(leftWidth).toBe("420");
+    await page.keyboard.press("ArrowLeft");
+    await expect.poll(leftWidth).toBe("404");
+    const leftBox = await page.locator("[data-left-sidebar-width]").boundingBox();
+    expect(Math.round(leftBox!.width)).toBeGreaterThanOrEqual(404);
+
+    // Persisted: a reload restores both widths.
+    await page.reload();
+    await expect(page.locator('[data-sidebar-content="ai-assistant"]')).toBeVisible();
+    await expect.poll(rightWidth).toBe("272");
+    await expect.poll(leftWidth).toBe("404");
+    expect(await stored()).toEqual({ left: 404, right: 272 });
   });
 });
 

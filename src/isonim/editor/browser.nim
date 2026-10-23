@@ -119,6 +119,33 @@ proc injectEditorStyles*() =
       [data-preview-viewport-overflow] { gap: 4px; }
       [data-preview-viewport-pinned-option="true"] { display: flex !important; }
     }
+    /* The storyboard's flow controls (``renderFlowControls``) add a group
+       of ~230 px to the chrome row. While it is shown, the row compacts
+       sooner -- spacing and icon chips from 1500 px of column, the
+       viewport strip to its compact selector and the flow group's own
+       spacing from 1000 px -- so every control stays visible in the 44 px
+       row at the default sidebars from a 1280 px window up (editor spec
+       "Preview-pane chrome layout"). Other views are unaffected. */
+    @container preview-chrome (max-width: 1500px) {
+      [data-preview-chrome-bar]:has([data-flow-controls-shown="true"]) { gap: 4px !important; padding-left: 4px !important; padding-right: 4px !important; }
+      [data-preview-chrome-bar]:has([data-flow-controls-shown="true"]) [data-preview-toolbar-spacer] { min-width: 0 !important; }
+      [data-preview-chrome-bar]:has([data-flow-controls-shown="true"]) [data-choice-group-has-icon="true"] {
+        min-width: 24px !important; width: 24px !important;
+        box-sizing: border-box; padding: 2px !important;
+      }
+      [data-preview-chrome-bar]:has([data-flow-controls-shown="true"]) [data-preview-viewport-strip-host] [data-choice-group-pill] {
+        min-width: 0 !important; padding: 2px 6px !important;
+      }
+    }
+    @container preview-chrome (max-width: 1000px) {
+      [data-preview-chrome-bar]:has([data-flow-controls-shown="true"]) [data-preview-viewport-strip-host] { display: none !important; }
+      [data-preview-chrome-bar]:has([data-flow-controls-shown="true"]) [data-preview-viewport-current] { display: inline !important; }
+      [data-preview-chrome-bar]:has([data-flow-controls-shown="true"]) [data-preview-viewport-overflow] { gap: 4px; }
+      [data-preview-chrome-bar]:has([data-flow-controls-shown="true"]) [data-preview-viewport-pinned-option="true"] { display: flex !important; }
+      [data-flow-controls-shown="true"], [data-flow-controls-shown="true"] [data-flow-playback] { gap: 0 !important; }
+      [data-flow-controls-shown="true"] button { min-width: 22px !important; padding: 1px !important; }
+      [data-flow-controls-shown="true"] [data-storyboard-zoom-level] { min-width: 30px !important; }
+    }
     /* Per-row "More" disclosure: hidden by default, revealed on row hover. */
     [data-inspector-control] > details > summary {
       display: none;
@@ -866,10 +893,10 @@ proc exposeWindowEditorHandle*(vm: EditorVM) =
   proc setCell(id, property, value: cstring): bool =
     setEditableValue($id, $property, $value)
 
-  proc setLeftSidebar(width: int) =
-    capturedVm.setLeftSidebarWidth(width)
-  proc setRightPanel(width: int) =
-    capturedVm.setRightPanelWidth(width)
+  proc setLeftSidebar(width: int; persist: bool) =
+    capturedVm.setLeftSidebarWidth(width, persist)
+  proc setRightPanel(width: int; persist: bool) =
+    capturedVm.setRightPanelWidth(width, persist)
   # Expose as a window-level handle. We install the helper inside an
   # IIFE so the closures (``selectByName`` / ``setEditModeByIndex``)
   # are captured by reference and so the wrapper returns ``true``
@@ -1077,12 +1104,14 @@ proc exposeWindowEditorHandle*(vm: EditorVM) =
       window.__isonimEditor.setEditableValue = function (id, property, value) {
         return fnSetCell(id, property, value);
       };
-      window.__isonimEditor.setLeftSidebarWidth = function (width) {
-        fnLeftW(width | 0);
+      // The resize handles pass ``{ persist: false }`` while dragging and
+      // persist once on release; every other caller persists.
+      window.__isonimEditor.setLeftSidebarWidth = function (width, options) {
+        fnLeftW(width | 0, !(options && options.persist === false));
         return true;
       };
-      window.__isonimEditor.setRightPanelWidth = function (width) {
-        fnRightW(width | 0);
+      window.__isonimEditor.setRightPanelWidth = function (width, options) {
+        fnRightW(width | 0, !(options && options.persist === false));
         return true;
       };
       // Returns "" when the save succeeded, or the refusal. Not a boolean:

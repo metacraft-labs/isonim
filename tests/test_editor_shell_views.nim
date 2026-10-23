@@ -876,10 +876,19 @@ suite "Editor Shell Views (M2)":
       let initialZoom = vm.storyboard.zoom.val
       findByAttr(flowChrome, "aria-label", "Zoom storyboard in").fireEvent("click")
       check vm.storyboard.zoom.val > initialZoom
+      let zoomedIn = vm.storyboard.zoom.val
+      # Fit fits the storyboard's content (editor spec "Canvas Features":
+      # "zooms to fit all content"; never above 100%), replacing the reset
+      # to the 100% origin; tests/test_editor_shell_controls.nim checks the
+      # fitted geometry.
       findByAttr(flowChrome, "aria-label", "Fit storyboard").fireEvent("click")
-      check vm.storyboard.zoom.val == 1.0
-      check vm.storyboard.panX.val == 0
-      check vm.storyboard.panY.val == 0
+      check vm.storyboard.zoom.val <= 1.0
+      check vm.storyboard.zoom.val != zoomedIn
+      let fitted = (vm.storyboard.zoom.val, vm.storyboard.panX.val,
+        vm.storyboard.panY.val)
+      findByAttr(flowChrome, "aria-label", "Fit storyboard").fireEvent("click")
+      check (vm.storyboard.zoom.val, vm.storyboard.panX.val,
+        vm.storyboard.panY.val) == fitted
       storyButton.fireEvent("click")
       check vm.selectedStory.val.name == "Active task"
 

@@ -100,11 +100,11 @@ when defined(js):
   proc readChoiceKey[E: dom.Event | dom_api.Event](ev: E): cstring
     {.importjs: "(#.key || '')".}
 
-  proc choiceKey(ev: dom.Event | dom_api.Event): string =
+  proc choiceKey*(ev: dom.Event | dom_api.Event): string =
     # A plain Event has no key; normalize it before Nim string conversion.
     $readChoiceKey(ev)
 
-proc choiceKey[E](ev: E): string =
+proc choiceKey*[E](ev: E): string =
   ev.key
 
 proc bindChoiceKeyboard*[R, E](r: R; node: E; enabled: bool; choose: proc()) =

@@ -984,6 +984,7 @@ test-editor: test-design-review-local-harbor test-design-review-harbor-build tes
     nim c -r tests/test_editor_agent_harbor.nim
     nim c -r tests/test_editor_user_project.nim
     nim c -r tests/test_editor_shell_views.nim
+    nim c -r tests/test_editor_shell_controls.nim
     nim c -r tests/test_editor_loop_handlers.nim
     nim c -r tests/test_loop_accessors.nim
     nim c -r tests/test_choice_row_activation.nim
@@ -1866,6 +1867,9 @@ test-editor-shell-current: build-tailwind
     nim c -r --out:build/test_editor_shell_views tests/test_editor_shell_views.nim
     nim js -d:nodejs --out:build/test_editor_shell_views.js tests/test_editor_shell_views.nim
     python3 tools/run_nim_js_test.py build/test_editor_shell_views.js
+    nim c -r --out:build/test_editor_shell_controls tests/test_editor_shell_controls.nim
+    nim js -d:nodejs --out:build/test_editor_shell_controls.js tests/test_editor_shell_controls.nim
+    python3 tools/run_nim_js_test.py build/test_editor_shell_controls.js
 
 editor-preview-mount-build: build-tailwind
     mkdir -p build/editor-preview-mount

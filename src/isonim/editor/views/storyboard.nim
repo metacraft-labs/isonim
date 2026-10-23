@@ -6,7 +6,12 @@ import isonim/editor/views/view_lifecycle
 ## pages are accessed via the sidebar. This follows the Figma/Overflow
 ## pattern: canvas shows spatial relationships, sidebar shows details.
 
+import std/[math, strutils]
 import isonim/core/[signals, computation]
+from isonim/core/batch import untrack
+import isonim/core/nondet as nondet
+when defined(js):
+  import std/jsffi
 import isonim/dsl/ui
 import isonim/editor/viewmodels
 import isonim/editor/types
@@ -24,12 +29,35 @@ const
   accent = "#7C7AED"
   accentSoft = "#272752"
 
+const
+  storyboardMinZoom* = 0.25
+  storyboardMaxZoom* = 4.0
+  storyboardZoomStep* = 1.2
+    ## Editor spec "Canvas Features": one Zoom in / Zoom out press
+    ## multiplies / divides the zoom by this factor about the canvas centre.
+  storyboardFitMargin* = 24.0
+    ## Fit leaves this many pixels between the cards and the canvas edge.
+  flowCardWidth = 520.0
+  flowCardHeight = 420.0
+  flowCardBorder = 1.0
+  flowCardGapX = 48.0
+  flowHeaderHeight = 40.0
+  flowRowGap = 56.0
+  headlessCanvasWidth = 1280.0
+  headlessCanvasHeight = 720.0
+    ## Canvas extent assumed off the browser (MockRenderer), where nothing
+    ## is laid out; the browser reads the canvas element's client size.
+
 type
   FlowRow = object
     ## A single user flow rendered as a horizontal sequence of cards.
     flowName: string
     flowDesc: string
     cards: seq[FlowCard]
+    firstStep: int
+      ## The flow player's index of this flow's first step, or -1 when the
+      ## workspace's flow steps do not include this flow (see
+      ## ``flowStepRun``).
   FlowCard = object
     x, y, w, h: float
     label: string
@@ -180,11 +208,45 @@ func resolveFlowCardStory(item: StoryItem; index: int;
       return step.screenRef
   StoryRef(group: item.group, name: item.name, kind: item.kind, index: index)
 
+func runMatches(steps: seq[FlowStep]; start: int; items: seq[StoryItem];
+    whole: bool): bool =
+  let n = if whole: items.len else: 1
+  if start < 0 or start + n > steps.len:
+    return false
+  for k in 0 ..< n:
+    if steps[start + k].action != items[k].name:
+      return false
+  true
+
+func flowStepRun(group: StoryGroup; steps: seq[FlowStep];
+    cursor: int): int =
+  ## Where this flow's steps start in the workspace's flow steps (every
+  ## flow's steps in canvas order; ``FlowStep`` carries no flow identity).
+  ## A flow is its whole run of item names, searched from ``cursor`` -- the
+  ## end of the previous flow's run -- so two flows whose steps share names
+  ## (even all of them) each get their own run; a run before the cursor is
+  ## the fallback, then a run of just the first name. -1 when none matches.
+  if group.items.len == 0:
+    return -1
+  for whole in [true, false]:
+    for i in max(cursor, 0) ..< steps.len:
+      if runMatches(steps, i, group.items, whole):
+        return i
+    for i in 0 ..< min(max(cursor, 0), steps.len):
+      if runMatches(steps, i, group.items, whole):
+        return i
+  -1
+
 proc layoutFlows(groups: seq[StoryGroup]; steps: seq[FlowStep]): seq[FlowRow] =
   ## Arrange only user flow groups as horizontal card sequences.
+  var cursor = 0
   for group in groups:
     if group.kind == skFlow:
-      var row = FlowRow(flowName: group.name, flowDesc: group.description)
+      let firstStep = flowStepRun(group, steps, cursor)
+      if firstStep >= 0:
+        cursor = firstStep + group.items.len
+      var row = FlowRow(flowName: group.name, flowDesc: group.description,
+        firstStep: firstStep)
       var x = 0.0
       # v3: enlarge flow cards so each one reads as a proper preview rather
       # than a thumbnail. The shell-laptop reviewer flagged the previous
@@ -196,11 +258,20 @@ proc layoutFlows(groups: seq[StoryGroup]; steps: seq[FlowStep]): seq[FlowRow] =
       # "raw wireframe placeholder" the P3 reviewer flagged. Tighten
       # the card so the iframe fills it; the bottom row is just the
       # step-label band.
-      let cardW = 520.0
-      let cardH = 420.0
-      let gapX = 48.0
+      let cardW = flowCardWidth
+      let cardH = flowCardHeight
+      let gapX = flowCardGapX
       for i, item in group.items:
-        let story = resolveFlowCardStory(item, i, steps)
+        # A card opens its own flow's step when the run is known, so a step
+        # name shared by two flows opens the right screen.
+        let own = firstStep + i
+        let story =
+          if firstStep >= 0 and own < steps.len and
+              steps[own].action == item.name and
+              steps[own].screenRef.hasConcreteScreenRef:
+            steps[own].screenRef
+          else:
+            resolveFlowCardStory(item, i, steps)
         row.cards.add FlowCard(x: x, y: 0, w: cardW, h: cardH,
                                 label: item.name, stepNum: i + 1,
                                 story: story)
@@ -212,7 +283,34 @@ proc storyClickHandler(vm: EditorVM; story: StoryRef): proc() =
   result = proc() = discard vm.selectStory(captured)
 
 proc clampZoom(value: float): float =
-  min(4.0, max(0.25, value))
+  min(storyboardMaxZoom, max(storyboardMinZoom, value))
+
+func storyboardFitTransform*(contentWidth, contentHeight, canvasWidth,
+    canvasHeight: float): tuple[zoom, panX, panY: float] =
+  ## Editor spec "Canvas Features" / "Canvas Navigation": Fit zooms so every
+  ## card is inside the canvas with ``storyboardFitMargin`` to spare, never
+  ## above 100% (the cards are already drawn at their designed size) and
+  ## never below the 25% zoom floor, and centres the cards. Nothing to fit
+  ## (no flows) or no laid-out canvas returns the 100% origin view.
+  if contentWidth <= 0 or contentHeight <= 0 or canvasWidth <= 0 or
+      canvasHeight <= 0:
+    return (1.0, 0.0, 0.0)
+  let availableWidth = max(1.0, canvasWidth - 2 * storyboardFitMargin)
+  let availableHeight = max(1.0, canvasHeight - 2 * storyboardFitMargin)
+  let zoom = clampZoom(min(1.0, min(availableWidth / contentWidth,
+    availableHeight / contentHeight)))
+  (zoom, (canvasWidth - contentWidth * zoom) / 2,
+    (canvasHeight - contentHeight * zoom) / 2)
+
+func flowsExtent(flows: seq[FlowRow]): tuple[width, height: float] =
+  ## The cards' bounding box in canvas-content coordinates (flow headers
+  ## start at 0, cards are absolutely placed from 0 including borders).
+  var rowY = 0.0
+  for flow in flows:
+    for card in flow.cards:
+      result.width = max(result.width, card.x + card.w + 2 * flowCardBorder)
+    result.height = rowY + flowHeaderHeight + flowCardHeight + 2 * flowCardBorder
+    rowY += flowHeaderHeight + flowCardHeight + flowRowGap
 
 proc zoomStoryboardAt(vm: EditorVM; nextZoom, localX, localY: float) =
   let oldZoom = vm.storyboard.zoom.val
@@ -227,17 +325,57 @@ proc zoomStoryboardAt(vm: EditorVM; nextZoom, localX, localY: float) =
   vm.storyboard.panX.val = localX - contentX * zoom
   vm.storyboard.panY.val = localY - contentY * zoom
 
-proc zoomStoryboardFromCenter*(vm: EditorVM; nextZoom: float) =
-  zoomStoryboardAt(vm, nextZoom, 640.0, 360.0)
+proc measured[E](node: E): nondet.Rect =
+  ## A laid-out box through the platform layout seam.
+  when isDomViewHost(E):
+    nondet.measure(cast[JsObject](node))
+  else:
+    nondet.Rect()
+
+proc canvasExtent[R, E](r: R; canvas: E): tuple[width, height: float] =
+  ## The canvas viewport's laid-out size, read when a control is used.
+  when isDomViewHost(E):
+    let box = measured(canvas)
+    (box.width, box.height)
+  else:
+    (headlessCanvasWidth, headlessCanvasHeight)
+
+proc headerRight[R, E](r: R; vm: EditorVM; canvas, header: E): float =
+  ## Right edge of a flow header (title, description, Play) in canvas-content
+  ## coordinates; its width is its text's, known only once laid out. The
+  ## measured box is on screen (panned and zoomed), so it is mapped back.
+  ## Off the browser the header's inline ``width`` (if any) stands in for
+  ## layout.
+  when isDomViewHost(E):
+    let zoom = vm.storyboard.zoom.val
+    if zoom <= 0:
+      return 0.0
+    let box = measured(header)
+    let area = measured(canvas)
+    (box.x + box.width - area.x - vm.storyboard.panX.val) / zoom
+  elif compiles(header.styles):
+    let width = header.styles.getOrDefault("width")
+    if width.endsWith("px"):
+      try: parseFloat(width[0 ..< ^2]) except ValueError: 0.0
+    else: 0.0
+  else:
+    0.0
+
+proc zoomStoryboardFromCenter(vm: EditorVM; nextZoom, canvasWidth,
+    canvasHeight: float) =
+  zoomStoryboardAt(vm, nextZoom, canvasWidth / 2, canvasHeight / 2)
 
 proc panStoryboard(vm: EditorVM; dx, dy: float) =
   vm.storyboard.panX.val = vm.storyboard.panX.val + dx
   vm.storyboard.panY.val = vm.storyboard.panY.val + dy
 
-proc resetStoryboardView*(vm: EditorVM) =
-  vm.storyboard.zoom.val = 1.0
-  vm.storyboard.panX.val = 0
-  vm.storyboard.panY.val = 0
+proc fitStoryboard(vm: EditorVM; contentWidth, contentHeight, canvasWidth,
+    canvasHeight: float) =
+  let fit = storyboardFitTransform(contentWidth, contentHeight, canvasWidth,
+    canvasHeight)
+  vm.storyboard.zoom.val = fit.zoom
+  vm.storyboard.panX.val = fit.panX
+  vm.storyboard.panY.val = fit.panY
 
 proc installFigmaCanvasNavigation[R, E](r: R; viewport, content: E;
     vm: EditorVM) =
@@ -288,7 +426,7 @@ proc installFigmaCanvasNavigation[R, E](r: R; viewport, content: E;
           const target = event.target instanceof Element
             ? event.target
             : event.target?.parentElement;
-          if (target?.closest('[data-flow-card="true"], [role="button"]')) return;
+          if (target?.closest('[data-flow-card="true"], [role="button"], button')) return;
           dragging = true;
           lastX = event.clientX;
           lastY = event.clientY;
@@ -317,15 +455,45 @@ proc installFigmaCanvasNavigation[R, E](r: R; viewport, content: E;
       }
     """].}
 
+proc toggleFlowPlayback*(vm: EditorVM) =
+  ## Play enters step-through playback at the current step (selecting its
+  ## card and story); pressed again it pauses there.
+  if vm.flowPlayer.playState.val == psPlaying:
+    vm.flowPlayer.pause()
+  else:
+    discard vm.selectFlowStep(vm.flowPlayer.currentStep.val)
+    vm.flowPlayer.play()
+
+proc playFlowHandler(vm: EditorVM; stepIndex: int): proc() =
+  ## A flow's own Play button: playback starts at that flow's first step.
+  ## (A proc of its own so each flow's closure keeps its own index.)
+  let captured = stepIndex
+  result = proc() =
+    discard vm.selectFlowStep(captured)
+    vm.flowPlayer.play()
+
+proc storyboardControlButton[R, E](r: R; label, glyph: string;
+    onPress: proc()): E =
+  ## A native button: Enter and Space activate it, Tab reaches it, and the
+  ## canvas pan gesture ignores presses on it.
+  result = ui(r):
+    button(`type` = "button", `aria-label` = label, title = label,
+           display = "inline-flex", align_items = "center",
+           justify_content = "center",
+           min_width = "26px", height = "26px", padding = "0 6px",
+           border = "0", border_radius = "4px",
+           background_color = "transparent", color = textSecondary,
+           font_size = "12px", font_family = "inherit",
+           cursor = "pointer"):
+      text glyph
+  r.addEventListener(result, "click", onPress)
+
 proc renderStoryboardCanvas*[R, E](r: R; vm: EditorVM): E =
-  ## M-EVP-6: per-view inner toolbar (User Journeys label + flow
-  ## playback + zoom + Fit) removed. The canonical chrome bar lives
-  ## above the view stack; the storyboard body starts directly at the
-  ## canvas area. Flow playback and zoom controls remain reachable via
-  ## the underlying VM operations (`vm.prevFlowStep`,
-  ## `vm.nextFlowStep`, `vm.stopFlow`, `vm.zoomStoryboardFromCenter`,
-  ## `vm.resetStoryboardView`); their visual affordances are tracked
-  ## under the broader chrome consolidation series (M-EVP-7..M-EVP-9).
+  ## M-EVP-6 removed the storyboard's inner top toolbar; its zoom, Fit and
+  ## flow playback controls live in the shared chrome bar
+  ## (``renderFlowControls`` in shell.nim). This canvas carries out their
+  ## zoom and Fit requests and shows the current step's annotation (editor
+  ## spec "Canvas Features", "Canvas Navigation", "Interactive Play Mode").
   let flows = layoutFlows(vm.sidebar.groups.val, vm.flowPlayer.steps.val)
 
   let canvas = ui(r):
@@ -356,6 +524,8 @@ proc renderStoryboardCanvas*[R, E](r: R; vm: EditorVM): E =
     r.setStyle(inner, "transform",
       "translate(" & $panX & "px, " & $panY & "px) scale(" & $zoom & ")")
 
+  # Flow headers, measured by Fit (a header can be wider than its cards).
+  var headers: seq[E]
   # Render each flow as a labeled row of connected cards
   var rowY = 0.0
   for fi, flow in flows:
@@ -364,10 +534,12 @@ proc renderStoryboardCanvas*[R, E](r: R; vm: EditorVM): E =
     let rowTop = int(rowY)
 
     # Flow title + description
+    var titleRow: E
     let flowHeader = ui(r):
       tdiv(position = "absolute", left = "0px",
             display = "flex", flex_direction = "column", gap = "2px"):
-        tdiv(display = "flex", align_items = "center", gap = "8px"):
+        tdiv(ref = titleRow, display = "flex", align_items = "center",
+              gap = "8px"):
           tdiv(width = "20px", height = "20px", border_radius = "10px",
                 background_color = accent, opacity = "0.2",
                 display = "flex", align_items = "center",
@@ -379,10 +551,31 @@ proc renderStoryboardCanvas*[R, E](r: R; vm: EditorVM): E =
         span(font_size = "11px", color = textMuted, margin_left = "28px"):
           text fDesc
     r.setStyle(flowHeader, "top", $rowTop & "px")
+    r.setAttribute(flowHeader, "data-flow-header", fName)
+    # Editor spec "Interactive Play Mode": each user flow has a Play
+    # button; it starts playback at the flow's first step.
+    let flowStart = flow.firstStep
+    if flowStart >= 0:
+      let flowPlay = storyboardControlButton[R, E](r, "Play flow " & fName,
+        "\xE2\x96\xB6 Play", playFlowHandler(vm, flowStart))
+      r.setAttribute(flowPlay, "data-flow-play", fName)
+      # Editor spec "Canvas Navigation": double-clicking a flow enters flow
+      # playback. The flow's header is the flow (a single click on a step
+      # card already opens that step's story).
+      r.addEventListener(flowHeader, "dblclick", playFlowHandler(vm, flowStart))
+      r.setAttribute(flowHeader, "title", "Double-click to play " & fName)
+      r.setStyle(flowPlay, "background-color", bgSurface)
+      r.setStyle(flowPlay, "margin-left", "8px")
+      # The title row's own height, so the header stays inside its 40 px
+      # slot above the cards.
+      r.setStyle(flowPlay, "height", "20px")
+      r.setStyle(flowPlay, "font-size", "11px")
+      r.appendChild(titleRow, flowPlay)
     r.appendChild(inner, flowHeader)
+    headers.add flowHeader
 
     # Cards start below the header
-    let cardsTop = rowY + 40
+    let cardsTop = rowY + flowHeaderHeight
     for ci, card in flow.cards:
       let cx = int(card.x)
       let cy = int(cardsTop)
@@ -464,7 +657,7 @@ proc renderStoryboardCanvas*[R, E](r: R; vm: EditorVM): E =
           r.setStyle(arrow, "width", $aw & "px")
           r.appendChild(inner, arrow)
 
-    rowY = cardsTop + 420 + 56 # card height + gap between flow rows
+    rowY = cardsTop + flowCardHeight + flowRowGap
 
   # Empty state if no flows
   if flows.len == 0:
@@ -497,6 +690,81 @@ proc renderStoryboardCanvas*[R, E](r: R; vm: EditorVM): E =
             display = "block"):
         text "minimap"
   r.appendChild(canvasArea, minimap)
+
+  # The chrome bar's zoom and Fit controls (``renderFlowControls`` in
+  # shell.nim) ask this canvas, which alone knows its laid-out size and its
+  # content, to act (``StoryboardVM.command``).
+  let capturedArea = canvasArea
+  let extent = flowsExtent(flows)
+  var lastCommand = untrack(proc(): int = vm.storyboard.command.val.serial)
+  createRenderEffect proc() =
+    let command = vm.storyboard.command.val
+    if command.serial == lastCommand:
+      return
+    lastCommand = command.serial
+    untrack proc() =
+      let size = r.canvasExtent(capturedArea)
+      case command.kind
+      of sckZoomIn:
+        # At the 400% ceiling ``clampZoom`` keeps the zoom and the pan.
+        vm.zoomStoryboardFromCenter(vm.storyboard.zoom.val *
+          storyboardZoomStep, size.width, size.height)
+      of sckZoomOut:
+        vm.zoomStoryboardFromCenter(vm.storyboard.zoom.val /
+          storyboardZoomStep, size.width, size.height)
+      of sckFit:
+        var width = extent.width
+        for header in headers:
+          width = max(width, r.headerRight(vm, capturedArea, header))
+        vm.fitStoryboard(width, extent.height, size.width, size.height)
+      of sckNone:
+        discard
+
+  # Step annotation (editor spec "Interactive Play Mode" mock-up: "Step 1/4:
+  # Empty State" over "-> User types ... and taps +"): a read-only caption
+  # at the canvas's bottom-left (the minimap holds the bottom-right). The
+  # playback controls live in the chrome bar, whose fixed 44 px row has no
+  # room for free text of any length; the caption carries no control.
+  let annotation = ui(r):
+    tdiv(`data-storyboard-step-annotation` = "true",
+          position = "absolute", left = "12px", bottom = "12px",
+          z_index = "20", display = "flex", gap = "6px",
+          padding = "4px 8px", font_size = "11px",
+          max_width = "calc(100% - 188px)",
+          background_color = bgCard, border = "1px solid " & border,
+          border_radius = "6px", pointer_events = "none")
+  let stepLabel = ui(r):
+    span(`data-storyboard-step` = "true", color = textMuted, flex_shrink = "0",
+          max_width = "30%", overflow = "hidden",
+          text_overflow = "ellipsis", white_space = "nowrap")
+  let stepAction = ui(r):
+    span(`data-storyboard-step-action` = "true", color = textPrimary,
+          flex_shrink = "0", max_width = "50%", overflow = "hidden",
+          text_overflow = "ellipsis", white_space = "nowrap")
+  let stepNote = ui(r):
+    span(`data-storyboard-step-description` = "true", color = textMuted,
+          min_width = "0", overflow = "hidden",
+          text_overflow = "ellipsis", white_space = "nowrap")
+  for node in [stepLabel, stepAction, stepNote]:
+    r.appendChild(annotation, node)
+  createRenderEffect proc() =
+    let total = vm.flowPlayer.totalSteps.val
+    r.setStyle(annotation, "display", if total > 0: "flex" else: "none")
+    let index = min(vm.flowPlayer.currentStep.val, max(total - 1, 0))
+    let stepText = "Step " & $(index + 1) & " / " & $total
+    r.setTextContent(stepLabel, stepText)
+    r.setAttribute(stepLabel, "title", stepText)
+    let steps = vm.flowPlayer.steps.val
+    let action = if index < steps.len: steps[index].action else: ""
+    let note =
+      if index < steps.len and steps[index].description.len > 0:
+        "\xE2\x86\x92 " & steps[index].description
+      else: ""
+    r.setTextContent(stepAction, action)
+    r.setAttribute(stepAction, "title", action)
+    r.setTextContent(stepNote, note)
+    r.setAttribute(stepNote, "title", note)
+  r.appendChild(canvasArea, annotation)
 
   r.appendChild(canvas, canvasArea)
   canvas
