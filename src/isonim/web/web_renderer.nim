@@ -143,6 +143,63 @@ proc parentNode*(r: WebRenderer; node: Element): Node =
   noteOp(boParentNode, 2)
   Node(node).parentNode
 
+proc webNodeIsElement(n: Node): bool {.importjs: "(#.nodeType === 1)".}
+proc webInputValue(e: Element): cstring {.importjs: "(#.value || '')".}
+proc webSetInputValue(e: Element; v: cstring) {.importjs: "#.value = #".}
+proc webSetChecked(e: Element; v: bool) {.importjs: "#.checked = #".}
+
+proc isNilNode*(r: WebRenderer; node: Element): bool =
+  ## Whether `node` is absent (`null`): the navigation procs below answer it
+  ## for "no such element".
+  isNodeNil(Node(node))
+
+proc firstElementChild*(r: WebRenderer; node: Element): Element =
+  ## The first ELEMENT child of `node` (text and comment nodes skipped), or
+  ## nil. Typed as the renderer's element, unlike `firstChild`, so a view
+  ## generic over the renderer can walk an element's children.
+  noteOp(boFirstChild, 2)
+  var child = Node(node).firstChild
+  while not isNodeNil(child) and not webNodeIsElement(child):
+    child = child.nextSibling
+  cast[Element](child)
+
+proc nextElementSibling*(r: WebRenderer; node: Element): Element =
+  ## The next ELEMENT sibling of `node`, or nil.
+  noteOp(boNextSibling, 2)
+  var sibling = Node(node).nextSibling
+  while not isNodeNil(sibling) and not webNodeIsElement(sibling):
+    sibling = sibling.nextSibling
+  cast[Element](sibling)
+
+proc getAttribute*(r: WebRenderer; node: Element; name: string): string =
+  ## An attribute's value, or the empty string when it is absent (as
+  ## `MockRenderer.getAttribute`).
+  let raw = dom_api.getAttribute(node, cstring(name))
+  result = if raw.isNil: "" else: $raw
+  noteOp(boGetAttribute, 1, name, result)
+
+proc inputValue*(r: WebRenderer; node: Element): string =
+  ## The current `value` of a form control.
+  result = $webInputValue(node)
+  noteOp(boInputValue, 1, result)
+
+proc setInputValue*(r: WebRenderer; node: Element; value: string) =
+  noteOp(boSetInputValue, 1, value)
+  webSetInputValue(node, cstring(value))
+
+proc setChecked*(r: WebRenderer; node: Element; checked: bool) =
+  ## Set a checkbox's or radio button's `checked` state (the property, which
+  ## is what the control shows — not the `checked` attribute, which is only
+  ## its initial value).
+  noteOp(boSetAttribute, 1, "checked", if checked: "true" else: "false")
+  webSetChecked(node, checked)
+
+proc setInnerHtml*(r: WebRenderer; node: Element; html: string) =
+  ## Replace `node`'s children with parsed `html` (trusted markup only: a
+  ## view's own static SVG, never data).
+  noteOp(boSetInnerHtml, 1, html)
+  node.innerHTML = cstring(html)
+
 # ---------------------------------------------------------------------------
 # Style manipulation
 # ---------------------------------------------------------------------------

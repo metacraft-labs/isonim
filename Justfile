@@ -203,12 +203,14 @@ test-c:
     nim c -r tests/test_ssr.nim
     nim c -r tests/test_streaming.nim
     nim c -r tests/test_dsl_ssr.nim
+    nim c -r tests/test_dsl_helper_calls.nim
     nim c -r tests/test_round_trip.nim
     nim c -r tests/test_benchmark.nim
     nim c -r tests/test_viewmodel.nim
     nim c -r tests/test_demo_vm.nim
     nim c -r tests/test_terminal.nim
     nim c -r tests/test_native_renderer.nim
+    nim c -r tests/test_renderer_element_nav.nim
     # NH-M1: the shared reactive-root scaffold (`renderNative`).
     nim c -r tests/test_render_native_reactive.nim
     nim c -r tests/test_nginx_module.nim
@@ -319,6 +321,7 @@ test-js: build-tailwind
     nim js -r tests/test_resource_registry.nim
     nim js -r tests/test_rxcore.nim
     nim js -r tests/test_dsl.nim
+    nim js -r tests/test_dsl_helper_calls.nim
     nim js -r tests/test_web.nim
     nim js -r tests/test_demo_vm.nim
     nim js -r tests/test_benchmark.nim

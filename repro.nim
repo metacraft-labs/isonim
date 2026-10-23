@@ -425,6 +425,7 @@ const isonimTestSpecs: seq[IsonimTestSpec] = @[
   # --- DSL / SSR / streaming / round-trip ---
   spec("test_dsl"),
   spec("test_dsl_ssr"),
+  spec("test_dsl_helper_calls"),
   spec("test_ssr"),
   spec("test_ssr_routing"),
   spec("test_streaming"),
@@ -433,6 +434,7 @@ const isonimTestSpecs: seq[IsonimTestSpec] = @[
   spec("test_benchmark"),
   # --- Renderers / native / DOM-model / accessibility / theming ---
   spec("test_native_renderer"),
+  spec("test_renderer_element_nav"),
   spec("test_nginx_module"),
   spec("test_terminal"),
   spec("test_accessibility"),

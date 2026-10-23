@@ -566,26 +566,19 @@ proc processChildren(rendererSym, parentSym: NimNode; body: NimNode;
     let child = body[i]
     case child.kind
     of nnkCall, nnkCommand:
-      # GOTCHA: if the call's name doesn't match a recognized DSL element,
-      # ``processNode`` returns nil and the call is silently dropped here.
-      # This is intentional for cases like nested ``ui()`` calls that
-      # build their own subtrees and append directly; but it is a
-      # frequent surprise for "bare proc call as a ``ui()`` block child"
-      # or "bare proc call as a ``for``-loop body inside ``ui()``" where
-      # the author expects the call to execute and emit DOM rows.
-      #
-      # If you want a proc call to run inside a ``ui()`` block without
-      # producing a DSL element, append its result explicitly via
-      # ``r.appendChild(parent, myProc(...))`` OUTSIDE the ``ui()`` block,
-      # or refactor the proc into an element-returning helper that the
-      # DSL macro can recognise. See the deep-review unified-diff hunk
-      # renderer in codetracer for a worked example.
+      # Every call child produces a node: an element when it is spelled as
+      # one (a known tag, or attributes / a child block), otherwise the
+      # call's own value — a helper or component returning a node, appended
+      # where it appears. Generic calls (`renderRow[R, N](r, item)`) and the
+      # names a generic proc's pre-pass has bound to symbols are helper
+      # calls too (`callHeadName`); a call returning nothing is a compile
+      # error at its `appendChild`, never a silently dropped statement.
       # `raw <expr>`: pre-rendered HTML dropped in where it appears. Handled
       # here rather than in `processNode` because the fragment may be any
       # number of sibling nodes, so there is nothing to return and append --
       # it has to append itself, into the parent only this scope knows.
       if child.kind in {nnkCall, nnkCommand} and child.len == 2 and
-          child[0].kind == nnkIdent and child[0].strVal == "raw":
+          callHeadName(child) == "raw":
         let value = scopedInstanceExpr(child, child[1])
         # Raw component results are nodes on the client and markup on the
         # server. Type selection erases itself for existing raw HTML callers.
@@ -631,7 +624,7 @@ proc processNode(rendererSym: NimNode; node: NimNode;
 
   # Handle `text` calls
   if node.kind in {nnkCall, nnkCommand}:
-    let name = if node[0].kind == nnkIdent: node[0].strVal else: ""
+    let name = callHeadName(node)
 
     if name == "text":
       # text "literal" or text $expr
@@ -688,7 +681,12 @@ proc processNode(rendererSym: NimNode; node: NimNode;
 
     if name == "raw":
       return scopedInstanceExpr(node, node[1])
-    if name.len > 0 and not isElementCall(name, node):
+    if name.len == 0 or not isElementCall(name, node):
+      # A helper / component call: its value is the child node. A head that
+      # is not a name (`renderRow[R, N](r, item)`, `views.renderRow(r)`) is
+      # always one — an element is spelled with its bare tag. A call that
+      # returns nothing fails to compile at the `appendChild` below rather
+      # than being dropped.
       return scopedInstanceExpr(node, node)
 
   # Handle element nodes: tagName(...): body or tagName: body
@@ -696,11 +694,11 @@ proc processNode(rendererSym: NimNode; node: NimNode;
     let nameNode = node[0]
     var tagIdent: string
 
-    if nameNode.kind == nnkIdent:
-      tagIdent = nameNode.strVal
+    if callHeadName(node).len > 0:
+      tagIdent = callHeadName(node)
     else:
-      # Not a recognized DSL node, pass through
-      return nil
+      # Unreachable: a call without a name head is a helper call (above).
+      error("ui: cannot tell what this call renders", node)
 
     let htmlTag = resolveTagName(tagIdent)
     let elSym = genName("el")
@@ -1101,7 +1099,7 @@ proc ssrNodeExpr(node: NimNode; stmts: NimNode): NimNode {.compileTime.} =
   ## Generates a string expression for a single SSR node.
 
   if node.kind in {nnkCall, nnkCommand}:
-    let name = if node[0].kind == nnkIdent: node[0].strVal else: ""
+    let name = callHeadName(node)
 
     # Handle `text` calls
     if name == "text":
@@ -1114,7 +1112,7 @@ proc ssrNodeExpr(node: NimNode; stmts: NimNode): NimNode {.compileTime.} =
     # Handle `raw` calls - insert pre-rendered HTML without escaping
     if name == "raw":
       return scopedInstanceExpr(node, node[1])
-    if name.len > 0 and not isElementCall(name, node):
+    if name.len == 0 or not isElementCall(name, node):
       return scopedInstanceExpr(node, node)
 
     # Handle element nodes
@@ -1487,7 +1485,7 @@ proc collectChildren(body: NimNode; ops: var seq[StreamOp]) {.compileTime.} =
 
 proc collectNode(node: NimNode; ops: var seq[StreamOp]) {.compileTime.} =
   if node.kind in {nnkCall, nnkCommand}:
-    let name = if node[0].kind == nnkIdent: node[0].strVal else: ""
+    let name = callHeadName(node)
 
     if name == "text":
       ops.add(StreamOp(kind: sokEscapedHtml, expr: node[1]))
@@ -1495,7 +1493,7 @@ proc collectNode(node: NimNode; ops: var seq[StreamOp]) {.compileTime.} =
     if name == "raw":
       ops.add(StreamOp(kind: sokRaw, expr: scopedInstanceExpr(node, node[1])))
       return
-    if name.len > 0 and not isElementCall(name, node):
+    if name.len == 0 or not isElementCall(name, node):
       ops.add(StreamOp(kind: sokRaw, expr: scopedInstanceExpr(node, node)))
       return
 

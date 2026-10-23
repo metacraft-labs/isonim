@@ -261,6 +261,37 @@ proc nextSibling*(r: MockRenderer; node: MockNode): MockNode =
       return siblings[i + 1]
   return nil
 
+proc isNilNode*(r: MockRenderer; node: MockNode): bool =
+  ## Whether `node` is absent: the navigation procs answer nil for "no such
+  ## element".
+  node.isNil
+
+proc firstElementChild*(r: MockRenderer; node: MockNode): MockNode =
+  ## The first ELEMENT child of `node` (text nodes skipped), or nil.
+  noteOp(boFirstChild, 2)
+  for c in node.children:
+    if c.kind == mnkElement:
+      return c
+  nil
+
+proc nextElementSibling*(r: MockRenderer; node: MockNode): MockNode =
+  ## The next ELEMENT sibling of `node`, or nil.
+  noteOp(boNextSibling, 2)
+  if node.parent == nil:
+    return nil
+  var seen = false
+  for c in node.parent.children:
+    if seen and c.kind == mnkElement:
+      return c
+    if c == node:
+      seen = true
+  nil
+
+proc setChecked*(r: MockRenderer; node: MockNode; checked: bool) =
+  ## A checkbox's state, recorded as its `checked` attribute.
+  noteOp(boSetAttribute, 1, "checked", if checked: "true" else: "false")
+  node.attributes["checked"] = if checked: "true" else: "false"
+
 proc parentNode*(r: MockRenderer; node: MockNode): MockNode =
   noteOp(boParentNode, 2)
   node.parent

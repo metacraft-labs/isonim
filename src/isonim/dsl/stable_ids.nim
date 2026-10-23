@@ -14,6 +14,28 @@ var identities {.compileTime.}: Table[string, string]
 var emitted {.compileTime.}: Table[string, string]
 var emittedPositions {.compileTime.}: Table[string, string]
 
+proc callHeadName*(call: NimNode): string {.compileTime.} =
+  ## The name a DSL call is spelled with — `span` in `span(class = "x")`,
+  ## `renderRow` in `renderRow(r, item)` — or "" when its head is not a name
+  ## (`renderRow[R, N](r, item)`, `views.renderRow(r)`).
+  ##
+  ## The head is not always an `nnkIdent`. Inside a GENERIC proc the
+  ## compiler's generic pre-pass binds every name that resolves in scope
+  ## before the `ui` macro sees its untyped body, so a helper call arrives
+  ## with an `nnkSym` or symbol-choice head. Reading only `nnkIdent` heads
+  ## made every such call — and every generic `f[R, N](…)` child — fall
+  ## through as "not a DSL node" and vanish from the generated code.
+  if call.kind notin {nnkCall, nnkCommand} or call.len == 0:
+    return ""
+  let head = call[0]
+  case head.kind
+  of nnkIdent, nnkSym:
+    head.strVal
+  of nnkOpenSymChoice, nnkClosedSymChoice:
+    if head.len > 0: head[0].strVal else: ""
+  else:
+    ""
+
 proc stableIid*(identity: string): string {.compileTime.} =
   ## FNV-1a 64, encoded as the low 60 bits in twelve base32 characters.
   ## Fixed arithmetic makes C and JS compilation produce identical ids.
@@ -66,7 +88,7 @@ proc sourceComponent(body: NimNode): string {.compileTime.} =
         bestLine = n.lineInfoObj.line
         qualified = name
     if n.kind in {nnkCall, nnkCommand} and n.len > 0 and
-        n[0].kind == nnkIdent and n[0].strVal in ["ui", "uiWrite", "uiString", "isomorphicUi"]:
+        callHeadName(n) in ["ui", "uiWrite", "uiString", "isomorphicUi"]:
       let index = counters.getOrDefault(name)
       counters[name] = index + 1
       proc lastLine(x: NimNode): int =
@@ -121,12 +143,12 @@ proc prepareStableIds*(body: NimNode; isElementCall: proc(name: string; node: Ni
           child.copyLineInfo(n[index])
           n[index] = child
         if child.kind in {nnkCall, nnkCommand} and child.len > 0 and
-            child[0].kind == nnkIdent and child[0].strVal in
+            callHeadName(child) in
               ["ui", "uiWrite", "uiString", "isomorphicUi"]:
           continue # A nested DSL macro owns its own component/block identity.
         var nextPath = path
         let element = child.kind in {nnkCall, nnkCommand} and child.len > 0 and
-          child[0].kind == nnkIdent and isElementCall(child[0].strVal, child)
+          callHeadName(child).len > 0 and isElementCall(callHeadName(child), child)
         let expressionSlot = child.kind in {nnkCall, nnkCommand} and child.len > 0 and
           (child[0].eqIdent("raw") or (not element and not child[0].eqIdent("text")))
         if expressionSlot:

@@ -556,6 +556,7 @@ suite "Web Renderer - counter demo compilation":
 # The existing DOM shim records all listener registrations. Dispatch its full
 # listener list, so duplicate DSL/imperative registration cannot hide here.
 import isonim/web/web_renderer
+import std/jsffi
 import isonim/editor/views/choice_row
 
 proc dispatchChoiceEvent[N](node: N; event, key: cstring): bool
@@ -602,3 +603,38 @@ suite "Choice-row DOM registrations":
     target.Node.addEventListener("click", proc(ev: Event) = calls.add(3))
     check dispatchChoiceEvent(target, "click", "")
     check calls == @[1, 2]
+
+suite "WebRenderer element navigation and form state":
+  # The calls `tests/test_renderer_element_nav.nim` drives through
+  # `MockRenderer`, here over the DOM shim.
+
+  test "firstElementChild / nextElementSibling skip text nodes":
+    let r = WebRenderer()
+    let parent = r.createElement("ul")
+    r.appendChild(parent, r.createTextNode("lead"))
+    let a = r.createElement("li")
+    let b = r.createElement("li")
+    r.appendChild(parent, a)
+    r.appendChild(parent, r.createTextNode(" "))
+    r.appendChild(parent, b)
+    check r.firstElementChild(parent) == a
+    check r.nextElementSibling(a) == b
+    check r.isNilNode(r.nextElementSibling(b))
+    check not r.isNilNode(a)
+
+  test "getAttribute answers the empty string for an absent attribute":
+    let r = WebRenderer()
+    let e = r.createElement("div")
+    r.setAttribute(e, "data-k", "v")
+    check r.getAttribute(e, "data-k") == "v"
+    check r.getAttribute(e, "data-missing") == ""
+
+  test "input value and checked state are the element's properties":
+    let r = WebRenderer()
+    let input = r.createElement("input")
+    r.setInputValue(input, "abc")
+    check r.inputValue(input) == "abc"
+    r.setChecked(input, true)
+    check input.toJs.checked.to(bool)
+    r.setChecked(input, false)
+    check not input.toJs.checked.to(bool)
