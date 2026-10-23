@@ -25,7 +25,20 @@
 
 import std/[strutils, algorithm]
 import ./anchors
+import ./fragments
+export fragments
 type
+  SourceLocation* = object
+    ## One-based line in the supplied source body; loaders may offset it.
+    path*: string
+    line*: int
+
+  ContentRenderers* = object
+    ## Two optional build-time seams. Empty callbacks leave syntax literal;
+    ## configured callbacks must return a fragment or raise with provenance.
+    math*: proc(tex: string; display: bool; location: SourceLocation): ContentFragment {.closure.}
+    diagram*: proc(language, source: string; location: SourceLocation): ContentFragment {.closure.}
+
   InlineKind* = enum
     ikText
     ikCode
@@ -53,6 +66,7 @@ type
     ## symbol query, for `ikSymRef`); `href` is the link/image/symbol-anchor
     ## target after `normalizeRelativeLink`/`resolveSymbol`.
     kind*: InlineKind
+    generated*: ContentFragment ## Optional validated math; `text` retains TeX.
     text*: string
     href*: string
     title*: string ## Optional link/image title, separate from the destination.
@@ -228,12 +242,15 @@ type
       lang*: string
       code*: string
       fenceAttrs*: FenceAttributes
+      generated*: ContentFragment ## Optional build-time math or diagram output.
     of bkAdmonition:
       admonitionKind*: AdmonitionKind
       bodyParagraphs*: seq[seq[InlineSpan]]
     of bkTable:
       headers*: seq[string]
       rows*: seq[seq[string]]
+      headerSpans*: seq[seq[InlineSpan]] ## Populated only for opt-in math.
+      cellSpans*: seq[seq[seq[InlineSpan]]]
     of bkTabs:
       tabs*: seq[TabPanel]
     of bkComponent:
@@ -332,12 +349,13 @@ type
     anchors: AnchorIdRegistry
     definitions: seq[Footnote]
     footnotes: bool
+    renderers: ContentRenderers
 
 func `==`*(a, b: InlineSpan): bool =
   ## Explicit recursive equality keeps the public value API usable on Nim
   ## 2.2: its synthesized object/seq equality can infer a spurious side effect
   ## when an individual recursive span is compared before a seq of spans.
-  if a.kind != b.kind or a.text != b.text or a.href != b.href or
+  if a.generated != b.generated or a.kind != b.kind or a.text != b.text or a.href != b.href or
       a.title != b.title or a.isRelative != b.isRelative or
       a.linkOrigin != b.linkOrigin or a.labelSource != b.labelSource or
       a.footnoteNumber != b.footnoteNumber or a.referenceId != b.referenceId or
@@ -697,9 +715,46 @@ proc opaqueInlineEnd(text: string; start: int): int =
     return auto.stop
   start
 
+proc contentError*(location: SourceLocation; message: string): ref ValueError =
+  ## Shared location format for parser and native tool diagnostics.
+  newException(ValueError, (if location.path.len > 0: location.path else: "<markdown>") &
+    ":" & $location.line & ": " & message)
+
+proc lineAt(text: string; stop, firstLine: int): int =
+  result = firstLine
+  for i in 0 ..< stop:
+    if text[i] == '\n' or (text[i] == '\r' and (i + 1 == text.len or text[i + 1] != '\n')):
+      inc result
+
+proc mathEnd(text: string; start, width: int): int =
+  ## Delimiters are recognized here, after the scanner has excluded literal
+  ## code/escapes. TeX contents remain opaque to every Markdown rule.
+  result = -1
+  if start + width >= text.len: return
+  if width == 1 and text[start + 1] in Whitespace + {'$'}: return
+  var i = start + width
+  while i < text.len:
+    if text[i] == '\\' and i + 1 < text.len:
+      i += 2
+      continue
+    if text[i] == '$':
+      var run = 1
+      while i + run < text.len and text[i + run] == '$': inc run
+      if run == width:
+        if i > start + width and (width == 2 or text[i - 1] notin Whitespace): return i
+        return -1
+      i += run
+    else: inc i
+
+proc requireFragment(fragment: ContentFragment; location: SourceLocation): ContentFragment =
+  if fragment.isEmpty: raise contentError(location, "content renderer returned an empty fragment")
+  fragment
+
 proc parseInlineSpans*(text: string; sourceRelPath: string = "";
                         resolveContentPath: proc(contentRelPath: string): string {.closure.} = nil;
-                        resolveSymbol: proc(sym: string): string {.closure.} = nil): seq[InlineSpan] =
+                        resolveSymbol: proc(sym: string): string {.closure.} = nil;
+                        renderers: ContentRenderers = ContentRenderers();
+                        firstLine: int = 1; literalLabel: bool = false): seq[InlineSpan] =
   ## Inline syntax is deliberately bounded: code, links/images with optional
   ## titles, symbol refs, strike and footnote refs, plus angle/bare autolinks.
   ## Unknown and unmatched syntax remains literal; raw HTML is never trusted.
@@ -727,11 +782,30 @@ proc parseInlineSpans*(text: string; sourceRelPath: string = "";
       let close = codeSpanEnd(text, i, width)
       if close >= 0:
         flushPlain()
-        result.add InlineSpan(kind: ikCode, text: codeSpanText(text[i + width ..< close]))
+        if literalLabel:
+          result.add InlineSpan(kind: ikText, text: unescapePunctuation(text[i ..< close + width]))
+        else:
+          result.add InlineSpan(kind: ikCode, text: codeSpanText(text[i + width ..< close]))
         i = close + width
       else:
         plain.add text[i ..< i + width]
         i += width
+      continue
+    if text[i] == '$' and renderers.math != nil and
+        (i == 0 or text[i - 1] != '$'):
+      let width = if i + 1 < text.len and text[i + 1] == '$': 2 else: 1
+      let close = mathEnd(text, i, width)
+      if close >= 0:
+        flushPlain()
+        let location = SourceLocation(path: sourceRelPath, line: lineAt(text, i, firstLine))
+        let tex = text[i + width ..< close]
+        result.add InlineSpan(kind: ikText, text: tex,
+          generated: requireFragment(renderers.math(tex, width == 2, location), location))
+        i = close + width
+        continue
+    if literalLabel:
+      plain.add text[i]
+      inc i
       continue
     if text.continuesWith("[[sym:", i):
       let close = text.find("]]", i + 6)
@@ -757,7 +831,10 @@ proc parseInlineSpans*(text: string; sourceRelPath: string = "";
       let (href, relative) = normalizeRelativeLink(link.href, sourceRelPath, resolveContentPath)
       result.add InlineSpan(kind: (if link.image: ikImage else: ikLink),
         text: unescapePunctuation(link.label), href: href, title: link.title,
-        isRelative: relative, linkOrigin: loExplicit, labelSource: link.label)
+        isRelative: relative, linkOrigin: loExplicit, labelSource: link.label,
+        children: (if not link.image and renderers.math != nil:
+          parseInlineSpans(link.label, sourceRelPath, resolveContentPath, resolveSymbol,
+            renderers, lineAt(text, i, firstLine), literalLabel = true) else: @[]))
       i = link.stop
       continue
     if text.continuesWith("~~", i) and (i == 0 or text[i - 1] != '~') and
@@ -767,6 +844,12 @@ proc parseInlineSpans*(text: string; sourceRelPath: string = "";
         if text[close] == '\\' and close + 1 < text.len:
           close += 2
           continue
+        if text[close] == '$' and renderers.math != nil:
+          let width = if close + 1 < text.len and text[close + 1] == '$': 2 else: 1
+          let mathClose = mathEnd(text, close, width)
+          if mathClose >= 0:
+            close = mathClose + width
+            continue
         let endToken = opaqueInlineEnd(text, close)
         if endToken > close:
           close = endToken
@@ -776,7 +859,8 @@ proc parseInlineSpans*(text: string; sourceRelPath: string = "";
         inc close
       if close > i + 2 and close + 1 < text.len:
         flushPlain()
-        let children = parseInlineSpans(text[i + 2 ..< close], sourceRelPath, resolveContentPath, resolveSymbol)
+        let children = parseInlineSpans(text[i + 2 ..< close], sourceRelPath, resolveContentPath, resolveSymbol,
+          renderers, lineAt(text, i + 2, firstLine))
         result.add InlineSpan(kind: ikStrike, text: spansText(children), children: children)
         i = close + 2
         continue
@@ -828,12 +912,33 @@ proc isTableSeparatorRow(line: string): bool =
     if ch notin {'|', '-', ':', ' '}: return false
   true
 
-proc splitTableRow(line: string): seq[string] =
+proc splitTableRow(line: string; math = false): seq[string] =
   var s = line.strip()
   if s.startsWith("|"): s = s[1 .. ^1]
   if s.endsWith("|"): s = s[0 ..< ^1]
-  for cell in s.split('|'):
-    result.add cell.strip()
+  if not math:
+    for cell in s.split('|'): result.add cell.strip()
+    return
+  var start, i: int
+  while i < s.len:
+    if s[i] == '\\' and i + 1 < s.len:
+      i += 2
+      continue
+    let opaque = opaqueInlineEnd(s, i)
+    if opaque > i:
+      i = opaque
+      continue
+    if s[i] == '$':
+      let width = if i + 1 < s.len and s[i + 1] == '$': 2 else: 1
+      let close = mathEnd(s, i, width)
+      if close >= 0:
+        i = close + width
+        continue
+    if s[i] == '|':
+      result.add s[start ..< i].strip()
+      start = i + 1
+    inc i
+  result.add s[start .. ^1].strip()
 
 proc headingMarkerLevel(line: string): int =
   ## Returns the heading level (1-6) if `line` is `#`..`######` followed
@@ -947,21 +1052,24 @@ proc isDirectiveMarker(strippedLine, name: string): bool =
 
 proc parseBodyParagraphs(bodyLines: seq[string]; sourceRelPath: string;
                          resolveContentPath: proc(contentRelPath: string): string {.closure.};
-                         resolveSymbol: proc(sym: string): string {.closure.}): seq[seq[InlineSpan]] =
+                         resolveSymbol: proc(sym: string): string {.closure.};
+                         renderers: ContentRenderers; firstLine: int): seq[seq[InlineSpan]] =
   ## Splits a directive body into blank-line-separated paragraphs of inline
   ## spans -- the same shape `bkAdmonition.bodyParagraphs` uses, reused for
   ## card descriptions and FAQ answers.
   var currentLines: seq[string] = @[]
-  for raw in bodyLines:
+  var paragraphLine = firstLine
+  for index, raw in bodyLines:
     let s = raw.strip()
     if s.len == 0:
       if currentLines.len > 0:
-        result.add parseInlineSpans(currentLines.join(" "), sourceRelPath, resolveContentPath, resolveSymbol)
+        result.add parseInlineSpans(currentLines.join(if renderers.math == nil: " " else: "\n"), sourceRelPath, resolveContentPath, resolveSymbol, renderers, paragraphLine)
         currentLines = @[]
     else:
+      if currentLines.len == 0: paragraphLine = firstLine + index
       currentLines.add s
   if currentLines.len > 0:
-    result.add parseInlineSpans(currentLines.join(" "), sourceRelPath, resolveContentPath, resolveSymbol)
+    result.add parseInlineSpans(currentLines.join(if renderers.math == nil: " " else: "\n"), sourceRelPath, resolveContentPath, resolveSymbol, renderers, paragraphLine)
 
 proc normalizeVariant(v: string): string =
   ## Buttons are either "secondary" (white) or "primary" (black, the
@@ -1041,18 +1149,20 @@ proc parseVideoDirective(args: string): tuple[id, src, title: string] =
 
 proc parseCardItems(bodyLines: seq[string]; sourceRelPath: string;
                     resolveContentPath: proc(contentRelPath: string): string {.closure.};
-                    resolveSymbol: proc(sym: string): string {.closure.}): seq[CardItem] =
+                    resolveSymbol: proc(sym: string): string {.closure.};
+                         renderers: ContentRenderers; firstLine: int): seq[CardItem] =
   ## Parses the body of a `:::cards` block into `:::card`-delimited items; a
   ## new `:::card` marker implicitly closes the previous card (mirroring how
   ## `@tab` delimits tab panels), so no per-card closing `:::` is required.
   var cur: CardItem
   var have = false
+  var itemLine = firstLine
   var itemLines: seq[string] = @[]
   template flush() =
     if have:
-      cur.body = parseBodyParagraphs(itemLines, sourceRelPath, resolveContentPath, resolveSymbol)
+      cur.body = parseBodyParagraphs(itemLines, sourceRelPath, resolveContentPath, resolveSymbol, renderers, itemLine)
       result.add cur
-  for raw in bodyLines:
+  for index, raw in bodyLines:
     let s = raw.strip()
     if isDirectiveMarker(s, "card"):
       flush()
@@ -1061,6 +1171,7 @@ proc parseCardItems(bodyLines: seq[string]; sourceRelPath: string;
                      href: props.getStr("href"))
       have = true
       itemLines = @[]
+      itemLine = firstLine + index + 1
     else:
       itemLines.add raw
   flush()
@@ -1090,17 +1201,19 @@ proc parseButtonSpecs(bodyLines: seq[string]): seq[ButtonSpec] =
 
 proc parseFaqItems(bodyLines: seq[string]; sourceRelPath: string;
                    resolveContentPath: proc(contentRelPath: string): string {.closure.};
-                   resolveSymbol: proc(sym: string): string {.closure.}): seq[FaqItem] =
+                   resolveSymbol: proc(sym: string): string {.closure.};
+                         renderers: ContentRenderers; firstLine: int): seq[FaqItem] =
   ## Parses the body of a `:::faq` block into `:::q title="…"` items; a new
   ## `:::q` marker implicitly closes the previous question.
   var cur: FaqItem
   var have = false
+  var itemLine = firstLine
   var itemLines: seq[string] = @[]
   template flush() =
     if have:
-      cur.answer = parseBodyParagraphs(itemLines, sourceRelPath, resolveContentPath, resolveSymbol)
+      cur.answer = parseBodyParagraphs(itemLines, sourceRelPath, resolveContentPath, resolveSymbol, renderers, itemLine)
       result.add cur
-  for raw in bodyLines:
+  for index, raw in bodyLines:
     let s = raw.strip()
     if isDirectiveMarker(s, "q"):
       flush()
@@ -1108,6 +1221,7 @@ proc parseFaqItems(bodyLines: seq[string]; sourceRelPath: string;
       cur = FaqItem(question: props.getStr("title"))
       have = true
       itemLines = @[]
+      itemLine = firstLine + index + 1
     else:
       itemLines.add raw
   flush()
@@ -1215,7 +1329,7 @@ proc headingLabel*(spans: seq[InlineSpan]): string =
   ## particular snake_case must keep its established snake-case anchor.
   ## Footnote references are annotations, not part of a heading's stable name.
   for span in spans:
-    if span.kind == ikStrike: result.add headingLabel(span.children)
+    if span.children.len > 0: result.add headingLabel(span.children)
     elif span.kind != ikFootnoteRef: result.add span.text
 
 proc headingLabel*(text: string): string = headingLabel(parseInlineSpans(text))
@@ -1235,7 +1349,8 @@ proc parseBlocks(body: string; ctx: ParseContext; sourceRelPath: string = "";
                            resolveSymbol: proc(sym: string): string {.closure.} = nil;
                            isComponentKnown: proc(name: string): bool {.closure.} = nil;
                            knownDirective: proc(name: string): bool {.closure.} = nil;
-                           renderDirective: proc(name, args, body: string): seq[Block] {.closure.} = nil): seq[Block] =
+                           renderDirective: proc(name, args, body: string): seq[Block] {.closure.} = nil;
+                           firstLine: int = 1): seq[Block] =
   ## Pure block-level parser over already-loaded body text (no
   ## filesystem access). A caller that keeps the page title as metadata
   ## (isonim-docs strips a page's leading `# Title` line first) passes
@@ -1251,6 +1366,7 @@ proc parseBlocks(body: string; ctx: ParseContext; sourceRelPath: string = "";
   let lines = body.splitLines()
   var i = 0
   while i < lines.len:
+    let blockLine = firstLine + i
     let stripped = lines[i].strip()
     if stripped.len == 0:
       inc i
@@ -1272,8 +1388,32 @@ proc parseBlocks(body: string; ctx: ParseContext; sourceRelPath: string = "";
           if line.len > 0 and line[0] in {'+', '-'}:
             attrs.diffLines.add DiffLine(line: index + 1,
               kind: (if line[0] == '+': dlAdded else: dlRemoved))
-      result.add Block(kind: bkCodeFence, lang: lang, code: codeLines.join("\n"), fenceAttrs: attrs)
+      let code = codeLines.join("\n")
+      let location = SourceLocation(path: sourceRelPath, line: blockLine)
+      var generated: ContentFragment
+      if lang == "math" and ctx.renderers.math != nil:
+        generated = requireFragment(ctx.renderers.math(code, true, location), location)
+      elif lang in ["d2", "dot"] and ctx.renderers.diagram != nil:
+        generated = requireFragment(ctx.renderers.diagram(lang, code, location), location)
+      result.add Block(kind: bkCodeFence, lang: lang, code: code, fenceAttrs: attrs, generated: generated)
       continue
+
+    if ctx.renderers.math != nil and stripped.startsWith("$$"):
+      # Only a whole display block claims the block boundary. Inline display
+      # math with surrounding text stays in the normal paragraph scanner.
+      let remaining = lines[i .. ^1].join("\n").strip(leading = true, trailing = false)
+      let close = mathEnd(remaining, 0, 2)
+      if close >= 0:
+        let tail = remaining[close + 2 .. ^1]
+        let newline = tail.find({'\r', '\n'})
+        let rest = if newline < 0: tail else: tail[0 ..< newline]
+        if rest.strip().len == 0:
+          let tex = remaining[2 ..< close].strip()
+          let location = SourceLocation(path: sourceRelPath, line: blockLine)
+          result.add Block(kind: bkCodeFence, lang: "math", code: tex,
+            generated: requireFragment(ctx.renderers.math(tex, true, location), location))
+          i += lineAt(remaining, close + 2, 1)
+          continue
 
     if stripped == "<!--more-->":
       result.add Block(kind: bkExcerptBreak)
@@ -1297,7 +1437,7 @@ proc parseBlocks(body: string; ctx: ParseContext; sourceRelPath: string = "";
         if note.label == definition.label: duplicate = true
       if not duplicate:
         let noteBlocks = parseBlocks(bodyLines.join("\n"), ctx, sourceRelPath,
-          resolveContentPath, resolveSymbol, isComponentKnown, knownDirective, renderDirective)
+          resolveContentPath, resolveSymbol, isComponentKnown, knownDirective, renderDirective, blockLine)
         ctx.definitions.add Footnote(label: definition.label, blocks: noteBlocks)
       continue
 
@@ -1309,25 +1449,32 @@ proc parseBlocks(body: string; ctx: ParseContext; sourceRelPath: string = "";
         quoteLines.add line
         inc i
       result.add Block(kind: bkBlockquote, quoteBlocks: parseBlocks(quoteLines.join("\n"), ctx,
-        sourceRelPath, resolveContentPath, resolveSymbol, isComponentKnown, knownDirective, renderDirective))
+        sourceRelPath, resolveContentPath, resolveSymbol, isComponentKnown, knownDirective, renderDirective, blockLine))
       continue
 
     if stripped == ":::figure":
       inc i
       var figureLines: seq[string]
+      var figureLineNumbers: seq[int]
       while i < lines.len and lines[i].strip() != ":::":
-        if lines[i].strip().len > 0: figureLines.add lines[i].strip()
+        if lines[i].strip().len > 0:
+          figureLines.add lines[i].strip()
+          figureLineNumbers.add firstLine + i
         inc i
       if i < lines.len: inc i
       let image = if figureLines.len > 0: parseInlineSpans(figureLines[0], sourceRelPath, resolveContentPath, resolveSymbol) else: @[]
       if image.len == 1 and image[0].kind == ikImage:
         var caption = figureLines[1 .. ^1].join(" ")
+        if ctx.renderers.math != nil and figureLines.len > 1:
+          caption = figureLines[1]
+          for n in 2 ..< figureLines.len:
+            caption.add repeat("\n", figureLineNumbers[n] - figureLineNumbers[n - 1]) & figureLines[n]
         if italicCaption(caption): caption = caption[1 ..< caption.len - 1]
         result.add Block(kind: bkFigure, figureImage: image[0],
-          caption: parseInlineSpans(caption, sourceRelPath, resolveContentPath, resolveSymbol))
+          caption: parseInlineSpans(caption, sourceRelPath, resolveContentPath, resolveSymbol, ctx.renderers, (if figureLineNumbers.len > 1: figureLineNumbers[1] else: blockLine + 1)))
       else:
         # Malformed author input remains visible, never an empty figure.
-        result.add Block(kind: bkParagraph, spans: parseInlineSpans(figureLines.join(" "), sourceRelPath, resolveContentPath, resolveSymbol))
+        result.add Block(kind: bkParagraph, spans: parseInlineSpans(figureLines.join("\n"), sourceRelPath, resolveContentPath, resolveSymbol, ctx.renderers, blockLine + 1))
       continue
 
     if stripped.startsWith("!["):
@@ -1337,7 +1484,7 @@ proc parseBlocks(body: string; ctx: ParseContext; sourceRelPath: string = "";
       if image.len == 1 and image[0].kind == ikImage and captionLine < lines.len and italicCaption(lines[captionLine].strip()):
         let caption = lines[captionLine].strip()
         result.add Block(kind: bkFigure, figureImage: image[0],
-          caption: parseInlineSpans(caption[1 ..< caption.len - 1], sourceRelPath, resolveContentPath, resolveSymbol))
+          caption: parseInlineSpans(caption[1 ..< caption.len - 1], sourceRelPath, resolveContentPath, resolveSymbol, ctx.renderers, firstLine + captionLine))
         i = captionLine + 1
         continue
 
@@ -1347,10 +1494,11 @@ proc parseBlocks(body: string; ctx: ParseContext; sourceRelPath: string = "";
       var title = ""
       var panelLines: seq[string] = @[]
       var haveTab = false
+      var panelLine = blockLine + 1
       template flushTab() =
         if haveTab:
           tabs.add TabPanel(title: title,
-            blocks: parseBlocks(panelLines.join("\n"), ctx, sourceRelPath, resolveContentPath, resolveSymbol, isComponentKnown, knownDirective, renderDirective))
+            blocks: parseBlocks(panelLines.join("\n"), ctx, sourceRelPath, resolveContentPath, resolveSymbol, isComponentKnown, knownDirective, renderDirective, panelLine))
       while i < lines.len and lines[i].strip() != ":::":
         let rawLine = lines[i]
         let lineStripped = rawLine.strip()
@@ -1359,6 +1507,7 @@ proc parseBlocks(body: string; ctx: ParseContext; sourceRelPath: string = "";
           flushTab()
           title = lineStripped[4 .. ^1].strip()
           panelLines = @[]
+          panelLine = firstLine + i + 1
           haveTab = true
         else:
           panelLines.add rawLine
@@ -1382,7 +1531,7 @@ proc parseBlocks(body: string; ctx: ParseContext; sourceRelPath: string = "";
         inc i
       if i < lines.len: inc i
       result.add Block(kind: bkCardGrid,
-        cards: parseCardItems(bodyLines, sourceRelPath, resolveContentPath, resolveSymbol),
+        cards: parseCardItems(bodyLines, sourceRelPath, resolveContentPath, resolveSymbol, ctx.renderers, blockLine + 1),
         gridVariant: normalizeCardVariant(gridProps.getStr("variant")))
       continue
 
@@ -1423,7 +1572,7 @@ proc parseBlocks(body: string; ctx: ParseContext; sourceRelPath: string = "";
         inc i
       if i < lines.len: inc i
       result.add Block(kind: bkFaq,
-        faqItems: parseFaqItems(bodyLines, sourceRelPath, resolveContentPath, resolveSymbol))
+        faqItems: parseFaqItems(bodyLines, sourceRelPath, resolveContentPath, resolveSymbol, ctx.renderers, blockLine + 1))
       continue
 
     if stripped.startsWith(":::") and directiveName(stripped) == "form":
@@ -1535,17 +1684,19 @@ proc parseBlocks(body: string; ctx: ParseContext; sourceRelPath: string = "";
       inc i
       var paragraphs: seq[seq[InlineSpan]] = @[]
       var currentLines: seq[string] = @[]
+      var paragraphLine = firstLine + i
       while i < lines.len and lines[i].strip() != ":::":
         let bodyLine = lines[i].strip()
         if bodyLine.len == 0:
           if currentLines.len > 0:
-            paragraphs.add parseInlineSpans(currentLines.join(" "), sourceRelPath, resolveContentPath, resolveSymbol)
+            paragraphs.add parseInlineSpans(currentLines.join(if ctx.renderers.math == nil: " " else: "\n"), sourceRelPath, resolveContentPath, resolveSymbol, ctx.renderers, paragraphLine)
             currentLines = @[]
         else:
+          if currentLines.len == 0: paragraphLine = firstLine + i
           currentLines.add bodyLine
         inc i
       if currentLines.len > 0:
-        paragraphs.add parseInlineSpans(currentLines.join(" "), sourceRelPath, resolveContentPath, resolveSymbol)
+        paragraphs.add parseInlineSpans(currentLines.join(if ctx.renderers.math == nil: " " else: "\n"), sourceRelPath, resolveContentPath, resolveSymbol, ctx.renderers, paragraphLine)
       if i < lines.len: inc i
       result.add Block(kind: bkAdmonition, admonitionKind: admonitionKind, bodyParagraphs: paragraphs)
       continue
@@ -1553,20 +1704,31 @@ proc parseBlocks(body: string; ctx: ParseContext; sourceRelPath: string = "";
     let level = headingMarkerLevel(stripped)
     if level > 0:
       let headingText = stripped[level + 1 .. ^1].strip()
-      let headingSpans = parseInlineSpans(headingText, sourceRelPath, resolveContentPath, resolveSymbol)
+      let headingSpans = parseInlineSpans(headingText, sourceRelPath, resolveContentPath, resolveSymbol, ctx.renderers, blockLine)
       result.add Block(kind: bkHeading, level: level, headingText: headingText,
         headingSpans: headingSpans)
       inc i
       continue
 
     if isTableRow(stripped) and i + 1 < lines.len and isTableSeparatorRow(lines[i + 1]):
-      let headers = splitTableRow(stripped)
+      let headers = splitTableRow(stripped, ctx.renderers.math != nil)
       i += 2
       var rows: seq[seq[string]] = @[]
       while i < lines.len and isTableRow(lines[i].strip()):
-        rows.add splitTableRow(lines[i])
+        rows.add splitTableRow(lines[i], ctx.renderers.math != nil)
         inc i
-      result.add Block(kind: bkTable, headers: headers, rows: rows)
+      var headerSpans: seq[seq[InlineSpan]]
+      var cellSpans: seq[seq[seq[InlineSpan]]]
+      if ctx.renderers.math != nil:
+        for header in headers:
+          headerSpans.add parseInlineSpans(header, sourceRelPath, resolveContentPath, resolveSymbol, ctx.renderers, blockLine)
+        for n, row in rows:
+          var cells: seq[seq[InlineSpan]]
+          for cell in row:
+            cells.add parseInlineSpans(cell, sourceRelPath, resolveContentPath, resolveSymbol, ctx.renderers, blockLine + 2 + n)
+          cellSpans.add cells
+      result.add Block(kind: bkTable, headers: headers, rows: rows,
+        headerSpans: headerSpans, cellSpans: cellSpans)
       continue
 
     if isUnorderedListItem(stripped) or isOrderedListItem(stripped):
@@ -1586,7 +1748,7 @@ proc parseBlocks(body: string; ctx: ParseContext; sourceRelPath: string = "";
           content = content[3 .. ^1].strip(leading = true, trailing = false)
           hasTasks = true
         tasks.add task
-        items.add parseInlineSpans(content, sourceRelPath, resolveContentPath, resolveSymbol)
+        items.add parseInlineSpans(content, sourceRelPath, resolveContentPath, resolveSymbol, ctx.renderers, firstLine + i)
         inc i
       result.add Block(kind: bkList, listKind: (if ordered: lkOrdered else: lkUnordered), items: items, tasks: (if hasTasks: tasks else: @[]))
       continue
@@ -1595,10 +1757,16 @@ proc parseBlocks(body: string; ctx: ParseContext; sourceRelPath: string = "";
     inc i
     while i < lines.len:
       let nextStripped = lines[i].strip()
-      if nextStripped.len == 0 or startsAnotherBlock(nextStripped): break
+      if nextStripped.len == 0 or startsAnotherBlock(nextStripped) or (ctx.renderers.math != nil and nextStripped.startsWith("$$")): break
       paraLines.add lines[i]
       inc i
-    result.add Block(kind: bkParagraph, spans: parseInlineSpans(paraLines.join("\n").strip(), sourceRelPath, resolveContentPath, resolveSymbol))
+    result.add Block(kind: bkParagraph, spans: parseInlineSpans(paraLines.join("\n").strip(), sourceRelPath, resolveContentPath, resolveSymbol, ctx.renderers, blockLine))
+
+proc hasGeneratedContent*(spans: seq[InlineSpan]): bool =
+  ## Consumers with legacy literal headings can opt into resolved rendering
+  ## only when a generated fragment is actually present.
+  for span in spans:
+    if not span.generated.isEmpty or hasGeneratedContent(span.children): return true
 
 proc hasFootnoteReference*(spans: seq[InlineSpan]): bool =
   ## Consumers that retain literal legacy headings can use the same predicate
@@ -1621,6 +1789,10 @@ proc visitInlineSpans*(blocks: seq[Block]; visitor: proc(span: InlineSpan) {.clo
     of bkParagraph: spans(blk.spans)
     of bkList:
       for item in blk.items: spans(item)
+    of bkTable:
+      for header in blk.headerSpans: spans(header)
+      for row in blk.cellSpans:
+        for cell in row: spans(cell)
     of bkAdmonition:
       for para in blk.bodyParagraphs: spans(para)
     of bkTabs:
@@ -1691,6 +1863,10 @@ proc resolveFootnotes(blocks: var seq[Block]; ctx: ParseContext) =
       of bkParagraph: resolveSpans(blk.spans, assignIds)
       of bkList:
         for item in blk.items.mitems: resolveSpans(item, assignIds)
+      of bkTable:
+        for header in blk.headerSpans.mitems: resolveSpans(header, assignIds)
+        for row in blk.cellSpans.mitems:
+          for cell in row.mitems: resolveSpans(cell, assignIds)
       of bkAdmonition:
         for para in blk.bodyParagraphs.mitems: resolveSpans(para, assignIds)
       of bkTabs:
@@ -1736,14 +1912,16 @@ proc parseMarkdownBlocks*(body: string; sourceRelPath: string = "";
                            isComponentKnown: proc(name: string): bool {.closure.} = nil;
                            knownDirective: proc(name: string): bool {.closure.} = nil;
                            renderDirective: proc(name, args, body: string): seq[Block] {.closure.} = nil;
-                           footnotes: bool = true): seq[Block] =
+                           footnotes: bool = true;
+                           renderers: ContentRenderers = ContentRenderers();
+                           firstLine: int = 1): seq[Block] =
   ## A fresh context per document keeps heading and footnote IDs unique across
   ## nested containers, without leaking state between parses or backends.
   ## `footnotes = false` keeps definitions in the text stream for targets
   ## whose published contract treats notes literally (for example email).
-  let ctx = ParseContext(anchors: newAnchorIdRegistry(), footnotes: footnotes)
+  let ctx = ParseContext(anchors: newAnchorIdRegistry(), footnotes: footnotes, renderers: renderers)
   result = parseBlocks(body, ctx, sourceRelPath, resolveContentPath, resolveSymbol,
-    isComponentKnown, knownDirective, renderDirective)
+    isComponentKnown, knownDirective, renderDirective, firstLine)
   resolveFootnotes(result, ctx)
 
 proc excerptBlocks*(blocks: seq[Block]): seq[Block] =
@@ -1818,14 +1996,16 @@ proc parseMarkdownDoc*(body: string; sourceRelPath: string = "";
                         resolveSymbol: proc(sym: string): string {.closure.} = nil;
                         isComponentKnown: proc(name: string): bool {.closure.} = nil;
                         knownDirective: proc(name: string): bool {.closure.} = nil;
-                        renderDirective: proc(name, args, body: string): seq[Block] {.closure.} = nil): MarkdownDoc =
+                        renderDirective: proc(name, args, body: string): seq[Block] {.closure.} = nil;
+                        renderers: ContentRenderers = ContentRenderers();
+                        firstLine: int = 1): MarkdownDoc =
   ## The one entry point later callers (the markdown page ViewModel
   ## builder, `test_markdown_vm.nim`, M3's `references.nim`) use: parses
   ## the body into blocks, then derives the heading tree from the
   ## headings found among them. `resolveContentPath`/`resolveSymbol` are
   ## passed straight through to `parseMarkdownBlocks` (see M8 deliverable 2
   ## for the `[[sym:...]]` cross-reference `resolveSymbol` resolves).
-  let blocks = parseMarkdownBlocks(body, sourceRelPath, resolveContentPath, resolveSymbol, isComponentKnown, knownDirective, renderDirective)
+  let blocks = parseMarkdownBlocks(body, sourceRelPath, resolveContentPath, resolveSymbol, isComponentKnown, knownDirective, renderDirective, renderers = renderers, firstLine = firstLine)
   var flat: seq[HeadingNode] = @[]
   proc headings(items: seq[Block]) =
     for blk in items:

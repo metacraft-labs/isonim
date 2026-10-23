@@ -58,6 +58,7 @@ type
     preParse*: proc(body: string): string {.closure.}
     postParse*: proc(doc: var MarkdownDoc) {.closure.}
     directives*: seq[DirectiveRegistration]
+    renderers*: ContentRenderers ## Optional native math/diagram callbacks.
 
 proc applyPreParse*(hooks: seq[ParseHooks]; body: string): string =
   ## Threads a page's raw Markdown through every `preParse` in order; each
@@ -97,16 +98,22 @@ proc parseMarkdownDocWithHooks*(hooks: seq[ParseHooks]; body: string;
     sourceRelPath: string = "";
     resolveContentPath: proc(contentRelPath: string): string {.closure.} = nil;
     resolveSymbol: proc(sym: string): string {.closure.} = nil;
-    isComponentKnown: proc(name: string): bool {.closure.} = nil): MarkdownDoc =
+    isComponentKnown: proc(name: string): bool {.closure.} = nil;
+    firstLine: int = 1): MarkdownDoc =
   ## `preParse`, then `parseMarkdownDoc` with the registered directives
   ## wired in, then `postParse`. The other arguments are
   ## `parseMarkdownDoc`'s. With no hooks this is exactly
   ## `parseMarkdownDoc(body, ...)`.
   let transformed = hooks.applyPreParse(body)
+  var renderers: ContentRenderers
+  for h in hooks:
+    if renderers.math == nil: renderers.math = h.renderers.math
+    if renderers.diagram == nil: renderers.diagram = h.renderers.diagram
   let known = proc(name: string): bool = hooks.knowsDirective(name)
   let render = proc(name, args, dbody: string): seq[Block] =
     hooks.renderDirectiveBlocks(name, args, dbody)
   result = parseMarkdownDoc(transformed, sourceRelPath, resolveContentPath,
     resolveSymbol, isComponentKnown,
-    knownDirective = known, renderDirective = render)
+    knownDirective = known, renderDirective = render,
+    renderers = renderers, firstLine = firstLine)
   hooks.applyPostParse(result)

@@ -201,6 +201,17 @@
           '';
         };
 
+        # Optional build-time content adapters. The core library and default
+        # shell do not depend on these executables. Tests require their paths,
+        # so entering the wrong shell fails visibly instead of skipping work.
+        devShells.content-tools = pkgs.mkShell {
+          inputsFrom = [ self.devShells.${system}.default ];
+          packages = [ pkgs.katex pkgs.d2 pkgs.graphviz ];
+          ISONIM_KATEX = "${pkgs.katex}/bin/katex";
+          ISONIM_D2 = "${pkgs.d2}/bin/d2";
+          ISONIM_DOT = "${pkgs.graphviz}/bin/dot";
+        };
+
         packages.nginx-module = pkgs.callPackage ./nix/nginx-module.nix { };
 
         # TBAR-M5b: vendored UMD bundles for the editor's TipTap + xterm

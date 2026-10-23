@@ -233,6 +233,7 @@ test-c:
     nim c -r tests/test_content_anchors.nim
     nim c -r tests/test_content_highlight.nim
     nim c -r tests/test_content_directives.nim
+    nim c -r --out:build/tests/test_content_extensions tests/test_content_extensions.nim
     nim c -r --out:build/tests/test_content_prose --nimcache:build/nimcache/test_content_prose tests/test_content_prose.nim
     nim c -r tests/test_theming_dtcg.nim
     # isonim/static: the static-site primitives (export, sitemap, robots, SEO
@@ -344,6 +345,7 @@ test-js: build-tailwind
     nim js -r tests/test_content_anchors.nim
     nim js -r tests/test_content_highlight.nim
     nim js -r tests/test_content_directives.nim
+    nim js -r --out:build/tests/test_content_extensions.js tests/test_content_extensions.nim
     nim js -r --out:build/tests/test_content_prose.js --nimcache:build/nimcache/test_content_prose_js tests/test_content_prose.nim
     # isonim/static (see test-c).
     nim js -r tests/test_static_script_policy.nim
@@ -2038,3 +2040,11 @@ test-content-prose:
 # Negative control: restore the original code-span logic in an isolated copy.
 test-content-prose-mutation:
     bash tests/test_content_prose_mutation.sh
+
+# Optional native adapters: Nix supplies paths; missing configuration fails.
+test-content-tools:
+    nix develop .#content-tools --command nim c -r --out:build/tests/test_content_math tests/test_content_math.nim
+    nix develop .#content-tools --command nim c -r --out:build/tests/test_content_diagrams tests/test_content_diagrams.nim
+
+test-content-tools-mutation:
+    nix develop .#content-tools --command python3 tests/test_content_tools_mutation.py

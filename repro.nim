@@ -451,6 +451,7 @@ const isonimTestSpecs: seq[IsonimTestSpec] = @[
   spec("test_content_highlight"),
   spec("test_content_directives"),
   spec("test_content_prose"),
+  spec("test_content_extensions"),
   spec("test_theming_dtcg"),
   # --- isonim/static: static export, sitemap, robots, head, script policy ---
   spec("test_static_export"),
@@ -610,6 +611,7 @@ const isonimJsTestSpecs: seq[string] = @[
   "test_content_highlight",
   "test_content_directives",
   "test_content_prose",
+  "test_content_extensions",
   # isonim/static: the script policy and SEO head are pure (dual-backend).
   "test_static_script_policy",
   "test_static_metadata",
@@ -763,6 +765,9 @@ const isonimDesignReviewSpecs: seq[DrSpec] = @[
 ]
 
 package isonim:
+  config:
+    contentTools: variant bool = false
+
   devEnv:
     when not defined(windows):
       useFlakeDevShell()
@@ -1636,9 +1641,37 @@ package isonim:
       actionId = "isonim.content_prose_mutation",
       extraInputs = @["tests/test_content_prose_mutation.sh", "tests/test_content_prose.nim",
         "src/isonim/content/markdown.nim", "src/isonim/content/anchors.nim",
-        "src/isonim/content/prose.nim", "src/isonim/ssr/escape.nim"])
+        "src/isonim/content/prose.nim", "src/isonim/content/fragments.nim", "src/isonim/ssr/escape.nim"])
     testExecuteActions.add(proseMutation)
     discard collect("test-content-prose-mutation", @[proseMutation])
+    # Native CLI integration is an explicit optional target. Pure parser and
+    # fragment tests above remain in normal C/JS content gates; no tool absence
+    # can become a skipped success, and a default core build needs no CLI.
+    if contentTools.value:
+      var contentToolActions: seq[BuildActionDef] = @[]
+      for stem in ["test_content_math", "test_content_diagrams"]:
+        let binary = "build/test-bin/" & stem
+        let edge = buildNimUnittest.build(
+          source = "tests/" & stem & ".nim", binary = binary,
+          defines = isonimDefines, paths = isonimPaths,
+          extraInputs = @["src/isonim/content", "src/isonim/static", "src/isonim/ssr/escape.nim",
+            "tests/helpers/content_tool_fixture.nim"])
+        let execute = sh.shell(
+          command = "nix develop .#content-tools --command " & binary,
+          cacheable = false, actionId = "isonim.content_tools_execute." & stem,
+          after = @[edge.action], extraInputs = @[binary, "flake.nix", "flake.lock"])
+        contentToolActions.add(execute)
+        testBuildActions.add(edge.action)
+        testExecuteActions.add(execute)
+      let toolsMutation = sh.shell(
+        command = "nix develop .#content-tools --command python3 tests/test_content_tools_mutation.py",
+        cacheable = false, actionId = "isonim.content_tools_mutation",
+        extraInputs = @["tests/test_content_tools_mutation.py", "tests/test_content_math.nim",
+          "tests/test_content_diagrams.nim", "tests/helpers/content_tool_fixture.nim",
+          "src/isonim/content", "src/isonim/static", "src/isonim/ssr/escape.nim", "flake.nix", "flake.lock"])
+      testExecuteActions.add(toolsMutation)
+      discard collect("test-content-tools", contentToolActions)
+      discard collect("test-content-tools-mutation", @[toolsMutation])
     discard collect("test-content", contentNativeActions & contentJsActions & @[proseMutation])
     discard collect("test-content-c", contentNativeActions)
     discard collect("test-content-js", contentJsActions)

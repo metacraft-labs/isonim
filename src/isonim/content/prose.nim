@@ -1,7 +1,6 @@
 ## Semantic HTML for the shared Markdown prose dialect. No theme, filesystem,
 ## scripts or inline styles. Consumers keep their existing block presentation
 ## by supplying callbacks to the extension renderer (quotes/figures/endnotes).
-import std/strutils
 import ./markdown
 import ../ssr/escape
 
@@ -15,11 +14,14 @@ proc footnoteBackLabel*(note: Footnote; occurrence: int): string =
 proc proseSpansHtml*(spans: seq[InlineSpan]): string =
   ## Escape every source-derived value, including destinations and titles.
   for span in spans:
+    if not span.generated.isEmpty:
+      result.add fragmentHtml(span.generated)
+      continue
     case span.kind
     of ikText: result.add escapeHtml(span.text)
     of ikCode: result.add "<code>" & escapeHtml(span.text) & "</code>"
     of ikLink:
-      result.add "<a href=\"" & escapeAttr(span.href) & "\"" & titleAttribute(span.title) & ">" & escapeHtml(span.text) & "</a>"
+      result.add "<a href=\"" & escapeAttr(span.href) & "\"" & titleAttribute(span.title) & ">" & (if span.children.len > 0: proseSpansHtml(span.children) else: escapeHtml(span.text)) & "</a>"
     of ikImage:
       result.add "<img src=\"" & escapeAttr(span.href) & "\" alt=\"" & escapeAttr(span.text) & "\"" & titleAttribute(span.title) & ">"
     of ikSymRef:
@@ -82,15 +84,20 @@ proc renderProseHtml*(blocks: seq[Block]): string =
         result.add proseSpansHtml(item) & "</li>"
       result.add "</" & tag & ">"
     of bkCodeFence:
+      if not blk.generated.isEmpty:
+        result.add fragmentHtml(blk.generated)
+        continue
       let language = if blk.lang.len > 0: " class=\"language-" & escapeAttr(blk.lang) & "\"" else: ""
       result.add "<pre><code" & language & ">" & escapeHtml(blk.code) & "</code></pre>"
     of bkTable:
       result.add "<table><thead><tr>"
-      for header in blk.headers: result.add "<th>" & escapeHtml(header) & "</th>"
+      for n, header in blk.headers:
+        result.add "<th>" & (if n < blk.headerSpans.len: proseSpansHtml(blk.headerSpans[n]) else: escapeHtml(header)) & "</th>"
       result.add "</tr></thead><tbody>"
-      for row in blk.rows:
+      for n, row in blk.rows:
         result.add "<tr>"
-        for cell in row: result.add "<td>" & escapeHtml(cell) & "</td>"
+        for c, cell in row:
+          result.add "<td>" & (if n < blk.cellSpans.len and c < blk.cellSpans[n].len: proseSpansHtml(blk.cellSpans[n][c]) else: escapeHtml(cell)) & "</td>"
         result.add "</tr>"
       result.add "</tbody></table>"
     of bkAdmonition:

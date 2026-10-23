@@ -9,7 +9,7 @@ mkdir -p build
 scratch=$(mktemp -d "$PWD/build/prose-mutation.XXXXXX")
 trap 'rm -rf "$scratch"' EXIT
 mkdir -p "$scratch/src/isonim/content" "$scratch/src/isonim/ssr"
-cp src/isonim/content/{markdown,anchors,prose}.nim "$scratch/src/isonim/content/"
+cp src/isonim/content/{markdown,anchors,prose,fragments}.nim "$scratch/src/isonim/content/"
 cp src/isonim/ssr/escape.nim "$scratch/src/isonim/ssr/"
 cp tests/test_content_prose.nim "$scratch/test_content_prose.nim"
 node - "$scratch/src/isonim/content/markdown.nim" <<'JS'
