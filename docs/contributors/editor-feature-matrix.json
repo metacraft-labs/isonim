@@ -378,8 +378,8 @@
       "mockOnly": false,
       "placeholderUi": false,
       "browserBehavior": ["pointer", "focus", "drag"],
-      "implementation": "M37 adds framework layout-control capabilities for flex/auto layout, grid, constraints, responsive modes, and canvas guides; source-aware planning routes edits to token, class, style/schema, story fixture, responsive mode, Tailwind, or fallback inline paths according to the M35 ownership graph. Browser coverage exposes functional layout controls, live iframe style updates, spacing measurement, gap overlays, snap lines, resize handles, and viewport-mode override staging.",
-      "knownLimitations": "M45 validates representative flex/grid/constraint/responsive plans, overlays, handles, and metacraft preview updates. Remaining gaps are complete multi-axis constraint solving and exhaustive named-area authoring.",
+      "implementation": "M37 adds framework layout-control capabilities for flex/auto layout, grid, constraints, responsive modes, and canvas guides; source-aware planning routes edits to token, class, style/schema, story fixture, responsive mode, Tailwind, or fallback inline paths according to the M35 ownership graph. The section-based inspector's Layout section has, after its layout mode row, `Enable flex wrap` (a pressed/unpressed button setting `flex-wrap` on a flex layout) and `Set grid template tracks` (opens the grid track editor on a grid layout), `Set left right top bottom constraints` beside W/H, and the `Show layout auto grid constraint controls` disclosure: Wrap, Align and Justify rows for a flex layout, Columns, Rows and Flow grid track rows for a grid, Position, Top/Right/Bottom/Left and Min/Max W/H constraint rows -- each an ordinary property row committing through its source pipeline, scope, validation, undo and automatic write -- and responsive overrides, which set one Layout property for Tablet or Mobile only, inside the project stylesheet's breakpoint for that mode (`SourceEditPlan.breakpointCondition`, admitted only for a writer stating `breakpointOverrides`), previewed in the frame's matching `@media` rule and undone to the exact bytes. The canvas shows spacing measurement, gap overlays, snap lines and resize handles.",
+      "knownLimitations": "M45 validates representative flex/grid/constraint/responsive plans, overlays, handles, and metacraft preview updates. Not built (editor spec, marked open): fixed/hug/fill and intrinsic sizing modes; grid item placement (`grid-column`/`grid-row`) and named areas; per-child alignment and order; responsive overrides for project-defined modes, through the native source connection, at scopes other than a class rule, and from a property's own row; showing each mode's current override; visual constraint pinning beyond the inset rows; multi-axis constraint solving. The layout mode commits `display` only at the local instance, because no shared `display` writer is tested. A project's writer must state `breakpointOverrides` for an override to be offered: metacraft-web's companion writer change states it for its class-rule entries (`.bo-page` and `.bo-topbar`, whose rules it writes inside its one breakpoint), and its preview reader re-applies those override declarations inside that breakpoint after a reload.",
       "headlessTests": [
         {
           "name": "layout_controls_plan_structured_flex_grid_constraint_edits",
@@ -388,6 +388,22 @@
         {
           "name": "responsive_overrides_are_scoped_to_selected_viewport_mode",
           "file": "tests/test_editor_viewmodels.nim"
+        },
+        {
+          "name": "on a flex layout Enable flex wrap commits flex-wrap through its row",
+          "file": "tests/test_editor_section_layout_controls.nim"
+        },
+        {
+          "name": "each group appears for its layout and each row commits through its pipeline",
+          "file": "tests/test_editor_section_layout_controls.nim"
+        },
+        {
+          "name": "an override is written in the breakpoint, undone exactly, and leaves Desktop alone",
+          "file": "tests/test_editor_section_layout_controls.nim"
+        },
+        {
+          "name": "a writer that does not state breakpointOverrides is never handed one",
+          "file": "tests/test_editor_section_layout_controls.nim"
         }
       ],
       "playwrightRequired": true,
@@ -395,6 +411,14 @@
         {
           "name": "e2e_canvas_layout_handles_measurement_and_responsive_overrides",
           "file": "tests/browser/specs/metacraft-web-editor.spec.ts"
+        },
+        {
+          "name": "e2e_layout_controls_auto_layout_grid_and_constraints",
+          "file": "tests/browser/specs/editor-example.spec.ts"
+        },
+        {
+          "name": "e2e_layout_responsive_override_is_written_in_the_breakpoint",
+          "file": "tests/browser/specs/editor-example.spec.ts"
         }
       ],
       "screenshotVisualAssertions": {
@@ -429,6 +453,9 @@
           "evidence": [
             "tests/test_editor_viewmodels.nim:layout_controls_plan_structured_flex_grid_constraint_edits",
             "tests/test_editor_viewmodels.nim:responsive_overrides_are_scoped_to_selected_viewport_mode",
+            "tests/test_editor_section_layout_controls.nim",
+            "tests/browser/specs/editor-example.spec.ts:e2e_layout_controls_auto_layout_grid_and_constraints",
+            "tests/browser/specs/editor-example.spec.ts:e2e_layout_responsive_override_is_written_in_the_breakpoint",
             "tests/browser/specs/editor-example.spec.ts:e2e_editor_visual_baselines_cover_all_primary_modes"
           ]
         },
@@ -443,7 +470,10 @@
         "src/isonim/editor/types.nim",
         "src/isonim/editor/viewmodels.nim",
         "src/isonim/editor/views/component_edit.nim",
+        "src/isonim/editor/views/widgets/section_layout_controls.nim",
+        "src/isonim/editor/css_patch.nim",
         "tests/test_editor_viewmodels.nim",
+        "tests/test_editor_section_layout_controls.nim",
         "tests/browser/specs/metacraft-web-editor.spec.ts"
       ]
     },

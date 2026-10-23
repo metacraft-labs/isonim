@@ -1945,6 +1945,205 @@ test.describe("IsoNim packaged editor example", () => {
     await expect(page.locator("[data-save-error]")).toBeHidden();
   });
 
+  // Editor spec "Full CSS Property Inspector": the Layout section exposes
+  // display, flex, grid, positioning, sizing, constraints and responsive
+  // overrides as source-backed CSS concepts; "Section catalogue": "W/H +
+  // constraint"; "Contextual sub-panels"; and the clauses under "Layout auto
+  // layout, grid, constraint and responsive controls". The example's real
+  // writer holds the card's layout declarations in `.long-tail-card` and its
+  // breakpoint in `@media (max-width: 640px)`.
+  async function openLayoutControls(page: Page) {
+    await page.setViewportSize(desktop);
+    await openDestinationComponentEdit(page);
+    await markPreviewSelected(page);
+    const frame = page.frameLocator('iframe[title="Editable component preview"]');
+    const card = () => frame.getByTestId("component-edit-preview");
+    const layout = page.locator('[data-inspector-section-header="layout"]');
+    if ((await layout.getAttribute("aria-expanded")) !== "true") await layout.click();
+    const controls = page.locator('[data-layout-controls="true"]');
+    return {
+      style: (property: string) => card().evaluate(
+        (node, name) => getComputedStyle(node).getPropertyValue(name), property),
+      undoCount: () =>
+        page.evaluate(() => (window as any).__isonimEditorVm.inspector.undoStack.value.length),
+      source: () => demoSourceContent(page, demoFoundationSource),
+      written: async (text: string) => {
+        await expect.poll(() => pendingSourceEdits(page)).toBe(0);
+        await expect(page.locator("[data-save-error]")).toBeHidden();
+        await expect.poll(() => demoSourceContent(page, demoFoundationSource)).toContain(text);
+      },
+      toggle: page.getByRole("button", {
+        name: "Show layout auto grid constraint controls", exact: true }),
+      controls,
+      row: (slug: string) => controls.locator(`[data-property-row="${slug}"]`).first(),
+    };
+  }
+
+  async function undoTo(page: Page, undoCount: () => Promise<number>, length: number) {
+    await page.evaluate(() => (document.activeElement as HTMLElement | null)?.blur());
+    while ((await undoCount()) > length) {
+      const before = await undoCount();
+      await page.keyboard.press("ControlOrMeta+Z");
+      await expect.poll(undoCount).toBeLessThan(before);
+      await expect.poll(() => pendingSourceEdits(page)).toBe(0);
+    }
+  }
+
+  test("e2e_layout_controls_auto_layout_grid_and_constraints", async ({ page }) => {
+    const { style, undoCount, source, written, toggle, controls, row } =
+      await openLayoutControls(page);
+    const wrap = page.getByRole("button", { name: "Enable flex wrap", exact: true });
+    const tracks = page.getByRole("button", { name: "Set grid template tracks", exact: true });
+    const constraints = page.getByRole("button", {
+      name: "Set left right top bottom constraints", exact: true });
+    const layoutMessage = page.locator('[data-layout-mode-message="true"]');
+    const original = await source();
+    const start = await undoCount();
+    const initialMinWidth = await style("min-width");
+
+    // The entry points: wrap and tracks say why they do not apply to a block.
+    await expect(wrap).toHaveAttribute("aria-pressed", "false");
+    await expect(wrap).toHaveAttribute("aria-disabled", "true");
+    await expect(wrap).toHaveAttribute("title",
+      "Flex wrap applies to a flex layout. Set the layout to vertical or horizontal first.");
+    await expect(tracks).toHaveAttribute("aria-disabled", "true");
+    await expect(constraints).toContainText("Constraints \u00b7 static");
+    await expect(toggle).toHaveAttribute("aria-expanded", "false");
+    await expect(toggle).toContainText("desktop");
+    await expect(controls).toBeHidden();
+    await wrap.dispatchEvent("click");
+    await expect(layoutMessage).toHaveText(
+      "Flex wrap applies to a flex layout. Set the layout to vertical or horizontal first.");
+    expect(await undoCount()).toBe(start);
+    expect(await source()).toBe(original);
+
+    // A horizontal layout; Enable flex wrap by pointer and by keyboard.
+    await page.locator('[data-layout-source-scope-property="display"]')
+      .getByRole("button", { name: "Apply local instance scope for display", exact: true }).click();
+    await page.getByRole("button", { name: "Set layout to horizontal", exact: true }).click();
+    await expect.poll(() => style("display")).toBe("flex");
+    await written(" display: flex;");
+    await expect(wrap).toHaveAttribute("aria-disabled", "false");
+    await wrap.click();
+    await expect.poll(() => style("flex-wrap")).toBe("wrap");
+    await expect(wrap).toHaveAttribute("aria-pressed", "true");
+    await written(" flex-wrap: wrap;");
+    expect(await undoCount()).toBe(start + 2);
+    await wrap.focus();
+    await page.keyboard.press("Enter");
+    await expect.poll(() => style("flex-wrap")).toBe("nowrap");
+    await expect(wrap).toHaveAttribute("aria-pressed", "false");
+    await written(" flex-wrap: nowrap;");
+    expect(await undoCount()).toBe(start + 3);
+
+    // The disclosure, by keyboard; the auto layout rows for a flex layout.
+    await toggle.focus();
+    await page.keyboard.press("Enter");
+    await expect(toggle).toHaveAttribute("aria-expanded", "true");
+    await expect(controls).toBeVisible();
+    await expect(row("align")).toBeVisible();
+    await expect(controls.locator('[data-layout-controls-note="grid"]')).toBeVisible();
+    await row("justify").locator("[data-choice-group-trigger]").click();
+    await page.getByRole("option", { name: "Between", exact: true }).click();
+    await expect.poll(() => style("justify-content")).toBe("space-between");
+    await written(" justify-content: space-between;");
+
+    // Grid tracks: refused for flex with the reason, opened for grid.
+    await tracks.dispatchEvent("click");
+    await expect(layoutMessage).toHaveText(
+      "Grid tracks apply to a grid layout. Set the layout to grid first.");
+    await page.getByRole("button", { name: "Set layout to grid", exact: true }).click();
+    await expect.poll(() => style("display")).toBe("grid");
+    await written(" display: grid;");
+    await toggle.click();
+    await expect(controls).toBeHidden();
+    await tracks.click();
+    await expect(controls).toBeVisible();
+    await expect(controls.locator('[data-layout-controls-group="grid"]')).toBeFocused();
+    await expect(row("align")).toBeHidden();
+    const columns = row("columns").locator('[data-property-row-input="true"]');
+    await columns.fill("repeat(2, minmax(0, 1fr))");
+    await columns.press("Enter");
+    await expect.poll(() => style("grid-template-columns")).toMatch(/^\S+px \S+px$/);
+    await written(" grid-template-columns: repeat(2, minmax(0, 1fr));");
+    const withColumns = await source();
+
+    // Constraints: opened at their group; a minimum width.
+    await constraints.click();
+    await expect(controls.locator('[data-layout-controls-group="constraints"]')).toBeFocused();
+    const minWidth = row("min-w").locator('[data-property-row-input="true"]');
+    await minWidth.fill("120px");
+    await minWidth.press("Enter");
+    await expect.poll(() => style("min-width")).toBe("120px");
+    await written(" min-width: 120px;");
+    expect(await undoCount()).toBe(start + 7);
+
+    // The panel stays within the sidebar.
+    const inspector = page.locator('[data-sidebar-content="inspector"]');
+    expect(await inspector.evaluate((node) => node.scrollWidth <= node.clientWidth + 1))
+      .toBe(true);
+
+    // Undo across the writes puts back the exact bytes.
+    await undoTo(page, undoCount, start + 6);
+    await expect.poll(source).toBe(withColumns);
+    await expect.poll(() => style("min-width")).toBe(initialMinWidth);
+    await expect(page.locator("[data-save-error]")).toBeHidden();
+  });
+
+  test("e2e_layout_responsive_override_is_written_in_the_breakpoint", async ({ page }) => {
+    const { style, undoCount, source, written, toggle, controls } =
+      await openLayoutControls(page);
+    const original = await source();
+    const start = await undoCount();
+    await toggle.click();
+    await expect(controls).toBeVisible();
+
+    // An override of gap for Mobile: written in the breakpoint; Desktop keeps
+    // its value.
+    const overrides = controls.locator('[data-layout-controls-group="responsive"]');
+    await overrides.getByRole("button", { name: "Override gap", exact: true }).click();
+    const overrideValue = page.getByRole("textbox", { name: "Responsive override value" });
+    await expect(overrideValue).toHaveValue("normal");
+    await overrideValue.fill("12px");
+    const mobile = page.getByRole("button", { name: "Set responsive override for Mobile mode" });
+    const tablet = page.getByRole("button", { name: "Set responsive override for Tablet mode" });
+    await expect(mobile).toContainText("\u2264 640px");
+    await expect(tablet).toContainText("no breakpoint");
+    await mobile.click();
+    const overrideMessage = page.locator('[data-layout-override-message="true"]');
+    await expect(overrideMessage).toHaveText(
+      "Mobile: gap set to 12px inside @media (max-width: 640px).");
+    const withOverride = original.replace(
+      "  .destination-card { font-size: 13px; }\n",
+      "  .destination-card { font-size: 13px; }\n  .long-tail-card { gap: 12px; }\n");
+    await written("  .long-tail-card { gap: 12px; }");
+    expect(await source()).toBe(withOverride);
+    expect(await undoCount()).toBe(start + 1);
+    expect(await style("gap")).toBe("normal");
+
+    // Tablet has no breakpoint in this stylesheet: the press says so and
+    // changes nothing.
+    await tablet.click();
+    await expect(overrideMessage).toHaveText("Tablet: No breakpoint in the project's " +
+      "stylesheet applies to Tablet (1024px wide), so there is nowhere to write its override.");
+    expect(await undoCount()).toBe(start + 1);
+    expect(await source()).toBe(withOverride);
+
+    // In the Phone preview the override applies.
+    const phone = page.locator('[data-toolbar-cluster="viewport"]')
+      .getByRole("button", { name: "Preview viewport Phone", exact: true });
+    await phone.click();
+    await expect(phone).toHaveAttribute("aria-pressed", "true");
+    await expect(toggle).toContainText("mobile");
+    await expect.poll(() => style("gap")).toBe("12px");
+
+    // Undo takes it back, in the file and in the preview.
+    await undoTo(page, undoCount, start);
+    await expect.poll(source).toBe(original);
+    await expect.poll(() => style("gap")).toBe("normal");
+    await expect(page.locator("[data-save-error]")).toBeHidden();
+  });
+
   // Editor spec "Planned interaction parity": dragging previews, releasing
   // commits one undoable operation, and Escape or pointer cancellation puts
   // back the value from before the gesture. The selection overlay's spacing

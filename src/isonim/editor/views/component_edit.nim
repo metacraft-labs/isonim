@@ -1342,7 +1342,7 @@ __ISONIM_SCENE_GRAPH_WALK__
       if (pending) {
         Object.keys(pending).forEach(function (key) {
           const d = pending[key];
-          window.__isonimSetDeclaration(d.id, d.path, d.property, d.value, d.scope);
+          window.__isonimSetDeclaration(d.id, d.path, d.property, d.value, d.scope, d.condition || '');
         });
       }
     } catch (e) {}
@@ -1354,7 +1354,8 @@ __ISONIM_SCENE_GRAPH_WALK__
     try {
       window.__isonimSetDeclaration(String(d.id || ''), String(d.path || ''),
                                     String(d.property || ''),
-                                    String(d.value == null ? '' : d.value), String(d.scope || 'sskLocalInstance'));
+                                    String(d.value == null ? '' : d.value), String(d.scope || 'sskLocalInstance'),
+                                    String(d.condition || ''));
     } catch (e) {}
   });
 
@@ -1579,8 +1580,68 @@ __ISONIM_SCENE_GRAPH_WALK__
     return '';
   };
 
-  window.__isonimSetDeclaration = function (id, path, property, value, scope) {
+  // A responsive override: the element's rule repeated inside the `@media`
+  // block `condition` names (an editor `ResponsiveBreakpoint.condition`, the
+  // verbatim prelude). The rule the cascade uses outside any breakpoint names
+  // the selector; the block and the rule are found by their text, and are
+  // added to that rule's stylesheet when it has neither.
+  function overrideRule(el, property, condition, create) {
+    var wanted = String(condition || '').replace(/^\s*@media\s*/i, '').replace(/\s+/g, '');
+    if (!wanted) return null;
+    var base = governingRule(el, property);
+    if (!base || !base.selectorText || !base.parentStyleSheet) return null;
+    var selector = base.selectorText;
+    var sheet = base.parentStyleSheet;
+    var media = null;
+    for (var i = 0; i < sheet.cssRules.length; i++) {
+      var rule = sheet.cssRules[i];
+      if (rule.type === CSSRule.MEDIA_RULE &&
+          String(rule.conditionText || rule.media.mediaText).replace(/\s+/g, '') === wanted) {
+        media = rule;
+      }
+    }
+    if (!media) {
+      if (!create) return null;
+      try {
+        var at = sheet.insertRule('@media ' + condition.replace(/^\s*@media\s*/i, '') + ' {}',
+                                  sheet.cssRules.length);
+        media = sheet.cssRules[at];
+      } catch (e) { return null; }
+    }
+    for (var j = 0; j < media.cssRules.length; j++) {
+      var inner = media.cssRules[j];
+      if (inner.type === CSSRule.STYLE_RULE && inner.selectorText === selector) return inner;
+    }
+    if (!create) return null;
+    try {
+      var k = media.insertRule(selector + ' {}', media.cssRules.length);
+      return media.cssRules[k];
+    } catch (e) { return null; }
+  }
+  function elementFor(id, path) {
+    var el = null;
+    if (id) el = document.querySelector('[data-isonim-element-id="' + CSS.escape(id) + '"]');
+    if (!el && path) { try { el = document.querySelector(path); } catch (e) {} }
+    return el;
+  }
+  window.__isonimOverrideValue = function (id, path, property, condition) {
+    var el = elementFor(id, path);
+    if (!el || !property) return '';
+    var rule = overrideRule(el, property, condition, false);
+    return rule ? rule.style.getPropertyValue(property).trim() : '';
+  };
+
+  window.__isonimSetDeclaration = function (id, path, property, value, scope, condition) {
     if (!property) return false;
+    if (condition) {
+      var target = elementFor(id, path);
+      if (!target) return false;
+      var holder = overrideRule(target, property, condition, value !== '');
+      if (!holder) return value === '';
+      if (value === '') holder.style.removeProperty(property);
+      else holder.style.setProperty(property, value);
+      return true;
+    }
     // Id first, DOM path second. On a freshly loaded document there are no
     // ids at all -- the scene-graph walk stamps them lazily and has not run
     // yet -- so the path is the only handle that works before the first paint,
@@ -2340,7 +2401,8 @@ proc renderComponentEditView*[R, E](r: R; vm: EditorVM): E =
         return
       lastPreviewRequest = request.generation
       applyPreviewStyle(request.elementId, request.domPath,
-                        request.property, request.value, request.sourceScope)
+                        request.property, request.value, request.sourceScope,
+                        request.condition)
       # The write that follows must not reload the preview out from under it,
       # for the same reason a commit sets this.
       vm.previewShowsPendingEdits.val = true

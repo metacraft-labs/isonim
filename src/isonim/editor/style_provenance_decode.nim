@@ -233,6 +233,10 @@ const inspectorEditableCssProperties* = [
   # Position / Layout
   "left", "top", "transform", "width", "height", "display", "position",
   "flex-direction", "flex-wrap", "gap", "overflow", "aspect-ratio",
+  # Layout: auto layout, grid tracks and constraints
+  "align-items", "justify-content", "grid-template-columns",
+  "grid-template-rows", "grid-auto-flow", "right", "bottom", "min-width",
+  "max-width", "min-height", "max-height",
   "padding", "padding-top", "padding-right", "padding-bottom", "padding-left",
   "margin", "margin-top", "margin-right", "margin-bottom", "margin-left",
   # Appearance / Fill / Stroke / Effects

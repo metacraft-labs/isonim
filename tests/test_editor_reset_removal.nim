@@ -358,7 +358,8 @@ suite "removal is admitted per schema entry and refused at the act":
         check not entry.removable
         inc svgEntries
       else: discard
-    check (classEntries, tokenEntries, svgEntries) == (1 + DemoLongTailValues.len, 8, 1)
+    check (classEntries, tokenEntries, svgEntries) ==
+      (1 + DemoLongTailValues.len + DemoLayoutValues.len, 8, 1)
 
   test "a removal the entry does not support is refused when committed":
     createRoot proc(dispose: proc()) =

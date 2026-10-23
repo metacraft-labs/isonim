@@ -1078,6 +1078,16 @@ type
       ## selector and the property has to guess, and guessing wrong writes a
       ## declaration the cascade discards. Zero means "not supplied", which
       ## adapters read as the unconditional base-rule behaviour.
+    breakpointCondition*: string
+      ## A responsive override (editor spec "Full CSS Property Inspector":
+      ## the Layout section exposes responsive overrides as source-backed CSS
+      ## concepts): the verbatim `@media` prelude, one of the project's
+      ## `ResponsiveBreakpoint.condition`s, that the declaration is written
+      ## inside -- in the rule the plan's entry owns, repeated under that
+      ## condition -- rather than in the rule that decides at the preview
+      ## width. Empty for every other edit. Only an entry whose writer states
+      ## `WorkspaceEditableSchemaEntry.breakpointOverrides` is handed such a
+      ## plan; the editor refuses it at the act everywhere else.
     nativeSourceBefore*, nativeSourceAfter*: string ## Guarded owned declaration receipts for exact undo.
     nativeSchemaKey*: string
       ## The native source project's editable-declaration key a removal was
@@ -1559,6 +1569,16 @@ type
       ## such an edit when it is committed and shows Reset disabled with that
       ## reason, instead of handing the writer a plan it would turn into an
       ## empty declaration.
+    breakpointOverrides*: bool
+      ## The project's writer writes a plan's `SourceEditPlan.breakpointCondition`:
+      ## handed one, ``patchFile`` sets the declaration in this entry's rule
+      ## repeated inside that `@media` block -- replacing it there, adding it
+      ## (and the block or the rule when the stylesheet has none yet), or,
+      ## for an empty value, removing exactly that declaration -- and never
+      ## touches the rule outside the block. False (the default) states that
+      ## it cannot, and the editor refuses a responsive override for the
+      ## entry when it is committed, with that reason, instead of handing the
+      ## writer a plan it would write into the base rule.
 
   WorkspaceEditDiagnostic* = object
     kind*: WorkspaceEditDiagnosticKind

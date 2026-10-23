@@ -8,6 +8,7 @@
 import std/strutils
 
 import isonim/editor/types
+import isonim/editor/css_patch
 
 const DemoFoundationSource* = "examples/wanderlust/design-system/foundations.css"
 
@@ -29,11 +30,37 @@ const DemoLongTailValues* = [
   ("transition-duration", "0s"), ("flex-wrap", "nowrap"),
   ("overflow", "visible"), ("aspect-ratio", "auto")]
 
+const DemoLayoutValues* = [
+  ("display", "block"), ("flex-direction", "row"), ("gap", "normal"),
+  ("align-items", "normal"), ("justify-content", "normal"),
+  ("grid-template-columns", "none"), ("grid-template-rows", "none"),
+  ("grid-auto-flow", "row"), ("position", "static"), ("min-width", "auto")]
+  ## The card's layout declarations the Layout section's auto layout, grid
+  ## and constraint controls edit (editor spec "Full CSS Property Inspector":
+  ## the Layout section exposes `display`, flex, grid, positioning, sizing and
+  ## constraints as source-backed CSS concepts). Each is the value the card
+  ## already computes to, so declaring it changes nothing on screen; it gives
+  ## those controls a declaration in the example's source to write. The
+  ## hand-built initial element (`demoInspectorElement`) does not list them:
+  ## the preview capture reports them once the card is selected, and every
+  ## property on the initial element is paid for on each story selection.
+
 func demoLongTailRule(): string =
   result = ".long-tail-card {"
   for (property, value) in DemoLongTailValues:
     result.add " " & property & ": " & value & ";"
+  for (property, value) in DemoLayoutValues:
+    result.add " " & property & ": " & value & ";"
   result.add " }\n"
+
+const DemoClassValues* = @DemoLongTailValues & @DemoLayoutValues
+  ## Every declaration of the example's `.long-tail-card` rule, each mapped
+  ## to a class-rule schema entry.
+
+const DemoCompactCondition* = "@media (max-width: 640px)"
+  ## The example's one breakpoint: the compact width its
+  ## `--wl-breakpoint-compact` token names, where the card's text is set
+  ## smaller.
 
 const DemoFoundationInitialSource* =
   "--wl-color-blue-600: #2563EB;\n" &
@@ -44,7 +71,21 @@ const DemoFoundationInitialSource* =
   "--wl-shadow-card: 0 12px 28px #0F172A;\n" &
   "--wl-motion-fast: 120ms;\n" &
   "--wl-breakpoint-compact: 640px;\n" &
-  ".destination-card { padding: 18px; }\n" & demoLongTailRule()
+  ".destination-card { padding: 18px; }\n" & demoLongTailRule() &
+  DemoCompactCondition & " {\n  .destination-card { font-size: 13px; }\n}\n"
+
+func demoResponsiveBreakpoints*(source: string): seq[ResponsiveBreakpoint] =
+  ## The width-based `@media` blocks the example's stylesheet defines,
+  ## narrowest first, read from the stylesheet itself (the workspace contract
+  ## of `EditorWorkspace.responsiveBreakpoints`).
+  for bp in source.responsiveBreakpoints():
+    let label =
+      if bp.maxWidth >= 0 and bp.minWidth >= 0:
+        $bp.minWidth & "-" & $bp.maxWidth & "px"
+      elif bp.maxWidth >= 0: "\u2264 " & $bp.maxWidth & "px"
+      else: "\u2265 " & $bp.minWidth & "px"
+    result.add ResponsiveBreakpoint(label: label, condition: bp.condition,
+      minWidth: bp.minWidth, maxWidth: bp.maxWidth)
 
 proc demoInspectorElement*(): ElementRef =
   result = ElementRef(
@@ -133,7 +174,7 @@ proc demoDesignSystemSchema*(): DesignSystemSchema =
         stories: @[componentStory], components: @["DestinationCard"],
         usageCount: 3)
     ])
-  for (property, value) in DemoLongTailValues:
+  for (property, value) in DemoClassValues:
     result.nodes.add DesignSchemaNode(
       key: "classes.destination-card." & property,
       kind: dsnClassDefinition, name: "long-tail-card",
@@ -214,27 +255,69 @@ func demoRuleSelector(schema: WorkspaceEditableSchemaEntry): string =
 type DemoRule = tuple[selector: string; bodyStart, bodyEnd: int]
 
 func demoRules(content, selector: string): seq[DemoRule] =
-  ## Every `{ ... }` rule whose selector list names ``selector``. The
-  ## foundation file mixes top-level custom properties with rules, so a
-  ## rule's selector is the text since the previous `;` or `}`.
+  ## Every top-level `{ ... }` rule whose selector list names ``selector``.
+  ## The foundation file mixes top-level custom properties with rules, so a
+  ## rule's selector is the text since the previous `;` or `}`. A rule inside
+  ## an at-rule block (`@media … { .destination-card { … } }`, a responsive
+  ## override) is not the class's base rule and is skipped with its block.
   var segment = 0
   var at = 0
+  var depth = 0
+  var blockSelector = ""
+  var bodyStart = -1
   while at < content.len:
     case content[at]
-    of ';', '}':
-      segment = at + 1
+    of ';':
+      if depth == 0: segment = at + 1
     of '{':
-      let close = content.find('}', at + 1)
-      if close < 0: return
-      let text = content[segment ..< at].strip()
-      for member in text.split(','):
-        if member.strip() == selector:
-          result.add (selector: text, bodyStart: at + 1, bodyEnd: close)
-          break
-      segment = close + 1
-      at = close
+      if depth == 0:
+        blockSelector = content[segment ..< at].strip()
+        bodyStart = at + 1
+      inc depth
+    of '}':
+      if depth > 0: dec depth
+      if depth == 0:
+        if bodyStart >= 0 and not blockSelector.startsWith("@"):
+          for member in blockSelector.split(','):
+            if member.strip() == selector:
+              result.add (selector: blockSelector, bodyStart: bodyStart,
+                bodyEnd: at)
+              break
+        bodyStart = -1
+        segment = at + 1
     else: discard
     inc at
+
+func setDemoOverride(plan: SourceEditPlan; content: string;
+    schema: WorkspaceEditableSchemaEntry; selector: string): WorkspacePatchResult =
+  ## A responsive override (`SourceEditPlan.breakpointCondition`): the class
+  ## rule's property set, replaced or -- for an empty value -- removed inside
+  ## that `@media` block, through `css_patch.patchCssDeclarationUnder`. The
+  ## base rule is not touched. A plan that expects an override value is
+  ## refused when the block says something else.
+  let file = if schema.file.len > 0: schema.file else: plan.file
+  proc refuse(kind: WorkspaceEditDiagnosticKind; why: string): WorkspacePatchResult =
+    WorkspacePatchResult(ok: false, diagnostics: @[WorkspaceEditDiagnostic(
+      kind: kind, message: "Refused to set the " & plan.property &
+        " override in " & plan.breakpointCondition & ": " & why &
+        " No source was changed.", file: file, schemaKey: plan.schemaKey,
+      property: plan.property)])
+  let value =
+    if plan.planKind == cspPropertyRemoval: "" else: plan.newValue
+  let patched = content.patchCssDeclarationUnder(plan.breakpointCondition,
+    selector, plan.property, value)
+  if not patched.ok:
+    return refuse(wedPatchFailed, patched.message)
+  if plan.expectedOldValue.len > 0 and patched.oldValue != plan.expectedOldValue:
+    return refuse(wedSourceConflict, file & " declares " & plan.property &
+      ": " & (if patched.oldValue.len > 0: patched.oldValue else: "nothing") &
+      " there, not " & plan.expectedOldValue & ".")
+  WorkspacePatchResult(ok: true, patch: WorkspaceFilePatch(
+    file: file,
+    beforeContent: content,
+    afterContent: patched.content,
+    affectedStory: schema.story,
+    fullReload: true))
 
 func demoRuleRefusal(rules: seq[DemoRule]; file, selector,
     property: string): string =
@@ -392,7 +475,9 @@ proc demoVectorEditAdapter*(vectorSource, foundationSource: ref string): Workspa
       property: token.property,
       removable: false)
   # The class rule's declaration is: removing it leaves the card's padding to
-  # the cascade, which is what Reset means.
+  # the cascade, which is what Reset means. The class rules' writer also
+  # writes responsive overrides, into the rule repeated inside a breakpoint's
+  # `@media` block (`setDemoOverride`).
   schema.add WorkspaceEditableSchemaEntry(
     key: "classes.destination-card.padding",
     kind: wskSourceMap,
@@ -401,14 +486,15 @@ proc demoVectorEditAdapter*(vectorSource, foundationSource: ref string): Workspa
     story: StoryRef(group: "DestinationCard", name: "Default",
       kind: skComponent, index: 0),
     property: "padding",
-    removable: true)
+    removable: true,
+    breakpointOverrides: true)
   result = WorkspaceEditAdapter(schema: schema)
-  for (property, value) in DemoLongTailValues:
+  for (property, value) in DemoClassValues:
     result.schema.add WorkspaceEditableSchemaEntry(
       key: "classes.destination-card." & property, kind: wskSourceMap,
       file: DemoFoundationSource, path: "classes.long-tail-card." & property,
       story: StoryRef(group: "DestinationCard", name: "Default", kind: skComponent, index: 0),
-      property: property, removable: true)
+      property: property, removable: true, breakpointOverrides: true)
   result.readFile = proc(file: string): WorkspaceReadResult =
     if file == DemoFoundationSource:
       exposeDemoSource(file, foundationSource[])
@@ -418,6 +504,19 @@ proc demoVectorEditAdapter*(vectorSource, foundationSource: ref string): Workspa
       WorkspaceReadResult(ok: true, content: vectorSource[])
   result.patchFile = proc(plan: SourceEditPlan; content: string;
       schema: WorkspaceEditableSchemaEntry): WorkspacePatchResult =
+    if plan.breakpointCondition.len > 0:
+      # Only a class rule's entry states `breakpointOverrides`, so the editor
+      # hands an override to no other entry; refuse one anyway rather than
+      # write it into the base rule.
+      let overrideSelector = demoRuleSelector(schema)
+      if overrideSelector.len == 0 or not schema.breakpointOverrides:
+        return WorkspacePatchResult(ok: false, diagnostics: @[
+          WorkspaceEditDiagnostic(kind: wedPatchFailed,
+            message: "Refused to set the " & plan.property & " override: " &
+              schema.key & " is not a class rule's declaration. No source " &
+              "was changed.", file: schema.file, schemaKey: plan.schemaKey,
+            property: plan.property)])
+      return setDemoOverride(plan, content, schema, overrideSelector)
     if plan.planKind == cspPropertyRemoval:
       return removeDemoDeclaration(plan, content, schema)
     let selector = demoRuleSelector(schema)

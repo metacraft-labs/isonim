@@ -114,6 +114,11 @@ type
     generation*: int
     elementId*, domPath*, property*, value*: string
     sourceScope*: SourceScopeChoiceKind
+    condition*: string
+      ## The `@media` prelude of a responsive override
+      ## (`SourceEditPlan.breakpointCondition`): the value is shown in the
+      ## element's rule repeated under that condition, not in the rule the
+      ## cascade uses at the preview width. Empty for every other edit.
 
   BoxCanvasDraft* = object
     ## A drag of a canvas margin or padding handle that has not been released
@@ -175,6 +180,11 @@ type
       ## "Specialized Editors": "Visual box model"; its disclosure is the
       ## `Show box model controls` button). Per editor session; closed when
       ## the editor opens.
+    layoutControlsShown*: Signal[bool]
+      ## Whether the Layout section's auto layout, grid, constraint and
+      ## responsive override controls are open (its disclosure is the
+      ## `Show layout auto grid constraint controls` button). Per editor
+      ## session; closed when the editor opens.
     boxCanvasDraft*: Signal[BoxCanvasDraft]
       ## The margin or padding side a canvas handle is dragging, and the
       ## value it previews (editor spec "Visual box model": "drag handles on
@@ -4276,6 +4286,11 @@ proc toggleBoxModel*(inspector: InspectorVM) =
   ## The Layout section's `Show box model controls` disclosure.
   inspector.boxModelShown.val = not inspector.boxModelShown.val
 
+proc toggleLayoutControls*(inspector: InspectorVM) =
+  ## The Layout section's `Show layout auto grid constraint controls`
+  ## disclosure.
+  inspector.layoutControlsShown.val = not inspector.layoutControlsShown.val
+
 proc applyKindDefaultExpansion*(inspector: InspectorVM; element: ElementRef) =
   ## Re-seed the untouched sections for what is now selected.
   ##
@@ -4429,6 +4444,11 @@ proc clearSelection*(inspector: InspectorVM) =
   inspector.refreshLayerFlags()
 
 func sameSourceJournalSlot(a, b: SourceEditPlan): bool =
+  # A responsive override is its own declaration: the property's value under
+  # one breakpoint, beside -- not instead of -- its value in the base rule
+  # or under another breakpoint (`SourceEditPlan.breakpointCondition`).
+  if a.breakpointCondition != b.breakpointCondition:
+    return false
   if a.conflictKey.len > 0 and b.conflictKey.len > 0:
     return a.conflictKey == b.conflictKey
   if a.schemaKey.len > 0 and b.schemaKey.len > 0:
@@ -4924,6 +4944,15 @@ proc sourcePlanAdmissionRefusal(editor: EditorVM;
   # commits exactly that. Each schema entry states whether its writer can
   # remove the declaration it owns; one that cannot would otherwise be handed
   # a removal and leave an empty declaration behind.
+  # A responsive override goes inside a breakpoint's `@media` block. Only a
+  # writer that states it writes there is handed one; any other would write
+  # it into the base rule, changing every width (editor spec "Saving": an
+  # edit no rule owns is refused at the commit).
+  if plan.breakpointCondition.len > 0 and not resolved.entry.breakpointOverrides:
+    let file =
+      if resolved.entry.file.len > 0: resolved.entry.file else: plan.file
+    return "This project's source writer cannot write a " & plan.property &
+      " override inside " & plan.breakpointCondition & " in " & file & "."
   if plan.planKind == cspPropertyRemoval and not resolved.entry.removable:
     let file =
       if resolved.entry.file.len > 0: resolved.entry.file else: plan.file
@@ -5320,7 +5349,7 @@ proc supersedePendingBelow(inspector: InspectorVM; plan: SourceEditPlan) =
 
 proc requestPreviewValue(inspector: InspectorVM; element: ElementRef;
                          property, value: string;
-                         sourceScope = sskLocalInstance) =
+                         sourceScope = sskLocalInstance; condition = "") =
   ## Ask the preview view to show `value`. See `PreviewValueRequest`.
   let elementId =
     if element.id.len > 0: element.id
@@ -5330,7 +5359,8 @@ proc requestPreviewValue(inspector: InspectorVM; element: ElementRef;
   inspector.previewValueRequest.val = PreviewValueRequest(
     generation: inspector.previewValueRequest.val.generation + 1,
     elementId: elementId, domPath: element.domPath,
-    property: property, value: value, sourceScope: sourceScope)
+    property: property, value: value, sourceScope: sourceScope,
+    condition: condition)
 
 proc refuseHistoryStep(inspector: InspectorVM; step: InspectorHistoryStep) =
   inspector.editDiagnostics.val = @[PropertyEditDiagnostic(
@@ -5385,7 +5415,8 @@ proc undoCssPropertyEdit*(inspector: InspectorVM): bool {.discardable.} =
   inspector.journalSupersededBelow(txn.sourceEdit)
   inspector.editDiagnostics.val = @[]
   inspector.requestPreviewValue(txn.beforeElement, txn.sourceEdit.property,
-                                txn.sourceEdit.oldValue, txn.sourceEdit.sourceScope)
+                                txn.sourceEdit.oldValue, txn.sourceEdit.sourceScope,
+                                txn.sourceEdit.breakpointCondition)
   true
 
 proc redoCssPropertyEdit*(inspector: InspectorVM): bool {.discardable.} =
@@ -5425,7 +5456,8 @@ proc redoCssPropertyEdit*(inspector: InspectorVM): bool {.discardable.} =
     result.add txn
   inspector.editDiagnostics.val = @[]
   inspector.requestPreviewValue(txn.afterElement, txn.sourceEdit.property,
-                                txn.sourceEdit.newValue, txn.sourceEdit.sourceScope)
+                                txn.sourceEdit.newValue, txn.sourceEdit.sourceScope,
+                                txn.sourceEdit.breakpointCondition)
   true
 
 proc nextWriteReceipt(inspector: InspectorVM;
@@ -6989,7 +7021,15 @@ func sharedDesignCategory*(prop: PropertyInfo;
   let name = prop.name.normalizedCssName()
   if sourceScope == sskSharedClass and name in ["background-size",
       "border-style", "outline-offset", "filter", "transform", "flex-wrap",
-      "overflow", "aspect-ratio"]:
+      "overflow", "aspect-ratio",
+      # The Layout section's auto layout, grid and constraint rows
+      # (`section_layout_controls`; tests/test_editor_section_layout_controls).
+      # `display` is not among them: the layout mode commits it at the local
+      # instance until a shared writer for it is tested.
+      "flex-direction", "align-items", "justify-content",
+      "grid-template-columns", "grid-template-rows", "grid-auto-flow",
+      "position", "top", "right", "bottom", "left", "min-width", "max-width",
+      "min-height", "max-height"]:
     # Compound declarations use the existing class writer and CSS validator.
     # Each admitted family is covered by source write + exact undo tests.
     sdecSharedClass
@@ -7447,6 +7487,225 @@ proc propertyValueCommitRefusal*(editor: EditorVM; property, value: string;
     "This edit to " & property & " was rejected.")
   if planned.refusal.len > 0: return planned.refusal
   editor.sourcePlanCommitRefusal(planned.plan)
+
+# --------------------------------------------------------------------------- #
+#  Responsive overrides (editor spec "Full CSS Property Inspector": the Layout
+#  section exposes responsive overrides as source-backed CSS concepts).
+# --------------------------------------------------------------------------- #
+
+type
+  ResponsiveOverrideTarget* = object
+    ## A responsive mode a Layout override can be written for, and where.
+    modeKey*: string
+      ## The mode's `layoutModeKey`: "tablet" or "mobile".
+    label*: string
+      ## "Tablet" or "Mobile", as the viewport cluster names its presets.
+    width*: int
+      ## The width the mode is laid out at: the preview's own width while the
+      ## preview shows that mode, the mode's preset width (Tablet 1024px,
+      ## Phone 390px) otherwise.
+    breakpoint*: ResponsiveBreakpoint
+      ## The project breakpoint an override for the mode is written in: the
+      ## narrowest one the stylesheet defines that applies at ``width``.
+      ## Its condition is empty when none applies.
+    refusal*: string
+      ## Why no override can be written for the mode, or "".
+
+  ResponsiveOverrideOutcome* = object
+    ok*: bool
+    message*: string
+      ## The refusal, never empty when ``ok`` is false.
+    plan*: SourceEditPlan
+
+const ResponsiveOverrideModes = [
+  (kind: pvkTablet, key: "tablet", label: "Tablet"),
+  (kind: pvkPhone, key: "mobile", label: "Mobile")]
+  ## The modes below Desktop the viewport cluster shows. Desktop is the base
+  ## rule, which every Layout row already edits.
+
+func breakpointApplies(bp: ResponsiveBreakpoint; width: int): bool =
+  bp.condition.len > 0 and (bp.maxWidth < 0 or width <= bp.maxWidth) and
+    (bp.minWidth < 0 or width >= bp.minWidth)
+
+proc responsiveOverrideTargets*(editor: EditorVM): seq[ResponsiveOverrideTarget] =
+  ## Where an override for each mode below Desktop would be written.
+  ##
+  ## The breakpoints are the project's own (`EditorWorkspace.
+  ## responsiveBreakpoints`, read from its stylesheet): the editor never
+  ## invents a media query. A mode with no breakpoint, or whose breakpoint
+  ## also applies at Desktop -- writing there would change Desktop too, so it
+  ## would not be an override -- is refused with that reason.
+  let current = editor.viewport.val
+  let desktopWidth = makeBuiltinViewport(pvkDesktop).width
+  let breakpoints = editor.responsiveBreakpoints.val
+  for mode in ResponsiveOverrideModes:
+    var width = makeBuiltinViewport(mode.kind).width
+    if layoutModeKey(current) == mode.key:
+      width =
+        if editor.previewRenderedWidth.val > 0: editor.previewRenderedWidth.val
+        else: current.width
+    var target = ResponsiveOverrideTarget(modeKey: mode.key, label: mode.label,
+      width: width)
+    for bp in breakpoints:
+      if bp.breakpointApplies(width):
+        target.breakpoint = bp
+        break
+    if breakpoints.len == 0:
+      target.refusal = "The project's stylesheet defines no breakpoints, so " &
+        "there is nowhere to write a " & mode.label & " override."
+    elif target.breakpoint.condition.len == 0:
+      target.refusal = "No breakpoint in the project's stylesheet applies to " &
+        mode.label & " (" & $width & "px wide), so there is nowhere to " &
+        "write its override."
+    elif target.breakpoint.breakpointApplies(desktopWidth):
+      target.refusal = "The breakpoint that applies to " & mode.label & " (" &
+        target.breakpoint.condition & ") applies at Desktop (" &
+        $desktopWidth & "px) too, so a declaration there would not override " &
+        mode.label & " alone."
+    result.add target
+
+proc responsiveOverrideTarget*(editor: EditorVM;
+    modeKey: string): ResponsiveOverrideTarget =
+  ## `responsiveOverrideTargets`' entry for ``modeKey``; an unknown mode is
+  ## refused.
+  for target in editor.responsiveOverrideTargets():
+    if target.modeKey == modeKey:
+      return target
+  ResponsiveOverrideTarget(modeKey: modeKey, label: modeKey,
+    refusal: "There is no " & modeKey & " mode to write an override for.")
+
+proc responsiveOverrideScope*(editor: EditorVM;
+    property: string): tuple[choice: SourceScopeChoice, refusal: string] =
+  ## The scope a responsive override of ``property`` is written at: the
+  ## selection's class rule. An override is a declaration in a rule repeated
+  ## inside a breakpoint's `@media` block; the local instance and the token,
+  ## schema and fixture scopes have no rule to repeat.
+  let element = editor.inspector.selectedElement.val
+  if element.tag.len == 0:
+    return (SourceScopeChoice(), "Select an element before setting a " &
+      "responsive override.")
+  var prop = PropertyInfo()
+  var found = false
+  for candidate in element.properties:
+    if candidate.name == property:
+      prop = candidate
+      found = true
+      break
+  if not found:
+    return (SourceScopeChoice(), "The selected element does not expose " &
+      property & ".")
+  var unwritable = -1
+  let choices = editor.sourceScopeChoices(prop)
+  for i, choice in choices:
+    if choice.kind != sskSharedClass: continue
+    if choice.editable: return (choice, "")
+    if unwritable < 0: unwritable = i
+  if unwritable >= 0:
+    let reason = choices[unwritable].reason
+    return (choices[unwritable],
+      if reason.len > 0: reason
+      else: "The class rule that owns " & property & " has no source-backed " &
+        "writer in the project schema.")
+  (SourceScopeChoice(), "No class rule owns " & property & " for this " &
+    "element. A responsive override is written into the element's class " &
+    "rule repeated inside a breakpoint, and its other scopes have no rule " &
+    "to repeat.")
+
+proc responsiveOverridePlan(editor: EditorVM; property, value,
+    previousValue: string; target: ResponsiveOverrideTarget): tuple[
+    plan: SourceEditPlan; refusal: string] =
+  ## The plan a responsive override of ``property`` to ``value`` for
+  ## ``target`` would stage, planned without staging it, or the refusal its
+  ## commit would give. ``previousValue`` is what the breakpoint's rule
+  ## declares for the property now ("" for none), which the write verifies.
+  if editor.inspector.selectedElement.val.tag.len == 0:
+    return (SourceEditPlan(), "Select an element before setting a " &
+      "responsive override.")
+  if not editor.workspacePermissions.val.writeSource:
+    return (SourceEditPlan(), "This workspace is read-only for source changes.")
+  if editor.hasAsyncSourceProject or editor.inspectorSourceCommit != nil:
+    return (SourceEditPlan(), "The native source connection does not write " &
+      "responsive overrides.")
+  if target.refusal.len > 0:
+    return (SourceEditPlan(), target.refusal)
+  let scope = editor.responsiveOverrideScope(property)
+  if scope.refusal.len > 0:
+    return (SourceEditPlan(), scope.refusal)
+  let planned = editor.plannedInspectorCommit(property, value, sskSharedClass,
+    "This " & property & " override was rejected.")
+  if planned.refusal.len > 0:
+    return (SourceEditPlan(), planned.refusal)
+  var plan = planned.plan
+  let condition = target.breakpoint.condition
+  plan.breakpointCondition = condition
+  plan.oldValue = previousValue.strip()
+  plan.expectedOldValue = previousValue.strip()
+  if value.strip().len == 0:
+    plan.planKind = cspPropertyRemoval
+    plan.newValue = ""
+  let refusal = editor.sourcePlanCommitRefusal(plan)
+  if refusal.len > 0:
+    return (SourceEditPlan(), refusal)
+  (plan, "")
+
+proc responsiveOverrideRefusal*(editor: EditorVM; property, value,
+    previousValue: string; target: ResponsiveOverrideTarget): string =
+  ## Why a responsive override of ``property`` to ``value`` for ``target``
+  ## would be refused at the act, or "" -- asked without staging anything
+  ## (editor spec "Saving": a refusal the editor can know at the act is made
+  ## at the act).
+  editor.responsiveOverridePlan(property, value, previousValue, target).refusal
+
+proc commitResponsiveOverride*(editor: EditorVM; property, value,
+    previousValue: string;
+    target: ResponsiveOverrideTarget): ResponsiveOverrideOutcome =
+  ## Set ``property`` to ``value`` for ``target``'s mode only: the
+  ## declaration is written in the selection's class rule repeated inside the
+  ## mode's breakpoint, and an empty value removes that declaration. One
+  ## edit on the undo timeline, journaled for the automatic write like any
+  ## row commit; refused at the act, with nothing changed, for every reason
+  ## `responsiveOverrideRefusal` gives.
+  ##
+  ## The selection's value changes only when the override applies at the
+  ## width the preview is showing; elsewhere the inspector keeps showing the
+  ## value that applies there.
+  let planned = editor.responsiveOverridePlan(property, value, previousValue,
+    target)
+  if planned.refusal.len > 0:
+    editor.inspector.editDiagnostics.val = @[PropertyEditDiagnostic(
+      kind: pedSchemaViolation, message: planned.refusal, property: property)]
+    return ResponsiveOverrideOutcome(ok: false, message: planned.refusal)
+  var plan = planned.plan
+  editor.inspector.inheritUnwrittenExpectation(plan)
+  editor.inspector.stampHistoryEntry(plan)
+  let beforeElement = editor.inspector.selectedElement.val
+  var afterElement = beforeElement
+  if editor.activeBreakpoint.val.condition == plan.breakpointCondition and
+      plan.newValue.len > 0:
+    for i, prop in afterElement.properties:
+      if prop.name == property:
+        afterElement.properties[i].value = plan.newValue
+        break
+    afterElement = afterElement.withShorthandSides(property, plan.newValue)
+  let record = EditRecord(file: plan.file, line: plan.line,
+    property: plan.property, oldValue: plan.oldValue, newValue: plan.newValue,
+    origin: poTailwindClass, originDetail: plan.originDetail, scope: plan.scope,
+    sourceScope: plan.sourceScope, isShared: true, editOrigin: peoInspector,
+    sourcePlanKind: plan.planKind)
+  editor.inspector.selectedElement.val = afterElement
+  editor.inspector.journalSourceEdit(plan)
+  editor.inspector.undoStack.update proc(prev: seq[CSSPropertyEditTransaction]): seq[
+      CSSPropertyEditTransaction] =
+    result = prev
+    result.add CSSPropertyEditTransaction(record: record, sourceEdit: plan,
+      beforeElement: beforeElement, afterElement: afterElement)
+  editor.inspector.redoStack.val = @[]
+  editor.inspector.editDiagnostics.val = @[]
+  editor.workspaceEditStage.val = wesDirty
+  editor.chat.accumulatedEdits.update proc(prev: seq[EditRecord]): seq[EditRecord] =
+    result = prev
+    result.add record
+  ResponsiveOverrideOutcome(ok: true, plan: plan)
 
 proc editSharedDesignProperty*(editor: EditorVM; property, newValue: string;
     sourceScope: SourceScopeChoiceKind): SharedDesignEditResult {.discardable.} =
@@ -12387,6 +12646,7 @@ proc createInspectorVM*(designSystemSchema: Signal[DesignSystemSchema] = nil;
     expandedSections: expandedSections,
     rawCssSections: createSignal[seq[InspectorSection]](@[]),
     boxModelShown: createSignal(false),
+    layoutControlsShown: createSignal(false),
     boxCanvasDraft: createSignal(BoxCanvasDraft()),
     sectionsUserSet: createSignal[seq[InspectorSection]](@[]),
     revealSectionRequest: createSignal(0),

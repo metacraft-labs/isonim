@@ -4,13 +4,19 @@
 ##
 ##   * Layout mode — 4-button row (none / vertical / horizontal / grid),
 ##     mapping to CSS ``display: block | flex-column | flex-row | grid``.
+##     After it, `Enable flex wrap` and `Set grid template tracks`
+##     (``section_layout_controls``).
 ##   * W / H — numeric inputs (px unit).
-##   * Constraint icon — placeholder square.
+##   * Constraint — `Set left right top bottom constraints`, which names the
+##     selection's positioning and opens the constraint controls.
 ##   * Gap — numeric, visible only when flex or grid.
 ##   * Padding — four numeric inputs (top / right / bottom / left).
 ##   * Visual box model — a disclosure under the padding rows
 ##     (``section_box_model``): margin, border, padding and content as
 ##     nested rings with a field per margin and padding side.
+##   * Auto layout, grid, constraints — a disclosure
+##     (``section_layout_controls``): the flex alignment rows, the grid
+##     track editor, the constraint rows and the responsive overrides.
 ##   * Overflow — segmented choice (visible / hidden / scroll / auto).
 
 import std/[options, strutils]
@@ -26,6 +32,7 @@ import isonim/editor/views/widgets/property_commit
 import isonim/editor/views/widgets/property_row
 import isonim/editor/views/widgets/section_raw_css
 import isonim/editor/views/widgets/section_box_model
+import isonim/editor/views/widgets/section_layout_controls
 import isonim/editor/views/widgets/section_position
 
 const
@@ -118,6 +125,7 @@ proc mountSectionLayout*[R, E](r: R; parent: E; vm: EditorVM) =
   let modeRow = ui(r):
     tdiv(`data-layout-mode-row` = "true",
          display = "flex", flex_direction = "row",
+         flex = "1", min_width = "0",
          background_color = "#1A1B22",
          border_radius = "4px",
          padding = "1px",
@@ -134,7 +142,19 @@ proc mountSectionLayout*[R, E](r: R; parent: E; vm: EditorVM) =
               border_radius = "3px",
               color = textMuted, font_size = "12px", cursor = "pointer"):
           text modeGlyphs[i]
-  r.appendChild(parent, modeRow)
+  # The mode row and, after it, the flex wrap and grid track entry points.
+  let modeLine = ui(r):
+    tdiv(`data-layout-mode-line` = "true", display = "flex",
+         flex_direction = "row", align_items = "center", gap = "4px",
+         min_width = "0")
+  r.appendChild(modeLine, modeRow)
+  r.appendChild(parent, modeLine)
+  # The Wrap row's wiring, shared with `Enable flex wrap` so both commit at
+  # the scope chosen on either; the controls' entry points open them here.
+  let wrapWiring = vm.inspectorRowWiring("flex-wrap")
+  let controlsFocus = newLayoutControlsFocus()
+  mountLayoutModeExtras[R, E](r, modeLine, vm, layoutMode, modeMessage,
+    wrapWiring, controlsFocus)
   var modeDiagnostic: E
   let diagnostic = ui(r):
     tdiv(ref = modeDiagnostic, `data-layout-mode-message` = "true", role = "status",
@@ -307,10 +327,7 @@ proc mountSectionLayout*[R, E](r: R; parent: E; vm: EditorVM) =
       r.setStyle(modeButtons[i], "box-shadow",
         if isActive: "0 0 0 1px #2A2C3A" else: "none")
 
-  # ----- W / H + constraint icon row ------------------------------- #
-  # Two numeric rows + a placeholder constraint glyph. The glyph is a
-  # data marker for the per-section test; Phase G+1 wires a real
-  # constraint editor.
+  # ----- W / H + constraint ---------------------------------------- #
   # A width without its height is half a question.
   discard r.mountPropertyRowPair(parent,
     propertyRowNumeric(
@@ -325,23 +342,8 @@ proc mountSectionLayout*[R, E](r: R; parent: E; vm: EditorVM) =
     onBindRequest = vm.inspectorBindRequestHandler("height"),
     onDetachRequest = vm.inspectorDetachRequestHandler("height"),
     wiring = vm.inspectorRowWiring("height")))
-  # Phase H (2026-05-28): the constraint indicator reads as a quiet
-  # icon-and-hint row. The Figma reference puts the constraint
-  # affordance as a small bracket glyph on the right edge next to W/H;
-  # we keep the row for the headless test contract but render it
-  # without the bordered chrome that competed with the alignment
-  # cluster pills above.
-  let constraintRow = ui(r):
-    tdiv(`data-layout-constraint` = "true",
-         display = "flex", align_items = "center", gap = "6px",
-         padding = "2px 0", font_size = "11px", color = textMuted):
-      tdiv(width = "18px", height = "18px",
-            display = "flex", align_items = "center",
-            justify_content = "center",
-            color = textMuted):
-        text "\xE2\x9F\x8B"
-      text "Constraints (auto)"
-  r.appendChild(parent, constraintRow)
+  # The constraint control (Section catalogue: "W/H + constraint").
+  mountLayoutConstraintButton[R, E](r, parent, vm, controlsFocus)
 
   # ----- Gap (visible only for flex / grid) ------------------------ #
   var gapHostEl: E
@@ -402,6 +404,11 @@ proc mountSectionLayout*[R, E](r: R; parent: E; vm: EditorVM) =
   # the padding rows (`Show box model controls`); its padding sides commit
   # through the rows' wirings above.
   mountSectionBoxModel[R, E](r, padHostEl, vm, padWirings)
+  # ----- Auto layout, grid, constraints ---------------------------- #
+  # After padding, as the catalogue orders Layout: "gap, padding, alignment
+  # children, overflow".
+  mountLayoutControls[R, E](r, parent, vm, layoutMode, wrapWiring,
+    controlsFocus)
   # ----- Overflow choice ------------------------------------------- #
   discard r.mountPropertyRow(parent, propertyRowChoice(
     name = "Overflow", value = overflow,

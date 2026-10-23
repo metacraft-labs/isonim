@@ -2517,7 +2517,11 @@ test.describe("metacraft-web IsoNim editor consumer", () => {
   // flex-wrap, grid-template, constraint and responsive-override controls
   // (spec "Full CSS Property Inspector" Layout row and layout semantics), a
   // gap edit with its preview effect, drag-to-resize, and per-viewport
-  // override isolation.
+  // override isolation. Re-authored 2026-10-23 for the rebuilt controls: the
+  // overrides sit behind the Layout section's `Show layout auto grid
+  // constraint controls` disclosure and write the value typed into their
+  // field; the deleted preset wrote a fixed 28px into the base rule (editor
+  // spec "Layout auto layout, grid, constraint and responsive controls").
   test("e2e_canvas_layout_handles_measurement_and_responsive_overrides", async ({
     page,
   }) => {
@@ -2582,9 +2586,14 @@ test.describe("metacraft-web IsoNim editor consumer", () => {
         )
         .toBeGreaterThan(beforeWidth);
 
+      // The responsive overrides are in the Layout section's auto layout,
+      // grid and constraint controls. An override is written for one mode
+      // only, inside the project's breakpoint for it; its value field starts
+      // at the property's current value (gap 24px here).
       const gapBeforeMobileOverride = await topbar.evaluate(
         (node) => getComputedStyle(node).gap,
       );
+      await page.getByLabel("Show layout auto grid constraint controls").click();
       await page
         .getByRole("button", { name: "Set responsive override for Mobile mode" })
         .click();
@@ -2602,7 +2611,15 @@ test.describe("metacraft-web IsoNim editor consumer", () => {
       await expect(phone).toHaveAttribute("aria-pressed", "true");
       const mobile = await openTopbarInEditMode(page);
       await selectTopbarElement(page, mobile.topbar);
-      await expect(page.getByText("mobile").first()).toBeVisible();
+      // The Layout controls name the mode the preview is in. Matched exactly:
+      // as a substring, "mobile" first matches a hidden story description.
+      await expect(page.getByText("mobile", { exact: true }).first()).toBeVisible();
+      // The deleted control wrote a fixed, undisclosed 28px; the override
+      // writes the value typed into its field (editor spec "Layout semantics
+      // stay close to CSS"; "Layout auto layout, grid, constraint and
+      // responsive controls").
+      await page.getByLabel("Show layout auto grid constraint controls").click();
+      await page.getByRole("textbox", { name: "Responsive override value" }).fill("28px");
       await page
         .getByRole("button", { name: "Set responsive override for Mobile mode" })
         .click();
@@ -2619,6 +2636,33 @@ test.describe("metacraft-web IsoNim editor consumer", () => {
       await expect
         .poll(() => mobile.topbar.evaluate((node) => getComputedStyle(node).gap))
         .toBe(mobileGap);
+
+      // The override is the source's, not the session's: after a later edit
+      // of the base rule is saved and the page reloads, the Phone preview
+      // still applies it. The consumer's preview reader re-injects the class
+      // rules after the compiled stylesheet, so it has to carry the override
+      // inside its breakpoint after the base rule, or the base rule's 20px
+      // would outrank it (metacraft-web `classRuleDeclarations`).
+      await expectNoPendingSourceEdits(page);
+      const mobileGapRow = propertyRowInput(page, "gap");
+      await mobileGapRow.click();
+      await mobileGapRow.fill("20");
+      await mobileGapRow.press("Enter");
+      await expectNoPendingSourceEdits(page);
+      await expect
+        .poll(() => readFileSync(devBridgeTokenFile, "utf8"))
+        .toMatch(/\n\.bo-topbar \{[^}]*\n  gap: 20px;/);
+      expect(readFileSync(devBridgeTokenFile, "utf8")).toMatch(
+        /\n@media \(max-width: 980px\) \{[^@]*\n  \.bo-topbar \{[^}]*\n    gap: 28px;/,
+      );
+      await page.goto("/");
+      const phoneAfterReload = viewportButton(page, "Phone");
+      await phoneAfterReload.click();
+      await expect(phoneAfterReload).toHaveAttribute("aria-pressed", "true");
+      const reloaded = await openTopbarInEditMode(page);
+      await expect
+        .poll(() => reloaded.topbar.evaluate((node) => getComputedStyle(node).gap))
+        .toBe("28px");
     } finally {
       await restoreDevWorkspace(page, workspaceBefore);
     }

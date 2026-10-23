@@ -3308,7 +3308,9 @@ proc mountInspectorSectionBody[R, E](r: R; vm: EditorVM;
     mountSectionPosition[R, E](r, body, vm)
   of "layout":
     mountSectionLayout[R, E](r, body, vm)
-    mountExposedCssRows[R, E](r, body, vm, ["flex-wrap", "aspect-ratio"])
+    # flex-wrap is the Layout section's own Wrap row and `Enable flex wrap`
+    # (`section_layout_controls`).
+    mountExposedCssRows[R, E](r, body, vm, ["aspect-ratio"])
   of "appearance":
     mountSectionAppearance[R, E](r, body, vm)
   of "fill":

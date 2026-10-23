@@ -723,6 +723,209 @@ proc patchCssDeclarationAt*(css, selector, property, newValue: string;
     content: css[0 ..< cut] & insertion & css[cut .. ^1],
     oldValue: "")
 
+# ---------------------------------------------------------------------------
+#  Responsive overrides: a declaration written under a named breakpoint.
+# ---------------------------------------------------------------------------
+
+func collapsedCondition(condition: string): string =
+  ## An at-rule prelude compared without its incidental whitespace, so the
+  ## stylesheet's `@media (max-width: 980px)` and a caller's copy of it with a
+  ## different line break or indentation name the same block.
+  condition.withoutComments().splitWhitespace().join(" ")
+
+iterator topLevelAtBlocks(css: string): tuple[prelude: string;
+    bodyStart, bodyEnd: int] =
+  ## Every at-rule block at brace depth 0 (`@media … { … }`), with its prelude
+  ## and the span between its braces (`bodyEnd` is the index of its `}`).
+  var i = 0
+  var depth = 0
+  var selectorStart = 0
+  var prelude = ""
+  var bodyStart = -1
+  while i < css.len:
+    if i + 1 < css.len and css[i] == '/' and css[i + 1] == '*':
+      let close = css.find("*/", i + 2)
+      i = if close < 0: css.len else: close + 2
+      continue
+    case css[i]
+    of '{':
+      if depth == 0:
+        prelude = css[selectorStart ..< i].withoutComments().strip()
+        bodyStart = i + 1
+      depth += 1
+    of '}':
+      depth -= 1
+      if depth == 0 and bodyStart >= 0:
+        if prelude.startsWith("@"):
+          yield (prelude: prelude, bodyStart: bodyStart, bodyEnd: i)
+        bodyStart = -1
+      if depth <= 0:
+        depth = 0
+        selectorStart = i + 1
+    of ';':
+      if depth == 0: selectorStart = i + 1
+    else: discard
+    i += 1
+
+proc patchCssDeclarationUnder*(css, condition, selector, property,
+                               newValue: string): CssPatchResult =
+  ## Set `property` for `selector` inside the `@media` block `condition` --
+  ## a responsive override -- leaving every rule outside that block alone.
+  ##
+  ## This is the write a responsive override makes (editor spec "Full CSS
+  ## Property Inspector": the Layout section exposes responsive overrides as
+  ## source-backed CSS concepts; `SourceEditPlan.breakpointCondition`). It is
+  ## the counterpart of `patchCssDeclarationAt`, which writes where a value is
+  ## ALREADY decided at a width: an override is the explicit request to decide
+  ## it under one breakpoint, so it is written there even when nothing in that
+  ## block mentions the property yet.
+  ##
+  ## * The one rule for `selector` directly under `condition` holds the
+  ##   declaration: its value is replaced (a trailing comment is kept) or it
+  ##   is added after the rule's last declaration.
+  ## * When that block has no rule for `selector`, one is added at the end of
+  ##   the block; when the stylesheet has no such block, the block is added at
+  ##   the end of the stylesheet. `condition` is written verbatim.
+  ## * An empty `newValue` removes exactly that declaration, as Reset does for
+  ##   the base rule, and refuses when there is none.
+  ##
+  ## Refused, with nothing changed: a condition that is not a width-only
+  ## `@media` prelude (it is not a breakpoint); two rules for `selector` under
+  ## the condition, or two such blocks (which one holds the override is not
+  ## this function's decision); a rule whose selector list styles other
+  ## selectors too (the override would change them as well); a declaration of
+  ## the property that appears more than once in the rule.
+  let wanted = condition.collapsedCondition()
+  if not wanted.startsWith("@media") or not wanted.conditionIsWidthOnly():
+    return CssPatchResult(ok: false, outcome: cpoRuleNotFound,
+      message: "`" & condition & "` is not a width-based `@media` " &
+        "breakpoint, so it cannot hold a responsive override.")
+  if selector.strip().len == 0 or property.strip().len == 0:
+    return CssPatchResult(ok: false, outcome: cpoRuleNotFound,
+      message: "A responsive override needs a selector and a property.")
+  let value = newValue.strip()
+  var matches: seq[NestedRule] = @[]
+  for rule in css.allRules():
+    if rule.condition.collapsedCondition() == wanted and
+        rule.selector.selectorMatches(selector):
+      matches.add rule
+  if matches.len > 1:
+    return CssPatchResult(ok: false, outcome: cpoAmbiguous,
+      message: $matches.len & " rules for `" & selector & "` sit inside `" &
+        condition & "`. Which one holds the override is a decision this " &
+        "patch cannot make; edit the stylesheet directly.")
+  if matches.len == 1:
+    let rule = matches[0]
+    for member in rule.selector.withoutComments().split(','):
+      if member.strip() != selector.strip():
+        return CssPatchResult(ok: false, outcome: cpoAmbiguous,
+          message: "The `" & selector & "` rule inside `" & condition &
+            "` is shared by the selector list `" & rule.selector.strip() &
+            "`; an override there would change every selector in the list. " &
+            "Edit the stylesheet directly.")
+    let body = RuleSpan(selector: rule.selector, bodyStart: rule.bodyStart,
+                        bodyEnd: rule.bodyEnd)
+    let decl = css.findDeclaration(body, property)
+    if decl.valueStart >= 0:
+      let later = css.findDeclaration(RuleSpan(selector: rule.selector,
+        bodyStart: decl.valueEnd + 1, bodyEnd: rule.bodyEnd), property)
+      if later.valueStart >= 0:
+        return CssPatchResult(ok: false, outcome: cpoAmbiguous,
+          message: "The `" & selector & "` rule inside `" & condition &
+            "` declares `" & property & "` more than once, so the one this " &
+            "override owns cannot be identified.")
+      let existing = css[decl.valueStart ..< decl.valueEnd]
+      let comment = existing.trailingComment()
+      let current = (if comment.len > 0: existing[0 ..< existing.find("/*")]
+                     else: existing).strip()
+      if value.len == 0:
+        var start = decl.nameStart
+        var stop = decl.valueEnd
+        if stop < rule.bodyEnd and css[stop] == ';': inc stop
+        var lineStart = start
+        while lineStart > 0 and css[lineStart - 1] in {' ', '\t'}: dec lineStart
+        var after = stop
+        while after < css.len and css[after] in {' ', '\t', '\r'}: inc after
+        if (lineStart == 0 or css[lineStart - 1] == '\n') and
+            after < css.len and css[after] == '\n':
+          start = lineStart
+          stop = after + 1
+        else:
+          while stop < rule.bodyEnd and css[stop] in {' ', '\t'}: inc stop
+        return CssPatchResult(ok: true, outcome: cpoRemoved, oldValue: current,
+          content: css[0 ..< start] & css[stop .. ^1])
+      if current == value:
+        return CssPatchResult(ok: true, outcome: cpoUnchanged, content: css,
+                              oldValue: current)
+      let lead = if css[decl.valueStart] in {' ', '\t'}: " " else: ""
+      return CssPatchResult(ok: true, outcome: cpoReplaced, oldValue: current,
+        content: css[0 ..< decl.valueStart] & lead & value &
+          (if comment.len > 0: " " & comment else: "") &
+          css[decl.valueEnd .. ^1])
+    if value.len == 0:
+      return CssPatchResult(ok: false, outcome: cpoRuleNotFound,
+        message: "The `" & selector & "` rule inside `" & condition &
+          "` has no `" & property & "` override to remove.")
+    # Add it after the rule's last declaration, on the rule's own layout.
+    let trimmed = css[rule.bodyStart ..< rule.bodyEnd].strip(leading = false)
+    let needsSemicolon = trimmed.strip().len > 0 and not trimmed.endsWith(";")
+    var insertion: string
+    if trimmed.strip().len == 0:
+      insertion = " " & property & ": " & value & ";"
+    elif "\n" notin trimmed:
+      insertion = (if needsSemicolon: ";" else: "") & " " & property & ": " &
+        value & ";"
+    else:
+      var indent = ""
+      let lastNewline = trimmed.rfind('\n')
+      for c in trimmed[lastNewline + 1 .. ^1]:
+        if c in {' ', '\t'}: indent.add c
+        else: break
+      insertion = (if needsSemicolon: ";" else: "") & "\n" & indent &
+        property & ": " & value & ";"
+    let cut = rule.bodyStart + trimmed.len
+    return CssPatchResult(ok: true, outcome: cpoInserted, oldValue: "",
+      content: css[0 ..< cut] & insertion &
+        (if trimmed.strip().len == 0: " " & css[rule.bodyEnd .. ^1]
+         else: css[cut .. ^1]))
+  if value.len == 0:
+    return CssPatchResult(ok: false, outcome: cpoRuleNotFound,
+      message: "No `" & selector & "` rule inside `" & condition &
+        "` holds a `" & property & "` override to remove.")
+  let ruleText = selector.strip() & " { " & property & ": " & value & "; }"
+  var blocks: seq[tuple[prelude: string; bodyStart, bodyEnd: int]] = @[]
+  for blk in css.topLevelAtBlocks():
+    if blk.prelude.collapsedCondition() == wanted:
+      blocks.add blk
+  if blocks.len > 1:
+    return CssPatchResult(ok: false, outcome: cpoAmbiguous,
+      message: "The stylesheet has " & $blocks.len & " `" & condition &
+        "` blocks, so the one to hold the override cannot be identified. " &
+        "Edit the stylesheet directly.")
+  if blocks.len == 1:
+    # The new rule goes after the block's last rule, indented like it.
+    let blk = blocks[0]
+    let inner = css[blk.bodyStart ..< blk.bodyEnd].strip(leading = false)
+    let cut = blk.bodyStart + inner.len
+    var indent = "  "
+    let lastNewline = inner.rfind('\n')
+    if lastNewline >= 0:
+      indent = ""
+      for c in inner[lastNewline + 1 .. ^1]:
+        if c in {' ', '\t'}: indent.add c
+        else: break
+    let separator = if "\n" in css[blk.bodyStart ..< blk.bodyEnd]: "\n" & indent
+                    else: " "
+    return CssPatchResult(ok: true, outcome: cpoInserted, oldValue: "",
+      content: css[0 ..< cut] & separator & ruleText &
+        (if "\n" in css[blk.bodyStart ..< blk.bodyEnd]: css[cut .. ^1]
+         else: " " & css[blk.bodyEnd .. ^1]))
+  # No such block yet: add it at the end, on lines of its own.
+  var head = css
+  if head.len > 0 and not head.endsWith("\n"): head.add "\n"
+  CssPatchResult(ok: true, outcome: cpoInserted, oldValue: "",
+    content: head & condition.strip() & " {\n  " & ruleText & "\n}\n")
+
 func nimConstBody*(nimSource, constName: string): string =
   ## The raw-string body of `const <constName> = """..."""`, or "".
   ##

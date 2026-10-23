@@ -222,7 +222,7 @@ proc localPreviewRefusal(elementId, domPath, property: string): string =
     result = $reason
 
 proc applyPreviewStyle*(elementId, domPath, property, value: string;
-    sourceScope = sskLocalInstance) =
+    sourceScope = sskLocalInstance; condition = "") =
   ## Show the change in the preview, now.
   ##
   ## Without this the editor accepted a value, staged it, wrote it to source --
@@ -261,7 +261,12 @@ proc applyPreviewStyle*(elementId, domPath, property, value: string;
   ## rebuilt before the source catches up gets the edit back on start. The
   ## records are short strings rather than the whole stylesheet, so there is
   ## nothing to cap or expire, and re-applying is idempotent.
-  if sourceScope == sskLocalInstance and
+  ##
+  ## A responsive override (``condition``, a `@media` prelude) is set in the
+  ## element's rule repeated under that condition -- the rule is added to the
+  ## preview's stylesheet when it has none yet -- and is recorded under its
+  ## own key, beside the element's unconditional value.
+  if sourceScope == sskLocalInstance and condition.len == 0 and
       localPreviewRefusal(elementId, domPath, property).len > 0: return
   when defined(js):
     # The cell first, the rule second.
@@ -292,6 +297,7 @@ proc applyPreviewStyle*(elementId, domPath, property, value: string;
       const property = toJsString(""", property, """);
       const value = toJsString(""", value, """);
       const scope = toJsString(""", scopeName, """);
+      const condition = toJsString(""", condition, """);
       if (!id || !property) return;
 
       // Resolve once, here, and hand the scene id to the cell registry.
@@ -310,7 +316,7 @@ proc applyPreviewStyle*(elementId, domPath, property, value: string;
         }
         if (target) break;
       }
-      if (scope === 'sskLocalInstance' && target &&
+      if (!condition && scope === 'sskLocalInstance' && target &&
           writeCell(target.getAttribute('data-isonim-src') || '')) {
         return;
       }
@@ -321,17 +327,54 @@ proc applyPreviewStyle*(elementId, domPath, property, value: string;
       // nothing to cap or expire, and applying twice is a no-op.
       const store = window.__isonimPreviewDeclarations ||
         (window.__isonimPreviewDeclarations = {});
-      const key = id + '|' + property;
-      if (value === '') delete store[key];
-      else store[key] = { id: id, path: path, property: property, value: value, scope: scope };
+      const key = id + '|' + property + (condition ? '|' + condition : '');
+      const record = { id: id, path: path, property: property, value: value,
+                       scope: scope, condition: condition };
+      // An emptied override is recorded too: its removal has to be re-applied
+      // to a frame rebuilt from a stylesheet that still declares it.
+      if (value === '' && !condition) delete store[key];
+      else store[key] = record;
       window.dispatchEvent(new CustomEvent('isonim-preview-set-declaration', {
-        detail: { id: id, path: path, property: property, value: value, scope: scope }
+        detail: record
       }));
       })(""", writeCell, ");"].}
   else:
     discard elementId
     discard property
     discard value
+
+proc previewOverrideValue*(elementId, domPath, property,
+    condition: string): string =
+  ## What the preview's stylesheet declares for ``property`` in the
+  ## element's rule repeated under ``condition`` (a `@media` prelude), or ""
+  ## when it declares nothing there. A responsive override's commit expects
+  ## the source to say the same (`SourceEditPlan.expectedOldValue`), and its
+  ## undo puts this value back. Outside a browser there is no preview to ask.
+  when defined(js):
+    var found: cstring
+    let id = cstring(elementId)
+    let path = cstring(domPath)
+    let prop = cstring(property)
+    let media = cstring(condition)
+    {.emit: [found, """ = (function(id, path, property, condition) {
+      if (typeof document === 'undefined' || !property || !condition) return '';
+      for (const frame of document.querySelectorAll('iframe')) {
+        try {
+          if (typeof frame.contentWindow.__isonimOverrideValue !== 'function') continue;
+          const doc = frame.contentDocument;
+          const target = (id && doc.querySelector('[data-isonim-element-id="' + CSS.escape(id) + '"]')) ||
+            (path && doc.querySelector(path));
+          if (target) return frame.contentWindow.__isonimOverrideValue(id, path, property, condition) || '';
+        } catch (e) {}
+      }
+      return '';
+    })(""", id, ",", path, ",", prop, ",", media, ");"].}
+    result = $found
+  else:
+    discard elementId
+    discard domPath
+    discard property
+    discard condition
 
 proc commitInspectorValue*(vm: EditorVM; property, rawValue: string;
     scope: SourceScopeChoiceKind): PropertyCommitOutcome =
@@ -668,3 +711,33 @@ proc inspectorRowWiring*(vm: EditorVM; property: string): InspectorRowWiring =
       if reason.len > 0: return reason
       vm.propertyResetRefusal(capturedProperty, effectiveScope(),
         checkWrite = false))
+
+proc commitResponsiveOverrideValue*(vm: EditorVM; property, rawValue,
+    modeKey: string): PropertyCommitOutcome =
+  ## Commit a responsive override of ``property`` for the mode ``modeKey``
+  ## (editor spec "Full CSS Property Inspector": the Layout section's
+  ## responsive overrides): the same act-time refusals, preview, history and
+  ## automatic write as a row commit, through `commitResponsiveOverride`.
+  let target = vm.responsiveOverrideTarget(modeKey)
+  let selected = vm.inspector.selectedElement.val
+  let previous = previewOverrideValue(selected.id, selected.domPath, property,
+    target.breakpoint.condition)
+  let outcome = vm.commitResponsiveOverride(property, rawValue, previous,
+    target)
+  if not outcome.ok:
+    return refusal(outcome.message, sskSharedClass)
+  if not vm.sourceAdapterReady.val:
+    return PropertyCommitOutcome(ok: false,
+      message: "Staged, but no source edit adapter is ready to write it.",
+      scope: sskSharedClass, committedValue: outcome.plan.newValue)
+  let previewId =
+    if selected.id.len > 0: selected.id
+    elif selected.sourceKey.len > 0: selected.sourceKey
+    else: selected.schemaKey
+  if previewId.len > 0:
+    applyPreviewStyle(previewId, selected.domPath, property,
+      outcome.plan.newValue, sskSharedClass, outcome.plan.breakpointCondition)
+    vm.previewShowsPendingEdits.val = true
+  vm.noteCommitForAutoSave()
+  PropertyCommitOutcome(ok: true, message: "", scope: sskSharedClass,
+    committedValue: outcome.plan.newValue)
