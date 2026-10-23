@@ -2035,6 +2035,261 @@ test.describe("IsoNim packaged editor example", () => {
     await expect.poll(() => used("padding-top")).toBe("18px");
   });
 
+  // Editor spec "Specialized Editors" -> "Visual box model": "drag handles on
+  // canvas for live preview", and the clause under it for the selection
+  // overlay's margin and padding handles: a drag previews in the frame and in
+  // the box model's field as it moves, the release commits one edit through
+  // the field's own pipeline, and Escape, pointer cancellation, a lost
+  // capture or another selection put back the value from before it. The
+  // example's writer maps the card's `padding` shorthand and no side, so a
+  // Shift-drag (every side, the shorthand) writes, and a side's drag is
+  // refused at the act with the writer's reason and restored.
+  test("e2e_canvas_box_handles_preview_commit_cancel_and_refusal", async ({
+    page,
+  }) => {
+    await page.setViewportSize(desktop);
+    await openDestinationComponentEdit(page);
+    await markPreviewSelected(page);
+    const frame = page.frameLocator('iframe[title="Editable component preview"]');
+    const card = frame.getByTestId("component-edit-preview");
+    await expect(card).toHaveAttribute("data-isonim-selected", "true");
+    const undoCount = () =>
+      page.evaluate(() => (window as any).__isonimEditorVm.inspector.undoStack.value.length);
+    const used = (property: string) =>
+      card.evaluate((node, name) => getComputedStyle(node).getPropertyValue(name), property);
+    const layout = page.locator('[data-inspector-section-header="layout"]');
+    if ((await layout.getAttribute("aria-expanded")) !== "true") await layout.click();
+    await page.getByRole("button", { name: "Show box model controls" }).click();
+    const field = (name: string) => page.getByRole("textbox", { name, exact: true });
+    const centre = field("Padding, all sides");
+    const boxMessage = page.locator("[data-box-model-message]");
+    const handle = (name: string) => frame.getByLabel(`Adjust ${name}`, { exact: true });
+    const canvasMessage = frame.locator("#isonim-editor-box-drag-message");
+    const original = await demoSourceContent(page, demoFoundationSource);
+    expect(original).toContain(".destination-card { padding: 18px; }");
+    const at = (px: number) => original.replace(".destination-card { padding: 18px; }",
+      `.destination-card { padding: ${px}px; }`);
+    const start = await undoCount();
+
+    // One handle per margin and padding side, in Edit mode.
+    for (const side of ["top", "right", "bottom", "left"]) {
+      await expect(handle(`margin ${side}`)).toBeVisible();
+      await expect(handle(`padding ${side}`)).toBeVisible();
+    }
+
+    // The preview is scaled to fit its pane; a handle follows the pointer in
+    // the frame's own CSS pixels, so the moves below are in those.
+    const scale = await page.evaluate(() => {
+      const node = document.querySelector('iframe[title="Editable component preview"]') as HTMLIFrameElement;
+      return node.getBoundingClientRect().width / node.contentWindow!.innerWidth;
+    });
+    const px = (n: number) => n * scale;
+    async function press(name: string, shift = false) {
+      const box = await handle(name).boundingBox();
+      if (!box) throw new Error(`the ${name} handle has no box`);
+      const x = box.x + box.width / 2;
+      const y = box.y + box.height / 2;
+      await page.mouse.move(x, y);
+      if (shift) await page.keyboard.down("Shift");
+      await page.mouse.down();
+      if (shift) await page.keyboard.up("Shift");
+      return { x, y };
+    }
+
+    // Shift-drag the top padding handle down 6px: every side previews at 24px
+    // in the frame and in the box model while the pointer moves, nothing is
+    // committed until release, and the release writes one edit.
+    let p = await press("padding top", true);
+    await page.mouse.move(p.x, p.y + px(3), { steps: 2 });
+    await page.mouse.move(p.x, p.y + px(6), { steps: 2 });
+    await expect.poll(() => used("padding-top")).toBe("24px");
+    expect(await used("padding-left")).toBe("24px");
+    await expect(centre).toHaveValue("24");
+    await expect(centre).toHaveAttribute("data-box-model-draft", "true");
+    await expect(frame.getByLabel("Canvas spacing measurement")).toHaveText("padding: 24px");
+    expect(await undoCount()).toBe(start);
+    expect(await demoSourceContent(page, demoFoundationSource)).toBe(original);
+    await page.mouse.up();
+    await expect.poll(() => demoSourceContent(page, demoFoundationSource)).toBe(at(24));
+    await expect.poll(() => pendingSourceEdits(page)).toBe(0);
+    expect(await undoCount()).toBe(start + 1);
+    expect(await used("padding-bottom")).toBe("24px");
+    await expect(card).not.toHaveAttribute("data-isonim-box-drag-preview", /.*/);
+    await expect(centre).toHaveValue("24");
+    await expect(centre).toHaveAttribute("data-box-model-draft", "false");
+    await expect(page.locator("[data-save-error]")).toBeHidden();
+
+    // Escape during a drag puts back the value from before it.
+    p = await press("padding bottom", true);
+    await page.mouse.move(p.x, p.y - px(4), { steps: 3 });
+    await expect.poll(() => used("padding-bottom")).toBe("28px");
+    await expect(centre).toHaveValue("28");
+    await page.keyboard.press("Escape");
+    await expect.poll(() => used("padding-bottom")).toBe("24px");
+    await expect(centre).toHaveValue("24");
+    await page.mouse.move(p.x, p.y - px(8));
+    expect(await used("padding-bottom")).toBe("24px");
+    await page.mouse.up();
+    // Escape ended the drag, not the selection.
+    await expect(card).toHaveAttribute("data-isonim-selected", "true");
+    expect(await undoCount()).toBe(start + 1);
+    expect(await demoSourceContent(page, demoFoundationSource)).toBe(at(24));
+
+    // Pointer cancellation, and a lost pointer capture, do the same.
+    await handle("padding left").evaluate((node) => node.addEventListener("pointerdown",
+      (event) => { (window as any).__boxHandlePointer = (event as PointerEvent).pointerId; }));
+    p = await press("padding left", true);
+    await page.mouse.move(p.x + px(5), p.y, { steps: 2 });
+    await expect.poll(() => used("padding-left")).toBe("29px");
+    await handle("padding left").evaluate((node) => {
+      const pointerId = (window as any).__boxHandlePointer;
+      window.dispatchEvent(new PointerEvent("pointercancel", { pointerId, bubbles: true }));
+    });
+    await expect.poll(() => used("padding-left")).toBe("24px");
+    await expect(centre).toHaveValue("24");
+    await page.mouse.up();
+    p = await press("padding left", true);
+    await page.mouse.move(p.x + px(40), p.y, { steps: 4 });
+    await expect.poll(() => used("padding-left")).toBe("64px");
+    expect(await handle("padding left").evaluate((node) =>
+      node.hasPointerCapture((window as any).__boxHandlePointer))).toBe(true);
+    await handle("padding left").evaluate((node) =>
+      node.releasePointerCapture((window as any).__boxHandlePointer));
+    await page.mouse.move(p.x + px(44), p.y);
+    await expect.poll(() => used("padding-left")).toBe("24px");
+    await page.mouse.up();
+    expect(await undoCount()).toBe(start + 1);
+    expect(await demoSourceContent(page, demoFoundationSource)).toBe(at(24));
+
+    // Another selection discards the drag: the arrow key selects the card's
+    // heading mid-drag, the card's preview goes back, and the release commits
+    // nothing to either element.
+    p = await press("padding top", true);
+    await page.mouse.move(p.x, p.y + px(6), { steps: 2 });
+    await expect.poll(() => used("padding-top")).toBe("30px");
+    await page.keyboard.press("ArrowRight");
+    await expect(frame.locator("h1")).toHaveAttribute("data-isonim-selected", "true");
+    await expect.poll(() => used("padding-top")).toBe("24px");
+    await page.mouse.move(p.x, p.y + px(10));
+    await page.mouse.up();
+    expect(await used("padding-top")).toBe("24px");
+    expect(await undoCount()).toBe(start + 1);
+    expect(await demoSourceContent(page, demoFoundationSource)).toBe(at(24));
+    await markPreviewSelected(page);
+
+    // A side the project maps no entry for: the drag previews that side only,
+    // and the release is refused at the act with the writer's reason, on the
+    // canvas and under the box; the preview and the field go back.
+    p = await press("padding top");
+    await page.mouse.move(p.x, p.y + px(6), { steps: 3 });
+    await expect.poll(() => used("padding-top")).toBe("30px");
+    expect(await used("padding-left")).toBe("24px");
+    await expect(field("Padding top")).toHaveValue("30");
+    await page.mouse.up();
+    await expect.poll(() => used("padding-top")).toBe("24px");
+    await expect(field("Padding top")).toHaveValue("24");
+    await expect(canvasMessage).toBeVisible();
+    await expect(canvasMessage).toContainText(
+      "No project schema or source map entry can safely represent this edit.");
+    await expect(boxMessage).toContainText(
+      "Padding top: No project schema or source map entry can safely represent this edit.");
+    expect(await undoCount()).toBe(start + 1);
+    expect(await demoSourceContent(page, demoFoundationSource)).toBe(at(24));
+
+    // A margin handle moves its margin edge away from the element.
+    p = await press("margin bottom");
+    await page.mouse.move(p.x, p.y + px(10), { steps: 3 });
+    await expect.poll(() => used("margin-bottom")).toBe("10px");
+    await expect(field("Margin bottom")).toHaveValue("10");
+    await page.mouse.up();
+    await expect.poll(() => used("margin-bottom")).toBe("0px");
+    await expect(boxMessage).toContainText(
+      "Margin bottom: No project schema or source map entry can safely represent this edit.");
+    await expect(canvasMessage).toBeVisible();
+    expect(await undoCount()).toBe(start + 1);
+
+    // The overlay's spacing handle keeps its own commit, and Escape now puts
+    // its preview back too.
+    p = await press("selected spacing");
+    await page.mouse.move(p.x, p.y + px(6), { steps: 2 });
+    await expect.poll(() => used("padding-top")).toBe("30px");
+    await page.keyboard.press("Escape");
+    await expect.poll(() => used("padding-top")).toBe("24px");
+    await page.mouse.up();
+    expect(await undoCount()).toBe(start + 1);
+
+    // A release still waiting for the project's answer (held here, as a
+    // native project answers later) keeps its own preview only: a newer
+    // drag previews over it, and the late answer leaves the newer one alone.
+    // The frame sends its requests with `parent.dispatchEvent`; wrapping it
+    // here reaches the request before the editor answers it.
+    await page.evaluate(() => {
+      const w = window as any;
+      w.__heldBoxSettles = [];
+      const dispatch = EventTarget.prototype.dispatchEvent;
+      w.dispatchEvent = function (event: Event) {
+        const d = (event as CustomEvent).detail || {};
+        if (event.type === "isonim-preview-box-drag" && d.phase === "commit" &&
+            typeof d.settle === "function") {
+          const settle = d.settle;
+          d.settle = (ok: boolean, message: string) =>
+            w.__heldBoxSettles.push(() => settle(ok, message));
+        }
+        return dispatch.call(window, event);
+      };
+    });
+    p = await press("padding top");
+    await page.mouse.move(p.x, p.y + px(6), { steps: 2 });
+    await expect.poll(() => used("padding-top")).toBe("30px");
+    await page.mouse.up();
+    await expect.poll(() => page.evaluate(() => (window as any).__heldBoxSettles.length)).toBe(1);
+    expect(await used("padding-top")).toBe("30px");
+    p = await press("padding left");
+    await page.mouse.move(p.x + px(5), p.y, { steps: 2 });
+    await expect.poll(() => used("padding-left")).toBe("29px");
+    await page.evaluate(() => {
+      const w = window as any;
+      delete w.dispatchEvent;
+      for (const settle of w.__heldBoxSettles.splice(0)) settle();
+    });
+    expect(await used("padding-left")).toBe("29px");
+    expect(await used("padding-top")).toBe("24px");
+    await page.keyboard.press("Escape");
+    await expect.poll(() => used("padding-left")).toBe("24px");
+    await page.mouse.up();
+    await expect(card).not.toHaveAttribute("data-isonim-box-drag-preview", /.*/);
+    expect(await undoCount()).toBe(start + 1);
+
+    // A drag keeps the side's authored unit: 1.5rem previews and writes rem.
+    await centre.click();
+    await centre.fill("1.5rem");
+    await centre.press("Enter");
+    await expect.poll(() => demoSourceContent(page, demoFoundationSource))
+      .toBe(original.replace("padding: 18px;", "padding: 1.5rem;"));
+    await expect.poll(undoCount).toBe(start + 2);
+    p = await press("padding top", true);
+    await page.mouse.move(p.x, p.y + px(6), { steps: 2 });
+    await expect.poll(() => used("padding-top")).toBe("30px");
+    await expect(frame.getByLabel("Canvas spacing measurement")).toHaveText("padding: 1.875rem");
+    await expect(centre).toHaveValue("1.875rem");
+    await page.mouse.up();
+    await expect.poll(() => demoSourceContent(page, demoFoundationSource))
+      .toBe(original.replace("padding: 18px;", "padding: 1.875rem;"));
+    await expect.poll(undoCount).toBe(start + 3);
+
+    // Undo puts the bytes back.
+    await page.evaluate(() => (document.activeElement as HTMLElement | null)?.blur());
+    await page.locator('[data-sidebar-content="inspector"]').click({ position: { x: 4, y: 4 } });
+    for (let n = 3; n > 0; n--) {
+      await page.keyboard.press("ControlOrMeta+Z");
+      await expect.poll(undoCount).toBe(start + n - 1);
+    }
+    await expect.poll(() => pendingSourceEdits(page)).toBe(0);
+    await expect.poll(() => demoSourceContent(page, demoFoundationSource)).toBe(original);
+    await expect.poll(() => used("padding-top")).toBe("18px");
+    await expect(centre).toHaveValue("18");
+  });
+
   test("m52_shared_design_editor_preview_save_and_revert", async ({ page }) => {
     await page.setViewportSize(desktop);
     await openDestinationComponentEdit(page);

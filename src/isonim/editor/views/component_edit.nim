@@ -19,6 +19,7 @@ import isonim/editor/preview_identity
 import isonim/editor/types
 import isonim/editor/views/preview_mount
 import isonim/editor/views/widgets/property_commit
+import isonim/editor/views/widgets/section_box_model
 import isonim/editor/views/scene_graph_walk
 import isonim/editor/style_provenance_decode
 
@@ -150,6 +151,40 @@ proc editablePreviewDocument*(documentHtml: string;
     border-radius: 5px;
     background: #22C55E;
     cursor: ns-resize;
+  }
+  /* Margin and padding handles: a bar on each side's margin edge (amber, as
+     the box model's margin ring) and content edge (green, as its padding
+     ring). */
+  #isonim-editor-selection-handles > span[data-box-handle] {
+    width: 16px;
+    height: 5px;
+    border-radius: 3px;
+    cursor: ns-resize;
+    outline: none;
+  }
+  #isonim-editor-selection-handles > span[data-box-handle$="-left"],
+  #isonim-editor-selection-handles > span[data-box-handle$="-right"] {
+    width: 5px;
+    height: 16px;
+    cursor: ew-resize;
+  }
+  #isonim-editor-selection-handles > span[data-box-handle^="margin-"] {
+    background: #F59E0B;
+  }
+  #isonim-editor-selection-handles > span[data-box-handle^="padding-"] {
+    background: #34D399;
+  }
+  #isonim-editor-selection-handles > span[data-box-handle]:hover,
+  #isonim-editor-selection-handles > span[data-box-handle][data-dragging] {
+    box-shadow: 0 0 0 2px rgba(15,23,42,.85), 0 0 0 4px rgba(255,255,255,.9);
+  }
+  #isonim-editor-box-drag-message {
+    max-width: 280px;
+    padding: 3px 6px;
+    border-radius: 4px;
+    background: rgba(127,29,29,.95);
+    color: #FEE2E2;
+    font: 11px/1.35 system-ui, sans-serif;
   }
   .isonim-editor-layout-guide {
     position: fixed;
@@ -289,7 +324,9 @@ __ISONIM_SCENE_GRAPH_WALK__
     'isonim-editor-snap-lines',
     'isonim-editor-spacing-measure',
     'isonim-editor-context-menu',
-    'isonim-editor-comment-popup'
+    'isonim-editor-comment-popup',
+    'isonim-editor-box-drag-message',
+    'isonim-editor-box-drag-preview'
   ]);
   // Repeat-click drill state. `target` is the element the pointer is
   // actually over (the deepest selectable node under it), `chain` is that
@@ -393,6 +430,12 @@ __ISONIM_SCENE_GRAPH_WALK__
     }
     return label;
   }
+  // The selection overlay's margin and padding handles, one per side, named
+  // by the longhand each drags (editor spec "Visual box model": "drag
+  // handles on canvas for live preview").
+  const BOX_HANDLES = ['margin-top', 'margin-right', 'margin-bottom',
+    'margin-left', 'padding-top', 'padding-right', 'padding-bottom',
+    'padding-left'];
   // One drag of a selection handle at a time. Every handle follows the same
   // contract (editor spec "Planned interaction parity"): the drag holds
   // pointer capture and previews as it moves; releasing commits one edit; a
@@ -472,6 +515,109 @@ __ISONIM_SCENE_GRAPH_WALK__
     event.preventDefault();
     cancelHandleDrag();
   });
+  // A margin or padding drag asks the editor, synchronously, what each step
+  // means: the reply comes back on the event (`d.reply`). The editor decides
+  // the value, keeps the drag in its box model's fields and commits it on
+  // release through the box model's pipeline (`section_box_model`).
+  function boxDragRequest(detail) {
+    try {
+      parent.dispatchEvent(new CustomEvent('isonim-preview-box-drag', { detail: detail }));
+    } catch (error) { return ''; }
+    return String(detail.reply || '');
+  }
+  // The live preview is an editor-owned rule, not an inline declaration: the
+  // commit's own preview resolves the rule or inline owner the cascade uses
+  // (`__isonimSetDeclaration`), and must not find the drag there. Each drag
+  // has its own rule, keyed by a token on the element it previews: a release
+  // still waiting for a native project's answer keeps its preview while a
+  // newer drag shows another, and the late answer removes only its own.
+  const boxPreviews = new Map();
+  let boxPreviewSerial = 0;
+  function renderBoxPreviews() {
+    let sheet = document.getElementById('isonim-editor-box-drag-preview');
+    if (!sheet) {
+      if (!boxPreviews.size) return;
+      sheet = document.createElement('style');
+      sheet.id = 'isonim-editor-box-drag-preview';
+      (document.head || document.documentElement).appendChild(sheet);
+    }
+    sheet.textContent = Array.from(boxPreviews.values(),
+      function (entry) { return entry.rule; }).join('\n');
+  }
+  function showBoxPreview(owner, el, property, value) {
+    let entry = boxPreviews.get(owner);
+    if (!entry) {
+      entry = { el: el, token: String(++boxPreviewSerial), rule: '' };
+      boxPreviews.set(owner, entry);
+    }
+    el.setAttribute('data-isonim-box-drag-preview', entry.token);
+    entry.rule = '[data-isonim-box-drag-preview="' + entry.token + '"] { ' +
+      property + ': ' + value + ' !important; }';
+    renderBoxPreviews();
+  }
+  function clearBoxPreview(owner) {
+    const entry = boxPreviews.get(owner);
+    if (!entry) return;
+    boxPreviews.delete(owner);
+    if (entry.el.getAttribute('data-isonim-box-drag-preview') === entry.token)
+      entry.el.removeAttribute('data-isonim-box-drag-preview');
+    renderBoxPreviews();
+  }
+  function hideBoxMessage() {
+    const note = document.getElementById('isonim-editor-box-drag-message');
+    if (note) note.remove();
+  }
+  function showBoxMessage(el, text) {
+    const note = ensureLayoutGuide('isonim-editor-box-drag-message');
+    note.setAttribute('role', 'alert');
+    note.dataset.layoutGuide = 'box-drag-message';
+    note.textContent = text;
+    const rect = el.getBoundingClientRect();
+    note.style.left = Math.max(6, Math.min(rect.left, window.innerWidth - 292)) + 'px';
+    note.style.top = Math.max(6, Math.min(window.innerHeight - 48, rect.bottom + 40)) + 'px';
+  }
+  function startBoxSideDrag(handleEl, handle, selected, event) {
+    hideBoxMessage();
+    const startPx = parseFloat(window.getComputedStyle(selected).getPropertyValue(handle)) || 0;
+    // A side the drag cannot move (`auto`, a variable) is refused at the
+    // press, with the reason beside the selection.
+    const property = boxDragRequest({ phase: 'start', handle: handle,
+      allSides: !!event.shiftKey, settle: function (ok, message) {
+        if (!ok && message) showBoxMessage(selected, String(message));
+      } });
+    if (!property) return;
+    const owner = {};
+    let value = '';
+    startHandleDrag(handleEl, event, {
+      move: function (dx, dy) {
+        const next = boxDragRequest({ phase: 'move', start: startPx, dx: dx, dy: dy });
+        if (!next) return false;
+        value = next;
+        if (handleDrag) handleDrag.readout = property + ': ' + value;
+        showBoxPreview(owner, selected, property, value);
+        placeHandles(selected);
+      },
+      cancel: function () {
+        boxDragRequest({ phase: 'cancel' });
+        clearBoxPreview(owner);
+        if (window.__isonimSelectedElement === selected) placeHandles(selected);
+      },
+      commit: function () {
+        // The preview stays until the editor has answered: a native project
+        // answers later, and the commit's own preview replaces it.
+        let settled = false;
+        const settle = function (ok, message) {
+          if (settled) return;
+          settled = true;
+          clearBoxPreview(owner);
+          if (window.__isonimSelectedElement !== selected) return;
+          placeHandles(selected);
+          if (!ok && message) showBoxMessage(selected, String(message));
+        };
+        if (!boxDragRequest({ phase: 'commit', settle: settle })) settle(true, '');
+      }
+    });
+  }
   function ensureHandles() {
     let box = document.getElementById('isonim-editor-selection-handles');
     if (!box) {
@@ -482,11 +628,27 @@ __ISONIM_SCENE_GRAPH_WALK__
         handle.dataset.handle = name;
         box.appendChild(handle);
       });
+      BOX_HANDLES.forEach((name) => {
+        // `data-box-handle`, not `data-handle`: these edit the box model's
+        // properties, apart from the resize and spacing handles.
+        const handle = document.createElement('span');
+        handle.dataset.boxHandle = name;
+        handle.dataset.layoutHandle = name;
+        handle.tabIndex = -1;
+        const label = 'Adjust ' + name.replace('-', ' ');
+        handle.setAttribute('aria-label', label);
+        handle.title = label + ' (drag; Shift sets every side)';
+        box.appendChild(handle);
+      });
       document.body.appendChild(box);
       box.addEventListener('pointerdown', function (event) {
         const data = event.target && event.target.dataset ? event.target.dataset : {};
         const selected = window.__isonimSelectedElement;
         if (!selected || event.button !== 0) return;
+        if (data.boxHandle) {
+          if (editorMode === 'edit') startBoxSideDrag(event.target, data.boxHandle, selected, event);
+          return;
+        }
         const handle = data.handle || '';
         if (!handle) return;
         const rect = selected.getBoundingClientRect();
@@ -593,7 +755,9 @@ __ISONIM_SCENE_GRAPH_WALK__
     measure.dataset.layoutGuide = 'spacing-measurement';
     measure.style.left = Math.max(6, rect.left) + 'px';
     measure.style.top = Math.max(6, rect.top - 22) + 'px';
-    measure.textContent = Math.round(rect.width) + ' x ' + Math.round(rect.height);
+    // While a margin or padding handle is dragged, the readout is its value.
+    measure.textContent = (handleDrag && handleDrag.readout) ||
+      (Math.round(rect.width) + ' x ' + Math.round(rect.height));
   }
   function placeHandles(el) {
     const box = ensureHandles();
@@ -606,11 +770,31 @@ __ISONIM_SCENE_GRAPH_WALK__
     box.querySelector('[data-handle="ne"]').style.cssText = 'right:-4px;top:-4px';
     box.querySelector('[data-handle="se"]').style.cssText = 'right:-4px;bottom:-4px';
     box.querySelector('[data-handle="sw"]').style.cssText = 'left:-4px;bottom:-4px';
-    box.querySelector('[data-handle="spacing"]').style.cssText = 'left:calc(50% - 5px);bottom:-18px';
+    // Right of centre, where the bottom margin and padding handles are not.
+    box.querySelector('[data-handle="spacing"]').style.cssText = 'left:calc(50% + 14px);bottom:-18px';
     box.querySelector('[data-handle="se"]').setAttribute('aria-label', 'Resize selected element');
     box.querySelector('[data-handle="se"]').dataset.layoutHandle = 'resize';
     box.querySelector('[data-handle="spacing"]').setAttribute('aria-label', 'Adjust selected spacing');
     box.querySelector('[data-handle="spacing"]').dataset.layoutHandle = 'spacing';
+    // A padding handle sits on its side's content edge, inside the border and
+    // the padding; a margin handle on the margin edge, outside. Both follow
+    // the box as a drag previews it. Offsets are from the overlay's 1px
+    // border. Editing, not reviewing: shown in Edit mode only.
+    const boxStyle = window.getComputedStyle(el);
+    const used = function (name) { return parseFloat(boxStyle.getPropertyValue(name)) || 0; };
+    BOX_HANDLES.forEach(function (name) {
+      const node = box.querySelector('[data-box-handle="' + name + '"]');
+      if (!node) return;
+      const dash = name.indexOf('-');
+      const side = name.slice(dash + 1);
+      const offset = name.slice(0, dash) === 'padding'
+        ? used('border-' + side + '-width') + used('padding-' + side) - 1
+        : -used('margin-' + side) - 7;
+      const along = (side === 'top' || side === 'bottom')
+        ? 'left:calc(50% - 8px)' : 'top:calc(50% - 8px)';
+      node.style.cssText = along + ';' + side + ':' + offset + 'px' +
+        (editorMode === 'edit' ? '' : ';display:none');
+    });
     placeLayoutGuides(el, rect);
     const crumb = ensureBreadcrumb();
     const stack = ancestorStack(el).reverse();
@@ -640,6 +824,7 @@ __ISONIM_SCENE_GRAPH_WALK__
     if (!el || el === document.documentElement || el === document.body) return;
     // A drag belongs to the element it was started on.
     if (handleDrag && handleDrag.element !== el) cancelHandleDrag();
+    if (el !== window.__isonimSelectedElement) hideBoxMessage();
     // Selecting something else ends inline text editing. The click handler
     // calls preventDefault, so the browser never moves focus by itself and
     // an element left editing by a double-click would otherwise stay
@@ -808,6 +993,7 @@ __ISONIM_SCENE_GRAPH_WALK__
   }
   function clearSelection() {
     cancelHandleDrag();
+    hideBoxMessage();
     document.querySelectorAll('[data-isonim-selected="true"]').forEach((node) => {
       node.removeAttribute('data-isonim-selected');
     });
@@ -1642,6 +1828,48 @@ proc installPreviewSelectionBridge*[R, E](r: R; frame: E; vm: EditorVM) =
             d.measurement || '', Number(d.fromIndex || 0),
             Number(d.toIndex || 0)
           );
+      });
+    """].}
+
+    # The selection overlay's margin and padding handles (editor spec "Visual
+    # box model": "drag handles on canvas for live preview"). The frame draws
+    # the handles and previews the drag; what a step means, the fields that
+    # show it and the commit on release are `section_box_model`'s, so a drag
+    # commits through the box model field's pipeline. Each request is
+    # answered on its event (`d.reply`): the property a press drags, the
+    # value a move previews, or "" when the drag is over; a release that
+    # commits answers "pending" and later calls `settle`.
+    let boxDragFromBrowser = proc(phase, handle: cstring; allSides: bool;
+        start, dx, dy: float;
+        settle: proc(ok: bool; message: cstring) {.closure.}): cstring =
+      case $phase
+      of "start":
+        let refusal = vm.boxCanvasDragRefusal($handle)
+        if refusal.len > 0:
+          settle(false, cstring(refusal))
+          cstring("")
+        else:
+          cstring(vm.beginBoxCanvasDrag($handle, allSides))
+      of "move":
+        cstring(vm.moveBoxCanvasDrag(start, dx, dy))
+      of "commit":
+        let committing = vm.commitBoxCanvasDrag(
+          proc(outcome: BoxModelCommitOutcome) =
+            settle(outcome.ok, cstring(outcome.message)))
+        if committing: cstring("pending") else: cstring("")
+      else:
+        vm.cancelBoxCanvasDrag()
+        cstring("")
+    {.emit: ["""
+      globalThis.__isonimPreviewBridge(""", frame, """, 'isonim-preview-box-drag', function (event) {
+          const d = event.detail || {};
+          d.reply = """, boxDragFromBrowser,
+        """(
+            String(d.phase || ''), String(d.handle || ''), !!d.allSides,
+            Number(d.start) || 0, Number(d.dx) || 0, Number(d.dy) || 0,
+            function (ok, message) {
+              try { if (typeof d.settle === 'function') d.settle(ok, message); } catch (error) {}
+            });
       });
     """].}
 

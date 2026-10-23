@@ -104,6 +104,23 @@ type
     elementId*, domPath*, property*, value*: string
     sourceScope*: SourceScopeChoiceKind
 
+  BoxCanvasDraft* = object
+    ## A drag of a canvas margin or padding handle that has not been released
+    ## (see `InspectorVM.boxCanvasDraft`).
+    handle*: string
+      ## The side the handle sits on, as its longhand (`padding-top`).
+    property*: string
+      ## What the drag edits: ``handle``, or its shorthand (`padding`) for a
+      ## drag that moves every side.
+    value*: string
+      ## The CSS value the drag previews; "" until the pointer has moved.
+    authored*: string
+      ## The dragged side's value as its field showed it at the press
+      ## (`1.5rem`); the drag keeps its unit.
+    selection*: string
+      ## The story and element the drag was started on. A drag belongs to
+      ## that selection; another one discards it.
+
   InspectorVM* = ref object of ViewModel
     designSystemSchema*: Signal[DesignSystemSchema]
     selectedElement*: Signal[ElementRef]
@@ -147,6 +164,18 @@ type
       ## "Specialized Editors": "Visual box model"; its disclosure is the
       ## `Show box model controls` button). Per editor session; closed when
       ## the editor opens.
+    boxCanvasDraft*: Signal[BoxCanvasDraft]
+      ## The margin or padding side a canvas handle is dragging, and the
+      ## value it previews (editor spec "Visual box model": "drag handles on
+      ## canvas for live preview"). Empty when no drag is in progress. The
+      ## preview bridge writes it; the box model shows it in its fields and
+      ## commits it on release (`section_box_model`).
+    boxCanvasCommit*: proc(property, value: string;
+        done: proc(ok, changed: bool; message: string) {.closure.}) {.closure.}
+      ## Where a canvas handle's drag is committed on release: the box
+      ## model installs it while it is mounted, so the drag commits through
+      ## the same row pipeline as the box model's field for that property.
+      ## Nil while no box model is mounted.
     sectionsUserSet*: Signal[seq[InspectorSection]]
     revealSectionRequest*: Signal[int]
       ## Bumped when something asks for the Source section to be scrolled
@@ -12306,6 +12335,7 @@ proc createInspectorVM*(designSystemSchema: Signal[DesignSystemSchema] = nil;
     expandedSections: expandedSections,
     rawCssSections: createSignal[seq[InspectorSection]](@[]),
     boxModelShown: createSignal(false),
+    boxCanvasDraft: createSignal(BoxCanvasDraft()),
     sectionsUserSet: createSignal[seq[InspectorSection]](@[]),
     revealSectionRequest: createSignal(0),
     focusedControlId: focusedControlId,

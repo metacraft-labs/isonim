@@ -863,3 +863,401 @@ suite "scope, raw CSS, search and native projects":
         textOf(panel.boxMessage)
       check r.inputOf(left) == "18"
       dispose()
+
+# The selection overlay's margin and padding handles (editor spec "Visual box
+# model": "drag handles on canvas for live preview"). The preview frame draws
+# them and previews a drag there; these cases drive what the frame asks the
+# editor -- `beginBoxCanvasDrag`, `moveBoxCanvasDrag`, `commitBoxCanvasDrag`,
+# `cancelBoxCanvasDrag`, exactly the calls `component_edit`'s bridge makes --
+# against the mounted production inspector, whose box model shows the drag and
+# commits it. The frame side (handles, capture, Escape, the preview rule) is
+# the editor-example Playwright case
+# `e2e_canvas_box_handles_preview_commit_cancel_and_refusal`.
+
+proc recorder(outcomes: ref seq[BoxModelCommitOutcome]):
+    proc(outcome: BoxModelCommitOutcome) {.closure.} =
+  result = proc(outcome: BoxModelCommitOutcome) = outcomes[].add outcome
+
+suite "canvas margin and padding handles":
+  test "a handle follows the pointer: padding grows into the content, margin away from it":
+    check boxCanvasHandles.len == 8
+    # A padding handle on the content edge: down for top, up for bottom,
+    # right for left, left for right add padding.
+    check boxCanvasDragValue("padding-top", 18, 0, 6) == "24px"
+    check boxCanvasDragValue("padding-bottom", 18, 0, -6) == "24px"
+    check boxCanvasDragValue("padding-left", 18, 6, 0) == "24px"
+    check boxCanvasDragValue("padding-right", 18, -6, 0) == "24px"
+    # A margin handle on the margin edge: outwards adds margin.
+    check boxCanvasDragValue("margin-top", 4, 0, -6) == "10px"
+    check boxCanvasDragValue("margin-bottom", 4, 0, 6) == "10px"
+    check boxCanvasDragValue("margin-left", 8, -2, 0) == "10px"
+    check boxCanvasDragValue("margin-right", 8, 2, 0) == "10px"
+    # The other axis is ignored; the value is whole pixels.
+    check boxCanvasDragValue("padding-top", 18, 40, 2.6) == "21px"
+    check boxCanvasDragValue("padding-top", 18.4, 0, 0) == "18px"
+    # Padding stops at zero; a margin may go negative, without "-0".
+    check boxCanvasDragValue("padding-top", 18, 0, -40) == "0px"
+    check boxCanvasDragValue("margin-top", 4, 0, 10) == "-6px"
+    check boxCanvasDragValue("margin-top", 0, 0, 0.2) == "0px"
+    # Not a handle, or not a number: no value.
+    check boxCanvasDragValue("border-top", 1, 0, 1) == ""
+    check boxCanvasDragValue("padding-top", NaN, 0, 1) == ""
+    check boxCanvasDragValue("padding-top", 1, Inf, 1) == ""
+    # Shift at the press drags every side: the shorthand.
+    check boxCanvasDragProperty("padding-left", false) == "padding-left"
+    check boxCanvasDragProperty("padding-left", true) == "padding"
+    check boxCanvasDragProperty("margin-top", true) == "margin"
+    check boxCanvasDragProperty("gap", false) == ""
+
+  test "a side's drag shows in its field as it moves and commits one edit on release":
+    createRoot proc(dispose: proc()) =
+      let r = MockRenderer()
+      let foundation = new(string)
+      foundation[] = DemoFoundationInitialSource
+      let vm = boxVm(foundation)
+      let panel = renderInspectorPanel[MockRenderer, MockNode](r, vm)
+      let top = panel.field("Padding top")
+      let centre = panel.field("Padding, all sides")
+      need(top)
+      need(centre)
+      let generation = vm.autoSaveGeneration.val
+      check vm.beginBoxCanvasDrag("padding-top", false) == "padding-top"
+      check vm.moveBoxCanvasDrag(18, 0, 3) == "21px"
+      check vm.moveBoxCanvasDrag(18, 0, 6) == "24px"
+      # The field shows the drag, the all-sides field sees the sides differ,
+      # and nothing is committed yet.
+      check r.inputOf(top) == "24"
+      check attr(top, "data-box-model-draft") == "true"
+      check attr(top, "data-committed-value") == "18"
+      check r.inputOf(centre) == ""
+      check r.inputOf(panel.field("Padding left")) == "18"
+      check r.inputOf(panel.padRowInput("top")) == "18"
+      check vm.value("padding-top") == "18px"
+      check vm.stacks == (0, 0)
+      let outcomes = new(seq[BoxModelCommitOutcome])
+      check vm.commitBoxCanvasDrag(recorder(outcomes))
+      check outcomes[].len == 1
+      check outcomes[][0].ok
+      check vm.value("padding-top") == "24px"
+      check vm.stacks == (1, 0)
+      check vm.autoSaveGeneration.val == generation + 1
+      check vm.inspector.boxCanvasDraft.val.property == ""
+      check r.inputOf(top) == "24"
+      check attr(top, "data-box-model-draft") == "false"
+      # Its Layout row shares the wiring, and follows.
+      check r.inputOf(panel.padRowInput("top")) == "24"
+      check display(panel.boxMessage) == "none"
+      vm.write()
+      check foundation[] == DemoFoundationInitialSource.replace(
+        ".destination-card { padding: 18px; }",
+        ".destination-card { padding: 18px; padding-top: 24px; }")
+      check vm.runEditorCommand(eckUndo).status == ecsSucceeded
+      vm.write()
+      check foundation[] == DemoFoundationInitialSource
+      check r.inputOf(top) == "18"
+      dispose()
+
+  test "a padding side's drag commits at the scope chosen on its Layout row":
+    createRoot proc(dispose: proc()) =
+      let r = MockRenderer()
+      let foundation = new(string)
+      foundation[] = DemoFoundationInitialSource
+      let vm = boxVm(foundation)
+      let panel = renderInspectorPanel[MockRenderer, MockNode](r, vm)
+      let rowLocal = findByAttr(findByAttr(panel, "data-property-row", "pad-top"),
+        "aria-label", "Apply local instance scope for padding-top")
+      need(rowLocal)
+      rowLocal.fireEvent("click")
+      check vm.stacks == (1, 0)
+      let outcomes = new(seq[BoxModelCommitOutcome])
+      check vm.beginBoxCanvasDrag("padding-top", false) == "padding-top"
+      check vm.moveBoxCanvasDrag(18, 0, 8) == "26px"
+      check vm.commitBoxCanvasDrag(recorder(outcomes))
+      check outcomes[].len == 1 and outcomes[][0].ok
+      check vm.stacks == (2, 0)
+      check vm.inspector.undoStack.val[^1].record.newValue == "26px"
+      check vm.inspector.undoStack.val[^1].record.sourceScope == sskLocalInstance
+      dispose()
+
+  test "Shift at the press drags every side, with the shorthand, as one edit":
+    createRoot proc(dispose: proc()) =
+      let r = MockRenderer()
+      let foundation = new(string)
+      foundation[] = DemoFoundationInitialSource
+      let vm = boxVm(foundation)
+      let panel = renderInspectorPanel[MockRenderer, MockNode](r, vm)
+      check vm.beginBoxCanvasDrag("padding-left", true) == "padding"
+      check vm.moveBoxCanvasDrag(18, 6, 0) == "24px"
+      for label in ["Padding top", "Padding right", "Padding bottom",
+          "Padding left", "Padding, all sides"]:
+        check r.inputOf(panel.field(label)) == "24"
+      check r.inputOf(panel.field("Margin top")) == "4"
+      let outcomes = new(seq[BoxModelCommitOutcome])
+      check vm.commitBoxCanvasDrag(recorder(outcomes))
+      check outcomes[].len == 1 and outcomes[][0].ok
+      check vm.value("padding") == "24px"
+      check vm.stacks == (1, 0)
+      vm.write()
+      check foundation[] == DemoFoundationInitialSource.replace(
+        ".destination-card { padding: 18px; }",
+        ".destination-card { padding: 24px; }")
+      dispose()
+
+  test "a margin handle commits its margin side":
+    createRoot proc(dispose: proc()) =
+      let r = MockRenderer()
+      let foundation = new(string)
+      foundation[] = DemoFoundationInitialSource
+      let vm = boxVm(foundation)
+      let panel = renderInspectorPanel[MockRenderer, MockNode](r, vm)
+      check vm.beginBoxCanvasDrag("margin-bottom", false) == "margin-bottom"
+      check vm.moveBoxCanvasDrag(4, 0, 10) == "14px"
+      check r.inputOf(panel.field("Margin bottom")) == "14"
+      let outcomes = new(seq[BoxModelCommitOutcome])
+      check vm.commitBoxCanvasDrag(recorder(outcomes))
+      check outcomes[].len == 1 and outcomes[][0].ok
+      check vm.value("margin-bottom") == "14px"
+      check vm.stacks == (1, 0)
+      vm.write()
+      check foundation[] == DemoFoundationInitialSource.replace(
+        ".destination-card { padding: 18px; }",
+        ".destination-card { padding: 18px; margin-bottom: 14px; }")
+      dispose()
+
+  test "cancelling, or releasing without moving, commits nothing and puts the fields back":
+    createRoot proc(dispose: proc()) =
+      let r = MockRenderer()
+      let foundation = new(string)
+      foundation[] = DemoFoundationInitialSource
+      let vm = boxVm(foundation)
+      let panel = renderInspectorPanel[MockRenderer, MockNode](r, vm)
+      let right = panel.field("Padding right")
+      need(right)
+      let outcomes = new(seq[BoxModelCommitOutcome])
+      # Escape, pointer cancellation or a lost capture.
+      check vm.beginBoxCanvasDrag("padding-right", false) == "padding-right"
+      check vm.moveBoxCanvasDrag(18, -12, 0) == "30px"
+      check r.inputOf(right) == "30"
+      vm.cancelBoxCanvasDrag()
+      check r.inputOf(right) == "18"
+      check attr(right, "data-box-model-draft") == "false"
+      check not vm.commitBoxCanvasDrag(recorder(outcomes))
+      # A press that never moved.
+      check vm.beginBoxCanvasDrag("padding-right", false) == "padding-right"
+      check not vm.commitBoxCanvasDrag(recorder(outcomes))
+      # A drag back to where it started commits nothing either.
+      check vm.beginBoxCanvasDrag("padding-right", false) == "padding-right"
+      check vm.moveBoxCanvasDrag(18, 0, 0) == "18px"
+      check vm.commitBoxCanvasDrag(recorder(outcomes))
+      check outcomes[].len == 1 and outcomes[][0].ok and not outcomes[][0].changed
+      check vm.value("padding-right") == "18px"
+      check vm.stacks == (0, 0)
+      check foundation[] == DemoFoundationInitialSource
+      # Not a handle, or nothing selected: no drag starts.
+      check vm.beginBoxCanvasDrag("gap", false) == ""
+      vm.clearInspectorSelection()
+      check vm.beginBoxCanvasDrag("padding-top", false) == ""
+      dispose()
+
+  test "another selection discards a drag started on the previous one":
+    createRoot proc(dispose: proc()) =
+      let r = MockRenderer()
+      let foundation = new(string)
+      foundation[] = DemoFoundationInitialSource
+      let vm = boxVm(foundation)
+      let panel = renderInspectorPanel[MockRenderer, MockNode](r, vm)
+      let top = panel.field("Padding top")
+      need(top)
+      var other = boxElement()
+      other.id = "destination-card-copy"
+      for prop in other.properties.mitems:
+        if prop.name == "padding-top": prop.value = "7px"
+      let outcomes = new(seq[BoxModelCommitOutcome])
+      check vm.beginBoxCanvasDrag("padding-top", false) == "padding-top"
+      check vm.moveBoxCanvasDrag(18, 0, 6) == "24px"
+      check vm.selectInspectorElement(other)
+      # The new selection's field shows its own value, not the drag.
+      check r.inputOf(top) == "7"
+      check attr(top, "data-box-model-draft") == "false"
+      # The frame's next move learns the drag is over; the release commits
+      # nothing, to either element.
+      check vm.moveBoxCanvasDrag(18, 0, 8) == ""
+      check not vm.commitBoxCanvasDrag(recorder(outcomes))
+      # Released straight after the selection changed: the same.
+      check vm.selectInspectorElement(boxElement())
+      check vm.beginBoxCanvasDrag("padding-top", false) == "padding-top"
+      check vm.moveBoxCanvasDrag(18, 0, 6) == "24px"
+      check vm.selectInspectorElement(other)
+      check not vm.commitBoxCanvasDrag(recorder(outcomes))
+      check outcomes[].len == 0
+      check vm.value("padding-top") == "7px"
+      check vm.stacks == (0, 0)
+      check foundation[] == DemoFoundationInitialSource
+      dispose()
+
+  test "a refused drag puts the field back and says why":
+    createRoot proc(dispose: proc()) =
+      let r = MockRenderer()
+      let foundation = new(string)
+      foundation[] = DemoFoundationInitialSource
+      let vm = boxVm(foundation, mapSides = false)
+      let panel = renderInspectorPanel[MockRenderer, MockNode](r, vm)
+      let top = panel.field("Padding top")
+      need(top)
+      let outcomes = new(seq[BoxModelCommitOutcome])
+      check vm.beginBoxCanvasDrag("padding-top", false) == "padding-top"
+      check vm.moveBoxCanvasDrag(18, 0, 12) == "30px"
+      check r.inputOf(top) == "30"
+      check vm.commitBoxCanvasDrag(recorder(outcomes))
+      check outcomes[].len == 1
+      check not outcomes[][0].ok
+      check "No project schema or source map entry can safely represent this edit" in
+        outcomes[][0].message
+      check textOf(panel.boxMessage) == "Padding top: " & outcomes[][0].message
+      check r.inputOf(top) == "18"
+      check vm.value("padding-top") == "18px"
+      check vm.stacks == (0, 0)
+      check foundation[] == DemoFoundationInitialSource
+      dispose()
+
+  test "a read-only workspace refuses a drag with the reason":
+    createRoot proc(dispose: proc()) =
+      let r = MockRenderer()
+      let foundation = new(string)
+      foundation[] = DemoFoundationInitialSource
+      let vm = boxVm(foundation, writable = false)
+      let panel = renderInspectorPanel[MockRenderer, MockNode](r, vm)
+      let outcomes = new(seq[BoxModelCommitOutcome])
+      check vm.beginBoxCanvasDrag("margin-left", true) == "margin"
+      check vm.moveBoxCanvasDrag(8, -4, 0) == "12px"
+      check vm.commitBoxCanvasDrag(recorder(outcomes))
+      check outcomes[].len == 1
+      check not outcomes[][0].ok
+      check outcomes[][0].message == "This workspace is read-only for source changes."
+      check textOf(panel.boxMessage) ==
+        "Margin, all sides: This workspace is read-only for source changes."
+      check vm.stacks == (0, 0)
+      dispose()
+
+  test "without a mounted box model a release is refused, not lost":
+    let foundation = new(string)
+    foundation[] = DemoFoundationInitialSource
+    var vm: EditorVM
+    createRoot proc(dispose: proc()) =
+      let r = MockRenderer()
+      vm = boxVm(foundation)
+      discard renderInspectorPanel[MockRenderer, MockNode](r, vm)
+      check vm.inspector.boxCanvasCommit != nil
+      dispose()
+    # Disposing the panel takes its commit with it.
+    check vm.inspector.boxCanvasCommit == nil
+    let outcomes = new(seq[BoxModelCommitOutcome])
+    check vm.beginBoxCanvasDrag("padding-top", false) == "padding-top"
+    check vm.moveBoxCanvasDrag(18, 0, 6) == "24px"
+    check vm.commitBoxCanvasDrag(recorder(outcomes))
+    check outcomes[].len == 1
+    check not outcomes[][0].ok
+    check outcomes[][0].message ==
+      "The box model is not available to commit padding-top."
+    check vm.value("padding-top") == "18px"
+    check vm.stacks == (0, 0)
+
+  test "a native source project receives the drag's commit, and its later answer settles it":
+    createRoot proc(dispose: proc()) =
+      let r = MockRenderer()
+      let foundation = new(string)
+      foundation[] = DemoFoundationInitialSource
+      let vm = boxVm(foundation)
+      var asked: seq[(string, string)] = @[]
+      var answer: proc(ok: bool; diagnostic: string)
+      vm.inspectorSourceCommit = proc(element: ElementRef; property, value: string;
+          scope: SourceScopeChoiceKind;
+          done: proc(ok: bool; diagnostic: string) {.closure.}) =
+        asked.add (property, value)
+        answer = done
+      let panel = renderInspectorPanel[MockRenderer, MockNode](r, vm)
+      let outcomes = new(seq[BoxModelCommitOutcome])
+      check vm.beginBoxCanvasDrag("padding-bottom", false) == "padding-bottom"
+      check vm.moveBoxCanvasDrag(18, 0, -2) == "20px"
+      check vm.commitBoxCanvasDrag(recorder(outcomes))
+      check asked == @[("padding-bottom", "20px")]
+      # Nothing is settled until the project answers.
+      check outcomes[].len == 0
+      check answer != nil
+      if answer != nil: answer(false, "Refused by the project.")
+      check outcomes[].len == 1
+      check not outcomes[][0].ok
+      check outcomes[][0].message == "Refused by the project."
+      check textOf(panel.boxMessage) == "Padding bottom: Refused by the project."
+      dispose()
+
+  test "a drag keeps the side's authored unit, as the field's scrub does":
+    # Pixels, or no authored value, give whole pixels.
+    check boxCanvasDragValue("padding-top", 18, 0, 6, "18px") == "24px"
+    check boxCanvasDragValue("padding-top", 18, 0, 6, "18") == "24px"
+    check boxCanvasDragValue("padding-top", 18, 0, 6) == "24px"
+    # Another unit moves by the whole pixels dragged at its used ratio:
+    # 1.5rem used as 24px is 1/16rem per pixel.
+    check boxCanvasDragValue("padding-top", 24, 0, 6, "1.5rem") == "1.875rem"
+    check boxCanvasDragValue("padding-top", 24, 0, 5.6, "1.5rem") == "1.875rem"
+    check boxCanvasDragValue("padding-left", 40, 4, 0, "10%") == "11%"
+    check boxCanvasDragValue("margin-top", 16, 0, 32, "1em") == "-1em"
+    # A drag back to the start gives back the authored value, at its
+    # precision; padding still stops at zero.
+    check boxCanvasDragValue("padding-top", 20.8, 0, 0, "1.3rem") == "1.3rem"
+    check boxCanvasDragValue("padding-top", 24, 0, -40, "1.5rem") == "0rem"
+    # A zero has no ratio: pixels.
+    check boxCanvasDragValue("padding-top", 0, 0, 6, "0rem") == "6px"
+    createRoot proc(dispose: proc()) =
+      let r = MockRenderer()
+      let foundation = new(string)
+      foundation[] = DemoFoundationInitialSource
+      var element = boxElement()
+      for prop in element.properties.mitems:
+        if prop.name == "padding-top": prop.value = "1.5rem"
+      let vm = boxVm(foundation, element = element)
+      let panel = renderInspectorPanel[MockRenderer, MockNode](r, vm)
+      let top = panel.field("Padding top")
+      need(top)
+      check r.inputOf(top) == "1.5rem"
+      check vm.beginBoxCanvasDrag("padding-top", false) == "padding-top"
+      check vm.moveBoxCanvasDrag(24, 0, 6) == "1.875rem"
+      check r.inputOf(top) == "1.875rem"
+      let outcomes = new(seq[BoxModelCommitOutcome])
+      check vm.commitBoxCanvasDrag(recorder(outcomes))
+      check outcomes[].len == 1 and outcomes[][0].ok
+      check vm.value("padding-top") == "1.875rem"
+      check vm.stacks == (1, 0)
+      dispose()
+
+  test "a side that is not a number is refused at the press with the field's reason":
+    createRoot proc(dispose: proc()) =
+      let r = MockRenderer()
+      let foundation = new(string)
+      foundation[] = DemoFoundationInitialSource
+      var element = boxElement()
+      for prop in element.properties.mitems:
+        if prop.name == "margin-left": prop.value = "auto"
+        if prop.name == "padding-top": prop.value = "var(--wl-space-card)"
+      let vm = boxVm(foundation, element = element)
+      let panel = renderInspectorPanel[MockRenderer, MockNode](r, vm)
+      check vm.boxCanvasDragRefusal("margin-left") ==
+        "Margin left: Type a numeric value to replace auto."
+      check vm.boxCanvasDragRefusal("padding-top") ==
+        "Padding top: Type a numeric value to replace var(--wl-space-card)."
+      # Shift (every side) starts from the same side, and is refused too.
+      for allSides in [false, true]:
+        check vm.beginBoxCanvasDrag("margin-left", allSides) == ""
+        check vm.beginBoxCanvasDrag("padding-top", allSides) == ""
+      check vm.inspector.boxCanvasDraft.val.property == ""
+      check vm.moveBoxCanvasDrag(200, -6, 0) == ""
+      check r.inputOf(panel.field("Margin left")) == "auto"
+      # A numeric side of the same element still drags.
+      check vm.boxCanvasDragRefusal("margin-right") == ""
+      check vm.beginBoxCanvasDrag("margin-right", false) == "margin-right"
+      check vm.moveBoxCanvasDrag(8, 2, 0) == "10px"
+      vm.cancelBoxCanvasDrag()
+      check vm.boxCanvasDragRefusal("gap") == ""
+      check vm.stacks == (0, 0)
+      check foundation[] == DemoFoundationInitialSource
+      dispose()

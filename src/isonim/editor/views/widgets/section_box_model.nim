@@ -37,10 +37,16 @@
 ## restores the value from before the drag. A draft or a drag belongs to the
 ## selection it was started on: another selection discards it.
 ##
-## Not built here: the spec bullet's "drag handles on canvas for live
-## preview". The canvas has only the selection overlay's single spacing
-## handle (`component_edit`); per-side margin and padding handles are future
-## work, and a field scrub reaches the preview when it is released.
+## The spec bullet's "drag handles on canvas for live preview" are the
+## selection overlay's margin and padding handles (`component_edit`'s preview
+## bridge). The bridge draws and previews them inside the preview frame; what
+## a drag means and where it commits is here: `beginBoxCanvasDrag`,
+## `moveBoxCanvasDrag`, `commitBoxCanvasDrag` and `cancelBoxCanvasDrag` keep
+## the drag in `InspectorVM.boxCanvasDraft` (which the fields show while it
+## lasts), and the release commits through `InspectorVM.boxCanvasCommit`,
+## which the mounted box model installs: the field's own pipeline for that
+## property, so a drag is one more way of committing a field, not a second
+## editing path.
 
 import std/[math, options, strutils]
 
@@ -256,6 +262,170 @@ proc commitBoxModelField*(vm: EditorVM; property: string;
   outcome
 
 # --------------------------------------------------------------------------- #
+#  Canvas handles.
+# --------------------------------------------------------------------------- #
+
+const
+  boxCanvasHandles* = ["margin-top", "margin-right", "margin-bottom",
+    "margin-left", "padding-top", "padding-right", "padding-bottom",
+    "padding-left"]
+    ## The selection overlay's margin and padding handles, one per side,
+    ## named by the longhand each one drags.
+
+proc boxModelSelectionKey*(vm: EditorVM): string =
+  ## The story and element a draft or a drag belongs to. Reactive.
+  let story = vm.selectedStory.val
+  story.group & " / " & story.name & " / " & vm.inspector.selectedElement.val.id
+
+func boxCanvasDragProperty*(handle: string; allSides: bool): string =
+  ## What a drag of ``handle`` edits: its own side, or with ``allSides``
+  ## (Shift held when the drag starts) its shorthand, which sets every side
+  ## in one declaration as the box model's all-sides field does. "" for a
+  ## name that is not a handle.
+  if handle notin boxCanvasHandles: return ""
+  if allSides: boxShorthandOf(handle) else: handle
+
+proc boxCanvasDragValue*(handle: string; startPx, dx, dy: float;
+    authored = ""): string =
+  ## The value a drag of ``handle`` by (``dx``, ``dy``) CSS pixels of the
+  ## preview gives a side whose used value was ``startPx`` when the drag
+  ## started. The handle follows the pointer: a padding handle sits on the
+  ## content edge, so moving it into the content box adds padding; a margin
+  ## handle sits on the margin edge, so moving it away from the element adds
+  ## margin. Padding stops at 0
+  ## (https://www.w3.org/TR/css-box-4/#padding-physical), a margin may be
+  ## negative.
+  ##
+  ## The value keeps the unit of ``authored``, the side's value as its field
+  ## shows it, as the field's scrub does. Pixels (or no authored value) give
+  ## whole pixels. Another unit moves by the whole pixels dragged, converted
+  ## at the ratio of the side's authored number to its used value
+  ## (`1.5rem` used as 24px moves 1/16rem per pixel), so a drag back to the
+  ## start gives back the authored value; a zero, whose ratio is unknown,
+  ## gives pixels. "" for a name that is not a handle or a non-finite input.
+  if handle notin boxCanvasHandles: return ""
+  for number in [startPx, dx, dy]:
+    if number.classify in {fcNan, fcInf, fcNegInf}: return ""
+  let shorthand = boxShorthandOf(handle)
+  var delta =
+    case handle[shorthand.len + 1 .. ^1]
+    of "top": dy
+    of "bottom": -dy
+    of "left": dx
+    else: -dx
+  if shorthand == "margin": delta = -delta
+  let parsed = parseNumericInput(authored.strip())
+  if parsed.value.isSome and parsed.unit notin ["", "px"] and
+      parsed.value.get != 0.0 and startPx != 0.0:
+    let number = parsed.value.get
+    var next = number + round(delta) * number / startPx
+    if shorthand == "padding" and next < 0.0: next = 0.0
+    if next == 0.0: next = 0.0 # no "-0rem"
+    return boxSteppedNumber(next) & parsed.unit
+  var value = round(startPx + delta)
+  if shorthand == "padding" and value < 0.0: value = 0.0
+  if value == 0.0: value = 0.0 # no "-0px"
+  boxNumber(value) & "px"
+
+proc boxCanvasDragRefusal*(vm: EditorVM; handle: string): string =
+  ## Why a press on ``handle`` starts no drag, or "": the side's value is
+  ## not a number (`auto`, `var(--space)`, `calc(...)`), which a drag cannot
+  ## move without replacing it, so it is refused as the field's scrub
+  ## refuses it, with the field's message.
+  if handle notin boxCanvasHandles: return ""
+  let text = untrack(proc(): string = vm.boxModelSideValue(handle)).strip()
+  if text.len == 0 or parseNumericInput(text).value.isSome: return ""
+  boxModelFieldLabel(handle) & ": Type a numeric value to replace " & text & "."
+
+proc beginBoxCanvasDrag*(vm: EditorVM; handle: string; allSides: bool): string =
+  ## A press on a canvas handle. Returns the property the drag edits, or ""
+  ## when no drag can start: nothing is selected, ``handle`` is not a
+  ## handle, or its side is not a number (`boxCanvasDragRefusal` says why).
+  ## Nothing is previewed until the pointer moves.
+  let property = boxCanvasDragProperty(handle, allSides)
+  if property.len == 0: return ""
+  let key = untrack(proc(): string =
+    if vm.inspector.selectedElement.val.tag.len == 0: "" else: vm.boxModelSelectionKey())
+  if key.len == 0 or vm.boxCanvasDragRefusal(handle).len > 0: return ""
+  vm.inspector.boxCanvasDraft.val = BoxCanvasDraft(handle: handle,
+    property: property, selection: key,
+    authored: untrack(proc(): string = vm.boxModelSideValue(handle)))
+  property
+
+proc cancelBoxCanvasDrag*(vm: EditorVM) =
+  ## Escape, pointer cancellation or a lost capture: the drag ends without an
+  ## edit, and the fields show the committed values again.
+  if untrack(proc(): string = vm.inspector.boxCanvasDraft.val.property).len > 0:
+    vm.inspector.boxCanvasDraft.val = BoxCanvasDraft()
+
+proc moveBoxCanvasDrag*(vm: EditorVM; startPx, dx, dy: float): string =
+  ## The pointer moved by (``dx``, ``dy``) since the press, on a side whose
+  ## used value was ``startPx``. Returns the value to preview, or "" when the
+  ## drag is over: none is in progress, or it was started on a selection
+  ## that is no longer selected ("Planned interaction parity": changing
+  ## selection cannot apply a pending edit to a different element), which
+  ## discards it.
+  let draft = untrack(proc(): BoxCanvasDraft = vm.inspector.boxCanvasDraft.val)
+  if draft.property.len == 0: return ""
+  if draft.selection != untrack(proc(): string = vm.boxModelSelectionKey()):
+    vm.cancelBoxCanvasDrag()
+    return ""
+  result = boxCanvasDragValue(draft.handle, startPx, dx, dy, draft.authored)
+  if result.len > 0 and result != draft.value:
+    var next = draft
+    next.value = result
+    vm.inspector.boxCanvasDraft.val = next
+
+proc commitBoxCanvasDrag*(vm: EditorVM;
+    done: proc(outcome: BoxModelCommitOutcome) {.closure.}): bool =
+  ## The release: commit the drag's value once, through the mounted box
+  ## model's pipeline for its property (`InspectorVM.boxCanvasCommit`).
+  ## Returns false when there is nothing to commit -- no drag, a press that
+  ## never moved, or a drag that belongs to another selection -- and the
+  ## caller puts its preview back. Otherwise ``done`` receives the outcome,
+  ## which for a synchronous project is before this returns.
+  let draft = untrack(proc(): BoxCanvasDraft = vm.inspector.boxCanvasDraft.val)
+  vm.cancelBoxCanvasDrag()
+  if draft.property.len == 0 or draft.value.len == 0 or
+      draft.selection != untrack(proc(): string = vm.boxModelSelectionKey()):
+    return false
+  let sink = vm.inspector.boxCanvasCommit
+  if sink == nil:
+    done(BoxModelCommitOutcome(ok: false, message:
+      "The box model is not available to commit " & draft.property & "."))
+    return true
+  sink(draft.property, draft.value, proc(ok, changed: bool; message: string) =
+    done(BoxModelCommitOutcome(ok: ok, changed: changed, message: message)))
+  true
+
+proc boxModelDraftText*(vm: EditorVM; property: string): Option[string] =
+  ## What the field that edits ``property`` shows while a canvas handle is
+  ## dragged: the dragged value on the dragged property's field (and on every
+  ## side's field for a drag of all sides), and on the all-sides field while
+  ## one side is dragged, the sides' common value or "" (Mixed). None when no
+  ## drag of this selection concerns the field. Reactive.
+  let draft = vm.inspector.boxCanvasDraft.val
+  if draft.value.len == 0 or draft.selection != vm.boxModelSelectionKey():
+    return none(string)
+  let shown = boxModelDisplayValue(draft.value)
+  if draft.property == property: return some(shown)
+  let uniform = property in ["margin", "padding"]
+  if not uniform and draft.property == boxShorthandOf(property):
+    return some(shown)
+  if uniform and boxShorthandOf(draft.property) == property:
+    var first = ""
+    for i, side in boxSides:
+      let sideProperty = property & "-" & side
+      let value =
+        if sideProperty == draft.property: shown
+        else: boxModelDisplayValue(vm.boxModelSideValue(sideProperty))
+      if value.len == 0: return some("")
+      if i == 0: first = value
+      elif value != first: return some("")
+    return some(first)
+  none(string)
+
+# --------------------------------------------------------------------------- #
 #  View.
 # --------------------------------------------------------------------------- #
 
@@ -466,9 +636,7 @@ proc mountSectionBoxModel*[R, E](r: R; parent: E; vm: EditorVM;
   var selectionKey = ""
   let selectionTick = createSignal(0)
   createRenderEffect proc() =
-    let story = vm.selectedStory.val
-    let key = story.group & " / " & story.name & " / " &
-      vm.inspector.selectedElement.val.id
+    let key = vm.boxModelSelectionKey()
     if key != selectionKey:
       selectionKey = key
       untrack(proc() =
@@ -545,6 +713,30 @@ proc mountSectionBoxModel*[R, E](r: R; parent: E; vm: EditorVM;
       else: boxModelFieldLabel(property) & " (" & property & ") · " &
         selected.get.label & " · Owner: " & selected.get.ownerLabel)
 
+  # A canvas handle's drag commits here on release, through the pipeline of
+  # the field that edits its property: the same scope, act-time refusals,
+  # preview, undo entry and automatic write, and a refusal shown under the
+  # box as a field's is.
+  let canvasCommit = proc(property, value: string;
+      done: proc(ok, changed: bool; message: string) {.closure.}) =
+    if property notin ["margin", "padding"] and property notin boxCanvasHandles:
+      done(false, false, property & " is not a box model property.")
+      return
+    let wiring = wiringFor(property)
+    let key = untrack(proc(): string = vm.boxModelSelectionKey())
+    discard commitBoxModelField(vm, property, wiring, value,
+      proc(outcome: BoxModelCommitOutcome) =
+        if alive and untrack(proc(): string = vm.boxModelSelectionKey()) == key:
+          if outcome.ok:
+            if outcome.changed: refusal.val = ""
+          else:
+            refusal.val = boxModelFieldLabel(property) & ": " & outcome.message
+        done(outcome.ok, outcome.changed, outcome.message))
+  vm.inspector.boxCanvasCommit = canvasCommit
+  onCleanup(proc() =
+    if vm.inspector.boxCanvasCommit == canvasCommit:
+      vm.inspector.boxCanvasCommit = nil)
+
   proc mountField(cell: E; property: string; minimum: Option[float];
       wide = false) =
     let wiring = wiringFor(property)
@@ -582,18 +774,23 @@ proc mountSectionBoxModel*[R, E](r: R; parent: E; vm: EditorVM;
     var startX, startY, startValue: float
     var startText = ""
 
-    proc modelText(): string =
+    proc committedText(): string =
       if isUniform: vm.boxModelUniformValue(property)
       else: boxModelDisplayValue(vm.boxModelSideValue(property))
 
     proc resync() =
-      r.setInputValue(field, untrack(proc(): string = modelText()))
+      r.setInputValue(field, untrack(proc(): string = committedText()))
 
     createRenderEffect proc() =
-      let text = modelText()
+      # A canvas handle being dragged shows its value here as it moves.
+      let draft = vm.boxModelDraftText(property)
+      let committed = committedText()
+      let text = if draft.isSome: draft.get else: committed
       if not dirty and not scrubbing and not pending:
         r.setInputValue(field, text)
-      r.setAttribute(field, "data-committed-value", text)
+      r.setAttribute(field, "data-committed-value", committed)
+      r.setAttribute(field, "data-box-model-draft",
+        if draft.isSome: "true" else: "false")
       if isUniform:
         r.setAttribute(field, "placeholder", if text.len == 0: "Mixed" else: "")
     createRenderEffect proc() =

@@ -212,8 +212,8 @@
       "mockOnly": false,
       "placeholderUi": false,
       "browserBehavior": ["pointer", "focus"],
-      "implementation": "Typed CSS value parsing, primitive-control normalization, math-expression/unit handling, source-plan selection, validation, shared-scope handling, undo/redo, dirty state, save staging, per-section raw CSS editing (each CSS section's Raw CSS toggle switches between its rows and its declarations as CSS text; a raw commit is checked as a whole and commits each changed declaration through its row's source pipeline), the Layout section's visual box model (its `Show box model controls` disclosure draws margin, border, padding and content rings with a field per margin and padding side and an all-sides field per shorthand; each field types, evaluates arithmetic, steps by arrow keys and scrubs by drag, and commits through its property row's source pipeline and scope), cascade origin indicators, copy/paste/reset property actions, numeric select-all/arrow/scrub/unit controls, color swatches/formats/variable/token/contrast affordances, gradient stop/angle/type controls, shadow layer/crosshair/inset/elevation controls, typography style/responsive/truncate/wrap controls, border-radius linked-corner controls, and Bezier/reduced-motion motion controls with live iframe preview and source commits.",
-      "knownLimitations": "M49 validates a bounded long-tail matrix only for property rows with headless, browser, visual, and Metacraft consumer evidence. Other long-tail rows stay marked consumer-unvalidated, browser-limited, or read-only until their browser and consumer coverage exists. Exhaustive browser eyedropper behavior, freeform color-plane drag serialization, container-query editing, and pseudo-state workflow editing remain future work. The visual box model's drag handles on the canvas (editor spec \"Specialized Editors\": \"drag handles on canvas for live preview\") are not built: margin and padding are edited only in the inspector's box model fields, and the canvas offers only the selection overlay's single spacing handle; a box-model field scrub, like a row's label scrub, shows its value in the field and reaches the preview when released.",
+      "implementation": "Typed CSS value parsing, primitive-control normalization, math-expression/unit handling, source-plan selection, validation, shared-scope handling, undo/redo, dirty state, save staging, per-section raw CSS editing (each CSS section's Raw CSS toggle switches between its rows and its declarations as CSS text; a raw commit is checked as a whole and commits each changed declaration through its row's source pipeline), the Layout section's visual box model (its `Show box model controls` disclosure draws margin, border, padding and content rings with a field per margin and padding side and an all-sides field per shorthand; each field types, evaluates arithmetic, steps by arrow keys and scrubs by drag, and commits through its property row's source pipeline and scope; the selection overlay's margin and padding handles, one per side, preview a drag in the frame and the box model's fields and commit it once on release through that field's pipeline, keeping the side's authored unit (a side that is not a number, such as auto or a variable, is refused at the press), Shift at the press setting every side to the dragged side's value with the shorthand, and Escape, pointer cancellation, a lost capture or another selection restoring the value from before the drag), cascade origin indicators, copy/paste/reset property actions, numeric select-all/arrow/scrub/unit controls, color swatches/formats/variable/token/contrast affordances, gradient stop/angle/type controls, shadow layer/crosshair/inset/elevation controls, typography style/responsive/truncate/wrap controls, border-radius linked-corner controls, and Bezier/reduced-motion motion controls with live iframe preview and source commits.",
+      "knownLimitations": "M49 validates a bounded long-tail matrix only for property rows with headless, browser, visual, and Metacraft consumer evidence. Other long-tail rows stay marked consumer-unvalidated, browser-limited, or read-only until their browser and consumer coverage exists. Exhaustive browser eyedropper behavior, freeform color-plane drag serialization, container-query editing, and pseudo-state workflow editing remain future work. The canvas margin and padding handles have no keyboard operation of their own; the box model's fields are their keyboard path. The overlay's spacing and resize handles now preview, commit once on release and restore on Escape or pointer cancellation, but a refusal of their commit is not shown on the canvas and their inline preview is not put back after one, and they are still shown in Comment mode. A box-model field scrub, like a row's label scrub, shows its value in the field and reaches the preview when released.",
       "headlessTests": [
         {
           "name": "css_property_editors_parse_validate_and_normalize_values",
@@ -266,6 +266,18 @@
         {
           "name": "a padding side commits at the scope chosen on its row, which the box model shows",
           "file": "tests/test_editor_section_box_model.nim"
+        },
+        {
+          "name": "a side's drag shows in its field as it moves and commits one edit on release",
+          "file": "tests/test_editor_section_box_model.nim"
+        },
+        {
+          "name": "another selection discards a drag started on the previous one",
+          "file": "tests/test_editor_section_box_model.nim"
+        },
+        {
+          "name": "a drag keeps the side's authored unit, as the field's scrub does",
+          "file": "tests/test_editor_section_box_model.nim"
         }
       ],
       "playwrightRequired": true,
@@ -296,6 +308,10 @@
         },
         {
           "name": "e2e_box_model_edits_margin_and_padding_by_keyboard_and_pointer",
+          "file": "tests/browser/specs/editor-example.spec.ts"
+        },
+        {
+          "name": "e2e_canvas_box_handles_preview_commit_cancel_and_refusal",
           "file": "tests/browser/specs/editor-example.spec.ts"
         }
       ],
