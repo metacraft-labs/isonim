@@ -109,7 +109,6 @@ proc editablePreviewDocument*(documentHtml: string;
   [data-isonim-selected="true"] {
     outline: 2px solid #3B82F6 !important;
     outline-offset: 2px !important;
-    box-shadow: 0 0 0 4px rgba(59,130,246,.22) !important;
   }
   [data-isonim-hovered="true"] {
     outline: 1px dashed rgba(59,130,246,.75) !important;
@@ -129,11 +128,17 @@ proc editablePreviewDocument*(documentHtml: string;
     box-shadow: 0 4px 14px rgba(15,23,42,.28);
     transform: translateY(-100%);
   }
+  /* The selection's halo is drawn by this overlay, which sits on the
+     element's border box, and not by the element: an `!important`
+     box-shadow on the element hid the element's own box-shadow -- the
+     property the Effects section's Shadow row and shadow editor edit -- for
+     as long as it was selected. */
   #isonim-editor-selection-handles {
     position: fixed;
     z-index: 2147483646;
     pointer-events: none;
     border: 1px solid rgba(59,130,246,.9);
+    box-shadow: 0 0 0 4px rgba(59,130,246,.22);
   }
   #isonim-editor-selection-handles > span {
     position: absolute;

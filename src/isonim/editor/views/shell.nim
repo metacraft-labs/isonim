@@ -28,6 +28,10 @@ import isonim/editor/views/design_review_mount as design_review_mount_view
 import isonim/editor/views/widgets as editor_widgets
 import isonim/editor/views/widgets/inspector_search
 import isonim/editor/views/widgets/exposed_css_rows
+from isonim/editor/views/widgets/property_commit import inspectorRowWiring
+import isonim/editor/views/widgets/gradient_editor
+import isonim/editor/views/widgets/shadow_editor
+import isonim/editor/views/widgets/timing_editor
 import isonim/editor/views/widgets/section_raw_css
 from isonim/core/context import provide
 import isonim/editor/design_review/brief_format
@@ -3315,13 +3319,26 @@ proc mountInspectorSectionBody[R, E](r: R; vm: EditorVM;
     mountSectionAppearance[R, E](r, body, vm)
   of "fill":
     mountSectionFill[R, E](r, body, vm)
-    mountExposedCssRows[R, E](r, body, vm, ["background-image", "background-size"])
+    # The gradient editor edits the Background image row's property through
+    # that row's wiring (`gradient_editor`).
+    let imageWiring = vm.inspectorRowWiring(gradientProperty)
+    mountExposedCssRow[R, E](r, body, vm, gradientProperty, imageWiring)
+    mountGradientEditor[R, E](r, body, vm, imageWiring)
+    mountExposedCssRows[R, E](r, body, vm, ["background-size"])
   of "stroke":
     mountSectionStroke[R, E](r, body, vm)
     mountExposedCssRows[R, E](r, body, vm, ["outline-offset"])
   of "effects":
     mountSectionEffects[R, E](r, body, vm)
+    # The shadow and timing curve editors edit their rows' properties through
+    # those rows' wirings (`shadow_editor`, `timing_editor`).
+    let shadowWiring = vm.inspectorRowWiring(shadowProperty)
+    mountExposedCssRow[R, E](r, body, vm, shadowProperty, shadowWiring)
+    mountShadowEditor[R, E](r, body, vm, shadowWiring)
     mountExposedCssRows[R, E](r, body, vm, ["filter", "transform", "transition-duration"])
+    let timingWiring = vm.inspectorRowWiring(timingProperty)
+    mountExposedCssRow[R, E](r, body, vm, timingProperty, timingWiring)
+    mountTimingEditor[R, E](r, body, vm, timingWiring)
   of "typography":
     mountSectionTypography[R, E](r, body, vm)
   of "selection-colors":

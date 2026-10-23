@@ -1,7 +1,9 @@
 ## Phase G — Effects section body widget.
 ##
-## Inspect selected effect metadata while specialized source editing is
-## unavailable. No section-local list can pretend to edit the document.
+## Summarise the selection's effects. The list edits nothing: the shadow,
+## filter and transition rows below it (and their specialized editors,
+## `shadow_editor` and `timing_editor`) edit the document. No section-local
+## list can pretend to edit it.
 
 import std/[options, strutils]
 
@@ -87,7 +89,9 @@ proc mountSectionEffects*[R, E](r: R; parent: E; vm: EditorVM) =
         text "No effect values exposed by this selection."
       tdiv(`data-effects-readonly-message` = "true", role = "note",
             font_size = "11px", color = textMuted):
-        text "Effects are read-only here. Edit them in source."
+        text "This list summarises the effects. Edit the shadow, filters " &
+          "and transitions in the rows below; adding an effect from here " &
+          "is not built yet."
       tdiv(ref = addBtnEl,
             role = "button", tabindex = "0",
             `data-effects-add` = "true",

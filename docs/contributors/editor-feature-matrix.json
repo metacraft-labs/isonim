@@ -212,8 +212,8 @@
       "mockOnly": false,
       "placeholderUi": false,
       "browserBehavior": ["pointer", "focus"],
-      "implementation": "Typed CSS value parsing, primitive-control normalization, math-expression/unit handling, source-plan selection, validation, shared-scope handling, undo/redo, dirty state, save staging, per-section raw CSS editing (each CSS section's Raw CSS toggle switches between its rows and its declarations as CSS text; a raw commit is checked as a whole and commits each changed declaration through its row's source pipeline), the Layout section's visual box model (its `Show box model controls` disclosure draws margin, border, padding and content rings with a field per margin and padding side and an all-sides field per shorthand; each field types, evaluates arithmetic, steps by arrow keys and scrubs by drag, and commits through its property row's source pipeline and scope; the selection overlay's margin and padding handles, one per side, preview a drag in the frame and the box model's fields and commit it once on release through that field's pipeline, keeping the side's authored unit (a side that is not a number, such as auto or a variable, is refused at the press), Shift at the press setting every side to the dragged side's value with the shorthand, and Escape, pointer cancellation, a lost capture or another selection restoring the value from before the drag), cascade origin indicators, copy/paste/reset property actions, numeric select-all/arrow/scrub/unit controls, color swatches/formats/variable/token/contrast affordances, gradient stop/angle/type controls, shadow layer/crosshair/inset/elevation controls, typography style/responsive/truncate/wrap controls, border-radius linked-corner controls, and Bezier/reduced-motion motion controls with live iframe preview and source commits.",
-      "knownLimitations": "M49 validates a bounded long-tail matrix only for property rows with headless, browser, visual, and Metacraft consumer evidence. Other long-tail rows stay marked consumer-unvalidated, browser-limited, or read-only until their browser and consumer coverage exists. Exhaustive browser eyedropper behavior, freeform color-plane drag serialization, container-query editing, and pseudo-state workflow editing remain future work. The canvas margin and padding handles have no keyboard operation of their own; the box model's fields are their keyboard path. The overlay's spacing and resize handles now preview, commit once on release and restore on Escape or pointer cancellation, but a refusal of their commit is not shown on the canvas and their inline preview is not put back after one, and they are still shown in Comment mode. A box-model field scrub, like a row's label scrub, shows its value in the field and reaches the preview when released.",
+      "implementation": "Typed CSS value parsing, primitive-control normalization, math-expression/unit handling, source-plan selection, validation, shared-scope handling, undo/redo, dirty state, save staging, per-section raw CSS editing (each CSS section's Raw CSS toggle switches between its rows and its declarations as CSS text; a raw commit is checked as a whole and commits each changed declaration through its row's source pipeline), the Layout section's visual box model (its `Show box model controls` disclosure draws margin, border, padding and content rings with a field per margin and padding side and an all-sides field per shorthand; each field types, evaluates arithmetic, steps by arrow keys and scrubs by drag, and commits through its property row's source pipeline and scope; the selection overlay's margin and padding handles, one per side, preview a drag in the frame and the box model's fields and commit it once on release through that field's pipeline, keeping the side's authored unit (a side that is not a number, such as auto or a variable, is refused at the press), Shift at the press setting every side to the dragged side's value with the shorthand, and Escape, pointer cancellation, a lost capture or another selection restoring the value from before the drag), cascade origin indicators, copy/paste/reset property actions, numeric select-all/arrow/scrub/unit controls, color swatches/formats/variable/token/contrast affordances, typography style/responsive/truncate/wrap controls, border-radius linked-corner controls, and the specialized editors, each behind its `Show advanced <property> controls` disclosure after the row of the property it edits and committing through that row's wiring (its scope, act-time refusals, validation, preview, one undo entry and automatic write): Fill's gradient editor for `background-image` (linear/radial/conic type buttons that keep the stops, an angle that scrubs by drag and commits on release, turns 45 degrees when pressed and takes typed degrees, a stop bar where a press adds a stop coloured as the gradient is there, a drag moves a stop and the keys move or delete the focused one, the selected stop's colour picker and position field, a starting gradient written on the first edit, and Background position and repeat rows); the Effects section's shadow editor for `box-shadow` (a layer list with add/remove, a crosshair whose drag moves the selected layer's X/Y offset, X/Y/Blur/Spread fields whose labels scrub, the colour picker, the inset toggle, presets, and `Bind elevation token`, which opens the variable picker); and its Bezier curve editor for `transition-timing-function` (two control points moved by drag or keys, x kept within 0..1, keyword preset thumbnails, a curve written as its keyword when one names it, and read-only reduced-motion diagnostics that report the transition and whether a `prefers-reduced-motion` rule changes it). A value an editor cannot change faithfully (an image or several layers, a variable, a step function, a comment, a calc() or other computed part) is named and only replaced by an explicit type button or preset; gradient stops positioned in a length are kept as written and are not added or moved by the stop bar. The selection's halo is drawn by the selection overlay rather than as a box-shadow on the element, so the preview shows the selection's own box-shadow.",
+      "knownLimitations": "M49 validates a bounded long-tail matrix only for property rows with headless, browser, visual, and Metacraft consumer evidence. Other long-tail rows stay marked consumer-unvalidated, browser-limited, or read-only until their browser and consumer coverage exists. Exhaustive browser eyedropper behavior, freeform color-plane drag serialization, container-query editing, and pseudo-state workflow editing remain future work. The canvas margin and padding handles have no keyboard operation of their own; the box model's fields are their keyboard path. The overlay's spacing and resize handles now preview, commit once on release and restore on Escape or pointer cancellation, but a refusal of their commit is not shown on the canvas and their inline preview is not put back after one, and they are still shown in Comment mode. A box-model field scrub, like a row's label scrub, shows its value in the field and reaches the preview when released. Specialized editors not built (editor spec, marked open): repeating-gradient and interpolation-colour-space controls; a radial gradient's shape, size and position, a conic gradient's centre; gradient colour hints and two-position stops; stops as design tokens; several gradient layers or images in one background; image and video fills; `text-shadow` (Typography's text shadow) and filter drop shadows; the Effects section's `+` quick-pick and per-effect visibility toggle; `steps()` and `linear()` timing functions and per-transition timing lists; previewing a drag on the canvas before its release (an editor's drag previews in the editor and commits on release).",
       "headlessTests": [
         {
           "name": "css_property_editors_parse_validate_and_normalize_values",
@@ -278,6 +278,26 @@
         {
           "name": "a drag keeps the side's authored unit, as the field's scrub does",
           "file": "tests/test_editor_section_box_model.nim"
+        },
+        {
+          "name": "the angle, the type buttons and typed angles commit background-image through its row",
+          "file": "tests/test_editor_specialized_editors.nim"
+        },
+        {
+          "name": "the stop bar adds, moves and removes stops; the stop's fields commit",
+          "file": "tests/test_editor_specialized_editors.nim"
+        },
+        {
+          "name": "the crosshair, the fields, inset and colour commit the selected layer",
+          "file": "tests/test_editor_specialized_editors.nim"
+        },
+        {
+          "name": "presets, handle drags and keys commit transition-timing-function",
+          "file": "tests/test_editor_specialized_editors.nim"
+        },
+        {
+          "name": "what the editor cannot change faithfully is refused with the reason",
+          "file": "tests/test_editor_compound_values.nim"
         }
       ],
       "playwrightRequired": true,
@@ -312,6 +332,22 @@
         },
         {
           "name": "e2e_canvas_box_handles_preview_commit_cancel_and_refusal",
+          "file": "tests/browser/specs/editor-example.spec.ts"
+        },
+        {
+          "name": "e2e_specialized_editors_gradient",
+          "file": "tests/browser/specs/editor-example.spec.ts"
+        },
+        {
+          "name": "e2e_specialized_editors_gradient_stops_and_rows",
+          "file": "tests/browser/specs/editor-example.spec.ts"
+        },
+        {
+          "name": "e2e_specialized_editors_shadow",
+          "file": "tests/browser/specs/editor-example.spec.ts"
+        },
+        {
+          "name": "e2e_specialized_editors_timing_curve",
           "file": "tests/browser/specs/editor-example.spec.ts"
         }
       ],
@@ -348,14 +384,18 @@
           "evidence": [
             "tests/browser/specs/editor-example.spec.ts:e2e_editor_edit_buttons_keyboard_and_pointer",
             "tests/browser/specs/editor-example.spec.ts:e2e_editor_visual_baselines_cover_all_primary_modes",
-            "tests/browser/specs/editor-example.spec.ts:e2e_section_raw_css_toggle_commits_refuses_and_undoes"
+            "tests/browser/specs/editor-example.spec.ts:e2e_section_raw_css_toggle_commits_refuses_and_undoes",
+            "tests/browser/specs/editor-example.spec.ts:e2e_specialized_editors_gradient",
+            "tests/browser/specs/editor-example.spec.ts:e2e_specialized_editors_shadow",
+            "tests/browser/specs/editor-example.spec.ts:e2e_specialized_editors_timing_curve"
           ]
         },
         "metacraftWeb": {
           "status": "covered",
           "evidence": [
             "tests/browser/specs/metacraft-web-editor.spec.ts:edits real metacraft component DOM through the inspector",
-            "tests/browser/specs/metacraft-web-editor.spec.ts:metacraft_long_tail_properties_validate_real_components"
+            "tests/browser/specs/metacraft-web-editor.spec.ts:metacraft_long_tail_properties_validate_real_components",
+            "tests/browser/specs/metacraft-web-editor.spec.ts:e2e_figma_grade_numeric_color_shadow_typography_controls"
           ]
         }
       },
@@ -364,6 +404,13 @@
         "src/isonim/editor/viewmodels.nim",
         "src/isonim/editor/views/component_edit.nim",
         "src/isonim/editor/views/widgets/section_raw_css.nim",
+        "src/isonim/editor/css_compound_values.nim",
+        "src/isonim/editor/views/widgets/advanced_controls.nim",
+        "src/isonim/editor/views/widgets/gradient_editor.nim",
+        "src/isonim/editor/views/widgets/shadow_editor.nim",
+        "src/isonim/editor/views/widgets/timing_editor.nim",
+        "tests/test_editor_compound_values.nim",
+        "tests/test_editor_specialized_editors.nim",
         "docs/editor-long-tail-property-evidence.md",
         "tests/test_editor_viewmodels.nim",
         "tests/browser/specs/metacraft-web-editor.spec.ts"

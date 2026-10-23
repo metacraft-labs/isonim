@@ -45,15 +45,30 @@ const DemoLayoutValues* = [
   ## the preview capture reports them once the card is selected, and every
   ## property on the initial element is paid for on each story selection.
 
+const DemoEffectValues* = [
+  ("box-shadow", "0 8px 24px rgba(15, 23, 42, 0.12)"),
+  ("transition-timing-function", "ease"),
+  ("background-position", "0% 0%"), ("background-repeat", "repeat")]
+  ## The card's declarations the specialized editors edit (editor spec
+  ## "Specialized Editors": the shadow and Bezier curve editors, and Fill's
+  ## advanced background-image controls). The shadow is the one the card's
+  ## page drew inline before; the others are the values the card already
+  ## computes to, so declaring them changes nothing on screen. Like the
+  ## layout declarations they are not on the hand-built initial element: the
+  ## preview capture reports them once the card is selected.
+
 func demoLongTailRule(): string =
   result = ".long-tail-card {"
   for (property, value) in DemoLongTailValues:
     result.add " " & property & ": " & value & ";"
   for (property, value) in DemoLayoutValues:
     result.add " " & property & ": " & value & ";"
+  for (property, value) in DemoEffectValues:
+    result.add " " & property & ": " & value & ";"
   result.add " }\n"
 
-const DemoClassValues* = @DemoLongTailValues & @DemoLayoutValues
+const DemoClassValues* = @DemoLongTailValues & @DemoLayoutValues &
+  @DemoEffectValues
   ## Every declaration of the example's `.long-tail-card` rule, each mapped
   ## to a class-rule schema entry.
 
@@ -139,7 +154,7 @@ func demoComponentDocument*(source, title, body: string): string =
     "<article class=\"destination-card long-tail-card\" data-testid=\"component-edit-preview\" " &
     "data-isonim-src=\"" & DemoFoundationSource & ":9\" " &
     "data-isonim-schema-key=\"classes.destination-card\" " &
-    "style=\"max-width:420px;border-width:1px;border-color:#CBD5E1;border-radius:8px;background-color:white;box-shadow:0 8px 24px rgba(15,23,42,.12)\">" &
+    "style=\"max-width:420px;border-width:1px;border-color:#CBD5E1;border-radius:8px;background-color:white\">" &
     "<h1 style=\"margin:0 0 8px;font-size:20px;line-height:1.2\">" & html(title) & "</h1>" &
     "<p style=\"margin:0;color:#475569\">" & html(body) & "</p></article></body></html>"
 

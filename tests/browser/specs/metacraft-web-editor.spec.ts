@@ -2899,12 +2899,24 @@ test.describe("metacraft-web IsoNim editor consumer", () => {
       await expect(
         page.getByLabel("Set background-image to radial gradient"),
       ).toBeVisible();
+      // The specialized editors commit through their row's pipeline, so the
+      // preview shows their value as it shows every row's: through the rule
+      // the cascade uses for the element (`applyPreviewStyle`), not as an
+      // inline declaration, which the retired editor wrote with `!important`
+      // ("Planned interaction parity": the same "preview synchronization" for
+      // every editable property; "Specialized controls use this same
+      // commit/cancel contract"). So the value the topbar computes is
+      // checked, as for the padding and fill above. The topbar draws no
+      // gradient before the edit, so the computed value can only come from
+      // it, and it is the exact gradient the editor wrote.
+      const computed = (name: string) =>
+        topbar.evaluate((node, property) =>
+          getComputedStyle(node).getPropertyValue(property), name);
+      expect(await computed("background-image")).not.toContain("gradient");
       await page.getByLabel("Scrub background-image gradient angle").click();
       await expect
-        .poll(() =>
-          topbar.evaluate((node) => (node as HTMLElement).style.backgroundImage),
-        )
-        .toContain("135deg");
+        .poll(() => computed("background-image"))
+        .toBe("linear-gradient(135deg, rgb(59, 130, 246) 0%, rgb(34, 197, 94) 100%)");
 
       // This host cannot write the component-token scope, so that chip is
       // disabled with its reason and is not the default (see
@@ -2939,6 +2951,13 @@ test.describe("metacraft-web IsoNim editor consumer", () => {
         await expect(propertyRowInput(page, corner)).toHaveValue("12");
       }
 
+      // The timing curve and shadow editors live in the Effects section,
+      // which the section catalogue opens collapsed ("Section catalogue":
+      // Effects "Default collapsed"; "Effects section consolidates
+      // Transitions + Filters"), so it is opened first.
+      const effects = page.locator('[data-inspector-section-header="effects"]');
+      if ((await effects.getAttribute("aria-expanded")) !== "true") await effects.click();
+      expect(await computed("transition-timing-function")).not.toBe("ease-in-out");
       await page
         .getByLabel("Show advanced transition-timing-function controls")
         .click();
@@ -2948,23 +2967,19 @@ test.describe("metacraft-web IsoNim editor consumer", () => {
       ).toBeVisible();
       await page.getByLabel("Set transition timing to ease-in-out").click();
       await expect
-        .poll(() =>
-          topbar.evaluate(
-            (node) => (node as HTMLElement).style.transitionTimingFunction,
-          ),
-        )
+        .poll(() => computed("transition-timing-function"))
         .toBe("ease-in-out");
 
       await page.getByLabel("Show advanced box-shadow controls").click();
       await expect(page.getByLabel("Edit shadow with crosshair")).toBeVisible();
       await expect(page.getByLabel("Bind elevation token")).toBeVisible();
       await expect(page.getByLabel("Add shadow layer")).toBeVisible();
+      const softShadow = "rgba(15, 23, 42, 0.18) 0px 8px 24px 0px";
+      expect(await computed("box-shadow")).not.toBe(softShadow);
       await page.getByLabel("Apply soft shadow preset").click();
-      await expect
-        .poll(() =>
-          topbar.evaluate((node) => (node as HTMLElement).style.boxShadow),
-        )
-        .toContain("rgba(15, 23, 42");
+      // The selected topbar shows the shadow itself: the selection's halo is
+      // drawn by the overlay, not as a box-shadow on the element.
+      await expect.poll(() => computed("box-shadow")).toBe(softShadow);
 
       await title.click({ force: true });
       await expect(title).toHaveAttribute("data-isonim-selected", "true");

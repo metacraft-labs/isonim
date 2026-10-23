@@ -185,6 +185,13 @@ type
       ## responsive override controls are open (its disclosure is the
       ## `Show layout auto grid constraint controls` button). Per editor
       ## session; closed when the editor opens.
+    advancedControlsShown*: Signal[seq[string]]
+      ## The properties whose specialized editor is open (editor spec
+      ## "Specialized Editors": the gradient editor for `background-image`,
+      ## the shadow editor for `box-shadow`, the Bezier curve editor for
+      ## `transition-timing-function`; each disclosure is the `Show advanced
+      ## <property> controls` button). Per editor session; every one is
+      ## closed when the editor opens.
     boxCanvasDraft*: Signal[BoxCanvasDraft]
       ## The margin or padding side a canvas handle is dragging, and the
       ## value it previews (editor spec "Visual box model": "drag handles on
@@ -4291,6 +4298,18 @@ proc toggleLayoutControls*(inspector: InspectorVM) =
   ## disclosure.
   inspector.layoutControlsShown.val = not inspector.layoutControlsShown.val
 
+proc toggleAdvancedControls*(inspector: InspectorVM; property: string) =
+  ## A property's `Show advanced <property> controls` disclosure.
+  var next = inspector.advancedControlsShown.val
+  let at = next.find(property)
+  if at >= 0: next.delete(at)
+  else: next.add property
+  inspector.advancedControlsShown.val = next
+
+proc advancedControlsOpen*(inspector: InspectorVM; property: string): bool =
+  ## Whether ``property``'s specialized editor is open. Reactive.
+  property in inspector.advancedControlsShown.val
+
 proc applyKindDefaultExpansion*(inspector: InspectorVM; element: ElementRef) =
   ## Re-seed the untouched sections for what is now selected.
   ##
@@ -7029,7 +7048,10 @@ func sharedDesignCategory*(prop: PropertyInfo;
       "flex-direction", "align-items", "justify-content",
       "grid-template-columns", "grid-template-rows", "grid-auto-flow",
       "position", "top", "right", "bottom", "left", "min-width", "max-width",
-      "min-height", "max-height"]:
+      "min-height", "max-height",
+      # Fill's advanced background-image controls (`gradient_editor`;
+      # tests/test_editor_specialized_editors).
+      "background-position", "background-repeat"]:
     # Compound declarations use the existing class writer and CSS validator.
     # Each admitted family is covered by source write + exact undo tests.
     sdecSharedClass
@@ -12647,6 +12669,7 @@ proc createInspectorVM*(designSystemSchema: Signal[DesignSystemSchema] = nil;
     rawCssSections: createSignal[seq[InspectorSection]](@[]),
     boxModelShown: createSignal(false),
     layoutControlsShown: createSignal(false),
+    advancedControlsShown: createSignal[seq[string]](@[]),
     boxCanvasDraft: createSignal(BoxCanvasDraft()),
     sectionsUserSet: createSignal[seq[InspectorSection]](@[]),
     revealSectionRequest: createSignal(0),

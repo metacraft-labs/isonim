@@ -86,6 +86,13 @@ func compactChoiceVisibleIndexes(options: seq[CompactChoiceOption];
     else:
       result[^1] = selectedIndex
 
+proc callOwned(callback: sink proc()) =
+  ## Call ``callback`` holding a reference of its own, so the closure stays
+  ## alive while it runs even when it replaces the last other reference to
+  ## itself (ARC/ORC free a closure's environment when its count reaches
+  ## zero: https://nim-lang.org/docs/destructors.html).
+  callback()
+
 proc compactChoiceHandler(enabled: bool; callback: proc()): proc() =
   let capturedEnabled = enabled
   let capturedCallback = callback
@@ -445,7 +452,14 @@ proc renderCompactChoiceRow*[R, E](r: R; label, ariaLabel: string;
             ariaLabel:option.ariaLabel,selected:option.selected,enabled:option.enabled,
             dataAttrs:option.dataAttrs,onChoose:proc() =
               if active and position < latest.len and latest[position].enabled and latest[position].onChoose != nil:
-                latest[position].onChoose())
+                # A choice writes the signals the options are computed from,
+                # so the strip's effect replaces `latest` while the callback
+                # runs. Called in place -- or through a `let`, which ARC
+                # infers as a cursor -- the native (ARC/ORC) build freed the
+                # running callback's closure under it: a use-after-free when
+                # a row's scope was chosen after a commit. `callOwned` takes
+                # its own reference for the call.
+                callOwned(latest[position].onChoose))
         var safeOptions: seq[CompactChoiceOption]
         for index,option in options: safeOptions.add guardedOption(option,index)
         mounted = renderCompactChoiceRow[R,E](r,label,ariaLabel,safeOptions,

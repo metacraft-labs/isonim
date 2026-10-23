@@ -1684,7 +1684,8 @@ test.describe("IsoNim packaged editor example", () => {
     await expect(toggle).toHaveAttribute("aria-pressed", "true");
     await expect(rows).toBeHidden();
     await expect(field).toHaveValue(
-      "filter: none;\ntransform: none;\ntransition-duration: 0s;\n");
+      "box-shadow: rgba(15, 23, 42, 0.12) 0px 8px 24px 0px;\n" +
+      "filter: none;\ntransform: none;\ntransition-duration: 0s;\ntransition-timing-function: ease;\n");
 
     // Edit the text: two changed declarations, one unchanged. Enter commits;
     // both are written inside the rule that owns them, and each is an edit.
@@ -1705,7 +1706,8 @@ test.describe("IsoNim packaged editor example", () => {
     await expect.poll(() => selected.evaluate((node) => getComputedStyle(node).transitionDuration))
       .toBe("0.18s");
     await expect(field).toHaveValue(
-      "filter: none;\ntransform: translateX(8px) scale(1.02);\ntransition-duration: 180ms;\n");
+      "box-shadow: rgba(15, 23, 42, 0.12) 0px 8px 24px 0px;\n" +
+      "filter: none;\ntransform: translateX(8px) scale(1.02);\ntransition-duration: 180ms;\ntransition-timing-function: ease;\n");
     await expect(message).toBeHidden();
 
     // Invalid text is refused at the commit with the reason; nothing moves,
@@ -1724,7 +1726,8 @@ test.describe("IsoNim packaged editor example", () => {
     await field.press("Escape");
     await expect(message).toBeHidden();
     await expect(field).toHaveValue(
-      "filter: none;\ntransform: translateX(8px) scale(1.02);\ntransition-duration: 180ms;\n");
+      "box-shadow: rgba(15, 23, 42, 0.12) 0px 8px 24px 0px;\n" +
+      "filter: none;\ntransform: translateX(8px) scale(1.02);\ntransition-duration: 180ms;\ntransition-timing-function: ease;\n");
 
     // A scope no project schema entry can write is refused at the act: the
     // card's heading is captured off the preview, and no rule of the
@@ -1762,7 +1765,8 @@ test.describe("IsoNim packaged editor example", () => {
     await expect.poll(() => selected.evaluate((node) => getComputedStyle(node).transform))
       .toBe("none");
     await expect(field).toHaveValue(
-      "filter: none;\ntransform: none;\ntransition-duration: 0s;\n");
+      "box-shadow: rgba(15, 23, 42, 0.12) 0px 8px 24px 0px;\n" +
+      "filter: none;\ntransform: none;\ntransition-duration: 0s;\ntransition-timing-function: ease;\n");
 
     // Toggling back shows the rows and the empty entry again.
     await toggle.click();
@@ -2141,6 +2145,232 @@ test.describe("IsoNim packaged editor example", () => {
     await undoTo(page, undoCount, start);
     await expect.poll(source).toBe(original);
     await expect.poll(() => style("gap")).toBe("normal");
+    await expect(page.locator("[data-save-error]")).toBeHidden();
+  });
+
+  // Editor spec "Specialized Editors": the gradient, shadow and Bezier curve
+  // editors, each behind its `Show advanced <property> controls`
+  // disclosure, committing through the row of the property it edits: the
+  // row's scope, validation, preview, undo entry and automatic write, into
+  // the example's `.long-tail-card` rule. Physical pointer and keyboard
+  // input; drags preview and commit once on release, and Escape ends one
+  // without an edit ("Planned interaction parity").
+  async function openSpecializedEditors(page: Page, section: "fill" | "effects") {
+    await page.setViewportSize(desktop);
+    await openDestinationComponentEdit(page);
+    await markPreviewSelected(page);
+    const frame = page.frameLocator('iframe[title="Editable component preview"]');
+    const card = frame.getByTestId("component-edit-preview");
+    const header = page.locator(`[data-inspector-section-header="${section}"]`);
+    if ((await header.getAttribute("aria-expanded")) !== "true") await header.click();
+    const source = () => demoSourceContent(page, demoFoundationSource);
+    return {
+      style: (property: string) => card.evaluate(
+        (node, name) => getComputedStyle(node).getPropertyValue(name), property),
+      undoCount: () =>
+        page.evaluate(() => (window as any).__isonimEditorVm.inspector.undoStack.value.length),
+      source,
+      written: async (pattern: string | RegExp) => {
+        await expect.poll(() => pendingSourceEdits(page)).toBe(0);
+        await expect(page.locator("[data-save-error]")).toBeHidden();
+        if (typeof pattern === "string") await expect.poll(source).toContain(pattern);
+        else await expect.poll(source).toMatch(pattern);
+      },
+      center: async (locator) => {
+        await locator.scrollIntoViewIfNeeded();
+        const box = await locator.boundingBox();
+        expect(box).not.toBeNull();
+        return { x: box!.x + box!.width / 2, y: box!.y + box!.height / 2, width: box!.width };
+      },
+    };
+  }
+
+  test("e2e_specialized_editors_gradient", async ({ page }) => {
+    const { style, undoCount, source, written, center } =
+      await openSpecializedEditors(page, "fill");
+    const original = await source();
+    const start = await undoCount();
+    const toggle = page.getByRole("button", {
+      name: "Show advanced background-image controls", exact: true });
+    await expect(toggle).toHaveAttribute("aria-expanded", "false");
+    await toggle.focus();
+    await page.keyboard.press("Enter");
+    await expect(toggle).toHaveAttribute("aria-expanded", "true");
+    const gradient = page.getByRole("group", { name: "Edit gradient stops", exact: true });
+    await expect(gradient).toBeVisible();
+    await expect(gradient.locator('[data-gradient-note="true"]')).toContainText("starting gradient");
+    // Pressing the angle turns the starting gradient by 45 degrees.
+    const angle = page.getByRole("button", {
+      name: "Scrub background-image gradient angle", exact: true });
+    await expect(angle).toHaveText("90°");
+    await angle.click();
+    await expect.poll(() => style("background-image")).toContain("135deg");
+    await written(" background-image: linear-gradient(135deg, #3B82F6 0%, #22C55E 100%);");
+    expect(await undoCount()).toBe(start + 1);
+    // The row is the same property and shows it.
+    await expect(page.locator('[data-exposed-css-property="background-image"]')
+      .locator('[data-property-row-input="true"]'))
+      .toHaveValue("linear-gradient(135deg, #3B82F6 0%, #22C55E 100%)");
+    // A drag of the angle previews and commits once; Escape ends one without
+    // an edit, and the press's click does not turn it either.
+    let at = await center(angle);
+    await page.mouse.move(at.x, at.y);
+    await page.mouse.down();
+    await page.mouse.move(at.x + 15, at.y, { steps: 3 });
+    await expect(angle).toHaveText("150°");
+    expect(await undoCount()).toBe(start + 1);
+    await page.mouse.up();
+    await written(" background-image: linear-gradient(150deg, #3B82F6 0%, #22C55E 100%);");
+    expect(await undoCount()).toBe(start + 2);
+    at = await center(angle);
+    await page.mouse.move(at.x, at.y);
+    await page.mouse.down();
+    await page.mouse.move(at.x + 30, at.y, { steps: 3 });
+    await expect(angle).toHaveText("180°");
+    await page.keyboard.press("Escape");
+    await expect(angle).toHaveText("150°");
+    await page.mouse.up();
+    expect(await undoCount()).toBe(start + 2);
+    await undoTo(page, undoCount, start);
+    await expect.poll(source).toBe(original);
+    await expect.poll(() => style("background-image")).toBe("none");
+    await expect(page.locator("[data-save-error]")).toBeHidden();
+  });
+
+  test("e2e_specialized_editors_gradient_stops_and_rows", async ({ page }) => {
+    const { style, undoCount, source, written, center } =
+      await openSpecializedEditors(page, "fill");
+    const original = await source();
+    const start = await undoCount();
+    await page.getByRole("button", {
+      name: "Show advanced background-image controls", exact: true }).click();
+    let at = { x: 0, y: 0, width: 0 };
+    // The type buttons keep the stops.
+    await page.getByRole("button", {
+      name: "Set background-image to radial gradient", exact: true }).click();
+    await expect.poll(() => style("background-image")).toContain("radial-gradient");
+    await written(" background-image: radial-gradient(#3B82F6 0%, #22C55E 100%);");
+    // Dragging the last stop to the middle of the bar moves it.
+    const bar = page.getByRole("group", { name: "Gradient stop bar: press to add a stop" });
+    const last = page.getByRole("button", { name: "Gradient stop 2 at 100%", exact: true });
+    at = await center(last);
+    const barBox = await center(bar);
+    await page.mouse.move(at.x, at.y);
+    await page.mouse.down();
+    await page.mouse.move(at.x - barBox.width / 2, at.y, { steps: 5 });
+    await page.mouse.up();
+    await written(/ background-image: radial-gradient\(#3B82F6 0%, #22C55E (4[5-9]|5[0-5])(\.\d+)?%\);/);
+    // Pressing the bar near its start adds a stop there.
+    await page.mouse.click(barBox.x - barBox.width / 2 + barBox.width * 0.25, barBox.y);
+    await written(/ background-image: radial-gradient\(#3B82F6 0%, #[0-9A-F]{6} 2\d(\.\d+)?%, #22C55E/);
+    expect(await undoCount()).toBe(start + 3);
+    // Background position and repeat are rows of the same controls.
+    const repeat = page.locator('[data-gradient-row-property="background-repeat"]');
+    await repeat.locator("[data-choice-group-trigger]").click();
+    await page.getByRole("option", { name: "No repeat", exact: true }).click();
+    await expect.poll(() => style("background-repeat")).toBe("no-repeat");
+    await written(" background-repeat: no-repeat;");
+    const inspector = page.locator('[data-sidebar-content="inspector"]');
+    expect(await inspector.evaluate((node) => node.scrollWidth <= node.clientWidth + 1))
+      .toBe(true);
+    // Undo across the writes puts back the exact bytes and the preview.
+    await undoTo(page, undoCount, start);
+    await expect.poll(source).toBe(original);
+    await expect.poll(() => style("background-image")).toBe("none");
+    await expect.poll(() => style("background-repeat")).toBe("repeat");
+    await expect(page.locator("[data-save-error]")).toBeHidden();
+  });
+
+  test("e2e_specialized_editors_shadow", async ({ page }) => {
+    const { style, undoCount, source, written, center } =
+      await openSpecializedEditors(page, "effects");
+    const original = await source();
+    const start = await undoCount();
+    // The selected card shows its own shadow: the selection's halo is drawn
+    // by the overlay, not on the element.
+    const originalShadow = "rgba(15, 23, 42, 0.12) 0px 8px 24px 0px";
+    expect(await style("box-shadow")).toBe(originalShadow);
+    await page.getByRole("button", {
+      name: "Show advanced box-shadow controls", exact: true }).click();
+    const pad = page.getByRole("group", { name: "Edit shadow with crosshair", exact: true });
+    await expect(pad).toBeVisible();
+    const dot = pad.locator('[data-shadow-crosshair-dot="true"]');
+    let at = await center(dot);
+    await page.mouse.move(at.x, at.y);
+    await page.mouse.down();
+    await page.mouse.move(at.x + 10, at.y - 4, { steps: 4 });
+    expect(await undoCount()).toBe(start);
+    await page.mouse.up();
+    await expect.poll(() => style("box-shadow")).toBe("rgba(15, 23, 42, 0.12) 10px 4px 24px 0px");
+    // Written as one list in the editor's canonical order; the card's
+    // shadow reaches the inspector as the preview computes it.
+    await written(" box-shadow: 10px 4px 24px 0px rgba(15, 23, 42, 0.12);");
+    // Escape ends a drag without an edit.
+    at = await center(dot);
+    await page.mouse.move(at.x, at.y);
+    await page.mouse.down();
+    await page.mouse.move(at.x + 20, at.y, { steps: 4 });
+    await page.keyboard.press("Escape");
+    await page.mouse.up();
+    expect(await undoCount()).toBe(start + 1);
+    await expect.poll(() => style("box-shadow")).toBe("rgba(15, 23, 42, 0.12) 10px 4px 24px 0px");
+    // The blur field takes a typed value; the preset replaces the list.
+    const blur = page.getByRole("textbox", { name: "Shadow blur", exact: true });
+    await blur.fill("30");
+    await blur.press("Enter");
+    await written(" box-shadow: 10px 4px 30px 0px rgba(15, 23, 42, 0.12);");
+    await page.getByRole("button", { name: "Apply raised shadow preset", exact: true }).click();
+    await written(" box-shadow: 0 1px 2px rgba(15, 23, 42, 0.18), 0 12px 32px rgba(15, 23, 42, 0.16);");
+    await expect(page.getByRole("button", { name: "Select shadow layer 2", exact: true }))
+      .toBeVisible();
+    expect(await undoCount()).toBe(start + 3);
+    await undoTo(page, undoCount, start);
+    await expect.poll(source).toBe(original);
+    await expect.poll(() => style("box-shadow")).toBe(originalShadow);
+    await expect(page.locator("[data-save-error]")).toBeHidden();
+  });
+
+  test("e2e_specialized_editors_timing_curve", async ({ page }) => {
+    const { style, undoCount, source, written, center } =
+      await openSpecializedEditors(page, "effects");
+    const original = await source();
+    const start = await undoCount();
+    await page.getByRole("button", {
+      name: "Show advanced transition-timing-function controls", exact: true }).click();
+    await expect(page.getByRole("group", { name: "Edit transition timing curve", exact: true }))
+      .toBeVisible();
+    await page.getByRole("button", { name: "Set transition timing to ease-in-out", exact: true })
+      .click();
+    await expect.poll(() => style("transition-timing-function")).toBe("ease-in-out");
+    await written(" transition-timing-function: ease-in-out;");
+    const point = page.getByRole("button", { name: "Move timing curve control point 1", exact: true });
+    const at = await center(point);
+    await page.mouse.move(at.x, at.y);
+    await page.mouse.down();
+    await page.mouse.move(at.x + 12, at.y - 60, { steps: 4 });
+    expect(await undoCount()).toBe(start + 1);
+    await page.mouse.up();
+    // 12px right and 60px up on the 120px square: x1 0.42 -> ~0.52, y1 0 ->
+    // ~0.5 (the pointer lands within a pixel).
+    const dragged = / transition-timing-function: cubic-bezier\((0\.5\d*), (0\.(?:49|5)\d*), 0\.58, 1\);/;
+    await written(dragged);
+    const [, x1, y1] = (await source()).match(dragged)!;
+    await expect.poll(() => style("transition-timing-function"))
+      .toBe(`cubic-bezier(${x1}, ${y1}, 0.58, 1)`);
+    expect(await undoCount()).toBe(start + 2);
+    // Shift+ArrowUp raises the point by 0.1: one more edit, written exactly.
+    await point.focus();
+    await page.keyboard.press("Shift+ArrowUp");
+    const raised = String(Number((Number(y1) + 0.1).toFixed(3)));
+    await written(` transition-timing-function: cubic-bezier(${x1}, ${raised}, 0.58, 1);`);
+    expect(await undoCount()).toBe(start + 3);
+    await page.getByRole("button", { name: "Run reduced-motion diagnostics", exact: true }).click();
+    await expect(page.locator('[data-timing-message="true"]'))
+      .toHaveText("transition-duration is 0s: nothing animates, so reduced motion needs nothing here.");
+    expect(await undoCount()).toBe(start + 3);
+    await undoTo(page, undoCount, start);
+    await expect.poll(source).toBe(original);
+    await expect.poll(() => style("transition-timing-function")).toBe("ease");
     await expect(page.locator("[data-save-error]")).toBeHidden();
   });
 
