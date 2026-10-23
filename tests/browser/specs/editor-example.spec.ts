@@ -1945,6 +1945,96 @@ test.describe("IsoNim packaged editor example", () => {
     await expect(page.locator("[data-save-error]")).toBeHidden();
   });
 
+  // Editor spec "Planned interaction parity": dragging previews, releasing
+  // commits one undoable operation, and Escape or pointer cancellation puts
+  // back the value from before the gesture. The selection overlay's spacing
+  // handle (uniform padding on the example's card) and resize handle follow
+  // it: they used to commit on every pointer move.
+  test("e2e_canvas_spacing_and_resize_handles_commit_once_and_cancel", async ({
+    page,
+  }) => {
+    await page.setViewportSize(desktop);
+    await openDestinationComponentEdit(page);
+    await markPreviewSelected(page);
+    const frame = page.frameLocator('iframe[title="Editable component preview"]');
+    const card = frame.getByTestId("component-edit-preview");
+    await expect(card).toHaveAttribute("data-isonim-selected", "true");
+    const undoCount = () =>
+      page.evaluate(() => (window as any).__isonimEditorVm.inspector.undoStack.value.length);
+    const used = (property: string) =>
+      card.evaluate((node, name) => getComputedStyle(node).getPropertyValue(name), property);
+    const scale = await page.evaluate(() => {
+      const node = document.querySelector('iframe[title="Editable component preview"]') as HTMLIFrameElement;
+      return node.getBoundingClientRect().width / node.contentWindow!.innerWidth;
+    });
+    const px = (n: number) => n * scale;
+    async function press(label: string) {
+      const box = await frame.getByLabel(label, { exact: true }).boundingBox();
+      if (!box) throw new Error(`the ${label} handle has no box`);
+      const x = box.x + box.width / 2;
+      const y = box.y + box.height / 2;
+      await page.mouse.move(x, y);
+      await page.mouse.down();
+      return { x, y };
+    }
+    const original = await demoSourceContent(page, demoFoundationSource);
+    expect(original).toContain(".destination-card { padding: 18px; }");
+    const start = await undoCount();
+
+    // The spacing handle previews in several steps and commits once.
+    let p = await press("Adjust selected spacing");
+    await page.mouse.move(p.x, p.y + px(3), { steps: 3 });
+    await page.mouse.move(p.x, p.y + px(6), { steps: 3 });
+    await expect.poll(() => used("padding-top")).toBe("24px");
+    expect(await undoCount()).toBe(start);
+    expect(await demoSourceContent(page, demoFoundationSource)).toBe(original);
+    await page.mouse.up();
+    await expect.poll(() => demoSourceContent(page, demoFoundationSource))
+      .toBe(original.replace("padding: 18px;", "padding: 24px;"));
+    await expect.poll(undoCount).toBe(start + 1);
+    await expect.poll(() => pendingSourceEdits(page)).toBe(0);
+
+    // Escape puts the spacing handle's preview back and commits nothing.
+    p = await press("Adjust selected spacing");
+    await page.mouse.move(p.x, p.y + px(8), { steps: 3 });
+    await expect.poll(() => used("padding-top")).toBe("32px");
+    await page.keyboard.press("Escape");
+    await expect.poll(() => used("padding-top")).toBe("24px");
+    await page.mouse.move(p.x, p.y + px(12));
+    expect(await used("padding-top")).toBe("24px");
+    await page.mouse.up();
+    await expect(card).toHaveAttribute("data-isonim-selected", "true");
+    expect(await undoCount()).toBe(start + 1);
+
+    // So does pointer cancellation of the resize handle's drag.
+    const width = await used("width");
+    await frame.getByLabel("Resize selected element", { exact: true }).evaluate((node) =>
+      node.addEventListener("pointerdown", (event) => {
+        (window as any).__resizePointer = (event as PointerEvent).pointerId;
+      }));
+    // (The handle sets `width` from the border box, and the card has a
+    // max-width: a long drag inwards is one that shows.)
+    p = await press("Resize selected element");
+    await page.mouse.move(p.x - px(100), p.y, { steps: 3 });
+    await expect.poll(() => used("width")).not.toBe(width);
+    expect(await undoCount()).toBe(start + 1);
+    await card.evaluate(() => window.dispatchEvent(new PointerEvent("pointercancel",
+      { pointerId: (window as any).__resizePointer, bubbles: true })));
+    await expect.poll(() => used("width")).toBe(width);
+    await page.mouse.up();
+    expect(await undoCount()).toBe(start + 1);
+    expect(await demoSourceContent(page, demoFoundationSource))
+      .toBe(original.replace("padding: 18px;", "padding: 24px;"));
+
+    // Undo puts the bytes back.
+    await page.evaluate(() => (document.activeElement as HTMLElement | null)?.blur());
+    await page.locator('[data-sidebar-content="inspector"]').click({ position: { x: 4, y: 4 } });
+    await page.keyboard.press("ControlOrMeta+Z");
+    await expect.poll(undoCount).toBe(start);
+    await expect.poll(() => demoSourceContent(page, demoFoundationSource)).toBe(original);
+    await expect.poll(() => used("padding-top")).toBe("18px");
+  });
+
   test("m52_shared_design_editor_preview_save_and_revert", async ({ page }) => {
     await page.setViewportSize(desktop);
     await openDestinationComponentEdit(page);

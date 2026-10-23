@@ -245,6 +245,8 @@ __ISONIM_SCENE_GRAPH_WALK__
   let releaseOwner = null;
   function disposeParentBridge() {
     if (bridgeDisposed) return;
+    // A document that goes away mid-drag ends the drag without an edit.
+    try { cancelHandleDrag(); } catch (error) {}
     bridgeDisposed = true;
     for (const [type, listener] of parentListeners)
       parent.removeEventListener(type, listener);
@@ -391,6 +393,85 @@ __ISONIM_SCENE_GRAPH_WALK__
     }
     return label;
   }
+  // One drag of a selection handle at a time. Every handle follows the same
+  // contract (editor spec "Planned interaction parity"): the drag holds
+  // pointer capture and previews as it moves; releasing commits one edit; a
+  // press without movement, Escape, pointer cancellation or a lost capture
+  // ends it without one and puts the preview back; and a drag belongs to the
+  // element it was started on, so selecting another one discards it.
+  let handleDrag = null;
+  function cancelHandleDrag() {
+    const drag = handleDrag;
+    if (!drag) return false;
+    drag.cancel();
+    return true;
+  }
+  function startHandleDrag(handleEl, event, gesture) {
+    cancelHandleDrag();
+    const drag = {
+      pointerId: event.pointerId,
+      startX: event.clientX,
+      startY: event.clientY,
+      element: window.__isonimSelectedElement,
+      moved: false
+    };
+    function release() {
+      if (handleDrag === drag) handleDrag = null;
+      window.removeEventListener('pointermove', onMove, true);
+      window.removeEventListener('pointerup', onUp, true);
+      window.removeEventListener('pointercancel', onLost, true);
+      handleEl.removeEventListener('lostpointercapture', onLost);
+      handleEl.removeAttribute('data-dragging');
+      try {
+        if (handleEl.hasPointerCapture(drag.pointerId))
+          handleEl.releasePointerCapture(drag.pointerId);
+      } catch (error) {}
+    }
+    function onMove(moveEvent) {
+      if (moveEvent.pointerId !== drag.pointerId) return;
+      moveEvent.preventDefault();
+      const dx = moveEvent.clientX - drag.startX;
+      const dy = moveEvent.clientY - drag.startY;
+      if (!drag.moved && !dx && !dy) return;
+      drag.moved = true;
+      if (gesture.move(dx, dy) === false) cancelHandleDrag();
+    }
+    function onUp(upEvent) {
+      if (upEvent.pointerId !== drag.pointerId) return;
+      release();
+      if (drag.moved) gesture.commit(); else gesture.cancel();
+    }
+    function onLost(lostEvent) {
+      if (lostEvent.pointerId !== drag.pointerId) return;
+      if (handleDrag === drag) cancelHandleDrag();
+    }
+    drag.cancel = function () { release(); gesture.cancel(); };
+    handleDrag = drag;
+    window.addEventListener('pointermove', onMove, true);
+    window.addEventListener('pointerup', onUp, true);
+    window.addEventListener('pointercancel', onLost, true);
+    handleEl.addEventListener('lostpointercapture', onLost);
+    handleEl.setAttribute('data-dragging', 'true');
+    // Capture keeps the drag on the handle when the pointer leaves it
+    // (https://w3c.github.io/pointerevents/#pointer-capture); focus puts
+    // Escape where the drag can hear it.
+    try { handleEl.setPointerCapture(event.pointerId); } catch (error) {}
+    try { handleEl.focus({ preventScroll: true }); } catch (error) {}
+    event.preventDefault();
+  }
+  // Escape ends a drag before anything else sees it: in this document the
+  // key would otherwise clear the selection.
+  window.addEventListener('keydown', function (event) {
+    if (event.key !== 'Escape' || !handleDrag) return;
+    event.preventDefault();
+    event.stopImmediatePropagation();
+    cancelHandleDrag();
+  }, true);
+  bindParent('keydown', function (event) {
+    if (event.key !== 'Escape' || !handleDrag) return;
+    event.preventDefault();
+    cancelHandleDrag();
+  });
   function ensureHandles() {
     let box = document.getElementById('isonim-editor-selection-handles');
     if (!box) {
@@ -403,12 +484,12 @@ __ISONIM_SCENE_GRAPH_WALK__
       });
       document.body.appendChild(box);
       box.addEventListener('pointerdown', function (event) {
-        const handle = event.target && event.target.dataset ? event.target.dataset.handle : '';
+        const data = event.target && event.target.dataset ? event.target.dataset : {};
         const selected = window.__isonimSelectedElement;
-        if (!handle || !selected) return;
+        if (!selected || event.button !== 0) return;
+        const handle = data.handle || '';
+        if (!handle) return;
         const rect = selected.getBoundingClientRect();
-        const startX = event.clientX;
-        const startY = event.clientY;
         const startWidth = rect.width;
         const style = window.getComputedStyle(selected);
         const spacingProperty =
@@ -421,39 +502,49 @@ __ISONIM_SCENE_GRAPH_WALK__
             : style.paddingTop
         ) || 0;
         const source = parseSource(selected.getAttribute('data-isonim-src'));
-        function move(moveEvent) {
-          let property = 'width';
-          let next = Math.max(24, Math.round(startWidth + moveEvent.clientX - startX)) + 'px';
-          if (handle === 'spacing') {
-            property = spacingProperty;
-            next = Math.max(0, Math.round(startSpacing + moveEvent.clientY - startY)) + 'px';
+        const property = handle === 'spacing' ? spacingProperty : 'width';
+        const marker = handle === 'spacing'
+          ? 'data-isonim-spacing-adjusted'
+          : 'data-isonim-layout-resized';
+        // What the drag replaces, for Escape and pointer cancellation.
+        const before = {
+          value: selected.style.getPropertyValue(property),
+          priority: selected.style.getPropertyPriority(property),
+          marked: selected.hasAttribute(marker)
+        };
+        let next = '';
+        startHandleDrag(event.target, event, {
+          move: function (dx, dy) {
+            next = handle === 'spacing'
+              ? Math.max(0, Math.round(startSpacing + dy)) + 'px'
+              : Math.max(24, Math.round(startWidth + dx)) + 'px';
+            selected.style.setProperty(property, next);
+            selected.setAttribute(marker, 'true');
+            placeHandles(selected);
+          },
+          cancel: function () {
+            if (before.value) selected.style.setProperty(property, before.value, before.priority);
+            else selected.style.removeProperty(property);
+            if (!before.marked) selected.removeAttribute(marker);
+            if (window.__isonimSelectedElement === selected) placeHandles(selected);
+          },
+          // One edit, on release.
+          commit: function () {
+            if (!next) return;
+            parent.dispatchEvent(new CustomEvent('isonim-preview-direct-manipulation', {
+              detail: {
+                kind: handle === 'spacing' ? 'spacing' : 'resize',
+                property: property,
+                value: next,
+                sourceFile: source.file,
+                sourceLine: source.line,
+                handle: handle,
+                sourceKey: sourceKeyFor(selected),
+                measurement: property + '=' + next
+              }
+            }));
           }
-          selected.style.setProperty(property, next);
-          selected.setAttribute(handle === 'spacing'
-            ? 'data-isonim-spacing-adjusted'
-            : 'data-isonim-layout-resized', 'true');
-          placeHandles(selected);
-          parent.dispatchEvent(new CustomEvent('isonim-preview-direct-manipulation', {
-            detail: {
-              kind: handle === 'spacing' ? 'spacing' : 'resize',
-              property: property,
-              value: next,
-              sourceFile: source.file,
-              sourceLine: source.line,
-              handle: handle,
-              sourceKey: sourceKeyFor(selected),
-              measurement: property + '=' + next
-            }
-          }));
-          moveEvent.preventDefault();
-        }
-        function stop() {
-          window.removeEventListener('pointermove', move, true);
-          window.removeEventListener('pointerup', stop, true);
-        }
-        window.addEventListener('pointermove', move, true);
-        window.addEventListener('pointerup', stop, true);
-        event.preventDefault();
+        });
       });
     }
     return box;
@@ -547,6 +638,8 @@ __ISONIM_SCENE_GRAPH_WALK__
   function selectElement(target) {
     const el = target;
     if (!el || el === document.documentElement || el === document.body) return;
+    // A drag belongs to the element it was started on.
+    if (handleDrag && handleDrag.element !== el) cancelHandleDrag();
     // Selecting something else ends inline text editing. The click handler
     // calls preventDefault, so the browser never moves focus by itself and
     // an element left editing by a double-click would otherwise stay
@@ -714,6 +807,7 @@ __ISONIM_SCENE_GRAPH_WALK__
     if (first) first.focus();
   }
   function clearSelection() {
+    cancelHandleDrag();
     document.querySelectorAll('[data-isonim-selected="true"]').forEach((node) => {
       node.removeAttribute('data-isonim-selected');
     });
