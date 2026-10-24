@@ -77,6 +77,9 @@ tests/test_faststreams_ssr
 tests/test_http_types
 tests/test_streaming_stress
 tests/test_third_party
+tests/test_dsl_helper_calls
+tests/test_nondet_seams
+tests/test_renderer_element_nav
 examples/streaming_stress/mock_db
 examples/streaming_stress/db_client
 examples/streaming_stress/server
