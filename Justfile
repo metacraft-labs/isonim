@@ -196,6 +196,7 @@ test-c:
     nim c -r tests/test_effects.nim
     nim c -r tests/test_clock.nim
     nim c -r tests/test_nondet_seams.nim
+    python3 tests/test_core_layering.py
     nim c -r tests/test_context.nim
     nim c -r tests/test_rxcore.nim
     nim c -r --out:build/test_keyed_effect_lifetime tests/test_keyed_effect_lifetime.nim
@@ -1975,6 +1976,7 @@ test-stable-id-mutants: build-tailwind
 
 # Platform boundaries include real layout and networking under Chromium.
 test-nondet:
+    python3 tests/test_core_layering.py
     nim c -r --out:build/test_nondet_default tests/test_nondet_default.nim
     nim js --out:build/test_nondet_default.js tests/test_nondet_default.nim
     python3 tools/run_nim_js_test.py build/test_nondet_default.js

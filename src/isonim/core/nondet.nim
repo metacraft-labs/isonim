@@ -339,7 +339,8 @@ when defined(js):
     discard env()
 
 when defined(js):
-  import ../web/dom_api
+  # The listener boundary is typed over the renderer's event object, so core
+  # never imports a renderer: the DOM backend instantiates it with its `Event`.
   import ./owner
 
   # Weak target ownership permits detached trees and their handlers to die.
@@ -408,17 +409,20 @@ when defined(js):
     ## Passing nil disables observation without changing callback semantics.
     {.emit: ["isonimEventListeners.setHook(", hook, ");"].}
   type ListenerDisposer* = proc()
-  proc rawListen(node: JsObject; event: cstring; handler: EventHandler;
+  proc rawListen(node: JsObject; event: cstring; handler: JsObject;
       capture: bool; nextSequence: proc(): int; eventTime: proc(): float64;
       registered: proc(dispose: ListenerDisposer)): ListenerDisposer
       {.importjs: "isonimEventListeners.listen(#,#,#,#,#,#,#)", tags: [RawNondet].}
-  proc listen*(node: JsObject; event: string; handler: EventHandler;
+  proc listen*[E](node: JsObject; event: string; handler: proc(ev: E) {.closure.};
       capture = false): ListenerDisposer {.discardable, tags: [DomEventEffect].} =
     ## Register at the original DOM target; returns idempotent removal.
     ## Native target/currentTarget, propagation and capture semantics survive.
     ## A duplicate shares cancellation but keeps its first reactive owner.
+    ## `E` is the event type the handler receives (the web renderer's `Event`);
+    ## the handler itself is passed through unchanged, so its identity is the
+    ## deduplication key.
     {.cast(tags: []).}:
-      result = rawListen(node, event.cstring, handler, capture, proc(): int =
+      result = rawListen(node, event.cstring, toJs(handler), capture, proc(): int =
         let selected = backend()
         when defined(isonimRecordable): beginDispatch(selected)
         else: inc selected.dispatchSequence
