@@ -10,7 +10,10 @@
 ## server functions of fixture_rpc.nim under `/api/v1/rpc`.
 ##
 ## It also serves the SSR -> hydrate round trip of hydration_app.nim (the
-## string and streaming renderers `hydration` and `hydration-stream`).
+## string and streaming renderers `hydration` and `hydration-stream`), and
+## the route manifest of tests/routing/negotiation_manifest.nim (IFP-M26:
+## JSON variants, per-response cache policies, handler-raised not-found)
+## as the async app `negotiation` at `/neg/`.
 ##
 ## Sessions: the cookie `sid=user|staff|admin` is a session with that role,
 ## whose CSRF token is `csrf-<sid>`.  Signatures: `X-Signature:
@@ -27,6 +30,7 @@ import isonim/server/[context, rpc]
 import isonim/routing/client_context
 import fixture_manifest
 import hydration_app
+import ../routing/negotiation_app
 
 const
   instanceId* = "fixture-instance"
@@ -108,8 +112,13 @@ proc installHooks*() =
         return nil,
     verifySignature: proc(ctx: RequestContext; route: string): Future[bool] {.async.} =
       return ctx.request.header("X-Signature") == "valid-" & route,
-    currentIncarnation: proc(): string = incarnationId)
-  canonicalizer = canonicalizeTopic
+    currentIncarnation: proc(): string = incarnationId,
+    onCachePolicyRefused: recordCacheRefusal)
+  # One hook for both manifests: each answers for its own entries.
+  canonicalizer = proc(ctx: RequestContext; route: string;
+                       policy: CanonicalPolicy): Future[CanonicalOutcome] =
+    if isNegotiationRoute(route): negotiationCanonicalizer(ctx, route, policy)
+    else: canonicalizeTopic(ctx, route, policy)
 
 proc fixtureApp*(): RequestHandler =
   manifestApp(handlers())
@@ -117,4 +126,5 @@ proc fixtureApp*(): RequestHandler =
 proc registerApps*() =
   installHooks()
   registerAsyncApp("fixture", fixtureApp())
+  registerAsyncApp("negotiation", negotiationApp())
   registerHydrationApps()

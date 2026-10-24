@@ -15,6 +15,9 @@
 # with the module's _$HY bootstrap appended (isonim_ssr_hydration, on by
 # default) on its default streaming transport.
 #
+# /neg/: the route manifest of tests/routing/negotiation_manifest.nim (the
+# async app `negotiation`), for tests/routing/t_manifest_negotiation.nim.
+#
 # One worker process: every request of a test is served by the same worker,
 # which is what makes "the worker was not blocked" observable.
 
@@ -60,6 +63,10 @@ http {
       isonim_ssr_app hydration-stream;
     }
     ${SLOW_BODY}
+    location /neg/ {
+      isonim_rpc on;
+      isonim_rpc_app negotiation;
+    }
     location / {
       isonim_rpc on;
       isonim_rpc_app fixture;

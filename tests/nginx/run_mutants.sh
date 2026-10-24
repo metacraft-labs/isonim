@@ -201,9 +201,13 @@ cp -r "${ROOT}/src" "${WORK}/canonical-first-src"
 mutate "${WORK}/canonical-first-src/isonim/routing/route_dispatch.nim" \
   "  if not await ctx.enforcePolicies(spec.name, spec.auth, spec.csrf, formToken):
     return
-  if not await ctx.canonicalStage(spec):
+  # What the response was before the hook and the handler ran: a not-found
+  # answer goes back to it.
+  let before = ctx.response.snapshot()
+  if not await ctx.canonicalStage(spec, before):
     return
-" "  if not await ctx.canonicalStage(spec):
+" "  let before = ctx.response.snapshot()
+  if not await ctx.canonicalStage(spec, before):
     return
   if not await ctx.enforcePolicies(spec.name, spec.auth, spec.csrf, formToken):
     return

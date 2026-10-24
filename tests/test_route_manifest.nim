@@ -37,70 +37,7 @@
 import std/[unittest, os, osproc, strutils, httpclient, json, net, times,
             monotimes, sequtils]
 import isonim/routing/[manifest, route_tests]
-import nginx/fixture_manifest
-
-const
-  repoRoot = currentSourcePath().parentDir.parentDir
-  fixtureDir = repoRoot / "build/nginx-fixture"
-
-# --------------------------------------------------------------------------
-# The fixture nginx
-# --------------------------------------------------------------------------
-
-type Fixture = object
-  prefix, pidFile, errorLog: string
-  port: int
-
-proc readNginxBin(): string =
-  for line in readFile(fixtureDir / "env.sh").splitLines:
-    if line.startsWith("NGINX_BIN="):
-      return line["NGINX_BIN=".len .. ^1]
-
-proc freePort(): int =
-  let s = newSocket()
-  s.bindAddr(Port(0), "127.0.0.1")
-  result = int(s.getLocalAddr()[1])
-  s.close()
-
-proc startFixture(): Fixture =
-  # ISONIM_NGINX_MODULE: another module build (run_mutants.sh's mutants).
-  let module = getEnv("ISONIM_NGINX_MODULE", fixtureDir / "ngx_http_isonim_module.so")
-  if not fileExists(module) or not fileExists(fixtureDir / "env.sh"):
-    raise newException(IOError, "the nginx fixture is not built: run " &
-      "`just build-nginx-fixture` (needs the ngx-isonim sibling checkout)")
-  result.prefix = getTempDir() / ("isonim-route-manifest-" & $getCurrentProcessId())
-  removeDir(result.prefix)
-  for d in ["client_body", "proxy", "fastcgi", "uwsgi", "scgi"]:
-    createDir(result.prefix / d)
-  result.port = freePort()
-  result.pidFile = result.prefix / "nginx.pid"
-  result.errorLog = result.prefix / "error.log"
-  let conf = result.prefix / "nginx.conf"
-  let (text, code) = execCmdEx("bash " & quoteShell(repoRoot / "tests/nginx/fixture_conf.sh") &
-    " " & quoteShell(result.prefix) & " " & $result.port & " " & quoteShell(module) &
-    " " & quoteShell(fixtureDir / "www"))
-  doAssert code == 0, text
-  writeFile(conf, text)
-  let start = execShellCmd(quoteShell(readNginxBin()) & " -c " & quoteShell(conf) &
-    " -p " & quoteShell(result.prefix) & " -e " & quoteShell(result.errorLog) &
-    " < /dev/null > " & quoteShell(result.prefix / "start.log") & " 2>&1")
-  doAssert start == 0, readFile(result.prefix / "start.log")
-  let deadline = getMonoTime() + initDuration(seconds = 10)
-  while true:
-    let s = newSocket()
-    try:
-      s.connect("127.0.0.1", Port(result.port), timeout = 200)
-      s.close()
-      break
-    except CatchableError:
-      s.close()
-      doAssert getMonoTime() < deadline, "nginx did not open its port"
-
-proc stop(f: Fixture) =
-  if fileExists(f.pidFile):
-    discard execCmd("kill -TERM " & readFile(f.pidFile).strip)
-
-proc baseUrl(f: Fixture): string = "http://127.0.0.1:" & $f.port
+import nginx/[fixture_manifest, fixture_server]
 
 # --------------------------------------------------------------------------
 # The policy environment: the fixture's sessions and signatures

@@ -34,6 +34,11 @@ type
     contextScope*: ContextScope
     progressive*: bool       ## a POST a no-JS form may submit
     target*: string          ## where a no-JS form submission is redirected
+    json*: bool              ## a page with a JSON variant (`.json` on its
+                             ## last path parameter, `Accept`)
+    cacheOverrides*: seq[CachePolicy]
+      ## the policies the hook or the handler may give one response instead
+      ## of `cache` (each at least as strict as `cache`)
 
   Page*[T] = object
     ## What a page handler returns: the HTML of the page, and the data the

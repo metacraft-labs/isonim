@@ -38,6 +38,8 @@
 ## | `prefix` | `false` | the pattern also matches every path below it |
 ## | `progressive` | `false` (`true` for `action`) | a `POST` a no-JS form may submit |
 ## | `target` | `""` | where a progressive entry's no-JS form is redirected (303); "" = the same-origin `Referer`, else `/` |
+## | `json` | `false` | pages only: the page also answers `Page.data` as JSON, for a `.json` suffix on its last path parameter (the pattern must end in one) or an `Accept` preferring `application/json` |
+## | `cacheOverrides` | `[]` | `[cpPrivateNoStore, ...]`: the policies the canonicalization hook or the handler may give one response instead of `cache` (`ctx.setCachePolicy`); each must be at least as strict as `cache` (a compile-time error otherwise); not on `rpc` |
 ##
 ## Omitted types are named after the entry: `rTopic` uses `TopicRequest`
 ## and `TopicResponse` (a page's handler returns `Page[TopicResponse]`).
@@ -86,8 +88,9 @@ type
     httpMethod: string
     reqType, respType: NimNode
     auth, csrf, cache, canonical, contextScope: NimNode
-    prefix, progressive: bool
+    prefix, progressive, json: bool
     target: string
+    cacheOverrides: seq[NimNode]
 
 proc derivedTypeName(name, suffix: string): NimNode =
   var base = name
@@ -143,6 +146,13 @@ proc parseEntry(stmt: NimNode): EntryDef =
       of "canonical": result.canonical = a[1]
       of "contextScope": result.contextScope = a[1]
       of "prefix": result.prefix = boolOption(a[1])
+      of "json": result.json = boolOption(a[1])
+      of "cacheOverrides":
+        if a[1].kind != nnkBracket:
+          error("`cacheOverrides` is a list of cache policies, e.g. " &
+            "[cpPrivateNoStore]", a[1])
+        for p in a[1]:
+          result.cacheOverrides.add p
       of "progressive": result.progressive = boolOption(a[1])
       of "target":
         if a[1].kind notin {nnkStrLit, nnkTripleStrLit, nnkRStrLit}:
@@ -182,6 +192,17 @@ proc parseEntry(stmt: NimNode): EntryDef =
     error(nameStr & ": only POST entries can be progressive", stmt)
   if result.target.len > 0 and not result.progressive:
     error(nameStr & ": `target` applies to progressive entries only", stmt)
+  if result.json:
+    if result.kind != rkPage:
+      error(nameStr & ": `json` applies to page entries only (a data " &
+        "entry answers JSON already)", stmt)
+    let segs = result.path.split('/')
+    if segs.len == 0 or segs[^1].len < 2 or segs[^1][0] != ':':
+      error(nameStr & ": `json` needs a pattern that ends in a :param " &
+        "segment (the `.json` suffix goes on it), got " & result.path, stmt)
+  if result.kind == rkRpc and result.cacheOverrides.len > 0:
+    error("the `rpc` entry takes no `cacheOverrides`: server functions " &
+      "are always cpPrivateNoStore", stmt)
 
   if result.auth.isNil: result.auth = ident"aOptional"
   if result.csrf.isNil: result.csrf = ident"csrfNone"
@@ -193,6 +214,28 @@ proc parseEntry(stmt: NimNode): EntryDef =
     result.contextScope = (if stateChanging and result.kind != rkAny:
                              ident"csAccount"
                            else: ident"csNavigation")
+
+proc overridesSeq(e: EntryDef): NimNode =
+  ## `@[...]` of the entry's `cacheOverrides` as a `seq[CachePolicy]`.
+  var lit = nnkBracket.newTree()
+  for p in e.cacheOverrides:
+    lit.add p
+  if lit.len == 0:
+    return newCall(nnkBracketExpr.newTree(ident"newSeq", ident"CachePolicy"))
+  nnkPrefix.newTree(ident"@", lit)
+
+proc overrideChecks(e: EntryDef): NimNode =
+  ## A compile-time error for each override weaker than the entry's cache
+  ## policy (`isAtLeastAsStrict`, policy.nim).
+  result = newStmtList()
+  for p in e.cacheOverrides:
+    let cache = e.cache
+    let msg = newLit($e.name & ": cacheOverrides names " & p.repr &
+      ", which is weaker than the entry's cache policy " & cache.repr &
+      " (a per-response policy may only make a response stricter)")
+    result.add quote do:
+      when not isAtLeastAsStrict(`p`, `cache`):
+        {.error: `msg`.}
 
 proc specConstr(e: EntryDef): NimNode =
   nnkObjConstr.newTree(ident"RouteSpec",
@@ -211,7 +254,9 @@ proc specConstr(e: EntryDef): NimNode =
     newColonExpr(ident"canonical", e.canonical),
     newColonExpr(ident"contextScope", e.contextScope),
     newColonExpr(ident"progressive", newLit(e.progressive)),
-    newColonExpr(ident"target", newLit(e.target)))
+    newColonExpr(ident"target", newLit(e.target)),
+    newColonExpr(ident"json", newLit(e.json)),
+    newColonExpr(ident"cacheOverrides", overridesSeq(e)))
 
 proc handlerType(e: EntryDef): NimNode =
   let ctxDef = newIdentDefs(ident"ctx", ident"RequestContext")
@@ -252,6 +297,8 @@ macro routeManifest*(enumName: untyped; body: untyped): untyped =
 
   let enumStr = $enumName
   result = newStmtList()
+  for e in entries:
+    result.add overrideChecks(e)
 
   # The enum.
   var enumTy = nnkEnumTy.newTree(newEmptyNode())

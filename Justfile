@@ -1222,13 +1222,16 @@ build-nginx-fixture: build-tailwind
 # Server functions over HTTP, the typed route manifest (IFP-M2) and the SSR
 # -> hydrate -> interact round trip (IFP-M3) against real nginx with the
 # real ngx-isonim module: the route-manifest test (its generated policy
-# tests run against nginx), the nginx-rpc and ssr-hydration Playwright
+# tests run against nginx), the route-manifest negotiation test (IFP-M26:
+# JSON variants, per-response cache policies, handler-raised not-found), the nginx-rpc and ssr-hydration Playwright
 # projects, and the falsifying mutations of those projects.  Needs the
 # ngx-isonim sibling checkout and nix; not part of `just test`.
 test-nginx: build-nginx-fixture
     nim c -r -d:isonimRpcPrefix=/api/v1/rpc tests/test_route_manifest.nim
+    nim c -r -d:isonimRpcPrefix=/api/v1/rpc tests/routing/t_manifest_negotiation.nim
     cd tests/browser && PLAYWRIGHT_CHROMIUM_EXECUTABLE="${PLAYWRIGHT_CHROMIUM_EXECUTABLE:-$(command -v chromium)}" npx playwright test --project=nginx-rpc --project=ssr-hydration
     bash tests/nginx/run_mutants.sh
+    bash tests/routing/run_negotiation_mutants.sh
 
 # CI: `just test-nginx`, its full output also in test-logs/test-nginx.log
 # (.github/workflows/nginx-tests.yml uploads that directory).

@@ -67,6 +67,19 @@ else:
       cvBadToken = "bad-token"       ## the token does not match
       cvNoSession = "no-session"     ## csrfSession without a session
 
+    PageVariant* = enum
+      ## The representation of a route-manifest page a request gets
+      ## (isonim-routing-server-functions.md, "JSON Variants of a Page").
+      pvHtml        ## the page's HTML with its data embedded
+      pvJsonSuffix  ## `Page.data` as JSON: the last path parameter ended
+                    ## in `.json` (removed before decoding and the hook)
+      pvJsonAccept  ## `Page.data` as JSON: `Accept` preferred it
+
+    RouteNotFound* = object of CatchableError
+      ## Raised by a route handler (or the canonicalization hook) whose
+      ## target is gone or no longer visible; the dispatch answers it as the
+      ## hook's `coNotFound` (404, nothing the hook or handler set is kept).
+
     ClientContextHeader* = object
       ## The parsed `X-Isonim-Context: <incarnation_id>:<account_generation>`.
       present*: bool        ## the header was sent
@@ -88,6 +101,17 @@ else:
       failure*: ref CatchableError
         ## What a handler raised, when the server answered 500 for it; the
         ## server logs it.
+      pageVariant*: PageVariant
+        ## Which representation of a page the dispatch answers with (always
+        ## `pvHtml` outside pages with a JSON variant).
+      cachePolicy: CachePolicy
+        ## The cache policy of this response (`responseCachePolicy`): the
+        ## entry's, or a stricter one `setCachePolicy` accepted.  The
+        ## default, `cpPrivateNoStore`, is the strictest, so a context the
+        ## route dispatch did not set up accepts no weakening either.
+      cacheChoices: seq[CachePolicy]
+        ## The policies `setCachePolicy` may pick: the entry's `cache` and
+        ## its `cacheOverrides`.
 
     RequestHandler* = proc(ctx: RequestContext): Future[void]
       ## A server-side request handler: reads `ctx.request`, leaves the
@@ -117,6 +141,11 @@ else:
         ## The origins (`scheme://host[:port]`) state-changing requests may
         ## come from.  Empty: the origin's host must equal the request's
         ## `Host` header.
+      onCachePolicyRefused*: proc(ctx: RequestContext;
+                                  requested, kept: CachePolicy)
+        ## Told of every `setCachePolicy` that was refused (a policy weaker
+        ## than the response's, or one the entry does not declare):
+        ## `requested` was asked for, `kept` is what the response keeps.
 
   var serverHooks* {.threadvar.}: ServerHooks
     ## The application's hooks.  Set once at startup (ngx-isonim: from the
@@ -314,6 +343,63 @@ else:
                                 "multipart/form-data"]
 
   # ------------------------------------------------------------------------
+  # The response's cache policy and representation
+  # (isonim-routing-server-functions.md, "Per-Response Cache Policy",
+  # "JSON Variants of a Page" and "Not Found")
+  # ------------------------------------------------------------------------
+
+  proc beginCachePolicy*(ctx: RequestContext; entry: CachePolicy;
+                         overrides: openArray[CachePolicy]) =
+    ## Called by the route dispatch before the hook and the handler run:
+    ## the response starts with the entry's policy, and may be given one of
+    ## `overrides` (each at least as strict as `entry`; the manifest checks
+    ## that at compile time).
+    ctx.cachePolicy = entry
+    ctx.cacheChoices = @[entry]
+    for p in overrides:
+      if p notin ctx.cacheChoices:
+        ctx.cacheChoices.add p
+
+  proc responseCachePolicy*(ctx: RequestContext): CachePolicy =
+    ## The cache policy the dispatch writes on this response.
+    ctx.cachePolicy
+
+  proc setCachePolicy*(ctx: RequestContext; policy: CachePolicy): bool =
+    ## Gives this response `policy` instead of the entry's.  Accepted (true)
+    ## when `policy` is at least as strict as the response's current policy
+    ## and is the entry's `cache` or one of its `cacheOverrides`.  Refused
+    ## (false) otherwise: the response keeps its current policy and the
+    ## refusal goes to `serverHooks.onCachePolicyRefused`.  So a response
+    ## can only be made stricter, never weaker.
+    if isAtLeastAsStrict(policy, ctx.cachePolicy) and policy in ctx.cacheChoices:
+      ctx.cachePolicy = policy
+      return true
+    let report = serverHooks.onCachePolicyRefused
+    if report != nil:
+      report(ctx, policy, ctx.cachePolicy)
+    false
+
+  proc routeNotFound*() {.noreturn.} =
+    ## Raises `RouteNotFound`: the handler's target is gone or no longer
+    ## visible, and the dispatch answers 404 exactly as for the
+    ## canonicalization hook's `coNotFound`.
+    raise newException(RouteNotFound, "not found")
+
+  proc keepPageVariant*(ctx: RequestContext; location: string): string =
+    ## `location` with `.json` appended to its path (before any `?` or `#`)
+    ## when this request named the JSON variant by its suffix: the
+    ## canonicalization hook builds its redirect with it, so the variant
+    ## survives the redirect.  Unchanged for any other request.
+    if ctx.pageVariant != pvJsonSuffix:
+      return location
+    var cut = location.len
+    for i, c in location:
+      if c in {'?', '#'}:
+        cut = i
+        break
+    location[0 ..< cut] & ".json" & location[cut .. ^1]
+
+  # ------------------------------------------------------------------------
   # The response body
   # ------------------------------------------------------------------------
 
@@ -339,5 +425,6 @@ else:
     ctx.respondJson(status, body)
 
   proc applyCachePolicy*(ctx: RequestContext; policy: CachePolicy) =
+    ## Writes the headers of `policy` on the response.
     for (k, v) in cacheHeaders(policy):
       ctx.response.setHeader(k, v)

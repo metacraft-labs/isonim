@@ -244,6 +244,34 @@ proc redirect*(r: SsrResponse; location: string; status = 302) =
 
 proc isRedirect*(r: SsrResponse): bool = r.location.len > 0
 
+# --------------------------------------------------------------------------
+# Snapshots
+# --------------------------------------------------------------------------
+
+type
+  ResponseSnapshot* = object
+    ## What a response carried at one point (status, content type, headers
+    ## and cookies, redirect), so the server can drop everything set after
+    ## it.  The route dispatch takes one before the canonicalization hook
+    ## runs: a not-found answer keeps nothing the hook or the handler set.
+    status: int
+    contentType: string
+    headers: seq[(string, string)]
+    location: string
+
+proc snapshot*(r: SsrResponse): ResponseSnapshot =
+  ResponseSnapshot(status: r.status, contentType: r.contentType,
+                   headers: r.headers, location: r.location)
+
+proc restore*(r: SsrResponse; s: ResponseSnapshot) =
+  ## Puts the response back to `s` (raises `ResponseCommittedError` once
+  ## the headers were sent).  The CSP nonce is kept.
+  r.checkNotCommitted()
+  r.status = s.status
+  r.contentType = s.contentType
+  r.headers = s.headers
+  r.location = s.location
+
 proc location*(r: SsrResponse): string = r.location
 
 # --------------------------------------------------------------------------

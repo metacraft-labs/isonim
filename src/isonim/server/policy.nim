@@ -109,6 +109,33 @@ proc cacheHeaders*(p: CachePolicy): seq[(string, string)] =
   of cpNone:
     @[]
 
+proc cacheStrictness*(p: CachePolicy): int =
+  ## The rank of a cache policy, from the least strict (0) to the most
+  ## strict (4).  Each rank guarantees everything the ranks below it do:
+  ##
+  ## 4. `cpPrivateNoStore`: not stored anywhere;
+  ## 3. `cpPrivateRevalidate`: private, revalidated on every use and keyed
+  ##    by the credentials (`Vary: Cookie, Authorization, ...`);
+  ## 2. `cpMediaRevalidate`: private and revalidated on every use;
+  ## 1. `cpNone`: nothing, a cache applies its defaults (heuristic
+  ##    freshness, RFC 9111 §4.2.2);
+  ## 0. `cpImmutable`: public and fresh for a year, the least strict,
+  ##    because it asks every cache, shared ones included, to keep the
+  ##    response.
+  ##
+  ## A per-response cache policy may only move a response up this order
+  ## (isonim-routing-server-functions.md, "Per-Response Cache Policy").
+  case p
+  of cpPrivateNoStore: 4
+  of cpPrivateRevalidate: 3
+  of cpMediaRevalidate: 2
+  of cpNone: 1
+  of cpImmutable: 0
+
+proc isAtLeastAsStrict*(a, b: CachePolicy): bool =
+  ## True when `a` guarantees everything `b` does (`cacheStrictness`).
+  cacheStrictness(a) >= cacheStrictness(b)
+
 proc cacheControl*(p: CachePolicy): string =
   ## The `Cache-Control` value of a policy ("" for `cpNone`).
   for (k, v) in cacheHeaders(p):
