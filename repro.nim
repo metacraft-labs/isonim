@@ -124,13 +124,12 @@
 ##     (43 actions asSucceeded, exit=0 — 1 tailwind extract + 21 ``nim js``
 ##     compiles + 21 node runs).
 ##
-##     **Compile-time prerequisite (provisioned):** ``src/isonim/dsl/
-##     tailwind.nim`` ``staticRead``s ``build/tailwind-styles.json`` on the JS
-##     back-end (the native path guards it behind ``when fileExists`` and
-##     tolerates absence; the JS ``staticRead``'s missing-file failure is an
-##     UNCATCHABLE compile error). Modelled as an ``isonim.tailwind_extract``
-##     ``node`` BUILD edge (``node tools/tailwind-extract.mjs`` → the real
-##     Tailwind v4 CLI) that every JS compile depends on; node_modules
+##     **Compile-time prerequisite (provisioned):** Utility-class suites need
+##     the actual ``build/tailwind-styles.json``. The loader's optional default
+##     map permits plain consumers but cannot supply utility styles. Modelled
+##     as an ``isonim.tailwind_extract`` ``node`` BUILD edge
+##     (``node tools/tailwind-extract.mjs`` → the real Tailwind v4 CLI) that
+##     the provisioned JS compiles depend on; node_modules
 ##     (``@tailwindcss/cli``) is a bootstrap prerequisite the same way the
 ##     flake toolchain is (``just build-tailwind`` runs ``[ -d node_modules ]
 ##     || yarn install`` first; the extract itself is then offline).
@@ -928,6 +927,17 @@ package isonim:
       emitTest(s.source, s.binary, executeToo = false,
         testBuildActions, testExecuteActions)
 
+    # Compilation is the behavior under test: the driver copies real source
+    # into an isolated layout and checks missing/invalid/provided map inputs.
+    # Its temporary probe binaries are not prerequisites of another action.
+    # Common contracts run on every host; POSIX also exercises permissions/links.
+    let tailwindLoaderEdge = pythonUnittest.run(
+      source = "tests/test_tailwind_loader.py",
+      actionId = "isonim.tailwind_loader",
+      extraInputs = @["src"])
+    testExecuteActions.add(tailwindLoaderEdge)
+    discard collect("test-tailwind-loader", @[tailwindLoaderEdge])
+
     # --- Design-review external-service suite (set (B), FUP-E1) ------------
     # Prerequisite tool binaries the design-review daemon/CLI/bench tests
     # spawn at runtime. Modelled as BUILD edges (folded into ``test-builds``)
@@ -1395,16 +1405,12 @@ package isonim:
     # sets to ``nim js -r`` too, so the edge reproduces the repo's own JS
     # compile environment (the engine build does not read ``config.nims``).
     #
-    # Compile-time prerequisite: ``src/isonim/dsl/tailwind.nim`` ``staticRead``s
-    # ``build/tailwind-styles.json`` on the JS back-end. The native back-end
-    # guards that read behind ``when fileExists`` and tolerates the file's
-    # absence (empty style map); the JS/nimscript path uses a bare
-    # ``staticRead`` whose missing-file failure is an UNCATCHABLE compile
-    # error (the ``try/except`` around it does not catch it). So the file must
-    # exist before any JS compile. The repo generates it with ``just
-    # build-tailwind`` (``node tools/tailwind-extract.mjs`` → the real Tailwind
-    # v4 CLI); modelled here as a ``node`` BUILD edge that every JS compile
-    # depends on via ``after``. node_modules (``@tailwindcss/cli`` + deps) is a
+    # Provisioned utility-class suites must consume actual extracted styles;
+    # the optional default-map fallback is not a substitute for those inputs.
+    # The repo generates them with ``just build-tailwind``
+    # (``node tools/tailwind-extract.mjs`` → the real Tailwind v4 CLI), modelled
+    # as a ``node`` BUILD edge retained in the JS consumers' ``after`` lists.
+    # node_modules (``@tailwindcss/cli`` + deps) is a
     # bootstrap prerequisite the same way the flake dev shell is — the repo's
     # own ``build-tailwind`` recipe runs ``[ -d node_modules ] || yarn
     # install`` before the extract; once installed the extract is offline

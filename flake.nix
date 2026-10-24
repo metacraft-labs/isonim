@@ -236,6 +236,64 @@
           sourceDateEpoch = self.lastModified;
           env.ISONIM_SITE_REVISION = self.shortRev or self.dirtyShortRev or "unknown";
         };
+
+        # Exercise the real JS loader in the sandbox, including its same-Nim
+        # metadata query. An empty PATH during compilation proves that query
+        # needs no separately provisioned helper, Python, Node or C compiler.
+        checks.tailwind-loader =
+          let
+            probe = ./tests/fixtures/tailwind-loader-nix/probe.nim;
+            styles = pkgs.writeText "tailwind-loader-map.json" ''
+              {"sandbox-color":{"color":"#123456"}}
+            '';
+          in
+          pkgs.runCommand "isonim-tailwind-loader-check"
+            { nativeBuildInputs = [ pkgs.nim pkgs.nodejs ]; }
+            ''
+              mkdir -p "$out"
+              # Keep the fixture's module name valid: a standalone store file
+              # has a hash-prefixed basename that Nim correctly rejects.
+              cp ${probe} "$TMPDIR/probe.nim"
+              # A literal empty map would also report no styles but would
+              # bypass the metadata query this sandbox check must exercise.
+              if [ -e ${isonimSrc}/build/tailwind-styles.json ] || \
+                 [ -L ${isonimSrc}/build/tailwind-styles.json ]; then
+                echo "missing-map fixture unexpectedly contains a map entry" >&2
+                exit 1
+              fi
+              nimArgs=(js -d:nodejs --hints:off --skipUserCfg:on --skipParentCfg:on --skipProjCfg:on)
+              PATH=/nonexistent ${pkgs.nim}/bin/nim "''${nimArgs[@]}" \
+                --path:${isonimSrc}/src --nimcache:"$TMPDIR/missing-cache" \
+                --out:"$out/missing.js" "$TMPDIR/probe.nim"
+              ${pkgs.nodejs}/bin/node "$out/missing.js" > "$out/missing.txt"
+              PATH=/nonexistent ${pkgs.nim}/bin/nim "''${nimArgs[@]}" \
+                --path:${isonimSrc}/src --nimcache:"$TMPDIR/provided-cache" \
+                -d:expectedMap -d:tailwindStylesPathOverride=${styles} \
+                --out:"$out/provided.js" "$TMPDIR/probe.nim"
+              ${pkgs.nodejs}/bin/node "$out/provided.js" > "$out/provided.txt"
+              cmp "$out/missing.txt" "$out/provided.txt"
+              grep -Fx '<div class="custom-class">Hello</div>' "$out/missing.txt"
+
+              # Same source bytes, with a real named link to a denied target.
+              mkdir -p "$TMPDIR/denied/src" "$TMPDIR/denied/build" "$TMPDIR/denied/target"
+              cp -R ${isonimSrc}/src/. "$TMPDIR/denied/src/"
+              cp ${styles} "$TMPDIR/denied/target/map.json"
+              ln -s "$TMPDIR/denied/target/map.json" "$TMPDIR/denied/build/tailwind-styles.json"
+              chmod 111 "$TMPDIR/denied/build"
+              chmod 000 "$TMPDIR/denied/target"
+              trap 'chmod 700 "$TMPDIR/denied/build" "$TMPDIR/denied/target"' EXIT
+              if [ -r "$TMPDIR/denied/build/tailwind-styles.json" ]; then
+                echo "permission fixture did not deny the real map" >&2
+                exit 1
+              fi
+              if PATH=/nonexistent ${pkgs.nim}/bin/nim "''${nimArgs[@]}" \
+                --path:"$TMPDIR/denied/src" --nimcache:"$TMPDIR/denied-cache" \
+                --out:"$TMPDIR/denied.js" "$TMPDIR/probe.nim" > "$out/denied.log" 2>&1; then
+                echo "denied-target map compiled instead of refusing" >&2
+                exit 1
+              fi
+              grep 'cannot open file: .*tailwind-styles.json' "$out/denied.log"
+            '';
       }
     );
 }

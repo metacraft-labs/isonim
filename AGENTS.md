@@ -49,6 +49,8 @@ just test              # native + JS framework tests
 just test-c            # native framework tests
 just test-js           # JS framework tests
 just test-dsl          # DSL and SSR DSL tests
+just test-tailwind-loader # C/JS/NimScript map checks; POSIX adds permissions/links
+just test-tailwind-loader-nix # explicit pinned Nix sandbox packaging gate
 just test-ssr          # server rendering and round-trip tests
 just test-editor       # headless editor/ViewModel/release-gate tests
 just editor-build      # build the packaged IsoNim Editor

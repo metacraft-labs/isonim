@@ -38,10 +38,97 @@ const tailwindJsonPath =
   else: defaultTailwindJsonPath
 
 when defined(nimscript) or defined(js):
-  # fileExists not available at compile time for JS target
-  const tailwindJsonStr = static:
-    try: staticRead(tailwindJsonPath)
-    except: "{}"
+  import std/compilesettings
+
+  const tailwindMetadataProgram = """
+import std/os
+proc namedLink(path: string): bool =
+  when buildOS == "windows":
+    # The native existence queries use GetFileAttributes, which describes
+    # the named link rather than requiring its target to be accessible.
+    false
+  elif buildOS in ["linux", "macosx", "freebsd", "openbsd", "netbsd",
+                  "dragonfly", "solaris", "aix", "haiku", "android"]:
+    let probe = gorgeEx("[ -L " & quoteShellPosix(path) & " ]", "", "")
+    if probe.exitCode notin [0, 1]:
+      raise newException(IOError, "Tailwind link query failed: " & probe.output)
+    probe.exitCode == 0
+  else:
+    raise newException(IOError, "Unsupported Tailwind metadata host: " & buildOS)
+proc mustRead(path: string): bool =
+  if fileExists(path) or dirExists(path) or namedLink(path):
+    return true
+  let parent = path.parentDir()
+  if fileExists(parent) or namedLink(parent):
+    return true
+  if dirExists(parent):
+    # Keep the raw /. component: joining/normalizing it loses the actual
+    # search-permission check of an existing but inaccessible directory.
+    if not dirExists(parent & "/."):
+      return true
+    for _, name in walkDir(parent, relative = true):
+      if name == path.extractFilename():
+        return true
+  else:
+    for _, name in walkDir(parent.parentDir(), relative = true):
+      if name == parent.extractFilename():
+        return true
+  false
+proc query(path: string) =
+  if mustRead(path): echo "isonim-tailwind-map-v1:read"
+  else: echo "isonim-tailwind-map-v1:absent"
+"""
+
+  proc quoteCompilerCommand(compiler: string; arguments: openArray[string]): string
+      {.compileTime.} =
+    ## JS's hostOS describes the target, not the compiler's native host.
+    ## Recognize native absolute executable paths and use the public quoting
+    ## functions for their command-line form; never guess from environment.
+    let drivePath = compiler.len >= 3 and compiler[0] in {'a'..'z', 'A'..'Z'} and
+      compiler[1] == ':' and compiler[2] in {'/', '\\'}
+    let uncParts = compiler.split('\\')
+    let uncPath = compiler.startsWith("\\\\") and uncParts.len >= 5 and
+      uncParts[2].len > 0 and uncParts[3].len > 0 and uncParts[^1].len > 0
+    let posixPath = compiler.startsWith("/") and not compiler.startsWith("//")
+    if not (drivePath or uncPath or posixPath):
+      raise newException(IOError, "Unknown absolute Nim compiler path: " & compiler)
+    for arg in @[compiler] & @arguments:
+      if result.len > 0: result.add ' '
+      result.add(if posixPath: quoteShellPosix(arg) else: quoteShellWindows(arg))
+
+  proc defaultTailwindMapMissing(): bool {.compileTime.} =
+    ## Nim 2.0's JS VM has no public file-existence API. Ask the very same
+    ## compiler in NimScript mode, which has host metadata operations. The
+    ## fixed program needs no generated file, C compiler or installed helper.
+    let library = querySetting(SingleValueSetting.libPath)
+    if library.len == 0:
+      raise newException(IOError, "Nim did not report its selected standard library")
+    # Nim expands $ in path options separately from the host command-line
+    # quoting. Double literal dollars when forwarding the resolved lib path.
+    let command = quoteCompilerCommand(getCurrentCompilerExe(), [
+      "e", "--hints:off", "--warnings:off", "--skipUserCfg:on",
+      "--skipParentCfg:on", "--skipProjCfg:on", "--lib:" & library.replace("$", "$$"),
+      "--eval:" & tailwindMetadataProgram & "\nquery(" & defaultTailwindJsonPath.escape & ")"])
+    # Metadata must be measured afresh when files or permissions change.
+    let metadata = gorgeEx(command, "", "")
+    if metadata.exitCode != 0:
+      raise newException(IOError, "Tailwind metadata query failed: " & metadata.output)
+    case metadata.output
+    of "isonim-tailwind-map-v1:absent", "isonim-tailwind-map-v1:absent\n",
+        "isonim-tailwind-map-v1:absent\r\n": true
+    of "isonim-tailwind-map-v1:read", "isonim-tailwind-map-v1:read\n",
+        "isonim-tailwind-map-v1:read\r\n": false
+    else:
+      raise newException(IOError, "Invalid Tailwind metadata response: " & metadata.output)
+
+  const tailwindJsonStr =
+    when tailwindStylesPathOverride.len > 0: staticRead(tailwindJsonPath)
+    elif compiles(block:
+      const readableDefault = staticRead(defaultTailwindJsonPath)
+      discard readableDefault):
+      staticRead(defaultTailwindJsonPath)
+    elif defaultTailwindMapMissing(): "{}"
+    else: staticRead(tailwindJsonPath)
   const hasTailwindStyles* = tailwindJsonStr != "{}"
 else:
   when fileExists(tailwindJsonPath):

@@ -155,10 +155,9 @@ check-siblings:
     echo "[check-siblings] all $(printf '%s\n' "$declared" | wc -l | tr -d ' ') declared sibling(s) present"
 
 # Generate build/tailwind.css + build/tailwind-styles.json from the
-# isonim source via the real Tailwind CSS CLI.  CodeTracer's
-# scripts/build-once.sh invokes this before any Nim compile because
-# ui_js.nim's staticRead of build/tailwind-styles.json is uncatchable
-# at compile time.
+# isonim source via the real Tailwind CSS CLI. Utility-class consumers and
+# the provisioned DSL suites need the actual extracted styles; the loader's
+# optional default-map fallback is only for consumers needing no utilities.
 build-tailwind:
     [ -d node_modules ] || yarn install --frozen-lockfile
     node tools/tailwind-extract.mjs
@@ -191,6 +190,7 @@ test-c:
     # unprovisioned checkout goes red here with the guard message from
     # `yoga_bindings.nim` instead of building green over a missing dependency.
     nim c -r tests/test_flexbox.nim
+    python3 tests/test_tailwind_loader.py
     nim c -r tests/test_nimcache_is_worktree_local.nim
     nim c -r tests/test_signals.nim
     nim c -r tests/test_effects.nim
@@ -296,15 +296,10 @@ test-hcr-shim:
 
 # Run tests on JS target.
 #
-# `build-tailwind` is a prerequisite, not a convention: on the JS target
-# `src/isonim/dsl/tailwind.nim` reaches `build/tailwind-styles.json` through
-# `staticRead`, which is uncatchable at compile time — the `try/except` around
-# it at tailwind.nim:43 does NOT save it — so `nim js tests/test_dsl.nim` dies
-# with `cannot open file: .../build/tailwind-styles.json` unless that file was
-# generated first. Third unprovisioned build input of the same family as the
-# yoga submodule and the cross-repo siblings, and the one the other two were
-# hiding: this lane never got past `test_signals` while the siblings were
-# missing, so it had never reached `test_dsl` to fail there.
+# Keep the real extraction prerequisite: these utility-class consumers need
+# the generated styles, even though plain custom-class consumers can compile
+# without the optional default native map. An absent-map fallback does not
+# qualify provisioned utility behavior.
 test-js: build-tailwind
     nim js -d:nodejs --out:build/test_editor_workspace_refresh.js tests/test_editor_workspace_refresh.nim
     python3 tools/run_nim_js_test.py build/test_editor_workspace_refresh.js
@@ -386,6 +381,7 @@ test-rxcore:
 
 # Run only DSL/html/components tests
 test-dsl: build-tailwind
+    python3 tests/test_tailwind_loader.py
     nim c -r tests/test_dsl.nim
     nim js -r tests/test_dsl.nim
     nim c -r tests/test_dsl_ssr.nim
@@ -403,6 +399,18 @@ test-dsl: build-tailwind
     # map. C only: class expansion to setStyle calls is native-only.
     nim c -r -d:tailwindStylesPathOverride={{justfile_directory()}}/tests/dsl/tailwind/variant-styles.json tests/test_dsl_tailwind_variants.nim
     nim c -r -d:tailwindStylesPathOverride={{justfile_directory()}}/tests/dsl/tailwind/variant-styles.json -d:isonimTailwindVariants tests/test_dsl_tailwind_variants.nim
+
+# Real compiler regression gate, isolated from any generated checkout map.
+test-tailwind-loader:
+    python3 tests/test_tailwind_loader.py
+
+# Pinned compiler, immutable sources and a real denied-link control in Nix.
+# Explicit packaging gate; not part of the host-portable default test suite.
+test-tailwind-loader-nix:
+    #!/usr/bin/env bash
+    set -euo pipefail
+    system="$(nix eval --raw --impure --expr builtins.currentSystem)"
+    nix build --no-link --option sandbox true ".#checks.$system.tailwind-loader"
 
 # Run only server function tests
 test-server:
@@ -1214,8 +1222,8 @@ demo-build:
 # Build the nginx fixture (tests/nginx/README.md): the sibling ngx-isonim
 # module with the fixture's route manifest, server functions and SSR
 # hydration app compiled in (built in ngx-isonim's dev shell), and the
-# fixture's browser clients. `build-tailwind`: the hydration client is a
-# JS build of the DSL (see `test-js`).
+# fixture's browser clients. Keep `build-tailwind` so these provisioned clients
+# use the real generated utility styles, as the main JS suite does.
 build-nginx-fixture: build-tailwind
     bash tests/nginx/build_fixture.sh
 
@@ -1300,10 +1308,9 @@ test-browser: test-browser-demo test-browser-ssr test-browser-hmr test-browser-h
 # metacraft-web sibling repo — see `test-browser-editor-consumer`;
 # `nginx-rpc` and `ssr-hydration` run against real nginx in `test-nginx`.)
 #
-# `build-tailwind` first, for the reason spelled out above `test-js`: every
-# `nim js` compile below reaches `build/tailwind-styles.json` through an
-# uncatchable `staticRead`. On a warm working copy that file already exists,
-# which is exactly why its absence would only ever have bitten a cold runner.
+# `build-tailwind` first so browser fixtures and their bundles consume real,
+# current utility styles. Plain components' optional default-map fallback does
+# not replace the CSS/map inputs these provisioned fixtures exercise.
 
 # Build every artifact the six static in-repo Playwright projects serve.
 browser-test-deps: build-tailwind demo-build build-hmr-fixture build-hmr-parametric-fixture build-hmr-transport-fixture build-web-worker-fixture editor-build
