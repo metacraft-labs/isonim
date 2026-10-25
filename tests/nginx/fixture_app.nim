@@ -13,7 +13,14 @@
 ## string and streaming renderers `hydration` and `hydration-stream`), and
 ## the route manifest of tests/routing/negotiation_manifest.nim (IFP-M26:
 ## JSON variants, per-response cache policies, handler-raised not-found)
-## as the async app `negotiation` at `/neg/`.
+## as the async app `negotiation` at `/neg/`, and the streaming pages of
+## tests/routing/streaming_manifest.nim (IFP-M30) as the async app
+## `streaming` at `/stream/`.
+##
+## Until ngx-isonim sets `ctx.bodyWriter` and `ctx.hydration` itself (it
+## keeps them in a table keyed by the context, `app_registry.bodyWriter` /
+## `hydrationEnabled`), `hostBridged` hands them to IsoNim's context before
+## the dispatch runs.  It compiles itself out once the table is gone.
 ##
 ## Sessions: the cookie `sid=user|staff|admin` is a session with that role,
 ## whose CSRF token is `csrf-<sid>`.  Signatures: `X-Signature:
@@ -27,10 +34,33 @@ import std/[asyncdispatch, strutils]
 import isonim/routing/route_dispatch
 from app_registry import registerAsyncApp  # ngx-isonim (src/app_registry.nim)
 import isonim/server/[context, rpc]
+# Only what is used: under -d:useFaststreams both response_body modules also
+# export faststreams' outputs, whose `Page` would clash with the manifest's.
+from isonim/server/response_body as isonimBody import nil
 import isonim/routing/client_context
 import fixture_manifest
 import hydration_app
 import ../routing/negotiation_app
+import ../routing/streaming_app
+
+when declared(app_registry.bindBodyWriter):
+  # ngx-isonim's own ResponseBody (src/response_body.nim), until it
+  # re-exports IsoNim's.
+  from response_body as ngxBody import nil
+
+proc hostBridged(app: RequestHandler): RequestHandler =
+  ## `app` with the module's body writer and hydration flag on IsoNim's
+  ## request context (see the module documentation).
+  when declared(app_registry.bindBodyWriter):
+    result = proc(ctx: RequestContext): Future[void] =
+      let ngxWriter: ngxBody.ResponseBody = app_registry.bodyWriter(ctx)
+      ctx.setBodyWriter(isonimBody.newResponseBody(
+        proc(data: openArray[char]) = ngxBody.write(ngxWriter, data),
+        proc() = ngxBody.flush(ngxWriter)))
+      ctx.hydration = app_registry.hydrationEnabled(ctx)
+      app(ctx)
+  else:
+    result = app
 
 const
   instanceId* = "fixture-instance"
@@ -114,7 +144,8 @@ proc installHooks*() =
     verifySignature: proc(ctx: RequestContext; route: string): Future[bool] {.async.} =
       return ctx.request.header("X-Signature") == "valid-" & route,
     currentIncarnation: proc(): string = incarnationId,
-    onCachePolicyRefused: recordCacheRefusal)
+    onCachePolicyRefused: recordCacheRefusal,
+    pageHeaders: streamingPageHeaders)
   # One hook for both manifests: each answers for its own entries.
   canonicalizer = proc(ctx: RequestContext; route: string;
                        policy: CanonicalPolicy): Future[CanonicalOutcome] =
@@ -128,4 +159,5 @@ proc registerApps*() =
   installHooks()
   registerAsyncApp("fixture", fixtureApp())
   registerAsyncApp("negotiation", negotiationApp())
+  registerAsyncApp("streaming", hostBridged(streamingApp()))
   registerHydrationApps()

@@ -223,6 +223,8 @@ test-c:
     nim c -r tests/test_router.nim
     nim c -r tests/test_ssr_routing.nim
     nim c -r tests/test_server_functions.nim
+    # IFP-M30: streaming pages on a host without a body writer (in-process).
+    nim c -r -d:isonimRpcPrefix=/api/v1/rpc tests/routing/t_manifest_streaming_buffered.nim
     nim c -r tests/test_form_actions.nim
     nim c -r tests/test_rpc_dispatch.nim
     nim c -r tests/test_static_dist_dev_server.nim
@@ -1240,15 +1242,20 @@ build-nginx-fixture: build-tailwind
 # -> hydrate -> interact round trip (IFP-M3) against real nginx with the
 # real ngx-isonim module: the route-manifest test (its generated policy
 # tests run against nginx), the route-manifest negotiation test (IFP-M26:
-# JSON variants, per-response cache policies, handler-raised not-found), the nginx-rpc and ssr-hydration Playwright
+# JSON variants, per-response cache policies, handler-raised not-found), the
+# streaming-page test (IFP-M30; its in-process twin for a host without a
+# writer, t_manifest_streaming_buffered.nim, is in `test-c`, and its mutants
+# in run_streaming_mutants.sh), the nginx-rpc and ssr-hydration Playwright
 # projects, and the falsifying mutations of those projects.  Needs the
 # ngx-isonim sibling checkout and nix; not part of `just test`.
 test-nginx: build-nginx-fixture
     nim c -r -d:isonimRpcPrefix=/api/v1/rpc tests/test_route_manifest.nim
     nim c -r -d:isonimRpcPrefix=/api/v1/rpc tests/routing/t_manifest_negotiation.nim
+    nim c -r -d:isonimRpcPrefix=/api/v1/rpc tests/routing/t_manifest_streaming.nim
     cd tests/browser && PLAYWRIGHT_CHROMIUM_EXECUTABLE="${PLAYWRIGHT_CHROMIUM_EXECUTABLE:-$(command -v chromium)}" npx playwright test --project=nginx-rpc --project=ssr-hydration
     bash tests/nginx/run_mutants.sh
     bash tests/routing/run_negotiation_mutants.sh
+    bash tests/routing/run_streaming_mutants.sh
 
 # CI: `just test-nginx`, its full output also in test-logs/test-nginx.log
 # (.github/workflows/nginx-tests.yml uploads that directory).

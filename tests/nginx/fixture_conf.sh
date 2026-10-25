@@ -18,6 +18,10 @@
 # /neg/: the route manifest of tests/routing/negotiation_manifest.nim (the
 # async app `negotiation`), for tests/routing/t_manifest_negotiation.nim.
 #
+# /stream/: the streaming pages of tests/routing/streaming_manifest.nim (the
+# async app `streaming`), for tests/routing/t_manifest_streaming.nim; with
+# isonim_ssr_hydration on (the default), except at /stream/f/9.
+#
 # One worker process: every request of a test is served by the same worker,
 # which is what makes "the worker was not blocked" observable.
 
@@ -66,6 +70,17 @@ http {
     location /neg/ {
       isonim_rpc on;
       isonim_rpc_app negotiation;
+    }
+    location /stream/ {
+      isonim_rpc on;
+      isonim_rpc_app streaming;
+      isonim_rpc_timeout 30s;
+    }
+    location = /stream/f/9 {
+      isonim_rpc on;
+      isonim_rpc_app streaming;
+      isonim_rpc_timeout 30s;
+      isonim_ssr_hydration off;
     }
     location / {
       isonim_rpc on;

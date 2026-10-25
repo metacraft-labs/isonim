@@ -12,7 +12,8 @@ export policy
 
 type
   RouteKind* = enum
-    rkPage    ## an SSR page (`page`): the response is a `Page[T]`
+    rkPage    ## an SSR page (`page`): the response is a `Page[T]`, or,
+              ## with `stream = true`, HTML streamed through a `PageStream`
     rkApi     ## a data or mutation route (`get`, `post`, ..., `action`)
     rkRpc     ## the mount of the server functions (`rpc`)
     rkAny     ## a raw handler for every method (`any`)
@@ -39,6 +40,8 @@ type
     cacheOverrides*: seq[CachePolicy]
       ## the policies the hook or the handler may give one response instead
       ## of `cache` (each at least as strict as `cache`)
+    stream*: bool            ## a streaming page: its handler writes through
+                             ## a `PageStream` and returns the page's data
 
   Page*[T] = object
     ## What a page handler returns: the HTML of the page, and the data the

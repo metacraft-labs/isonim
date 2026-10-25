@@ -21,7 +21,12 @@
 ##   handler (`cvVerified`, `cvSafeMethod`, `cvExempt`, or why it failed);
 ## * `clientContext`: the `X-Isonim-Context` header the generated client
 ##   sent (URL-Schema.md §5.4);
-## * `pathParams`: the parameters the route pattern matched.
+## * `pathParams`: the parameters the route pattern matched;
+## * `bodyWriter`: the server's response body writer (`ResponseBody`), when
+##   the server streams (nil otherwise), and `hydration`: whether the
+##   server enables the hydration bootstrap.  The route manifest's streaming
+##   pages write through them (isonim-routing-server-functions.md,
+##   "Streaming Pages").
 ##
 ## The application plugs in what only it can know through `serverHooks`:
 ## how to find the session of a request, how to verify a signed request,
@@ -43,7 +48,12 @@ when defined(js):
 else:
   import std/[asyncdispatch, strutils, sysrand, base64, json]
   import request, response
+  from response_body import ResponseBody
   export request, response
+  # response_body is deliberately not exported: a server that keeps its own
+  # `ResponseBody` name in scope (ngx-isonim, until it re-exports this one)
+  # would otherwise see two.  Import isonim/server/response_body to write to
+  # `ctx.bodyWriter`.
 
   type
     Session* = ref object of RootObj
@@ -115,6 +125,15 @@ else:
       resolvedTraceparent: string
         ## Owned by this request, so repeated metadata rendering and server
         ## correlation use one value without retaining contexts globally.
+      cachePolicyFixed: bool
+        ## The response's headers were committed (a streaming page's first
+        ## flush): `setCachePolicy` refuses every change from then on.
+      writer: ResponseBody
+        ## The server's body writer (`bodyWriter`, `setBodyWriter`).
+      hydration*: bool
+        ## Whether the server enables the hydration bootstrap for this
+        ## response (ngx-isonim: the location's `isonim_ssr_hydration`).  A
+        ## streaming page writes `generateHydrationScript` when it is set.
 
     RequestHandler* = proc(ctx: RequestContext): Future[void]
       ## A server-side request handler: reads `ctx.request`, leaves the
@@ -147,8 +166,16 @@ else:
       onCachePolicyRefused*: proc(ctx: RequestContext;
                                   requested, kept: CachePolicy)
         ## Told of every `setCachePolicy` that was refused (a policy weaker
-        ## than the response's, or one the entry does not declare):
-        ## `requested` was asked for, `kept` is what the response keeps.
+        ## than the response's, one the entry does not declare, or any
+        ## change after the response was committed): `requested` was asked
+        ## for, `kept` is what the response keeps.
+      pageHeaders*: proc(ctx: RequestContext; route: string)
+        ## The application's headers of a route-manifest page's HTML answer
+        ## (`route` is the entry's name), e.g. `Content-Security-Policy`
+        ## with `ctx.response.cspNonceSource`.  Runs before the response is
+        ## committed and before the cache policy's headers are written, for
+        ## streaming and `Page`-returning pages alike; never for a JSON
+        ## variant, a redirect or an error.
 
   var serverHooks* {.threadvar.}: ServerHooks
     ## The application's hooks.  Set once at startup (ngx-isonim: from the
@@ -176,6 +203,20 @@ else:
                             csrf: cvNotChecked)
     if req.hasHeader(contextHeaderName):
       result.clientContext = parseContextHeader(req.header(contextHeaderName))
+
+  proc bodyWriter*[C: RequestContext](ctx: C): ResponseBody =
+    ## The server's response body writer for this request, nil when the
+    ## server does not stream.  Its first `flush` commits the response.
+    ##
+    ## Generic on purpose: a server that still keeps the writer in a table
+    ## of its own and exports a `bodyWriter(ctx: RequestContext)` of its
+    ## own (ngx-isonim before it calls `setBodyWriter`) outranks this one
+    ## in its own code, which keeps compiling unchanged.
+    ctx.writer
+
+  proc setBodyWriter*(ctx: RequestContext; body: ResponseBody) =
+    ## Used by the server before it runs the handler.
+    ctx.writer = body
 
   proc resolveSession*(ctx: RequestContext): Future[void] {.async.} =
     ## Runs the application's session resolver once per request.
@@ -424,14 +465,25 @@ else:
     ## The cache policy the dispatch writes on this response.
     ctx.cachePolicy
 
+  proc fixCachePolicy*(ctx: RequestContext) =
+    ## Called by the route dispatch at a streaming page's commit point: the
+    ## policy's headers are on their way, so `setCachePolicy` refuses every
+    ## later change.
+    ctx.cachePolicyFixed = true
+
   proc setCachePolicy*(ctx: RequestContext; policy: CachePolicy): bool =
     ## Gives this response `policy` instead of the entry's.  Accepted (true)
     ## when `policy` is at least as strict as the response's current policy
-    ## and is the entry's `cache` or one of its `cacheOverrides`.  Refused
-    ## (false) otherwise: the response keeps its current policy and the
-    ## refusal goes to `serverHooks.onCachePolicyRefused`.  So a response
-    ## can only be made stricter, never weaker.
-    if isAtLeastAsStrict(policy, ctx.cachePolicy) and policy in ctx.cacheChoices:
+    ## and is the entry's `cache` or one of its `cacheOverrides`, and the
+    ## response is not committed yet.  Refused (false) otherwise: the
+    ## response keeps its current policy and the refusal goes to
+    ## `serverHooks.onCachePolicyRefused`.  So a response can only be made
+    ## stricter, never weaker, and never once its headers are sent (a
+    ## streaming page after its first flush).
+    let committed = ctx.cachePolicyFixed or ctx.response.committed
+    if committed:
+      discard  # the headers are sent: refused below
+    elif isAtLeastAsStrict(policy, ctx.cachePolicy) and policy in ctx.cacheChoices:
       ctx.cachePolicy = policy
       return true
     let report = serverHooks.onCachePolicyRefused

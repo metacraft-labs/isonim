@@ -40,9 +40,11 @@
 ## | `target` | `""` | where a progressive entry's no-JS form is redirected (303); "" = the same-origin `Referer`, else `/` |
 ## | `json` | `false` | pages only: the page also answers `Page.data` as JSON, for a `.json` suffix on its last path parameter (the pattern must end in one) or an `Accept` preferring `application/json` |
 ## | `cacheOverrides` | `[]` | `[cpPrivateNoStore, ...]`: the policies the canonicalization hook or the handler may give one response instead of `cache` (`ctx.setCachePolicy`); each must be at least as strict as `cache` (a compile-time error otherwise); not on `rpc` |
+## | `stream` | `false` | pages only: a streaming page, whose handler is `proc(ctx, req, page: PageStream): Future[Resp]`: it flushes its shell, then reads and streams the rest, and returns the page's data (route_dispatch.nim, `runStreamRoute`) |
 ##
 ## Omitted types are named after the entry: `rTopic` uses `TopicRequest`
-## and `TopicResponse` (a page's handler returns `Page[TopicResponse]`).
+## and `TopicResponse` (a page's handler returns `Page[TopicResponse]`; a
+## streaming page's returns `TopicResponse`, its data).
 ## A request type is a plain object: its fields are filled from the path
 ## parameters of the same name, then the body, then the query.
 ##
@@ -88,7 +90,7 @@ type
     httpMethod: string
     reqType, respType: NimNode
     auth, csrf, cache, canonical, contextScope: NimNode
-    prefix, progressive, json: bool
+    prefix, progressive, json, stream: bool
     target: string
     cacheOverrides: seq[NimNode]
 
@@ -147,6 +149,7 @@ proc parseEntry(stmt: NimNode): EntryDef =
       of "contextScope": result.contextScope = a[1]
       of "prefix": result.prefix = boolOption(a[1])
       of "json": result.json = boolOption(a[1])
+      of "stream": result.stream = boolOption(a[1])
       of "cacheOverrides":
         if a[1].kind != nnkBracket:
           error("`cacheOverrides` is a list of cache policies, e.g. " &
@@ -200,6 +203,9 @@ proc parseEntry(stmt: NimNode): EntryDef =
     if segs.len == 0 or segs[^1].len < 2 or segs[^1][0] != ':':
       error(nameStr & ": `json` needs a pattern that ends in a :param " &
         "segment (the `.json` suffix goes on it), got " & result.path, stmt)
+  if result.stream and result.kind != rkPage:
+    error(nameStr & ": `stream` applies to page entries only (a data " &
+      "entry answers JSON, which is never streamed)", stmt)
   if result.kind == rkRpc and result.cacheOverrides.len > 0:
     error("the `rpc` entry takes no `cacheOverrides`: server functions " &
       "are always cpPrivateNoStore", stmt)
@@ -256,7 +262,8 @@ proc specConstr(e: EntryDef): NimNode =
     newColonExpr(ident"progressive", newLit(e.progressive)),
     newColonExpr(ident"target", newLit(e.target)),
     newColonExpr(ident"json", newLit(e.json)),
-    newColonExpr(ident"cacheOverrides", overridesSeq(e)))
+    newColonExpr(ident"cacheOverrides", overridesSeq(e)),
+    newColonExpr(ident"stream", newLit(e.stream)))
 
 proc handlerType(e: EntryDef): NimNode =
   let ctxDef = newIdentDefs(ident"ctx", ident"RequestContext")
@@ -265,10 +272,16 @@ proc handlerType(e: EntryDef): NimNode =
     nnkProcTy.newTree(nnkFormalParams.newTree(
       nnkBracketExpr.newTree(ident"Future", ident"void"), ctxDef), newEmptyNode())
   of rkPage:
-    nnkProcTy.newTree(nnkFormalParams.newTree(
-      nnkBracketExpr.newTree(ident"Future",
-        nnkBracketExpr.newTree(ident"Page", e.respType)),
-      ctxDef, newIdentDefs(ident"req", e.reqType)), newEmptyNode())
+    if e.stream:
+      nnkProcTy.newTree(nnkFormalParams.newTree(
+        nnkBracketExpr.newTree(ident"Future", e.respType),
+        ctxDef, newIdentDefs(ident"req", e.reqType),
+        newIdentDefs(ident"page", ident"PageStream")), newEmptyNode())
+    else:
+      nnkProcTy.newTree(nnkFormalParams.newTree(
+        nnkBracketExpr.newTree(ident"Future",
+          nnkBracketExpr.newTree(ident"Page", e.respType)),
+        ctxDef, newIdentDefs(ident"req", e.reqType)), newEmptyNode())
   else:
     nnkProcTy.newTree(nnkFormalParams.newTree(
       nnkBracketExpr.newTree(ident"Future", e.respType),
@@ -383,9 +396,11 @@ macro routeManifest*(enumName: untyped; body: untyped): untyped =
     of rkPage, rkApi:
       blk.add newLetStmt(h, newDotExpr(hSym, e.name))
       let ctxP = genSym(nskParam, "ctx")
-      let respT = if e.kind == rkPage: nnkBracketExpr.newTree(ident"Page", e.respType)
+      let respT = if e.kind == rkPage and not e.stream:
+                    nnkBracketExpr.newTree(ident"Page", e.respType)
                   else: e.respType
-      let call = newCall(nnkBracketExpr.newTree(ident"runRoute", e.reqType, respT),
+      let runProc = if e.stream: ident"runStreamRoute" else: ident"runRoute"
+      let call = newCall(nnkBracketExpr.newTree(runProc, e.reqType, respT),
                          ctxP, s, h)
       runner = newProc(params = [nnkBracketExpr.newTree(ident"Future", ident"void"),
                                  newIdentDefs(ctxP, ident"RequestContext")],

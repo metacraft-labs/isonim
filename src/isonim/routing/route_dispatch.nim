@@ -21,7 +21,7 @@
 ##      `303` to its target.
 ##
 ## The contract is isonim-routing-server-functions.md, "Typed Route
-## Manifest".  Three parts of it live here:
+## Manifest".  Four parts of it live here:
 ##
 ## * **JSON variants of a page** (`json = true`): a `.json` suffix on the
 ##   last path parameter is removed before decoding and the hook
@@ -35,13 +35,27 @@
 ##   handler's response;
 ## * **not found**: the hook's `coNotFound` and a `RouteNotFound` raised by
 ##   the hook or the handler are one answer (`notFound`): the response is
-##   put back to what it was before the hook ran, then answered 404.
+##   put back to what it was before the hook ran, then answered 404;
+## * **streaming pages** (`stream = true`, `runStreamRoute`): the handler
+##   writes through a `PageStream` over the server's body writer
+##   (`ctx.bodyWriter`).  Its first flush is the commit point: the content
+##   type, the application's `serverHooks.pageHeaders`, the response's cache
+##   policy and `Vary: Accept` are applied just before it, and nothing about
+##   the status or headers changes after it (`setCachePolicy` is refused, a
+##   failure propagates to the server, which terminates the response).
+##   After the handler returns: the page-data script, the hydration
+##   bootstrap with the response's nonce (`ctx.hydration`), and the
+##   stream's tail.  A JSON variant is never streamed.
 ##
 ## Responses the pipeline produces itself carry `Cache-Control: private,
 ## no-store`, so no cache keeps a refusal.
 
 import std/[asyncdispatch, json, options, strutils]
 import ../server/[context, rpc]
+# Only the writer: under -d:useFaststreams response_body also exports
+# faststreams' outputs (whose buffers define a `Page` of their own).
+from ../server/response_body import ResponseBody, write, flush
+import ../ssr/markers
 import match, route_spec
 
 export route_spec
@@ -281,18 +295,26 @@ proc canonicalStage(ctx: RequestContext; spec: RouteSpec;
                           if outcome.status == 0: 301 else: outcome.status)
     return false
 
-proc runRoute*[Req, Resp](ctx: RequestContext; spec: RouteSpec;
-    handler: proc(ctx: RequestContext; req: Req): Future[Resp]): Future[void] {.async.} =
-  ## The pipeline of a page or data entry around its handler.
+type
+  Prelude[Req] = object
+    ## What the stages before a page's or data entry's handler leave it.
+    ok: bool                 ## false: the pipeline already answered
+    req: Req
+    before: ResponseSnapshot ## the response before the hook ran
+
+proc routePrelude[Req](ctx: RequestContext;
+                       spec: RouteSpec): Future[Prelude[Req]] {.async.} =
+  ## The stages before the handler: the cache policy, the `.json` suffix,
+  ## request decoding (`400`), authentication, CSRF and the client context,
+  ## the canonicalization hook, and the `Accept` negotiation.
   var body: JsonNode = nil
   var formToken = ""
   ctx.beginCachePolicy(spec.cache, spec.cacheOverrides)
   ctx.takeJsonSuffix(spec)
   if not ctx.prepare(spec, body, formToken):
     return
-  var req: Req
   try:
-    req = decodeRequest[Req](ctx.pathParams, ctx.request.queryParams, body)
+    result.req = decodeRequest[Req](ctx.pathParams, ctx.request.queryParams, body)
   except RpcBadRequest as e:
     ctx.respondError(400, "bad_request", e.msg)
     return
@@ -303,24 +325,52 @@ proc runRoute*[Req, Resp](ctx: RequestContext; spec: RouteSpec;
   let before = ctx.response.snapshot()
   if not await ctx.canonicalStage(spec, before):
     return
+  result.before = before
   # `Accept` is read only now, so the hook's answer cannot depend on it.
   if spec.kind == rkPage and spec.json and ctx.pageVariant == pvHtml and
       prefersJson(ctx.request.header("Accept")):
     ctx.pageVariant = pvJsonAccept
-  var resp: Resp
-  try:
-    resp = await handler(ctx, req)
-  except RouteNotFound:
+  result.ok = true
+
+proc failBeforeCommit(ctx: RequestContext; e: ref CatchableError;
+                      before: ResponseSnapshot) =
+  ## A handler's exception while nothing is sent: the pipeline's answer.
+  if e of RouteNotFound:
     ctx.notFound(before)
-    return
-  except RpcBadRequest as e:
+  elif e of RpcBadRequest:
     ctx.respondError(400, "bad_request", e.msg)
-    return
-  except CatchableError as e:
+  else:
     ctx.failure = e
     ctx.responseBody.setLen(0)
     ctx.respondError(500, "internal")
+
+proc answerJsonVariant[T](ctx: RequestContext; spec: RouteSpec; data: T) =
+  ## A page's JSON answer (after the handler, its cache policy applied).
+  if spec.json and ctx.response.status in 200 .. 299:
+    # The same URL answers HTML and JSON (by Accept).
+    ctx.addVaryAccept()
+  ctx.response.contentType = "application/json"
+  ctx.responseBody = $(%data)
+
+proc runRoute*[Req, Resp](ctx: RequestContext; spec: RouteSpec;
+    handler: proc(ctx: RequestContext; req: Req): Future[Resp]): Future[void] {.async.} =
+  ## The pipeline of a page or data entry around its handler.
+  let pre = await routePrelude[Req](ctx, spec)
+  if not pre.ok:
     return
+  var resp: Resp
+  try:
+    resp = await handler(ctx, pre.req)
+  except CatchableError as e:
+    ctx.failBeforeCommit(e, pre.before)
+    return
+  when Resp is Page:
+    if not ctx.response.isRedirect and ctx.pageVariant == pvHtml:
+      # The application's page headers, before the policy's, so that the
+      # policy's are the dispatch's whatever the hook set.
+      let hook = serverHooks.pageHeaders
+      if hook != nil:
+        hook(ctx, spec.name)
   # Exactly one policy: the entry's, or the stricter one the hook or the
   # handler set for this response.
   ctx.applyCachePolicy(ctx.responseCachePolicy)
@@ -330,13 +380,11 @@ proc runRoute*[Req, Resp](ctx: RequestContext; spec: RouteSpec;
     ctx.redirectAfterPost(spec.target)
     return
   when Resp is Page:
-    if spec.json and ctx.response.status in 200 .. 299:
-      # The same URL answers HTML and JSON (by Accept).
-      ctx.addVaryAccept()
     if ctx.pageVariant != pvHtml:
-      ctx.response.contentType = "application/json"
-      ctx.responseBody = $(%resp.data)
+      ctx.answerJsonVariant(spec, resp.data)
     else:
+      if spec.json and ctx.response.status in 200 .. 299:
+        ctx.addVaryAccept()
       ctx.response.contentType = "text/html; charset=utf-8"
       # The page's data goes in before </body> (at the end without one).
       let script = pageDataScript($(%resp.data))
@@ -347,6 +395,148 @@ proc runRoute*[Req, Resp](ctx: RequestContext; spec: RouteSpec;
   else:
     ctx.response.contentType = "application/json"
     ctx.responseBody = $(%resp)
+
+# --------------------------------------------------------------------------
+# Streaming pages (isonim-routing-server-functions.md, "Streaming Pages")
+# --------------------------------------------------------------------------
+
+const defaultPageTail* = "</body></html>"
+  ## What a streaming page's dispatch writes last, unless the handler sets
+  ## `page.tail`.
+
+type
+  PageStream* = ref object
+    ## A streaming page's HTML on its way to the client.  `write` queues,
+    ## `flush` sends; the first flush commits the response's status and
+    ## headers.  Nothing queued reaches the server before a flush, so a
+    ## handler that fails before its first flush is answered by the
+    ## pipeline (404, 400, 500) with none of its HTML.
+    ctx: RequestContext
+    spec: RouteSpec
+    pending: string
+    committed: bool
+    discarding: bool   ## a JSON variant: the HTML is not sent
+    tail*: string
+      ## The closing markup the dispatch writes after the page-data and
+      ## bootstrap scripts (default `defaultPageTail`).
+
+proc committed*(page: PageStream): bool =
+  ## Whether the first flush has happened (the headers are committed).
+  page.committed
+
+proc write*(page: PageStream; html: string) =
+  ## Queues `html`; it is sent at the next `flush` (or when the handler
+  ## returns).  A JSON variant's stream discards it.
+  if not page.discarding:
+    page.pending.add html
+
+proc emit(page: PageStream; flush: bool) =
+  ## Hands what is queued to the server: its body writer (flushed when
+  ## `flush`), or, on a server that does not stream, the context's body.
+  let ctx = page.ctx
+  if page.pending.len > 0 or flush:
+    let w = ctx.bodyWriter
+    let data = move page.pending
+    page.pending = ""
+    if w.isNil:
+      ctx.responseBody.add data
+    else:
+      if data.len > 0:
+        w.write(data)
+      if flush:
+        w.flush()
+
+proc commitHeaders(page: PageStream) =
+  ## The response's headers, just before they are sent: the content type,
+  ## the application's page headers, exactly one cache policy's headers and
+  ## (for a page with a JSON variant) `Vary` naming `Accept`.  From now on
+  ## the cache policy cannot change.
+  let ctx = page.ctx
+  ctx.response.contentType = "text/html; charset=utf-8"
+  let hook = serverHooks.pageHeaders
+  if hook != nil:
+    hook(ctx, page.spec.name)
+  ctx.applyCachePolicy(ctx.responseCachePolicy)
+  if page.spec.json and ctx.response.status in 200 .. 299:
+    ctx.addVaryAccept()
+  ctx.fixCachePolicy()
+  page.committed = true
+
+proc flush*(page: PageStream) =
+  ## Sends what is queued.  The first flush commits the response: its
+  ## headers are applied, then the server sends them with the queued HTML.
+  ## Raises `ValueError` on a redirected response (a redirect has no body),
+  ## and what the server's writer raises (`ClientConnectionError`,
+  ## `ResponseTooLargeError`).  A JSON variant's stream does nothing.
+  if page.discarding:
+    return
+  let ctx = page.ctx
+  if not page.committed:
+    if ctx.response.isRedirect:
+      raise newException(ValueError, "the page redirected to " &
+        ctx.response.location & "; a redirect carries no body")
+    page.commitHeaders()
+    if ctx.bodyWriter.isNil:
+      # No server writer: the bytes stay in the context, but the response
+      # is fixed exactly as a streaming server would have fixed it.
+      ctx.response.markCommitted()
+  page.emit(flush = true)
+
+proc shell*(page: PageStream; html: string) =
+  ## Writes the document shell and flushes it: the commit point.  Call it
+  ## before the first read, so the client gets the shell while the data
+  ## is read.
+  page.write(html)
+  page.flush()
+
+proc newPageStream(ctx: RequestContext; spec: RouteSpec): PageStream =
+  PageStream(ctx: ctx, spec: spec, tail: defaultPageTail,
+             discarding: ctx.pageVariant != pvHtml)
+
+proc finishStream[T](page: PageStream; data: T) =
+  ## After the handler returned: the page-data script, the hydration
+  ## bootstrap (with the response's CSP nonce) when the server enables it,
+  ## and the tail.  The server ends the response.
+  let ctx = page.ctx
+  if not page.committed:
+    page.commitHeaders()
+  page.pending.add pageDataScript($(%data))
+  if ctx.hydration:
+    page.pending.add generateHydrationScript(nonce = ctx.response.cspNonce)
+  page.pending.add page.tail
+  page.emit(flush = false)
+
+proc runStreamRoute*[Req, Resp](ctx: RequestContext; spec: RouteSpec;
+    handler: proc(ctx: RequestContext; req: Req;
+                  page: PageStream): Future[Resp]): Future[void] {.async.} =
+  ## The pipeline of a streaming page around its handler (see
+  ## "Streaming pages" in the module documentation).
+  let pre = await routePrelude[Req](ctx, spec)
+  if not pre.ok:
+    return
+  let page = newPageStream(ctx, spec)
+  var data: Resp
+  try:
+    data = await handler(ctx, pre.req, page)
+  except CatchableError as e:
+    if page.committed:
+      # The headers are sent: no 404, 400 or 500 can be answered any more.
+      # The server terminates the response and logs the error.
+      raise e
+    ctx.failBeforeCommit(e, pre.before)
+    return
+  if page.discarding:
+    # A JSON variant: answered whole, as for a Page.
+    ctx.applyCachePolicy(ctx.responseCachePolicy)
+    if ctx.response.isRedirect:
+      return
+    ctx.answerJsonVariant(spec, data)
+    return
+  if ctx.response.isRedirect and not page.committed:
+    page.pending.setLen(0)
+    ctx.applyCachePolicy(ctx.responseCachePolicy)
+    return
+  page.finishStream(data)
 
 proc runAny*(ctx: RequestContext; spec: RouteSpec;
              handler: proc(ctx: RequestContext): Future[void]): Future[void] {.async.} =

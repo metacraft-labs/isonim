@@ -1,8 +1,9 @@
 ## fixture_server.nim
 ##
 ## Starts and stops the nginx fixture (README.md) for the tests that run
-## against it: tests/test_route_manifest.nim and
-## tests/routing/t_manifest_negotiation.nim.  The fixture must be built
+## against it: tests/test_route_manifest.nim,
+## tests/routing/t_manifest_negotiation.nim and
+## tests/routing/t_manifest_streaming.nim.  The fixture must be built
 ## (`just build-nginx-fixture`); `ISONIM_NGINX_MODULE` names another module
 ## build (run_mutants.sh's mutants).
 

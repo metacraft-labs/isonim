@@ -20,6 +20,13 @@
 ## | `pcJsonAccept` | the same page with `Accept: application/json` | as `pcJsonSuffix` (a redirect's `Location` is not checked) |
 ## | `pcCacheOverride` | for each policy in an entry's `cacheOverrides` (an `any` entry's too, as a `GET`): the request the application names for it (`PolicyEnv.cacheOverridePath`) | `2xx` or a redirect with exactly that policy's headers |
 ##
+## For a streaming page (`stream = true`) every refusal (a `4xx` answer:
+## `pcMethod`, `pcAuth`, `pcRole`, `pcAuthBeforeCanonical`, ...) must be the
+## pipeline's JSON error, since a refusal is answered before any shell is
+## sent, and `pcCache`'s `2xx` answer must be `text/html` carrying the
+## page-data script (the stream ran to its end, and the headers checked are
+## those it committed).
+##
 ## For an entry with a `canonical` policy, `pcCache` also accepts the
 ## canonical redirect (`301`, `302`, `308`), which carries the entry's
 ## cache headers: the sample path is not the target's canonical URL, and
@@ -79,6 +86,9 @@ type
       ## pcJsonSuffix: a redirect's `Location` path must end with this
     overridePolicy*: CachePolicy
       ## pcCacheOverride: the policy whose headers the answer must carry
+    streamPage*: bool
+      ## the entry is a streaming page: a refusal must be the pipeline's
+      ## JSON error, and pcCache's 2xx answer the page with its data
 
 proc credentialsFor*(auth: AuthPolicy): Credentials =
   case auth
@@ -115,7 +125,8 @@ proc entryTests(specs: seq[RouteSpec]; route, httpMethod, path, query: string;
                 cache: CachePolicy; progressive: bool; target: string;
                 isRpc: bool;
                 canonical = ccNone; json = false;
-                overrides: seq[CachePolicy] = @[]): seq[RoutePolicyTest] =
+                overrides: seq[CachePolicy] = @[];
+                stream = false): seq[RoutePolicyTest] =
   # A csrfSession mutation needs a session even where anyone may call it.
   let creds =
     if credentialsFor(auth) == crNone and csrf.kind == ckSession and
@@ -129,7 +140,7 @@ proc entryTests(specs: seq[RouteSpec]; route, httpMethod, path, query: string;
   template base(c: PolicyCheck): RoutePolicyTest =
     RoutePolicyTest(route: route, check: c, httpMethod: httpMethod,
       path: fullPath, body: bodyText, contentType: ct, credentials: creds,
-      csrf: csrf, sendCsrfToken: true, jsonVariant: json)
+      csrf: csrf, sendCsrfToken: true, jsonVariant: json, streamPage: stream)
 
   # Wrong method.
   let served = methodsServed(specs, path)
@@ -259,7 +270,7 @@ proc buildPolicyTests*(specs: seq[RouteSpec];
       result.add entryTests(specs, s.name, s.httpMethod, samples[i].path,
         samples[i].query, samples[i].body, s.auth, s.csrf, s.cache,
         s.progressive, s.target, isRpc = false, canonical = s.canonical,
-        json = s.json, overrides = s.cacheOverrides)
+        json = s.json, overrides = s.cacheOverrides, stream = s.stream)
 
 proc `$`*(t: RoutePolicyTest): string =
   t.route & " " & $t.check & ": " & t.httpMethod & " " & t.path &

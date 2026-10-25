@@ -12,6 +12,7 @@ nginx with the real `ngx-isonim` module.
 | `fixture_app.nim` | the server side: hooks (sessions, signatures, incarnation) and the manifest's dispatch as the async app `fixture`; compiled into the module with `-d:ngxIsonimAppModule` |
 | `fixture_server.nim` | starts and stops the fixture's nginx for the Nim tests (`startFixture`, `stop`) |
 | `../routing/negotiation_manifest.nim`, `../routing/negotiation_app.nim` | a second manifest (IFP-M26: a page's JSON variants, per-response cache policies, a handler-raised not-found), registered by `fixture_app.nim` as the async app `negotiation` and served at `/neg/` |
+| `../routing/streaming_manifest.nim`, `../routing/streaming_app.nim` | streaming pages (IFP-M30: a shell flushed before the page's read, the `pageHeaders` CSP, the bootstrap with the response's nonce), registered by `fixture_app.nim` as the async app `streaming` and served at `/stream/` (hydration off at `/stream/f/9`); until ngx-isonim sets `ctx.bodyWriter` itself, `fixture_app.nim`'s `hostBridged` hands it the module's writer |
 | `fixture_client.nim` | the browser client: calls through the generated clients only, exposes `window.fx` |
 | `hydration_store.nim`, `hydration_app.nim` | a task manager rendered with the `ui:` DSL by the module: `hydration` (string mode, `/ssr.html`) and `hydration-stream` (`uiWrite` stream mode, `/ssr-stream.html`); registered by `fixture_app.nim` |
 | `hydration_client.nim` | its browser side (`www/hydrate.js`): the same tree with `ui(r):`, `forEachKeyed` and `show`, handed to `hydrate` |
@@ -40,6 +41,12 @@ The tests:
   not-found, refused overrides, an `any` entry's policies, its generated
   policy tests); `tests/routing/run_negotiation_mutants.sh` runs it against
   a module built for each falsifying mutation the script's header lists.
+* `tests/routing/t_manifest_streaming.nim`: the streaming pages over a raw
+  socket (the shell before the read the test gates, the committed headers,
+  refusals and failures before and after the commit point, the whole and
+  JSON answers, the `Page` control, the generated policy tests);
+  `tests/routing/run_streaming_mutants.sh` runs it against a module built
+  for each falsifying mutation the script's header lists.
 * `tests/browser/specs/rpc-over-nginx.spec.ts`: async server functions from
   the browser (typed results, a 1 MB body, 413 over the limit, a request
   served while a slow server function is suspended, no XMLHttpRequest).

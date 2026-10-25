@@ -19,7 +19,7 @@
 
 import std/[httpclient, strutils, uri, json]
 import ../server/policy
-import route_policy
+import route_policy, route_spec
 
 export route_policy
 
@@ -139,6 +139,17 @@ proc runPolicyTest*(env: PolicyEnv; t: RoutePolicyTest): string =
       return fail("expected status " & $t.expectStatus)
   elif r.status < 200 or r.status > 299:
     return fail("expected a 2xx status")
+  if t.streamPage and r.status >= 400:
+    # Refusals come before the handler, so before any shell: the
+    # pipeline's own JSON error, never a page that started streaming.
+    if mediaType != "application/json":
+      return fail("the refusal of a streaming page is '" & mediaType &
+        "', not the pipeline's JSON error")
+    try:
+      discard parseJson(r.body)
+    except CatchableError:
+      return fail("the refusal of a streaming page is not the pipeline's " &
+        "JSON error")
   case t.check
   of pcMethod:
     let allow = r.headers.getOrDefault("Allow").toString
@@ -151,6 +162,13 @@ proc runPolicyTest*(env: PolicyEnv; t: RoutePolicyTest): string =
     if cc != t.expectCacheControl:
       return fail("Cache-Control '" & cc & "', expected '" &
         t.expectCacheControl & "'")
+    if t.streamPage and r.status in 200 .. 299:
+      if mediaType != "text/html":
+        return fail("Content-Type '" & mediaType & "': the streaming " &
+          "page did not answer its HTML")
+      if ("id=\"" & pageDataScriptId & "\"") notin r.body:
+        return fail("the streaming page's answer has no page-data script: " &
+          "its stream did not run to its end")
     if t.jsonVariant and r.status in 200 .. 299:
       if mediaType != "text/html":
         return fail("Content-Type '" & mediaType & "': the page's HTML " &
