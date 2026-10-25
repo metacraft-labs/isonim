@@ -30,6 +30,7 @@
   stdenv,
   nim,
   isonimSrc,
+  nimEverywhereSrc,
 }:
 
 {
@@ -68,6 +69,7 @@ stdenv.mkDerivation (
         --nimcache:"$TMPDIR/nimcache" \
         --out:"$TMPDIR/static-site-exporter" \
         --path:${isonimSrc}/src \
+        --path:${nimEverywhereSrc}/src \
         ${lib.concatMapStringsSep " " (p: "--path:${lib.escapeShellArg (toString p)}") nimPaths} \
         ${lib.escapeShellArgs nimFlags} \
         ${lib.escapeShellArg exporter}

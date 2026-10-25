@@ -173,6 +173,12 @@ class TailwindLoaderBase(unittest.TestCase):
             args += ["--out:" + str(output).replace("$", "$$")]
         if target == "js":
             args += ["-d:nodejs"]
+        if consumer:
+            # The full DSL imports the framework's platform dependency. Keep
+            # it explicit while parent/project/user configuration is disabled.
+            platform_source = Path(os.environ.get("NIM_EVERYWHERE_SRC", ROOT.parent / "nim-everywhere"))
+            self.assertTrue((platform_source / "src/nim_everywhere/platform.nim").is_file())
+            args += ["--path:" + str(platform_source / "src").replace("$", "$$")]
         if not consumer:
             args += ["-d:expectedHas=" + str(has).lower(), "-d:expectedColor=" + color]
         if override is not None:

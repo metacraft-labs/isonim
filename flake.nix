@@ -4,6 +4,11 @@
   inputs = {
     nixpkgs.url = "github:NixOS/nixpkgs/nixpkgs-unstable";
     flake-utils.url = "github:numtide/flake-utils";
+    nix-nim-development.url = "github:metacraft-labs/nix-nim-development/agents";
+    nim-everywhere = {
+      url = "github:metacraft-labs/nim-everywhere/agents";
+      flake = false;
+    };
     git-hooks = {
       url = "github:cachix/git-hooks.nix";
       inputs.nixpkgs.follows = "nixpkgs";
@@ -15,6 +20,8 @@
       self,
       nixpkgs,
       flake-utils,
+      nix-nim-development,
+      nim-everywhere,
       git-hooks,
     }:
     flake-utils.lib.eachDefaultSystem (
@@ -27,6 +34,9 @@
           inherit system;
           config.allowUnfree = true;
         };
+        # Consume the shared compiler with its own locked builder API. Keep
+        # this shell's remaining packages on the existing nixpkgs baseline.
+        nim = nix-nim-development.packages.${system}.nim;
         # Expose the binary under both the legacy ``claude-code-acp`` name
         # (which our Nim transport prefers via ``findExe``) and the new
         # ``claude-agent-acp`` name.
@@ -111,8 +121,10 @@
         # `lib.<system>.buildStaticSite`: compile a site's exporter against
         # isonim/static and run it in the sandbox (nix/static-site.nix).
         buildStaticSite = import ./nix/static-site.nix {
-          inherit (pkgs) lib stdenv nim;
+          inherit (pkgs) lib stdenv;
+          inherit nim;
           inherit isonimSrc;
+          nimEverywhereSrc = nim-everywhere;
         };
 
         # The repo's pre-commit hooks. Entering the default dev shell from inside
@@ -136,9 +148,9 @@
       in
       {
         devShells.default = pkgs.mkShell {
+          NIM_EVERYWHERE_SRC = toString nim-everywhere;
           packages =
             (with pkgs; [
-              nim
               nimble
               nodejs
               # TBAR-M5b: yarn 1 manages the editor's runtime JS deps
@@ -179,6 +191,7 @@
               # without re-entering the shell.
               codex-acp
             ])
+            ++ [ nim ]
             # ``chromium`` and ``chromedriver`` only build on Linux in
             # nixpkgs; Darwin users supply system Chrome / a Homebrew
             # chromedriver. Gate them here so ``nix develop`` works on
@@ -212,7 +225,7 @@
           ISONIM_DOT = "${pkgs.graphviz}/bin/dot";
         };
 
-        packages.nginx-module = pkgs.callPackage ./nix/nginx-module.nix { };
+        packages.nginx-module = pkgs.callPackage ./nix/nginx-module.nix { inherit nim; };
 
         # TBAR-M5b: vendored UMD bundles for the editor's TipTap + xterm
         # runtime deps.  Output: ``$out/{tiptap,xterm}.umd.js`` +
@@ -248,7 +261,7 @@
             '';
           in
           pkgs.runCommand "isonim-tailwind-loader-check"
-            { nativeBuildInputs = [ pkgs.nim pkgs.nodejs ]; }
+            { nativeBuildInputs = [ nim pkgs.nodejs ]; }
             ''
               mkdir -p "$out"
               # Keep the fixture's module name valid: a standalone store file
@@ -261,12 +274,12 @@
                 echo "missing-map fixture unexpectedly contains a map entry" >&2
                 exit 1
               fi
-              nimArgs=(js -d:nodejs --hints:off --skipUserCfg:on --skipParentCfg:on --skipProjCfg:on)
-              PATH=/nonexistent ${pkgs.nim}/bin/nim "''${nimArgs[@]}" \
+              nimArgs=(js -d:nodejs --hints:off --skipUserCfg:on --skipParentCfg:on --skipProjCfg:on --path:${nim-everywhere}/src)
+              PATH=/nonexistent ${nim}/bin/nim "''${nimArgs[@]}" \
                 --path:${isonimSrc}/src --nimcache:"$TMPDIR/missing-cache" \
                 --out:"$out/missing.js" "$TMPDIR/probe.nim"
               ${pkgs.nodejs}/bin/node "$out/missing.js" > "$out/missing.txt"
-              PATH=/nonexistent ${pkgs.nim}/bin/nim "''${nimArgs[@]}" \
+              PATH=/nonexistent ${nim}/bin/nim "''${nimArgs[@]}" \
                 --path:${isonimSrc}/src --nimcache:"$TMPDIR/provided-cache" \
                 -d:expectedMap -d:tailwindStylesPathOverride=${styles} \
                 --out:"$out/provided.js" "$TMPDIR/probe.nim"
@@ -286,7 +299,7 @@
                 echo "permission fixture did not deny the real map" >&2
                 exit 1
               fi
-              if PATH=/nonexistent ${pkgs.nim}/bin/nim "''${nimArgs[@]}" \
+              if PATH=/nonexistent ${nim}/bin/nim "''${nimArgs[@]}" \
                 --path:"$TMPDIR/denied/src" --nimcache:"$TMPDIR/denied-cache" \
                 --out:"$TMPDIR/denied.js" "$TMPDIR/probe.nim" > "$out/denied.log" 2>&1; then
                 echo "denied-target map compiled instead of refusing" >&2
