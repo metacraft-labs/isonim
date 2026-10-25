@@ -452,10 +452,11 @@ const isonimTestSpecs: seq[IsonimTestSpec] = @[
   spec("test_content_prose"),
   spec("test_content_extensions"),
   spec("test_theming_dtcg"),
-  # --- isonim/static: static export, sitemap, robots, head, script policy ---
+  # --- isonim/static: static export, sitemap, robots, feeds, head, script policy ---
   spec("test_static_export"),
   spec("test_static_script_policy"),
   spec("test_static_metadata"),
+  spec("test_static_feeds"),
   spec("test_http_types"),
   spec("test_form_actions"),
   spec("test_third_party"),
@@ -611,9 +612,10 @@ const isonimJsTestSpecs: seq[string] = @[
   "test_content_directives",
   "test_content_prose",
   "test_content_extensions",
-  # isonim/static: the script policy and SEO head are pure (dual-backend).
+  # isonim/static: the script policy, SEO head and feeds are pure (dual-backend).
   "test_static_script_policy",
   "test_static_metadata",
+  "test_static_feeds",
   # Per-item captures and activation are contracts on both backends.
   "test_choice_row_activation", "test_loop_accessors",
   # JS-back-end-only (``{.error.}`` head unless ``defined(js)``).

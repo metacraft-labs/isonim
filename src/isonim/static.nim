@@ -4,6 +4,7 @@
 ## - `isonim/static/exporter`: `exportSite(pages, outDir)`, clean URLs,
 ##   deterministic order, atomic output (C only);
 ## - `isonim/static/sitemap` and `isonim/static/robots`;
+## - `isonim/static/feeds`: RSS 2.0 and Atom 1.0 feeds with absolute URLs;
 ## - `isonim/static/head`: canonical, OpenGraph, Twitter, JSON-LD and
 ##   `theme-color` in the page `<head>`;
 ## - `isonim/static/scripts`: the script policy (`spNone` emits no
@@ -18,8 +19,8 @@
 ## C target). Nothing else in `isonim` imports them, so they cost nothing
 ## unless a site uses them.
 
-import ./static/[urls, sitemap, robots, head, scripts, csp, buildinfo]
-export urls, sitemap, robots, head, scripts, csp, buildinfo
+import ./static/[urls, sitemap, robots, feeds, head, scripts, csp, buildinfo]
+export urls, sitemap, robots, feeds, head, scripts, csp, buildinfo
 
 when not defined(js):
   import ./static/[assets, exporter]

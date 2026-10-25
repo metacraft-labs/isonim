@@ -238,11 +238,12 @@ test-c:
     nim c -r --out:build/tests/test_content_prose --nimcache:build/nimcache/test_content_prose tests/test_content_prose.nim
     nim c -r tests/test_theming_dtcg.nim
     # isonim/static: the static-site primitives (export, sitemap, robots, SEO
-    # head, script policy, CSP, assets, build.json). The exporter writes
-    # files, so its suite is C-only; the script policy and head are pure.
+    # head, script policy, CSP, assets, build.json, feeds). The exporter writes
+    # files, so its suite is C-only; the script policy, head and feeds are pure.
     nim c -r tests/test_static_export.nim
     nim c -r tests/test_static_script_policy.nim
     nim c -r --out:build/tests/test_static_metadata --nimcache:build/nimcache/test_static_metadata tests/test_static_metadata.nim
+    nim c -r --out:build/tests/test_static_feeds --nimcache:build/nimcache/test_static_feeds tests/test_static_feeds.nim
     nim c -r tests/test_http_types.nim
     nim c -r tests/test_streaming_stress.nim
     nim c -r tests/test_third_party.nim
@@ -346,6 +347,7 @@ test-js: build-tailwind
     # isonim/static (see test-c).
     nim js -r tests/test_static_script_policy.nim
     nim js -r --out:build/tests/test_static_metadata.js --nimcache:build/nimcache/test_static_metadata_js tests/test_static_metadata.nim
+    nim js -r --out:build/tests/test_static_feeds.js --nimcache:build/nimcache/test_static_feeds_js tests/test_static_feeds.nim
     # The Web Worker target's message codec and build guard (IFP-M3).
     nim js -r tests/test_web_worker.nim
 
