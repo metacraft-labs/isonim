@@ -162,8 +162,8 @@ type
     ## `newStaticDistDevServer` (or use the all-in-one `staticDistDevServer`).
     distDir*: string             ## directory the exporter writes / we serve
     rebuildCommand*: seq[string] ## argv of the real static-export pipeline
-    watchRoots*: seq[string]     ## source roots scanned for edits
-    watchExts*: seq[string]      ## extensions that count as a source change
+    watchRoots*: seq[string]     ## source roots (directories or files) scanned for edits
+    watchExts*: seq[string]      ## extensions that count as a source change; empty = every file
     liveReloadPath*: string      ## WS endpoint path
     reloadMessage*: string       ## WS payload sent on reload
     siteName*: string            ## branding for the error overlay
@@ -228,18 +228,31 @@ proc runExport(s: StaticDistDevServer) =
 # ---------------------------------------------------------------------------
 
 proc watchedFile(s: StaticDistDevServer; path: string): bool =
-  path.splitFile.ext.toLowerAscii in s.watchExts
+  ## An empty `watchExts` watches every file, whatever its extension (sites
+  ## whose inputs include extension-less files such as `_headers`).
+  s.watchExts.len == 0 or path.splitFile.ext.toLowerAscii in s.watchExts
 
-proc snapshotSources(s: StaticDistDevServer): Table[string, Time] =
+proc snapshotSources*(s: StaticDistDevServer): Table[string, Time] =
+  ## The modification time of every watched file. A watch root may be a
+  ## directory (walked recursively) or a single file (for example a site's
+  ## configuration file next to output directories that must not be walked).
+  ## A root that does not exist yet contributes nothing, so creating it later
+  ## is seen as a change.
   result = initTable[string, Time]()
   for root in s.watchRoots:
+    if fileExists(root):
+      if s.watchedFile(root):
+        try: result[root] = getLastModificationTime(root)
+        except CatchableError: discard
+      continue
     if not dirExists(root): continue
     for path in walkDirRec(root):
       if s.watchedFile(path):
         try: result[path] = getLastModificationTime(path)
         except CatchableError: discard
 
-proc changed(prev, cur: Table[string, Time]): bool =
+proc changed*(prev, cur: Table[string, Time]): bool =
+  ## Whether two snapshots differ: a file added, removed or re-timed.
   for path, mt in cur:
     if mt != prev.getOrDefault(path): return true
   for path in prev.keys:

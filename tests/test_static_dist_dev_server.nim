@@ -3,7 +3,7 @@
 ## against the spec's own vectors, the text-frame encoder's length prefixes,
 ## and the injected live-reload client placement.
 
-import std/[unittest, strutils]
+import std/[unittest, strutils, os, tempfiles, tables, times]
 import isonim/server/static_dist_dev_server
 
 suite "static_dist_dev_server — RFC 6455 primitives":
@@ -78,3 +78,42 @@ suite "static_dist_dev_server — config constructor":
     check s.reloadMessage == defaultReloadMessage
     check s.siteName == "isonim site"
     check ".nim" in s.watchExts
+
+suite "static_dist_dev_server — source watcher":
+  # Real files in a fresh temporary directory; no test doubles.
+  test "a file root is watched on its own and an empty extension list watches every file":
+    let root = createTempDir("isonim-watch-", "")
+    defer: removeDir(root)
+    createDir(root / "content")
+    createDir(root / "out")
+    writeFile(root / "site.toml", "title = 1\n")
+    writeFile(root / "content/post.md", "a\n")
+    writeFile(root / "content/_headers", "/*\n")
+    writeFile(root / "out/index.html", "generated\n")
+    let s = newStaticDistDevServer(rebuildCommand = @["true"],
+      watchRoots = @[root / "site.toml", root / "content", root / "missing"],
+      watchExts = @[])
+    let first = s.snapshotSources()
+    check first.len == 3
+    check (root / "site.toml") in first
+    check (root / "content/_headers") in first   # no extension, still watched
+    check (root / "out/index.html") notin first  # not under a watch root
+    # A re-timed file root and a newly created root are both changes.
+    setLastModificationTime(root / "site.toml", fromUnix(1_000_000))
+    let second = s.snapshotSources()
+    check changed(first, second)
+    check not changed(second, s.snapshotSources())
+    createDir(root / "missing")
+    writeFile(root / "missing/new.txt", "x\n")
+    check changed(second, s.snapshotSources())
+
+  test "a non-empty extension list still filters directories and file roots":
+    let root = createTempDir("isonim-watch-", "")
+    defer: removeDir(root)
+    writeFile(root / "notes.md", "a\n")
+    writeFile(root / "page.nim", "discard\n")
+    let s = newStaticDistDevServer(rebuildCommand = @["true"],
+      watchRoots = @[root, root / "notes.md"], watchExts = @[".nim"])
+    let snapshot = s.snapshotSources()
+    check snapshot.len == 1
+    check (root / "page.nim") in snapshot
