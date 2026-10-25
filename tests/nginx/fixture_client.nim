@@ -25,8 +25,9 @@
 when not defined(js):
   {.error: "fixture_client.nim is the browser client (JS target)".}
 
-import std/[asyncjs, jsffi, strutils]
+import std/[asyncjs, jsffi, strutils, json]
 import isonim/core/[signals, computation, owner]
+import isonim/core/nondet
 import isonim/routing/[router, match, route_client]
 import fixture_manifest
 
@@ -134,6 +135,10 @@ proc fxState(): JsObject {.exportc.} =
   o.contextHeader = js(contextHeaderValue())
   return o
 
+proc fxEnvironmentTraceparent(): cstring {.exportc.} =
+  ## Exercise the real environment seam, rather than a second DOM reader.
+  cstring(env()["traceparent"].getStr())
+
 {.emit: """
 window.fx = {
   sum: `fxSum`, describe: `fxDescribe`, bodySize: `fxBodySize`,
@@ -141,6 +146,7 @@ window.fx = {
   load: `fxLoad`, loadSlowBody: `fxLoadSlowBody`, switchAccount: `fxSwitchAccount`,
   changeIncarnation: `fxChangeIncarnation`, navigate: `fxNavigate`,
   state: `fxState`,
+  environmentTraceparent: `fxEnvironmentTraceparent`,
 };
 window.fxReady = true;
 """.}

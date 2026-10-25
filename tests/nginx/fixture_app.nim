@@ -41,6 +41,7 @@ proc homePage(ctx: RequestContext; req: HomeRequest): Future[Page[HomeResponse]]
   let html = "<!doctype html><html><head><meta charset=\"utf-8\">" &
     "<title>IsoNim nginx fixture</title>" &
     clientContextMeta(instanceId, incarnationId, token) &
+    traceparentMeta(ctx) &
     "</head><body><h1 id=\"title\">IsoNim nginx fixture</h1>" &
     "<p>Value: <span id=\"value\"></span></p>" &
     rSubscribeForm(ctx, SubscribeRequest(),

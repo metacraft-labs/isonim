@@ -47,6 +47,38 @@
 import { createServer, type IncomingMessage, type ServerResponse } from "node:http";
 import { test, expect, type Page } from "@playwright/test";
 
+test("SSR traceparent metadata forwards context and isolates concurrent requests", async ({ page, request, baseURL }) => {
+  const incoming = "00-4bf92f3577b34da6a3ce929d0e0e4736-00f067aa0ba902b7-01";
+  await page.setExtraHTTPHeaders({ TraceParent: incoming });
+  await page.goto("/");
+  await expect(page.locator('meta[name="traceparent"]')).toHaveAttribute("content", incoming);
+  await page.waitForFunction(() => window.fxReady === true);
+  expect(await page.evaluate(() => window.fx.environmentTraceparent())).toBe(incoming);
+  await expect(page.locator('meta[name="isonim-instance"]')).toHaveAttribute("content", "fixture-instance");
+  await expect(page.locator('meta[name="isonim-incarnation"]')).toHaveAttribute("content", "inc-1");
+  await expect(page.locator('meta[name="csrf-token"]')).toHaveAttribute("content", /.+/);
+  const readMeta = async (headers: Record<string, string> = {}) => {
+    const response = await request.get(baseURL! + "/", { headers });
+    expect(response.status()).toBe(200);
+    const html = await response.text();
+    const matches = [...html.matchAll(/<meta name="traceparent" content="([^"]*)">/g)];
+    expect(matches).toHaveLength(1);
+    return matches[0][1];
+  };
+  const values = await Promise.all(Array.from({ length: 16 }, () => readMeta()));
+  expect(new Set(values).size).toBe(values.length);
+  for (const value of values) {
+    expect(value).toMatch(/^00-[0-9a-f]{32}-[0-9a-f]{16}-00$/);
+    expect(value.slice(3, 35)).not.toBe("0".repeat(32));
+    expect(value.slice(36, 52)).not.toBe("0".repeat(16));
+  }
+  expect(await readMeta({ traceparent: incoming })).toBe(incoming);
+  expect(await readMeta({ traceparent: "01" + incoming.slice(2) + "-opaque" })).toBe(incoming);
+  const invalid = await readMeta({ traceparent: '<unsafe-attribute>"&' });
+  expect(invalid).toMatch(/^00-[0-9a-f]{32}-[0-9a-f]{16}-00$/);
+  expect(invalid).not.toBe(incoming);
+});
+
 declare global {
   interface Window {
     fx: any;

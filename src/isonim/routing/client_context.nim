@@ -40,6 +40,7 @@ const
 
 when not defined(js):
   import std/strutils
+  import ../server/context
 
   proc escapeAttr(s: string): string =
     s.multiReplace(("&", "&amp;"), ("\"", "&quot;"), ("<", "&lt;"),
@@ -54,6 +55,11 @@ when not defined(js):
       escapeAttr(incarnationId) & "\">" &
     "<meta name=\"" & csrfMetaName & "\" content=\"" &
       escapeAttr(csrfToken) & "\">"
+
+  proc traceparentMeta*(ctx: RequestContext): string =
+    ## The request's trace context for browser environment capture. Render
+    ## next to `clientContextMeta`; repeated calls reuse the context's value.
+    "<meta name=\"traceparent\" content=\"" & escapeAttr(ctx.traceparent()) & "\">"
 
 else:
   import std/jsffi

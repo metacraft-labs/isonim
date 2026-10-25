@@ -112,6 +112,9 @@ else:
       cacheChoices: seq[CachePolicy]
         ## The policies `setCachePolicy` may pick: the entry's `cache` and
         ## its `cacheOverrides`.
+      resolvedTraceparent: string
+        ## Owned by this request, so repeated metadata rendering and server
+        ## correlation use one value without retaining contexts globally.
 
     RequestHandler* = proc(ctx: RequestContext): Future[void]
       ## A server-side request handler: reads `ctx.request`, leaves the
@@ -182,6 +185,63 @@ else:
     let resolver = serverHooks.resolveSession
     if resolver != nil:
       ctx.session = await resolver(ctx.request)
+
+  proc canonicalTraceparent(value: string): string =
+    # Parse only the standardized prefix of future versions. Unknown suffix
+    # fields are ignored and must never be reflected into HTML.
+    # https://www.w3.org/TR/trace-context/#traceparent-header
+    if value.len < 55 or value[2] != '-': return ""
+    for i in 0 .. 1:
+      if value[i] notin {'0'..'9', 'a'..'f'}: return ""
+    let version = value[0 .. 1]
+    if version == "ff" or
+        (version == "00" and value.len != 55) or
+        (value.len > 55 and value[55] != '-'): return ""
+    var traceNonzero, parentNonzero: bool
+    for i in 3 .. 54:
+      if i in [35, 52]:
+        if value[i] != '-': return ""
+      else:
+        if value[i] notin {'0'..'9', 'a'..'f'}: return ""
+        if i < 35 and value[i] != '0': traceNonzero = true
+        if i > 35 and i < 52 and value[i] != '0': parentNonzero = true
+    if not traceNonzero or not parentNonzero: return ""
+    if version == "00": return value
+    # Unknown flag bits are not interpreted or emitted when normalizing.
+    "00" & value[2 .. 52] & (if value[54] in {'1', '3', '5', '7',
+      '9', 'b', 'd', 'f'}: "01" else: "00")
+
+  proc randomTraceId(byteCount: int): string =
+    # sysrand raises on entropy failure. Retry only the forbidden all-zero
+    # identifier, never substitute a clock, counter or ordinary PRNG.
+    while true:
+      let bytes = urandom(byteCount)
+      var nonzero = false
+      result = ""
+      for b in bytes:
+        nonzero = nonzero or b != 0
+        result.add toHex(b, 2).toLowerAscii()
+      if nonzero: return
+
+  proc traceparent*(ctx: RequestContext): string =
+    ## The request's stable version-00 trace context. One valid incoming
+    ## header is forwarded; higher-version prefixes are normalized to 00.
+    ## Absent, invalid, duplicate or forbidden-version headers
+    ## mint a new context using OS entropy. This does not create a span or
+    ## choose recording: new contexts carry unsampled flags `00`.
+    if ctx.resolvedTraceparent.len == 0:
+      var count = 0
+      var incoming: string
+      for (name, value) in ctx.request.headers:
+        if cmpIgnoreCase(name, "traceparent") == 0:
+          inc count
+          incoming = value.strip(chars = {' ', '\t'})
+      if count == 1:
+        ctx.resolvedTraceparent = canonicalTraceparent(incoming)
+      if ctx.resolvedTraceparent.len == 0:
+        ctx.resolvedTraceparent = "00-" & randomTraceId(16) & "-" &
+          randomTraceId(8) & "-00"
+    ctx.resolvedTraceparent
 
   proc pathParam*(ctx: RequestContext; name: string; default = ""): string =
     for (k, v) in ctx.pathParams:
