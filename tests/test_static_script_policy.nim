@@ -121,6 +121,14 @@ suite "isonim/static/head -- the SEO head":
       "<meta name=\"twitter:description\" content=\"A post\" />" &
       "<script type=\"application/ld+json\">{}</script></head>"
 
+  test "a page without a stylesheet gets no stylesheet link":
+    var h = pageHead()
+    h.stylesheetHref = ""
+    let html = renderDocumentHeadHtml(h)
+    check not html.contains("rel=\"stylesheet\"")
+    check html.contains("<meta name=\"description\" content=\"A post\" />" &
+      "<link rel=\"canonical\" href=\"https://example.org/posts/hello\" />")
+
   test "theme-color for both schemes, og:image and the card type":
     var h = pageHead()
     h.themeColors = @[ThemeColor(color: "#ffffff", media: "(prefers-color-scheme: light)"),

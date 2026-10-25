@@ -134,12 +134,18 @@ proc renderDocumentHeadHtml*(head: DocumentHead; headTop = ""): string =
   let twitterImageHtml =
     if head.ogImage.len == 0: ""
     else: "<meta name=\"twitter:image\" content=\"" & escapeAttr(head.ogImage) & "\" />"
+  # A page without a stylesheet gets no `<link>`: an empty href resolves to
+  # the page's own URL (https://url.spec.whatwg.org/#concept-basic-url-parser),
+  # so the browser would fetch the HTML again and try to parse it as CSS.
+  let stylesheetHtml =
+    if head.stylesheetHref.len == 0: ""
+    else: "<link rel=\"stylesheet\" href=\"" & escapeAttr(head.stylesheetHref) & "\" />"
   "<head>" &
     "<meta charset=\"utf-8\" />" & headTop &
     "<title>" & escapeHtml(head.title) & "</title>" &
     "<meta name=\"description\" content=\"" & escapeAttr(head.description) & "\" />" &
     themeColorHtml &
-    "<link rel=\"stylesheet\" href=\"" & escapeAttr(head.stylesheetHref) & "\" />" &
+    stylesheetHtml &
     "<link rel=\"canonical\" href=\"" & escapeAttr(head.canonicalUrl) & "\" />" &
     alternatesHtml &
     "<meta property=\"og:title\" content=\"" & escapeAttr(head.title) & "\" />" &
@@ -218,10 +224,11 @@ proc renderDocumentHead*[R, E](r: R; head: DocumentHead): E =
       r.setAttribute(m, "media", tc.media)
     r.appendChild(headEl, m)
 
-  let styleLink = r.createElement("link")
-  r.setAttribute(styleLink, "rel", "stylesheet")
-  r.setAttribute(styleLink, "href", head.stylesheetHref)
-  r.appendChild(headEl, styleLink)
+  if head.stylesheetHref.len > 0:
+    let styleLink = r.createElement("link")
+    r.setAttribute(styleLink, "rel", "stylesheet")
+    r.setAttribute(styleLink, "href", head.stylesheetHref)
+    r.appendChild(headEl, styleLink)
 
   let canonicalLink = r.createElement("link")
   r.setAttribute(canonicalLink, "rel", "canonical")
