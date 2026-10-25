@@ -78,10 +78,16 @@ proc renderProseHtml*(blocks: seq[Block]): string =
       for n, item in blk.items:
         result.add "<li>"
         if n < blk.tasks.len and blk.tasks[n] != tsNone:
-          result.add "<input type=\"checkbox\" disabled"
+          # The item's text labels its checkbox: a <label> wrapping the
+          # input gives it a programmatic accessible name (WCAG 2.2 SC 4.1.2,
+          # https://www.w3.org/TR/WCAG22/#name-role-value; HTML label
+          # element, https://html.spec.whatwg.org/multipage/forms.html#the-label-element).
+          # Adjacent text alone does not name a control, disabled or not.
+          result.add "<label><input type=\"checkbox\" disabled"
           if blk.tasks[n] == tsChecked: result.add " checked"
-          result.add "> "
-        result.add proseSpansHtml(item) & "</li>"
+          result.add "> " & proseSpansHtml(item) & "</label></li>"
+        else:
+          result.add proseSpansHtml(item) & "</li>"
       result.add "</" & tag & ">"
     of bkCodeFence:
       if not blk.generated.isEmpty:

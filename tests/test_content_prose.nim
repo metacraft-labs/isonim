@@ -77,7 +77,11 @@ suite "long-form prose":
     check doc.blocks[0].tasks == @[tsUnchecked, tsChecked, tsChecked, tsNone, tsNone]
     check spansText(doc.blocks[0].items[0]) == "pending"
     check spansText(doc.blocks[0].items[4]) == "[xy] literal"
-    check renderProseHtml(doc) == "<ul><li><input type=\"checkbox\" disabled> pending</li><li><input type=\"checkbox\" disabled checked> complete</li><li><input type=\"checkbox\" disabled checked> also complete</li><li>ordinary</li><li>[xy] literal</li></ul>"
+    # Each task's own text labels its checkbox; ordinary items get no label.
+    check renderProseHtml(doc) == "<ul><li><label><input type=\"checkbox\" disabled> pending</label></li><li><label><input type=\"checkbox\" disabled checked> complete</label></li><li><label><input type=\"checkbox\" disabled checked> also complete</label></li><li>ordinary</li><li>[xy] literal</li></ul>"
+    # Inline markup inside a task stays inside its label.
+    check renderProseHtml(parseMarkdownDoc("- [x] see [the plan](https://example.test/plan) `now`")) ==
+      "<ul><li><label><input type=\"checkbox\" disabled checked> see <a href=\"https://example.test/plan\">the plan</a> <code>now</code></label></li></ul>"
 
   test "strike parses children but code stays literal":
     let doc = parseMarkdownDoc("~~old `x` & [link](https://example.test)~~ and `~~literal~~`")
