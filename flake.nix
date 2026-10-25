@@ -217,12 +217,24 @@
         # Optional build-time content adapters. The core library and default
         # shell do not depend on these executables. Tests require their paths,
         # so entering the wrong shell fails visibly instead of skipping work.
+        # libvips (image variants) and resvg with a bundled font (OpenGraph
+        # images) are the static-site adapters of the same kind.
         devShells.content-tools = pkgs.mkShell {
           inputsFrom = [ self.devShells.${system}.default ];
-          packages = [ pkgs.katex pkgs.d2 pkgs.graphviz ];
+          packages = [
+            pkgs.katex
+            pkgs.d2
+            pkgs.graphviz
+            pkgs.vips
+            pkgs.resvg
+          ];
           ISONIM_KATEX = "${pkgs.katex}/bin/katex";
           ISONIM_D2 = "${pkgs.d2}/bin/d2";
           ISONIM_DOT = "${pkgs.graphviz}/bin/dot";
+          ISONIM_VIPS = pkgs.lib.getExe' pkgs.vips "vips";
+          ISONIM_RESVG = pkgs.lib.getExe pkgs.resvg;
+          ISONIM_OG_FONT = "${pkgs.dejavu_fonts}/share/fonts/truetype/DejaVuSans.ttf";
+          ISONIM_OG_FONT_BOLD = "${pkgs.dejavu_fonts}/share/fonts/truetype/DejaVuSans-Bold.ttf";
         };
 
         packages.nginx-module = pkgs.callPackage ./nix/nginx-module.nix { inherit nim; };

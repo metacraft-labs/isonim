@@ -11,7 +11,11 @@
 ##   executable script) and a checker for built HTML;
 ## - `isonim/static/csp`: Content-Security-Policy with inline-script hashes;
 ## - `isonim/static/assets`: hashed asset names, `asset-manifest.json`,
-##   CSS purge (C only);
+##   CSS purge and responsive image variants written by libvips (C only);
+## - `isonim/static/images`: image sizes read from file headers, and the
+##   `<picture>`/`srcset` markup that serves variants;
+## - `isonim/static/ogimage`: OpenGraph images, an SVG template rendered
+##   to a 1200x630 PNG by resvg with bundled fonts (C only);
 ## - `isonim/static/buildinfo`: `build.json`;
 ## - `isonim/static/urls`: `joinSiteUrl`, `xmlEscape`.
 ##
@@ -19,9 +23,9 @@
 ## C target). Nothing else in `isonim` imports them, so they cost nothing
 ## unless a site uses them.
 
-import ./static/[urls, sitemap, robots, feeds, head, scripts, csp, buildinfo]
-export urls, sitemap, robots, feeds, head, scripts, csp, buildinfo
+import ./static/[urls, sitemap, robots, feeds, head, scripts, csp, buildinfo, images]
+export urls, sitemap, robots, feeds, head, scripts, csp, buildinfo, images
 
 when not defined(js):
-  import ./static/[assets, exporter]
-  export assets, exporter
+  import ./static/[assets, exporter, ogimage]
+  export assets, exporter, ogimage

@@ -238,12 +238,15 @@ test-c:
     nim c -r --out:build/tests/test_content_prose --nimcache:build/nimcache/test_content_prose tests/test_content_prose.nim
     nim c -r tests/test_theming_dtcg.nim
     # isonim/static: the static-site primitives (export, sitemap, robots, SEO
-    # head, script policy, CSP, assets, build.json, feeds). The exporter writes
-    # files, so its suite is C-only; the script policy, head and feeds are pure.
+    # head, script policy, CSP, assets, build.json, feeds, image headers). The
+    # exporter writes files, so its suite is C-only; the script policy, head,
+    # feeds and image headers are pure. Image variants and OpenGraph images
+    # run real tools: see test-content-tools.
     nim c -r tests/test_static_export.nim
     nim c -r tests/test_static_script_policy.nim
     nim c -r --out:build/tests/test_static_metadata --nimcache:build/nimcache/test_static_metadata tests/test_static_metadata.nim
     nim c -r --out:build/tests/test_static_feeds --nimcache:build/nimcache/test_static_feeds tests/test_static_feeds.nim
+    nim c -r --out:build/tests/test_static_image_meta --nimcache:build/nimcache/test_static_image_meta tests/test_static_image_meta.nim
     nim c -r tests/test_http_types.nim
     nim c -r tests/test_streaming_stress.nim
     nim c -r tests/test_third_party.nim
@@ -348,6 +351,7 @@ test-js: build-tailwind
     nim js -r tests/test_static_script_policy.nim
     nim js -r --out:build/tests/test_static_metadata.js --nimcache:build/nimcache/test_static_metadata_js tests/test_static_metadata.nim
     nim js -r --out:build/tests/test_static_feeds.js --nimcache:build/nimcache/test_static_feeds_js tests/test_static_feeds.nim
+    nim js -r --out:build/tests/test_static_image_meta.js --nimcache:build/nimcache/test_static_image_meta_js tests/test_static_image_meta.nim
     # The Web Worker target's message codec and build guard (IFP-M3).
     nim js -r tests/test_web_worker.nim
 
@@ -2055,10 +2059,13 @@ test-content-prose:
 test-content-prose-mutation:
     bash tests/test_content_prose_mutation.sh
 
-# Optional native adapters: Nix supplies paths; missing configuration fails.
+# Optional native adapters (KaTeX, D2, Graphviz, libvips, resvg): Nix
+# supplies paths; missing configuration fails.
 test-content-tools:
     nix develop .#content-tools --command nim c -r --out:build/tests/test_content_math tests/test_content_math.nim
     nix develop .#content-tools --command nim c -r --out:build/tests/test_content_diagrams tests/test_content_diagrams.nim
+    nix develop .#content-tools --command nim c -r --out:build/tests/test_static_image_variants --nimcache:build/nimcache/test_static_image_variants tests/test_static_image_variants.nim
+    nix develop .#content-tools --command nim c -r --out:build/tests/test_static_ogimage_render --nimcache:build/nimcache/test_static_ogimage_render tests/test_static_ogimage_render.nim
 
 test-content-tools-mutation:
     nix develop .#content-tools --command python3 tests/test_content_tools_mutation.py

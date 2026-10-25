@@ -457,6 +457,7 @@ const isonimTestSpecs: seq[IsonimTestSpec] = @[
   spec("test_static_script_policy"),
   spec("test_static_metadata"),
   spec("test_static_feeds"),
+  spec("test_static_image_meta"),
   spec("test_http_types"),
   spec("test_form_actions"),
   spec("test_third_party"),
@@ -612,10 +613,12 @@ const isonimJsTestSpecs: seq[string] = @[
   "test_content_directives",
   "test_content_prose",
   "test_content_extensions",
-  # isonim/static: the script policy, SEO head and feeds are pure (dual-backend).
+  # isonim/static: the script policy, SEO head, feeds and image headers are
+  # pure (dual-backend).
   "test_static_script_policy",
   "test_static_metadata",
   "test_static_feeds",
+  "test_static_image_meta",
   # Per-item captures and activation are contracts on both backends.
   "test_choice_row_activation", "test_loop_accessors",
   # JS-back-end-only (``{.error.}`` head unless ``defined(js)``).
@@ -893,7 +896,7 @@ package isonim:
         # ``src`` + the nimble file are declared inputs so the monitor
         # tracks the transitively imported ``src/isonim/**`` module tree
         # (the reactive core / DSL / editor modules the tests pull in).
-        extraInputs = @["src", "isonim.nimble"] & (if stem == "test_editor_renderer_boundaries": @["tests/test_editor_source_scope_labels.nim", "tests/test_editor_shell_chat_lifetime.nim", "tests/helpers/editor_source_scope_label_cases.nim"] else: @[]) & (if stem == "test_editor_source_scope_labels": @["tests/helpers/editor_source_scope_label_cases.nim"] else: @[]) & (if stem == "test_static_export": @["tests/fixtures/static-export"] else: @[]))
+        extraInputs = @["src", "isonim.nimble"] & (if stem == "test_editor_renderer_boundaries": @["tests/test_editor_source_scope_labels.nim", "tests/test_editor_shell_chat_lifetime.nim", "tests/helpers/editor_source_scope_label_cases.nim"] else: @[]) & (if stem == "test_editor_source_scope_labels": @["tests/helpers/editor_source_scope_label_cases.nim"] else: @[]) & (if stem == "test_static_export": @["tests/fixtures/static-export"] else: @[]) & (if stem == "test_static_image_meta": @["tests/fixtures/images"] else: @[]))
       buildActions.add(edge.action)
       # ``registerImplicitName = false``: the BUILD edge already owns the
       # binary basename as the implicit target name; the explicit
@@ -1508,7 +1511,7 @@ package isonim:
         warningsOff = true,
         actionId = "isonim.js_build." & stem,
         after = (if pureContent: @[] else: @[tailwindStylesEdge]),
-        extraInputs = @["src", "isonim.nimble"] & (if pureContent: @[] else: @["build/tailwind-styles.json"]) & (if stem == "test_editor_renderer_boundaries": @["tests/test_editor_source_scope_labels.nim", "tests/test_editor_shell_chat_lifetime.nim", "tests/helpers/editor_source_scope_label_cases.nim"] else: @[]))
+        extraInputs = @["src", "isonim.nimble"] & (if pureContent: @[] else: @["build/tailwind-styles.json"]) & (if stem == "test_editor_renderer_boundaries": @["tests/test_editor_source_scope_labels.nim", "tests/test_editor_shell_chat_lifetime.nim", "tests/helpers/editor_source_scope_label_cases.nim"] else: @[]) & (if stem == "test_static_image_meta": @["tests/fixtures/images"] else: @[]))
       testBuildActions.add(jsCompileEdge)
       jsBuildActions.add(jsCompileEdge)
       let guardedC2 = stem in ["test_effects", "test_editor_widget_property_row", "test_editor_color_popover", "test_editor_section_fill", "test_editor_source_scope_row"]
@@ -1657,13 +1660,14 @@ package isonim:
     # can become a skipped success, and a default core build needs no CLI.
     if contentTools.value:
       var contentToolActions: seq[BuildActionDef] = @[]
-      for stem in ["test_content_math", "test_content_diagrams"]:
+      for stem in ["test_content_math", "test_content_diagrams",
+          "test_static_image_variants", "test_static_ogimage_render"]:
         let binary = "build/test-bin/" & stem
         let edge = buildNimUnittest.build(
           source = "tests/" & stem & ".nim", binary = binary,
           defines = isonimDefines, paths = isonimPaths,
           extraInputs = @["src/isonim/content", "src/isonim/static", "src/isonim/ssr/escape.nim",
-            "tests/helpers/content_tool_fixture.nim"])
+            "tests/helpers/content_tool_fixture.nim", "tests/fixtures/images"])
         let execute = sh.shell(
           command = "nix develop .#content-tools --command " & binary,
           cacheable = false, actionId = "isonim.content_tools_execute." & stem,

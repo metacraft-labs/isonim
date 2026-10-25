@@ -9,8 +9,17 @@
 ## The directory pass visits files in sorted order, so the manifest and
 ## the returned rewrites do not depend on the order the file system lists
 ## a directory in.
+##
+## Responsive images: `ResponsiveImages` measures every image a
+## built page shows, resizes each raster once into AVIF and WebP variants
+## with an injected libvips, and rewrites the page's `<img>` elements into
+## `<picture>` elements with `srcset`, `width`, `height` and `loading`
+## (see the section below and `isonim/static/images`).
 
-import std/[os, sets, strutils, json, sequtils, algorithm]
+import std/[os, sets, strutils, json, sequtils, algorithm, osproc, streams, strtabs, tables, tempfiles]
+import ./images
+import ./buildinfo
+export images
 
 {.push warning[Deprecated]: off.}
 import std/md5
@@ -196,3 +205,203 @@ proc hashAndPurgeAssets*(siteDir: string; usedClasses: HashSet[string];
     if item.original.toLowerAscii notin destinations:
       removeFile(assetsDir / item.original)
   writeAssetManifest(siteDir / manifestName, manifestEntries)
+
+# --- Responsive image variants ----------------------------------------------
+#
+# Every raster a page shows gets `width` and `height` and, for formats that
+# have a still frame to resize, AVIF/WebP copies at the configured widths,
+# written by libvips (https://www.libvips.org/API/current/Using-vipsthumbnail.html)
+# from an injected executable. The pure half (header reading, `srcset`,
+# `<picture>` markup) is `isonim/static/images`.
+#
+# Variants are reproducible: libvips runs with a fixed minimal environment,
+# with a fixed thread count (an AV1 encode's bytes depend on how many threads
+# split the frame, so leaving it to the host's core count would make the
+# output depend on the machine) and with its own SIMD paths off
+# (`VIPS_NOVECTOR`), so its resampling does not depend on the host's
+# instruction set. Metadata is stripped (`keep=none`) after converting to
+# sRGB, so nothing about the source file but its pixels reaches a variant.
+
+const
+  vipsThreads = "4"  ## Fixed, not the host's core count (see above).
+  imageVariantRevision = "isonim-image-variants-1"
+    ## Changes whenever the arguments below change, so cached variants made
+    ## with other settings are never reused.
+  avifSaveOptions = "[Q=50,effort=4,keep=none]"
+  webpSaveOptions = "[Q=75,effort=4,keep=none]"
+
+type
+  ImageVariantConfig* = object
+    ## How a site's images are served.
+    vipsPath*: string             ## The `vips` executable (absolute); needed
+                                  ## only when a raster is given variants.
+    widths*: seq[int]             ## Variant widths, in pixels.
+    formats*: seq[ImageFormat]    ## Variant formats: `ifAvif`, `ifWebp`.
+    maxSourceBytes*: int          ## A larger source is an error; 0: no limit.
+    cacheDir*: string             ## Optional; variants are reused from here.
+
+  ImageReferenceKind* = enum
+    irFile       ## a file of the site
+    irExternal   ## a URL this build cannot read (another origin, `data:`)
+    irMissing    ## a path of the site that names no file
+
+  ImageReference* = object
+    ## What an `<img src>` refers to, as the caller's resolver sees it.
+    kind*: ImageReferenceKind
+    name*: string      ## irFile: the source's site-relative name, which
+                       ## names its variants (`assets/b/photo.png` gives
+                       ## `assets/b/photo-480.<hash>.avif`).
+    content*: string   ## irFile: the file's bytes.
+
+  ImageSet* = tuple[info: ImageInfo, variants: seq[ImageVariant]]
+
+  ResponsiveImages* = ref object
+    ## One build's image processing: each source is measured and resized
+    ## once, whichever pages show it. `files` collects the variant files
+    ## the build writes, in the order they were first made.
+    config: ImageVariantConfig
+    urlFor: proc(path: string): string {.closure.}
+    sets: Table[string, ImageSet]
+    vipsIdentity: string
+    files*: seq[tuple[path, content: string]]
+    warnings*: seq[string]
+
+proc newResponsiveImages*(config: ImageVariantConfig;
+    urlFor: proc(path: string): string {.closure.}): ResponsiveImages =
+  ## `urlFor` maps an output path (`assets/b/photo-480.<hash>.avif`) to the
+  ## URL pages use for it (a site under a base path prefixes it).
+  for format in config.formats:
+    if format notin [ifAvif, ifWebp]:
+      raise newException(ImageError, "image variants are written as avif or webp, not " & $format)
+  for width in config.widths:
+    if width <= 0: raise newException(ImageError, "an image width must be positive")
+  ResponsiveImages(config: config, urlFor: urlFor)
+
+proc vipsExecutable(images: ResponsiveImages): string =
+  let path = images.config.vipsPath
+  if path.len == 0:
+    raise newException(ImageError, "libvips (vips) is not configured; image variants need it")
+  if not path.isAbsolute or not fileExists(path):
+    raise newException(ImageError, "the vips executable must be an existing absolute path: " & path)
+  path
+
+proc runVips(images: ResponsiveImages; args: openArray[string]; work: string): string =
+  let executable = vipsExecutable(images)
+  var status: int
+  try:
+    let process = startProcess(executable, workingDir = work, args = args,
+      options = {poStdErrToStdOut},
+      env = newStringTable({"PATH": parentDir(executable), "LANG": "C.UTF-8",
+        "LC_ALL": "C.UTF-8", "TZ": "UTC", "HOME": work, "TMPDIR": work,
+        "VIPS_CONCURRENCY": vipsThreads, "VIPS_NOVECTOR": "1"}))
+    defer: process.close()
+    result = process.outputStream.readAll()
+    status = process.waitForExit()
+  except OSError as cause:
+    raise newException(ImageError, "vips could not run: " & cause.msg)
+  if status != 0:
+    raise newException(ImageError, "vips exited with status " & $status & ": " & result.strip())
+
+proc identity(images: ResponsiveImages): string =
+  ## The tool's identity for cache keys: its path and version report.
+  if images.vipsIdentity.len == 0:
+    let work = createTempDir("isonim-images-", "")
+    defer: removeDir(work)
+    images.vipsIdentity = vipsExecutable(images) & "\n" & runVips(images, ["--version"], work)
+  images.vipsIdentity
+
+proc encodeVariant(images: ResponsiveImages; source: string; info: ImageInfo;
+    width: int; format: ImageFormat): string =
+  ## One variant's bytes, from the cache when an identical encode was kept.
+  let options = if format == ifAvif: avifSaveOptions else: webpSaveOptions
+  let key = treeHashOf([("revision", imageVariantRevision), ("tool", images.identity),
+    ("width", $width), ("format", $format & options), ("source", source)])
+  let cached = if images.config.cacheDir.len == 0: ""
+               else: images.config.cacheDir / key & "." & format.extension
+  proc valid(content: string): bool =
+    try:
+      let made = readImageInfo(content)
+      made.format == format and made.width == width
+    except ImageError: false
+  if cached.len > 0 and fileExists(cached):
+    let content = readFile(cached)
+    if valid(content): return content
+    # A damaged entry is replaced, never served.
+    removeFile(cached)
+  let work = createTempDir("isonim-images-", "")
+  defer: removeDir(work)
+  let input = work / ("source." & info.format.extension)
+  let output = work / ("variant." & format.extension)
+  writeFile(input, source)
+  discard runVips(images, ["thumbnail", input, output & options, $width,
+    "--export-profile", "srgb"], work)
+  if not fileExists(output): raise newException(ImageError, "vips wrote no variant")
+  result = readFile(output)
+  if not valid(result):
+    raise newException(ImageError, "vips wrote a " & $format & " variant that is not " &
+      $width & " pixels wide")
+  if cached.len > 0:
+    createDir(images.config.cacheDir)
+    # Write beside the entry and rename, so a reader never sees half a file.
+    let (file, temporary) = createTempFile("variant-", ".part", images.config.cacheDir)
+    file.write(result)
+    file.close()
+    moveFile(temporary, cached)
+
+proc variantName(name: string; width: int; format: ImageFormat; content: string): string =
+  ## `assets/b/photo.png` at 480 as AVIF: `assets/b/photo-480.<hash>.avif`.
+  ## Variants are fingerprinted assets, so a source outside `assets/` gets
+  ## its variants under `assets/`.
+  let base = if name.startsWith("assets/"): name else: "assets/" & name
+  let (dir, stem, _) = splitFile(base)
+  hashedAssetName(dir & "/" & stem & "-" & $width & "." & format.extension, content)
+    .replace('\\', '/')
+
+proc imageSet*(images: ResponsiveImages; name, content: string): ImageSet =
+  ## Measure a source and make its variants (once per `name`). An SVG, and
+  ## a raster with more than one frame, get no variants: resizing would
+  ## rasterise the one and freeze the other.
+  if images.sets.hasKey(name): return images.sets[name]
+  let info = readImageInfo(content)
+  result.info = info
+  if info.format != ifSvg and info.format != ifGif and not info.animated:
+    for format in images.config.formats:
+      for width in variantWidths(info.width, images.config.widths):
+        let bytes = encodeVariant(images, content, info, width, format)
+        let made = readImageInfo(bytes)
+        let path = variantName(name, width, format, bytes)
+        images.files.add (path, bytes)
+        result.variants.add ImageVariant(format: format, width: made.width,
+          height: made.height, url: images.urlFor(path))
+  images.sets[name] = result
+
+proc rewritePageImages*(images: ResponsiveImages; html, page: string;
+    resolve: proc(src: string): ImageReference {.closure.}; sizes = ""): string =
+  ## `html` (one built page, named `page` in errors) with every `<img>`
+  ## served responsively (`responsiveImageHtml`): the first image loads
+  ## eagerly, every later one lazily. An image without alt text, or whose
+  ## source is larger than `maxSourceBytes`, is an `ImageError`, as is a
+  ## site path that names no file. An external image keeps its markup
+  ## (with `loading`), and a warning says it has no dimensions.
+  rewriteImgTags(html, proc(tag: ImgTag; index: int): string =
+    let src = tag.attr("src")
+    if tag.attr("alt").strip().len == 0:
+      raise newException(ImageError, page & ": the image " & src & " has no alt text")
+    let reference = resolve(src)
+    case reference.kind
+    of irMissing:
+      raise newException(ImageError, page & ": the image " & src & " is not a file of the site")
+    of irExternal:
+      images.warnings.add page & ": the image " & src &
+        " is not a file of the site, so it has no width, height or variants"
+      responsiveImageHtml(tag, ImageInfo(), [], lazy = index > 0)
+    of irFile:
+      let limit = images.config.maxSourceBytes
+      if limit > 0 and reference.content.len > limit:
+        raise newException(ImageError, page & ": the image " & src & " is " &
+          $reference.content.len & " bytes, over the limit of " & $limit)
+      let found =
+        try: images.imageSet(reference.name, reference.content)
+        except ImageError as cause:
+          raise newException(ImageError, page & ": the image " & src & ": " & cause.msg)
+      responsiveImageHtml(tag, found.info, found.variants, lazy = index > 0, sizes = sizes))
