@@ -3447,11 +3447,11 @@
         "rust-overlay": "rust-overlay_3"
       },
       "locked": {
-        "lastModified": 1792892368,
-        "narHash": "sha256-tnpEGIZqa9vXPwJWZdAn/0M+x0gBtdBa6ROlePt1Gck=",
+        "lastModified": 1792896587,
+        "narHash": "sha256-FlhMcmLHzC5d1ILVv4/awn5V4qi4aqHpP/AoMAWL1d0=",
         "owner": "metacraft-labs",
         "repo": "nix-nim-development",
-        "rev": "9c3c1994322c1f89c61cfd53a0932fcebd14ed62",
+        "rev": "7f5184d2df69ef943299757ff5fa8621bffd9bb0",
         "type": "github"
       },
       "original": {
