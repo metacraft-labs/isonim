@@ -6,8 +6,9 @@
 ##
 ## Test double, and why: `instrumentTool` (tests/helpers/content_tool_fixture)
 ## wraps the real resvg so that its exit status can be replaced after it
-## ran, the only way to make the real tool fail on demand. It never writes
-## an image itself.
+## ran, the only way to make the real tool fail on demand, and so that the
+## arguments it was given can be recorded, the only host-independent way to
+## see that system fonts are switched off. It never writes an image itself.
 import std/[unittest, os, strutils, tempfiles]
 import isonim/static/ogimage
 import isonim/static/images
@@ -52,6 +53,32 @@ suite "rendering":
     # Negative control: without the stand-in the generic family resolves to
     # a font that was never loaded, and nothing is drawn.
     check renderOgImage(generic, noDefault) == renderOgImage(none, noDefault)
+
+  test "the host's fonts are never read; only the bundled fonts are loaded":
+    # Behaviour: a family that is not bundled draws exactly like a family
+    # that exists nowhere. On a host whose fontconfig offers DejaVu Serif
+    # (or any font resvg would pick for it) the two differ as soon as resvg
+    # may read system fonts; on a host with no system fonts at all they are
+    # equal either way, so the argument check below carries the guarantee.
+    let unbundled = card("", "<text x=\"80\" y=\"500\" font-family=\"DejaVu Serif\" font-size=\"40\">Serif</text>")
+    let nowhere = card("", "<text x=\"80\" y=\"500\" font-family=\"No Such Family\" font-size=\"40\">Serif</text>")
+    let drawnAlike = renderOgImage(unbundled, config) == renderOgImage(nowhere, config)
+    check drawnAlike
+    # The invocation itself: system fonts are switched off and the bundled
+    # files are the only fonts named.
+    let work = createTempDir("isonim-og-", "")
+    defer: removeDir(work)
+    let log = work / "arguments"
+    var logged = config
+    logged.resvgPath = instrumentTool(work, "resvg", resvg, "", argumentLog = log)
+    let sameImage = renderOgImage(card("x"), logged) == renderOgImage(card("x"), config)
+    check sameImage
+    let arguments = readFile(log).splitLines()
+    check "--skip-system-fonts" in arguments
+    var fontArguments: seq[string]
+    for i, argument in arguments:
+      if argument == "--use-font-file" and i + 1 < arguments.len: fontArguments.add arguments[i + 1]
+    check fontArguments == config.fontFiles
 
   test "a template of another aspect ratio is refused":
     try:
