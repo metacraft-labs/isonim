@@ -220,3 +220,14 @@ identity-bypass source mutations must fail distinct oracles. Early stable-ID
 selection must initialize no renderer registry. The actual generic recorder's
 weak-reference Refusal stays observable; this preparation does not qualify that
 factory path for recording or settle weak-reference replay compatibility.
+
+`test-replay-timers-owner` checks the private timeout preparation through actual
+native RealClock callback observations, the recorder's strict codec and its owned
+replay scheduler. It covers new timeout registration for each repeating arm,
+cancellation, callback/microtask order, errors, delay conversion and explicit
+completion-only disposal. Cancellation has no log record. Tests compare genuine
+DOM checkpoints and reject raw-timer, missing-unregister, interval-kind and
+identity-reset source mutations. This remains internal preparation: it installs
+no automatic recording, protocol declaration or supported public build API.
+Missing owner artifacts fail the gate. Ordinary/dormant artifacts omit its
+private timer state entirely.

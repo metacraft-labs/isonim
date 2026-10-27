@@ -2127,6 +2127,7 @@ test-replay-reads-owner: test-replay-ssr-guard
     python3 tools/test_replay_media_owner.py
     python3 tools/test_replay_measure_owner.py
     python3 tools/test_replay_wall_owner.py
+    python3 tools/test_replay_timers_owner.py
 
 # Artifact-free ordinary/recordable SSR byte fidelity and private-guard inverse.
 test-replay-ssr-guard:
@@ -2139,3 +2140,7 @@ test-replay-measure-owner:
 # Deliberate private wall clock preparation; real owner is mandatory.
 test-replay-wall-owner:
     python3 tools/test_replay_wall_owner.py
+
+# Deliberate private timeout preparation; real owner is mandatory.
+test-replay-timers-owner:
+    python3 tools/test_replay_timers_owner.py

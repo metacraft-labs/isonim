@@ -86,7 +86,6 @@ proc scheduleAt*(afterMs: float64; cb: proc()): int {.tags: [ClockEffect].} =
   ## Schedule after a delay, matching nim-everywhere's time facade.
   ## Effects of deferred callbacks belong to their later dispatch slot.
   {.cast(tags: []).}:
-    refuseReadReplay(currentClock, "scheduleAt")
     note("scheduleAt")
     let b = backend()
     inc b.nextHandle
@@ -97,7 +96,6 @@ proc scheduleAt*(afterMs: float64; cb: proc()): int {.tags: [ClockEffect].} =
     id
 proc cancel*(id: int) {.tags: [ClockEffect].} =
   {.cast(tags: []).}:
-    refuseReadReplay(currentClock, "cancel")
     note("cancel")
     let b = backend()
     if id in b.frameCancels:
@@ -108,7 +106,6 @@ proc cancel*(id: int) {.tags: [ClockEffect].} =
       b.seamTimers.del(id)
 proc scheduleEvery*(intervalMs: float64; cb: proc()): int {.tags: [ClockEffect].} =
   {.cast(tags: []).}:
-    refuseReadReplay(currentClock, "scheduleEvery")
     note("scheduleEvery")
     if intervalMs <= 0: raise newException(ValueError, "interval must be positive")
     let b = backend()

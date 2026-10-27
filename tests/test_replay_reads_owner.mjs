@@ -90,6 +90,9 @@ try {
       "readReplayMedia",
       "mediaRead",
       "readReplayWall",
+      "timerNamespaces",
+      "nextTimerTask",
+      "disposeInternalReadReplay",
       "internalReadReplay:true",
       'module replay_reads"',
     ]) {
@@ -395,7 +398,9 @@ try {
         assert.equal(outcome.observation.cookie, outcome.recorded.cookie);
         assert.deepEqual(outcome.presence, [null, ""]);
         assert.equal(outcome.next, "Checkpoint");
-        assert.equal(outcome.refused.length, 35);
+        // Timer APIs have their own mandatory actual-owner ordering and
+        // cancellation gate; the remaining unsupported APIs still refuse.
+        assert.equal(outcome.refused.length, 30);
         noRaw(outcome.counts);
       }
     } else if (mode.endsWith("mismatch")) {

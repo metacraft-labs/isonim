@@ -4,12 +4,26 @@
 ## The internal define is preparation-only. Normal/dormant builds omit even
 ## private RTTI/state and the guard calls; no runtime feature switch is added.
 when defined(js) and defined(isonimInternalReplayReads):
-  import std/[json, times]
+  import std/[json, times, math, tables]
   import ../clock
   import std/jsffi
 
   type ReadReplayClock = ref object of ClockBase
     cursor: JsObject
+    nextTimerId: int
+    timerTasks: Table[int, JsObject]
+    activeCallbacks: int
+    disposed: bool
+
+  # Weak keys preserve one framework namespace per actual cursor without
+  # retaining completed sessions. Allocate only at the first private timer.
+  var timerNamespaces: JsObject
+  proc newTimerNamespaces(): JsObject {.importjs: "new WeakMap()".}
+  proc nextTimerTask(namespaces, cursor: JsObject): JsObject {.importjs: "(function(m,r){var n=m.get(r);if(n===undefined)n=1n;m.set(r,n+1n);return n;})(#,#)".}
+  proc registerTimer(cursor, task: JsObject; delay: int) {.importjs: "#.registerTask(#,1,#)".}
+  proc onTimer(cursor, task: JsObject; callback: proc()) {.importjs: "#.onTask(#,#)".}
+  proc offTimer(cursor, task: JsObject) {.importjs: "#.offTask(#)".}
+  proc timerSessionFinished(cursor: JsObject): bool {.importjs: "(function(r){var s=r.status().state;return s==='done'||s==='diverged';})(#)".}
 
   proc isReadReplay*(clock: ClockBase): bool = clock != nil and clock of ReadReplayClock
 
@@ -18,7 +32,7 @@ when defined(js) and defined(isonimInternalReplayReads):
     if clock.isReadReplay:
       raise newException(ValueError, "internal read Replay does not support " & operation)
 
-  proc actualCursor(): JsObject {.importjs: "(function(){var r=globalThis.__ctReplay;if(!r||r.protocol!==1||typeof r.next!=='function')throw new Error('internal read Replay requires actual __ctReplay protocol 1');return r;})()".}
+  proc actualCursor(): JsObject {.importjs: "(function(){var r=globalThis.__ctReplay;if(!r||r.protocol!==1||typeof r.next!=='function')throw new Error('internal read Replay requires actual __ctReplay protocol 1');for(var k of ['registerTask','onTask','offTask','status'])if(typeof r[k]!=='function')throw new Error('internal read Replay requires owner '+k);return r;})()".}
   proc captureQueueLive(): bool {.importjs: "(globalThis['_'+String.fromCharCode(36)+'HY']!=null&&globalThis['_'+String.fromCharCode(36)+'HY'].events!=null)".}
   proc guardCollision(): bool {.importjs: "Object.getOwnPropertyDescriptor(globalThis,'__isonimInternalReadReplaySelected')!==undefined".}
   var guardInstalled = false
@@ -54,9 +68,47 @@ when defined(js) and defined(isonimInternalReplayReads):
       convert(Milliseconds, Nanoseconds,
         millis mod convert(Seconds, Milliseconds, 1).int))
   method schedule(clock: ReadReplayClock; callback: proc(); delayMs: float64): int =
-    raise newException(ValueError, "internal read Replay does not support schedule")
+    if clock.disposed:
+      raise newException(ValueError, "internal read Replay timer clock is disposed")
+    inc clock.nextTimerId
+    let id = clock.nextTimerId
+    # Preserve RealClock conversion and its error-before-registration order.
+    let delay = max(0, ceil(delayMs).int)
+    if timerNamespaces.isNil: timerNamespaces = newTimerNamespaces()
+    let task = nextTimerTask(timerNamespaces, clock.cursor)
+    registerTimer(clock.cursor, task, delay)
+    clock.timerTasks[id] = task
+    onTimer(clock.cursor, task, proc() =
+      # A timeout is no longer live even when its callback throws or rearms.
+      offTimer(clock.cursor, task)
+      clock.timerTasks.del(id)
+      inc clock.activeCallbacks
+      try:
+        when defined(isonimRecordable): beginDispatch(clock)
+        else: inc clock.dispatchSequence
+        callback()
+      finally:
+        dec clock.activeCallbacks)
+    id
   method cancel(clock: ReadReplayClock; id: int) =
-    raise newException(ValueError, "internal read Replay does not support cancel")
+    if id in clock.timerTasks:
+      offTimer(clock.cursor, clock.timerTasks[id])
+      clock.timerTasks.del(id)
+
+  proc disposeInternalReadReplay*(clock: ClockBase) =
+    ## Explicit internal lifecycle only: the actual owner has finished, and no
+    ## callback is on the stack. Selection changes preserve pending ownership.
+    if not clock.isReadReplay:
+      raise newException(ValueError, "internal read Replay disposal requires its clock")
+    let selected = ReadReplayClock(clock)
+    if selected.disposed: return
+    if selected.activeCallbacks != 0 or not timerSessionFinished(selected.cursor):
+      raise newException(ValueError, "internal read Replay disposal requires completed owner outside callbacks")
+    for task in selected.timerTasks.values:
+      offTimer(selected.cursor, task)
+    selected.timerTasks.clear()
+    selected.seamTimers.clear()
+    selected.disposed = true
 
   proc readReplayStorage*(clock: ClockBase; area: int; key: string): JsonNode =
     ## Fixed read bridge, not an observer/provider extension point. Original
