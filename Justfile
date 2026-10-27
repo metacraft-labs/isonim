@@ -2001,7 +2001,7 @@ test-stable-id-mutants: build-tailwind
     node tools/test_iid_mutants.mjs
 
 # Platform boundaries include real layout and networking under Chromium.
-test-nondet:
+test-nondet: test-scripted-rpc-body
     python3 tests/test_core_layering.py
     nim c -r --out:build/test_nondet_default tests/test_nondet_default.nim
     nim js --out:build/test_nondet_default.js tests/test_nondet_default.nim
@@ -2081,3 +2081,11 @@ test-content-tools:
 
 test-content-tools-mutation:
     nix develop .#content-tools --command python3 tests/test_content_tools_mutation.py
+
+# Actual public no-body GET and direct empty/non-empty scripted RPC controls.
+test-scripted-rpc-body:
+    nim js --out:build/scripted_rpc_body_fixture.js tests/scripted_rpc_body_fixture.nim
+    node tests/test_scripted_rpc_body.mjs
+    nim js -d:isonimRecordable --out:build/scripted_rpc_body_fixture_recordable.js tests/scripted_rpc_body_fixture.nim
+    SCRIPTED_RPC_BODY_FIXTURE=build/scripted_rpc_body_fixture_recordable.js node tests/test_scripted_rpc_body.mjs
+    node tests/test_scripted_rpc_body_mutation.mjs

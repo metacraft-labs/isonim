@@ -328,7 +328,9 @@ when defined(js):
       let b = backend()
       if b.scripted:
         if b.fetchResponse == nil: raise newException(ValueError, "missing scripted fetch")
-        var req = HttpRequest(url: $url, body: $body)
+        # Public no-body RPC calls pass nil; the buffered scripted request
+        # represents absence with an empty Nim string, not a nil cstring read.
+        var req = HttpRequest(url: $url, body: (if body == nil: "" else: $body))
         req.headers = @[
           HttpHeader(name: "X-CSRF-Token", value: $csrf),
           HttpHeader(name: "X-Isonim-Context", value: $context)]
