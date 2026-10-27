@@ -66,3 +66,21 @@ when defined(js) and defined(isonimInternalReplayReads):
     ## media query list or consulting layout. Only the checked log supplies the
     ## result. Keep parser/owner exceptions intact; never default missing data.
     %mediaRead(ReadReplayClock(clock).cursor, query.cstring)
+
+  when defined(isonimStableIds):
+    import ./iid_lookup
+    proc measureIid(el: JsObject): cstring {.importjs: "(function(e){if(typeof Element==='undefined'||!(e instanceof Element))throw new TypeError('internal read Replay does not support measure: requires a registered element');var iid=e.getAttribute('data-iid');if(typeof iid!=='string'||!iid)throw new TypeError('internal read Replay does not support measure: requires a stable iid');return iid;})(#)".}
+    proc sameElement(el: JsObject; resolved: JsObject): bool {.importjs: "(# === #)".}
+    proc measureRead(cursor: JsObject; iid: cstring): cstring {.importjs: "JSON.stringify(JSON.parse(#.next('LayoutRead',{target:'iid:'+#,prop:'getBoundingClientRect'}).value))".}
+
+  proc readReplayMeasure*(clock: ClockBase; el: JsObject): JsonNode =
+    ## Trust the existing registered node identity, never an attribute alone.
+    ## This preserves synchronous duplicate checks, detached successor choice
+    ## and genuine weak lookup Refusal behavior. No raw geometry is consulted.
+    when defined(isonimStableIds):
+      let iid = measureIid(el)
+      if not sameElement(el, resolveIidLookup(iid)):
+        raise newException(ValueError, "internal read Replay does not support measure: requires the registered iid element")
+      parseJson($measureRead(ReadReplayClock(clock).cursor, iid))
+    else:
+      raise newException(ValueError, "internal read Replay does not support measure without stable ids")

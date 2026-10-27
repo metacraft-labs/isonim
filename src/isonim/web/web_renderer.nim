@@ -238,6 +238,7 @@ proc clearEventListeners*(r: WebRenderer; node: Element) =
 
 
 when defined(isonimStableIds):
+  import isonim/core/private/iid_lookup
   {.emit: """
   (() => {
   if (globalThis.__isonimRememberIid) return;
@@ -288,7 +289,6 @@ when defined(isonimStableIds):
   })();
   """.}
   proc rememberIid(iid: cstring; el: Element) {.importjs: "globalThis.__isonimRememberIid(#, #)".}
-  proc resolveIidRaw(iid: cstring): Element {.importjs: "((iid) => { globalThis.__isonimValidateIids(iid); return globalThis.__isonimIids.get(iid)?.deref() || null; })(#)".}
   proc noteElement*(el: Element; iid: string) =
     ## The two-argument typed element hook indexes stable ids. Weak refs
     ## prevent detached trees from being retained; finalization removes keys
@@ -296,4 +296,4 @@ when defined(isonimStableIds):
     rememberIid(cstring(iid), el)
   proc resolveIid*(iid: string): Element =
     ## Resolve the latest node claimed for an identity, or nil after GC.
-    resolveIidRaw(cstring(iid))
+    cast[Element](resolveIidLookup(cstring(iid)))

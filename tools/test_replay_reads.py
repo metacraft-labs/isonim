@@ -4,7 +4,7 @@ from pathlib import Path
 import subprocess
 
 root = Path(__file__).resolve().parent.parent
-for target, flags, suffix in [("c", [], "native"), ("js", ["-d:nodejs"], "js"), ("js", ["-d:nodejs", "-d:isonimInternalReplayReads"], "internal-js")]:
+for target, flags, suffix in [("c", [], "native"), ("js", ["-d:nodejs"], "js"), ("js", ["-d:nodejs", "-d:isonimInternalReplayReads"], "internal-js"), ("js", ["-d:nodejs", "-d:isonimInternalReplayReads", "-d:isonimStableIds"], "internal-stable-js")]:
     output = root / "build" / ("replay-read-custom." + suffix)
     subprocess.run(["nim", target, *flags, "--nimcache:" + str(root / "build/nimcache" / ("read-custom-" + suffix)), "--out:" + str(output), "tests/test_replay_read_guards.nim"], cwd=root, check=True)
     subprocess.run(([str(output)] if target == "c" else ["node", str(output)]), cwd=root, check=True)

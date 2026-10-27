@@ -318,7 +318,10 @@ proc matchMedia*(query: string): bool {.tags: [LayoutEffect].} =
 when defined(js):
   proc measure*(el: JsObject): Rect {.tags: [LayoutEffect].} =
     {.cast(tags: []).}:
-      refuseReadReplay(currentClock, "measure")
+      when defined(isonimInternalReplayReads):
+        if currentClock.isReadReplay:
+          note("measure")
+          return asRect(readReplayMeasure(currentClock, el))
       note("measure")
       let b = backend()
       if b.scripted: return asRect(b.read("measure"))

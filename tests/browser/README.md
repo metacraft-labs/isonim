@@ -171,11 +171,14 @@ uses actual Recorder→strict codec→installed runtime/cursor in Chromium, both
 and directly recordable builds, and a storage-dispatch inverse with unchanged
 positive clock/context controls. Explicit prior public env snapshot is internal
 constructor configuration, NOT reconstructed archive data or a public API. Only
-Clock2/storage/cookie, viewport and media queries are supported; all other paths refuse.
+Clock2/storage/cookie, viewport, media queries and validated registered-IID measurement
+are supported; all other paths refuse. Measurement requires stable IDs and the
+existing renderer registry to resolve the exact passed element. Unknown, missing,
+forged and superseded identities refuse before any layout or cursor read.
 The same mandatory owner gate checks viewport through logged window width then
 height, using genuine browser observations after a resize, zero platform reads
 on replay, first/second-read mismatch latching and a source-restoration control
-that exposes raw getters plus an unconsumed log record. Other layout reads still
+that exposes raw getters plus an unconsumed log record. Unregistered and other target forms still
 refuse. No automatic replay,
 protocol declaration, RNG mapping, active recording or complete replay support follows.
 
@@ -199,3 +202,14 @@ unadopted CSSOM syntax objects and logged booleans. It traps live matching and
 layout, covers repeated reads and exact owner divergence, and rejects both raw
 matching restoration and authored-query serialization mutations. Missing owner
 artifacts fail this gate rather than skipping it.
+
+`test-replay-measure-owner` is the separate mandatory registered-node geometry
+gate, also included by `test-replay-reads-owner`. One compiled runtime sets up
+genuine DSL nodes before deliberate private selection. Actual browser rect
+samples retain eight fields privately and project four publicly; changed geometry
+and traps prove values come from checked log records. Live/detached/replaced and
+duplicate identities retain existing resolver semantics. Raw restoration and
+identity-bypass source mutations must fail distinct oracles. Early stable-ID
+selection must initialize no renderer registry. The actual generic recorder's
+weak-reference Refusal stays observable; this preparation does not qualify that
+factory path for recording or settle weak-reference replay compatibility.

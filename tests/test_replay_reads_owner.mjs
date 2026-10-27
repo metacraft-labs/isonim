@@ -219,6 +219,8 @@ try {
               )?.get !== undefined,
           };
         if (error) throw error;
+        if ('__isonimIids' in globalThis) throw Error('early private selection initialized renderer IID state');
+        if ('__isonimRememberIid' in globalThis) throw Error('early renderer registry machinery');
         if (
           mode === "key-mismatch" ||
           mode === "area-mismatch" ||

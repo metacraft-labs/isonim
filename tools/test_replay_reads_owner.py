@@ -30,7 +30,7 @@ script = subprocess.check_output([str(root / "build/replay-script")], cwd=root)
 (root / "build/replay-reads-capture-script.txt").write_bytes(script)
 subprocess.run(["nim", "js", "--nimcache:build/nimcache/replay-context", "--out:build/replay-reads-context.js", "tests/fixtures/replay_reads_context.nim"], cwd=root, check=True)
 subprocess.run(["nim", "js", "-d:isonimRecordable", "--nimcache:build/nimcache/replay-context-recordable", "--out:build/replay-reads-context-recordable.js", "tests/fixtures/replay_reads_context.nim"], cwd=root, check=True)
-for name, flags in [("replay-reads", []), ("replay-reads-recordable", ["-d:isonimRecordable"])]:
+for name, flags in [("replay-reads", []), ("replay-reads-recordable", ["-d:isonimRecordable"]), ("replay-reads-stable-early", ["-d:isonimStableIds"])]:
     bundle = compile_js(name, flags)
     subprocess.run(["node", "tests/test_replay_reads_owner.mjs"], cwd=root, env={**env, "REPLAY_READS_BUNDLE": str(bundle)}, check=True)
 
