@@ -2010,6 +2010,7 @@ test-nondet: test-scripted-rpc-body test-http-response test-http-response-mutant
     python3 tools/test_rectangle_mutant.py
     python3 tools/test_environment_iana.py
     python3 tools/test_environment_metadata.py
+    python3 tools/test_boot_date_observation.py
     nim c -r tests/test_nondet_seams.nim
     nim js tests/test_nondet_seams.nim
     python3 tools/run_nim_js_test.py tests/test_nondet_seams.js
@@ -2107,3 +2108,7 @@ test-http-response-mutants:
 # Explicit recorder-library integration; missing CT_ARTIFACT is an error.
 test-environment-owner:
     python3 tools/test_environment_metadata.py --owner
+
+# Strict same-instance clock metadata integration with the real owner codec.
+test-boot-date-owner:
+    python3 tools/test_boot_date_observation.py --owner

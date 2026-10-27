@@ -146,3 +146,8 @@ strict owner-library integration gate is `just test-environment-owner`: set
 directory. Missing owner artifacts fail this explicit integration gate; they
 are never skipped. That gate imports the actual generated environment helper
 without activating recording or changing framework toolchain/dependency pins.
+
+The same-instance boot Date controls run in `test-nondet` without an owner
+artifact. `just test-boot-date-owner` is the separate strict integration gate:
+with the same `CT_ARTIFACT` setting, it requires the actual owner's IEEE bit
+conversion and strict Clock3 codec. Missing artifacts fail this gate.

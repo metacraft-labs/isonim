@@ -16,4 +16,5 @@ proc mutateSnapshot() =
   copy["timeZone"] = %"caller-mutation"
   copy["colorScheme"] = %99
   copy["referrerOrigin"] = %"caller-mutation"
+  copy["bootDateEpochMs"] = %(-1)
 {.emit: "globalThis.isonimReadEnv = `readSnapshot`; globalThis.isonimResetEnv = `resetSnapshot`; globalThis.isonimMutateEnv = `mutateSnapshot`;".}
