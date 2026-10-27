@@ -151,3 +151,12 @@ The same-instance boot Date controls run in `test-nondet` without an owner
 artifact. `just test-boot-date-owner` is the separate strict integration gate:
 with the same `CT_ARTIFACT` setting, it requires the actual owner's IEEE bit
 conversion and strict Clock3 codec. Missing artifacts fail this gate.
+
+`test-nondet` also exercises lazy backend forwarding on C, proper windowless
+Node and Chromium, including supported TestClock/FakeAsyncContext scheduling,
+transport routing, explicit hooks/clearing and source-restoration controls.
+`just test-nondet-bridge-owner` is its separate strict actual-owner integration
+(requires `CT_ARTIFACT`). It uses the real Recorder/runtime/cursor to verify both
+Clock2 reads, not a fake replay provider. The intentionally incomplete probe
+backends leave storage visibly unconsumed; this is bridge preparation, not a
+recording/replay/conformance qualification or active framework declaration.

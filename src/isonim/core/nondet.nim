@@ -48,6 +48,7 @@ else:
     for i, value in bytes: result = result or (int64(value) shl (i * 8))
 proc backend*(): NondetBackend =
   if currentClock == nil: install(newRealBackend(pageSeed()))
+  elif currentBackendHook == nil: install(currentClock)
   currentClock
 template note(name: string) =
   # Coverage counters are absent from normal builds, including their table
@@ -187,19 +188,23 @@ proc fetch*(request: HttpRequest): PlatformFuture[HttpResponse] {.tags: [NetEffe
           else: inc b.dispatchSequence
           wrapped.fail(newException(CatchableError, message)))
       wrapped
+proc installBridge() =
+  # The same dynamic forwarding bridge serves eager browser bootstrap and
+  # lazy native/windowless imports. Creating it never selects a default clock.
+  installBackendHook(PlatformBackendHook(
+    monotonicNowMs: proc(): int64 = backend().now().int64,
+    schedule: proc(ms: int; cb: proc()): proc() =
+      # currentClock remains the public selector, including scoped test clocks.
+      # Cancellation must retain the clock that owns this particular timer.
+      let selected = backend()
+      let id = selected.schedule(cb, ms.float64)
+      result = proc() = selected.cancel(id),
+    fetch: proc(request: HttpRequest): PlatformFuture[HttpResponse] = fetch(request)))
+
 proc install*(b: NondetBackend) =
   currentClock = b
   if b == nil: installBackendHook(nil)
-  else:
-    installBackendHook(PlatformBackendHook(
-      monotonicNowMs: proc(): int64 = backend().now().int64,
-      schedule: proc(ms: int; cb: proc()): proc() =
-        # currentClock remains the public selector, including scoped test clocks.
-        # Cancellation must retain the clock that owns this particular timer.
-        let selected = backend()
-        let id = selected.schedule(cb, ms.float64)
-        result = proc() = selected.cancel(id),
-      fetch: proc(request: HttpRequest): PlatformFuture[HttpResponse] = fetch(request)))
+  else: installBridge()
 
 when defined(js):
   # The boot snapshot (`env`) runs at module initialisation whenever a
@@ -373,6 +378,11 @@ when defined(js):
     # environment before navigation or later viewport changes can alter it.
     discard backend()
     discard env()
+
+# A clock-only bootstrap can select currentClock before importing this module,
+# and native/windowless callers may select one later. Keep a lazy bridge ready
+# without replacing an explicit hook or eagerly allocating/seeding RealClock.
+if currentBackendHook == nil: installBridge()
 
 when defined(js):
   # The listener boundary is typed over the renderer's event object, so core
