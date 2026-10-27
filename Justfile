@@ -2017,6 +2017,7 @@ test-nondet: test-scripted-rpc-body test-http-response test-http-response-mutant
     PLAYWRIGHT_CHROMIUM_EXECUTABLE="${PLAYWRIGHT_CHROMIUM_EXECUTABLE:-$(command -v chromium)}" node tests/test_nondet_browser.mjs
     PLAYWRIGHT_CHROMIUM_EXECUTABLE="${PLAYWRIGHT_CHROMIUM_EXECUTABLE:-$(command -v chromium)}" python3 tests/test_storage_observation_mutation.py
     PLAYWRIGHT_CHROMIUM_EXECUTABLE="${PLAYWRIGHT_CHROMIUM_EXECUTABLE:-$(command -v chromium)}" python3 tests/test_frame_observation_mutation.py
+    python3 tools/test_history_observation.py
 
 # Production browser adapter composition, retained chats and control bridge.
 test-editor-workspace-adapters-gui: editor-build

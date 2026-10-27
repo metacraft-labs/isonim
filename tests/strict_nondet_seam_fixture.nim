@@ -8,5 +8,11 @@ proc component() {.tags: [ClockEffect].} =
   discard now()
 proc networkComponent() {.tags: [NetEffect].} =
   discard fetch(HttpRequest(url: "/"))
+proc historyComponent() {.tags: [DomEventEffect].} =
+  pushState("/push")
+  replaceState("/replace")
+  discard location()
+proc storageComponent() {.tags: [StorageEffect].} =
+  storageSet("key", "value")
 install(newRealBackend(1))
 component()

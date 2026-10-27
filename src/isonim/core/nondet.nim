@@ -209,7 +209,11 @@ when defined(js):
   # with each raw snapshot; an offset cannot identify it, and missing Intl
   # is explicitly unavailable (empty string), never guessed from another host.
   proc rawRead(name, arg: cstring; el: JsObject): cstring {.importjs: "JSON.stringify((function(n,a,e){switch(n){case 'storageGet':return localStorage.getItem(a);case 'cookieGet':return document.cookie;case 'location':return window.location.pathname;case 'measure':var r=e.getBoundingClientRect();return {x:r.x,y:r.y,width:r.width,height:r.height,top:r.top,right:r.right,bottom:r.bottom,left:r.left};case 'viewport':return {x:0,y:0,width:innerWidth,height:innerHeight};case 'matchMedia':return matchMedia(a).matches;case 'env':var w=window,l=w.location||{},v=w.navigator||{},d=w.document,u=String(v.userAgent||''),hy=globalThis['_'+String.fromCharCode(36)+'HY'],q=function(m){return typeof w.matchMedia==='function'&&w.matchMedia(m)?.matches===true;},t=d&&typeof d.querySelector==='function'?d.querySelector('meta[name=traceparent]'):null,z='',i=w.Intl;if(i&&typeof i.DateTimeFormat==='function'){var f=i.DateTimeFormat();if(f&&typeof f.resolvedOptions==='function'){var o=f.resolvedOptions();if(o&&typeof o.timeZone==='string')z=o.timeZone;}}return {url:String(l.href||''),ua:u,browserMajor:(u.match(new RegExp('(?:Chrome|Firefox|Version|Edg)/([0-9]+)'))||[])[1]||'',language:String(v.language||''),timezoneOffset:new Date().getTimezoneOffset(),timeZone:z,viewport:{width:Number(w.innerWidth)||0,height:Number(w.innerHeight)||0},dpr:Number(w.devicePixelRatio)||1,prefersDark:q('(prefers-color-scheme: dark)'),prefersReducedMotion:q('(prefers-reduced-motion: reduce)'),buildId:hy?.buildId||'',assignment:hy?.assignment||{},traceparent:String(t?.content||'')};}})(#,#,#))", tags: [RawNondet].}
-  proc rawWrite(name, key, value: cstring) {.importjs: "(function(n,k,v){if(n==='storageSet')localStorage.setItem(k,v);else window.history[n](null,'',v);})(#,#,#)", tags: [RawNondet].}
+  proc rawStorageWrite(key, value: cstring) {.importjs: "localStorage.setItem(#,#)", tags: [RawNondet].}
+  # Catch metadata failures only: an unsuccessful mutation keeps its original
+  # exception and must not query location. Partial hosts can mutate history
+  # without supplying usable URL metadata; absence is not a guessed URL.
+  proc rawHistory(name, url: cstring): cstring {.importjs: "(function(n,u){window.history[n](null,'',u);try{var l=window.location,h=l&&l.href;return typeof h==='string'?h:null;}catch(e){return null;}})(#,#)", tags: [RawNondet].}
 
 proc readValue(name: string; arg = ""): JsonNode =
   let b = backend()
@@ -236,7 +240,7 @@ proc storageSet*(key, value: string) {.tags: [StorageEffect].} =
     let b = backend()
     if b.scripted: b.storage[key] = value
     else:
-      when defined(js): rawWrite("storageSet", key.cstring, value.cstring)
+      when defined(js): rawStorageWrite(key.cstring, value.cstring)
       else: raise newException(ValueError, "browser storage unavailable on native")
 proc cookieGet*(): string {.tags: [StorageEffect].} =
   {.cast(tags: []).}:
@@ -246,22 +250,27 @@ proc location*(): string {.tags: [DomEventEffect].} =
   {.cast(tags: []).}:
     note("location")
     readValue("location").getStr()
+type HistoryObservation = tuple[browserUrl: Option[string]]
+
+proc historyObservation(name, url: string): HistoryObservation =
+  let b = backend()
+  if b.scripted:
+    b.nativeLocation = url
+    return (browserUrl: none(string))
+  when defined(js):
+    let observed = rawHistory(name.cstring, url.cstring)
+    (browserUrl: if observed.isNil: none(string) else: some($observed))
+  else:
+    raise newException(ValueError, "browser history unavailable on native")
+
 proc pushState*(url: string) {.tags: [DomEventEffect].} =
   {.cast(tags: []).}:
     note("pushState")
-    let b = backend()
-    if b.scripted: b.nativeLocation = url
-    else:
-      when defined(js): rawWrite("pushState", "", url.cstring)
-      else: raise newException(ValueError, "browser history unavailable on native")
+    discard historyObservation("pushState", url)
 proc replaceState*(url: string) {.tags: [DomEventEffect].} =
   {.cast(tags: []).}:
     note("replaceState")
-    let b = backend()
-    if b.scripted: b.nativeLocation = url
-    else:
-      when defined(js): rawWrite("replaceState", "", url.cstring)
-      else: raise newException(ValueError, "browser history unavailable on native")
+    discard historyObservation("replaceState", url)
 proc asRect(value: JsonNode): Rect =
   Rect(x: value["x"].getFloat(), y: value["y"].getFloat(), width: value["width"].getFloat(), height: value["height"].getFloat())
 proc viewport*(): Rect {.tags: [LayoutEffect].} =

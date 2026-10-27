@@ -14,6 +14,23 @@ proc observedValue(observation: StorageObservation): string = observation.value
 proc frameTimestamp(observation: FrameObservation): Option[float64] = observation.browserTimestamp
 
 suite "nondeterminism boundaries":
+  test "scripted history has no fabricated URL and leaves location reads independent":
+    let b = newTestBackend()
+    install(b)
+    defer: nondet.install(NondetBackend(nil))
+    b.script("location", @[%"/independent", %"/next"])
+    for name in ["pushState", "replaceState"]:
+      let observation = historyObservation(name, "relative?q=1#fragment")
+      check observation.browserUrl.isNone
+      check b.nativeLocation == "relative?q=1#fragment"
+    check location() == "/independent"
+    pushState("/public-push")
+    check b.nativeLocation == "/public-push"
+    replaceState("/public-replace")
+    check b.nativeLocation == "/public-replace"
+    check location() == "/next"
+    check b.seamCalls["pushState"] == 1
+    check b.seamCalls["replaceState"] == 1
   test "timer frame fallback has no browser timestamp and preserves cancellation":
     let b = newTestBackend(123.25)
     install(b)
