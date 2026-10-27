@@ -2187,7 +2187,7 @@ proc renderSidebar*[R, E](r: R; vm: EditorVM): E =
                               let openVec = openVectorEditorHandler(vm, story)
                               r.addEventListener(storyEditBtn, "click", openVec)
                               r.addEventListener(storyEditBtn, "keydown", openVec)
-                          inc itemIdx
+                          itemIdx += 1
                     else:
                       tdiv(ref = groupBody, display = "none")
                   block:
