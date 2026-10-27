@@ -244,6 +244,7 @@ proc readValue(name: string; arg = ""): JsonNode =
       case name
       of "storageGet": return readReplayStorage(b, 1, arg)
       of "cookieGet": return readReplayStorage(b, 3, "")
+      of "viewport": return readReplayViewport(b)
       else: refuseReadReplay(b, name)
   if b.scripted: return b.read(name)
   when defined(js):
@@ -307,7 +308,6 @@ proc asRect(value: JsonNode): Rect =
   Rect(x: value["x"].getFloat(), y: value["y"].getFloat(), width: value["width"].getFloat(), height: value["height"].getFloat())
 proc viewport*(): Rect {.tags: [LayoutEffect].} =
   {.cast(tags: []).}:
-    refuseReadReplay(currentClock, "viewport")
     note("viewport")
     asRect(readValue("viewport"))
 proc matchMedia*(query: string): bool {.tags: [LayoutEffect].} =

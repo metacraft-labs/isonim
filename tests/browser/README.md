@@ -171,7 +171,12 @@ uses actual Recorder→strict codec→installed runtime/cursor in Chromium, both
 and directly recordable builds, and a storage-dispatch inverse with unchanged
 positive clock/context controls. Explicit prior public env snapshot is internal
 constructor configuration, NOT reconstructed archive data or a public API. Only
-Clock2/storage/cookie are supported; all other paths refuse. No automatic replay,
+Clock2/storage/cookie and viewport are supported; all other paths refuse.
+The same mandatory owner gate checks viewport through logged window width then
+height, using genuine browser observations after a resize, zero platform reads
+on replay, first/second-read mismatch latching and a source-restoration control
+that exposes raw getters plus an unconsumed log record. Other layout reads still
+refuse. No automatic replay,
 protocol declaration, RNG mapping, active recording or complete replay support follows.
 
 The private implementation is additionally compiled only by the INTERNAL

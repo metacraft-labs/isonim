@@ -44,10 +44,13 @@ with tempfile.TemporaryDirectory(prefix="isonim-read-restoration-") as directory
       case name
       of "storageGet": return readReplayStorage(b, 1, arg)
       of "cookieGet": return readReplayStorage(b, 3, "")
+      of "viewport": return readReplayViewport(b)
       else: refuseReadReplay(b, name)
 '''
     assert original.count(block) == 1, "inverse must restore the actual read dispatch"
-    path.write_text(original.replace(block, ""))
+    # Restore storage ONLY: newly supported viewport dispatch remains intact.
+    restored = block.replace('      of "storageGet": return readReplayStorage(b, 1, arg)\n', '      of "storageGet": discard\n').replace('      of "cookieGet": return readReplayStorage(b, 3, "")\n', '      of "cookieGet": discard\n')
+    path.write_text(original.replace(block, restored))
     fixtures = Path(directory) / "tests/fixtures"
     fixtures.mkdir(parents=True)
     for name in ["replay_reads.nim", "replay_reads_bootstrap.nim"]:
@@ -57,7 +60,7 @@ with tempfile.TemporaryDirectory(prefix="isonim-read-restoration-") as directory
 
 # Restore ONLY the nil predicate in isolated own source. The exact nil oracle
 # remains mandatory in the artifact-free driver; here the same transformation
-# must retain actual-owner active Replay/38-entry/cursor/context positives.
+# must retain actual-owner active Replay/37-entry/cursor/context positives.
 with tempfile.TemporaryDirectory(prefix="isonim-owner-nil-inverse-") as directory:
     temporary = Path(directory)
     source = temporary / "src"
@@ -72,4 +75,4 @@ with tempfile.TemporaryDirectory(prefix="isonim-owner-nil-inverse-") as director
         shutil.copyfile(root / "tests/fixtures" / name, fixtures / name)
     bundle = compile_js("replay-reads-nil-restored-active", [], source, fixtures / "replay_reads.nim")
     subprocess.run(["node", "tests/test_replay_reads_owner.mjs"], cwd=root, env={**env, "REPLAY_READS_BUNDLE": str(bundle), "REPLAY_READS_NIL_INVERSE": "1"}, check=True)
-    print("nil-check restoration: active actual-owner Replay/38-entry controls PASS")
+    print("nil-check restoration: active actual-owner Replay/37-entry controls PASS")

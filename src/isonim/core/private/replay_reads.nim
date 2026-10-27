@@ -53,3 +53,9 @@ when defined(js) and defined(isonimInternalReplayReads):
     ## Fixed read bridge, not an observer/provider extension point. Original
     ## owner errors are never caught or wrapped; divergence identity survives.
     parseJson($storageRead(ReadReplayClock(clock).cursor, area, key.cstring))
+
+  proc viewportRead(cursor: JsObject): cstring {.importjs: "(function(r){var w=JSON.parse(r.next('LayoutRead',{target:'win',prop:'innerWidth'}).value);var h=JSON.parse(r.next('LayoutRead',{target:'win',prop:'innerHeight'}).value);return JSON.stringify({x:0,y:0,width:w,height:h});})(#)".}
+  proc readReplayViewport*(clock: ClockBase): JsonNode =
+    ## Preserve the original width-then-height observations. No platform layout
+    ## or boot snapshot can substitute for these dynamic, checked owner reads.
+    parseJson($viewportRead(ReadReplayClock(clock).cursor))
