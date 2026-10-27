@@ -51,8 +51,10 @@ else:
   from response_body import ResponseBody
   export request, response
   # response_body is deliberately not exported: a server that keeps its own
-  # `ResponseBody` name in scope (ngx-isonim, until it re-exports this one)
-  # would otherwise see two.  Import isonim/server/response_body to write to
+  # `ResponseBody` name in scope (ngx-isonim up to `0b84ef3`; later ones
+  # re-export this one) would otherwise see two, and under
+  # -d:useFaststreams it also exports faststreams' outputs, whose `Page`
+  # clashes with the route manifest's.  Import isonim/server/response_body to write to
   # `ctx.bodyWriter`.
 
   type
@@ -208,10 +210,12 @@ else:
     ## The server's response body writer for this request, nil when the
     ## server does not stream.  Its first `flush` commits the response.
     ##
-    ## Generic on purpose: a server that still keeps the writer in a table
-    ## of its own and exports a `bodyWriter(ctx: RequestContext)` of its
-    ## own (ngx-isonim before it calls `setBodyWriter`) outranks this one
-    ## in its own code, which keeps compiling unchanged.
+    ## Generic on purpose: a server that exports a `bodyWriter(ctx:
+    ## RequestContext)` of its own outranks this one instead of making the
+    ## call ambiguous.  ngx-isonim up to `0b84ef3` did (it kept the writer
+    ## in a table keyed by the context); later revisions call
+    ## `setBodyWriter`, and this keeps the older ones compiling against
+    ## this IsoNim.
     ctx.writer
 
   proc setBodyWriter*(ctx: RequestContext; body: ResponseBody) =
