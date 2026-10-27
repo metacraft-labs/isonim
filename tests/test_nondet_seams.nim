@@ -262,6 +262,40 @@ when defined(js):
   import std/jsffi
   proc inBrowser(): bool {.importjs: "(typeof window !== 'undefined')".}
   proc testElement(): JsObject {.importjs: "(function(){var e=document.createElement('div');e.style.cssText='position:absolute;left:11px;top:13px;width:23px;height:29px';document.body.appendChild(e);return e;})()".}
+  proc verifyBrowserRectangles() =
+    install(newRealBackend(1))
+    # The wrapper delegates to Chromium and retains that exact returned object;
+    # it supplies no fabricated geometry. JSON is the production observation format.
+    proc rectangleElement(): JsObject {.importjs: "(function(){var e=document.createElement('div');e.style.cssText='position:absolute;left:11.375px;top:13.625px;width:23.25px;height:29.75px;transform:rotate(13deg) translate(0.375px,-0.625px)';document.body.appendChild(e);var original=e.getBoundingClientRect;e.getBoundingClientRect=function(){globalThis.xrRectCalls++;return globalThis.xrRectActual=original.call(this);};return e;})()".}
+    proc resetRectCalls() {.importjs: "(globalThis.xrRectCalls=0)".}
+    proc rectCalls(): int {.importjs: "(globalThis.xrRectCalls)".}
+    proc actualRect(): cstring {.importjs: "JSON.stringify(globalThis.xrRectActual)".}
+    let el = rectangleElement()
+    resetRectCalls()
+    let publicRect = measure(el)
+    let publicActual = parseJson($actualRect())
+    doAssert rectCalls() == 1, "public rectangle must consume one platform read"
+    doAssert publicRect.x == publicActual["x"].getFloat()
+    doAssert publicRect.y == publicActual["y"].getFloat()
+    doAssert publicRect.width == publicActual["width"].getFloat()
+    doAssert publicRect.height == publicActual["height"].getFloat()
+    echo "four-field-browser-rectangle: PASS"
+    resetRectCalls()
+    let observed = parseJson($rawRead("measure", "", el))
+    let actual = parseJson($actualRect())
+    doAssert rectCalls() == 1, "eight-field rectangle must consume one platform read"
+    for key in ["x", "y", "width", "height", "top", "right", "bottom", "left"]:
+      doAssert observed.hasKey(key), "eight-field rectangle observation missing " & key
+      doAssert observed[key] == actual[key], "eight-field rectangle differs from platform " & key
+    doAssert actual["x"].getFloat() != 11.375
+    doAssert actual["width"].getFloat() != 23.25
+    echo "eight-field-browser-rectangle: PASS"
+    var invalidRejected = false
+    try: discard measure(nil)
+    except: invalidRejected = true
+    doAssert invalidRejected, "invalid element must retain platform exception"
+    proc removeElement(el: JsObject) {.importjs: "#.remove()".}
+    removeElement(el)
   proc verifyBrowserFrames() {.async.} =
     let b = newRealBackend(1)
     install(b)
@@ -475,6 +509,7 @@ when defined(js):
     await verifyRealTimers()
     await verifyRejectedFetch()
     if inBrowser():
+      verifyBrowserRectangles()
       await verifyBrowserFrames()
       await realBrowserSeams()
   discard runAsyncChecks()

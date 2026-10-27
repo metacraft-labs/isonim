@@ -15,7 +15,7 @@ control = subprocess.run(runner, cwd=root, text=True, capture_output=True)
 assert control.returncode == 0, control.stdout + control.stderr
 source = (root / "tests/test_nondet_seams.js").read_text()
 needle = "return localStorage.getItem(a);"
-assert source.count(needle) == 2, "expected both compiler-inlined rawRead sites"
+assert source.count(needle) == 3, "expected storage, measure and direct rectangle rawRead sites"
 with tempfile.TemporaryDirectory(prefix="isonim-storage-mutant-") as tmp:
     bundle = Path(tmp) / "lossy.js"
     bundle.write_text(source.replace(needle, "return localStorage.getItem(a)||'';"))

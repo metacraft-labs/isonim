@@ -19,7 +19,7 @@ try {
   page.on('pageerror', err => { errors.push(String(err)); console.error(String(err)); });
   page.on('console', msg => {
     messages.push(msg.text());
-    if (msg.text() === 'ordinary-browser-frame-facade: PASS') console.log(msg.text());
+    if (msg.text() === 'ordinary-browser-frame-facade: PASS' || msg.text().includes('field-browser-rectangle: PASS')) console.log(msg.text());
   });
   await page.goto(`http://127.0.0.1:${server.address().port}/`);
   await Promise.race([
@@ -29,6 +29,8 @@ try {
   assert.deepEqual(errors, []);
   assert(!messages.some(m => /FAILED|Check failed/.test(m)), messages.join('\n'));
   assert(messages.includes('async-browser-seams: PASS'));
+  assert(messages.includes('eight-field-browser-rectangle: PASS'));
+  assert(messages.includes('four-field-browser-rectangle: PASS'));
   assert(messages.includes('ordinary-browser-frame-facade: PASS'));
   assert(messages.includes('delivered-browser-frame-observation: PASS'));
   const opaque = await browser.newPage();
