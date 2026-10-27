@@ -5,11 +5,14 @@ cd "$(dirname "$0")/.."
 work="$(mktemp -d)"
 trap 'rm -rf "$work"' EXIT
 for target in c js; do
-  for selection in scheduleAtRaw sleepForRaw fetchHttpRaw; do
+  selections=(scheduleAtRaw sleepForRaw fetchHttpRaw)
+  if [[ "$target" == js ]]; then selections+=(fetchBrowserResponseRaw); fi
+  for selection in "${selections[@]}"; do
     flags=()
     case "$selection" in
       sleepForRaw) flags=(-d:rawSleep);;
       fetchHttpRaw) flags=(-d:rawFetch);;
+      fetchBrowserResponseRaw) flags=(-d:rawBrowserResponse);;
     esac
     nim "$target" --hints:off "${flags[@]}" --out:"$work/raw-$target" tests/strict_nondet_fixture.nim
     if nim "$target" --hints:off "${flags[@]}" -d:isonimStrictNondet --out:"$work/strict-$target" tests/strict_nondet_fixture.nim >"$work/error" 2>&1; then

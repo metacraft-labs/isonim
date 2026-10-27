@@ -2001,7 +2001,7 @@ test-stable-id-mutants: build-tailwind
     node tools/test_iid_mutants.mjs
 
 # Platform boundaries include real layout and networking under Chromium.
-test-nondet: test-scripted-rpc-body
+test-nondet: test-scripted-rpc-body test-http-response test-http-response-mutants
     python3 tests/test_core_layering.py
     nim c -r --out:build/test_nondet_default tests/test_nondet_default.nim
     nim js --out:build/test_nondet_default.js tests/test_nondet_default.nim
@@ -2089,3 +2089,13 @@ test-scripted-rpc-body:
     nim js -d:isonimRecordable --out:build/scripted_rpc_body_fixture_recordable.js tests/scripted_rpc_body_fixture.nim
     SCRIPTED_RPC_BODY_FIXTURE=build/scripted_rpc_body_fixture_recordable.js node tests/test_scripted_rpc_body.mjs
     node tests/test_scripted_rpc_body_mutation.mjs
+
+# Real generated Nim HTTP/RPC buffered facades and native browser response.
+test-http-response:
+    nim js --out:build/http_response_fixture.js tests/http_response_fixture.nim
+    node tests/test_http_response_browser.mjs
+    nim js -d:isonimRecordable --out:build/http_response_fixture_recordable.js tests/http_response_fixture.nim
+    HTTP_RESPONSE_FIXTURE=build/http_response_fixture_recordable.js node tests/test_http_response_browser.mjs
+
+test-http-response-mutants:
+    node tests/test_http_response_mutations.mjs

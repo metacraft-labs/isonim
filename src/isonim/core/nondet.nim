@@ -299,13 +299,17 @@ when defined(js):
     ## is read (`text()` rejects).  The final `catch` covers the whole chain,
     ## so an `AbortError` never reaches the caller as an exception.
     {.cast(tags: []).}:
+     var init: JsObject
      {.emit: """
     var headers = {"X-CSRF-Token": `csrf`, "X-Isonim-Context": `context`};
     if (`contentType` !== "") headers["Content-Type"] = `contentType`;
-    var init = {method: `httpMethod`, headers: headers, credentials: "same-origin"};
-    if (`body` !== null) init.body = `body`;
-    if (`signal`) init.signal = `signal`;
-    `result` = fetch(`url`, init)
+    `init` = {method: `httpMethod`, headers: headers, credentials: "same-origin"};
+    if (`body` !== null) `init`.body = `body`;
+    if (`signal`) `init`.signal = `signal`;
+     """.}
+     let pending = neHttp.fetchBrowserResponseRaw(rawBackendAccess, url, init)
+     {.emit: """
+    `result` = `pending`
       .then(function (r) {
         return r.text().then(function (t) { return {status: r.status, text: t}; });
       })
