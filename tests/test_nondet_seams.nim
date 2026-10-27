@@ -178,6 +178,7 @@ suite "nondeterminism boundaries":
     check measure(nil).height == 4
     check env()["language"].getStr() == "bg"
     check env()["language"].getStr() == "bg"
+    check env() == %*{"language": "bg"} # Explicit scripted JSON stays exact.
     var order: seq[int]
     var dispatches: seq[uint64]
     proc observe(id: int) =

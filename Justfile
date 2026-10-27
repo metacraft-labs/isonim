@@ -2008,6 +2008,7 @@ test-nondet: test-scripted-rpc-body test-http-response test-http-response-mutant
     python3 tools/run_nim_js_test.py build/test_nondet_default.js
     python3 tools/test_nondet_mutants.py
     python3 tools/test_rectangle_mutant.py
+    python3 tools/test_environment_iana.py
     nim c -r tests/test_nondet_seams.nim
     nim js tests/test_nondet_seams.nim
     python3 tools/run_nim_js_test.py tests/test_nondet_seams.js

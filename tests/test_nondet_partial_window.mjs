@@ -69,3 +69,22 @@ assert.equal(full.prefersDark, true);
 assert.equal(full.prefersReducedMotion, false);
 assert.equal(full.traceparent, '00-abc-def-01');
 console.log('window members: boot snapshot PASS');
+
+assert.equal(located.timeZone, '', 'partial window must not borrow bare global Intl');
+assert.equal(bare.timeZone, '');
+for (const [name, Intl] of [
+  ['empty-Intl', {}], ['missing-constructor', {DateTimeFormat: null}],
+  ['missing-options', {DateTimeFormat: () => ({})}],
+  ['missing-zone', {DateTimeFormat: () => ({resolvedOptions: () => ({})})}],
+  ['non-string-zone', {DateTimeFormat: () => ({resolvedOptions: () => ({timeZone: 0})})}],
+]) {
+  assert.equal(boot(name, {Intl}).timeZone, '', `${name} must denote unavailable zone`);
+}
+console.log('partial-window IANA absence: PASS');
+assert.throws(() => boot('throwing-Intl', {Intl: {
+  DateTimeFormat() { throw new Error('platform Intl failure'); },
+}}), /platform Intl failure/, 'platform failures must propagate, not become a guessed zone');
+assert.throws(() => boot('throwing-options', {Intl: {
+  DateTimeFormat: () => ({resolvedOptions() { throw new Error('platform options failure'); }}),
+}}), /platform options failure/);
+console.log('partial-window Intl exception fidelity: PASS');
