@@ -88,3 +88,14 @@ assert.throws(() => boot('throwing-options', {Intl: {
   DateTimeFormat: () => ({resolvedOptions() { throw new Error('platform options failure'); }}),
 }}), /platform options failure/);
 console.log('partial-window Intl exception fidelity: PASS');
+
+// New metadata must not run if any original snapshot member failed. Date's
+// original position precedes the legacy dark query; retain that exact order.
+{
+  const calls=[];
+  const dateFailure=new Error('legacy Date failure');
+  const context=vm.createContext({window:{matchMedia(){calls.push('dark');throw Error('later dark failure');},document:{get referrer(){calls.push('referrer');return '';}}},console,crypto:globalThis.crypto,Date:class {constructor(){throw dateFailure;}}});
+  assert.throws(()=>vm.runInContext(source,context),error=>error===dateFailure);
+  assert.deepEqual(calls,[]);
+}
+console.log('legacy Date ordering: PASS');

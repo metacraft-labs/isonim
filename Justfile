@@ -2009,6 +2009,7 @@ test-nondet: test-scripted-rpc-body test-http-response test-http-response-mutant
     python3 tools/test_nondet_mutants.py
     python3 tools/test_rectangle_mutant.py
     python3 tools/test_environment_iana.py
+    python3 tools/test_environment_metadata.py
     nim c -r tests/test_nondet_seams.nim
     nim js tests/test_nondet_seams.nim
     python3 tools/run_nim_js_test.py tests/test_nondet_seams.js
@@ -2102,3 +2103,7 @@ test-http-response:
 
 test-http-response-mutants:
     node tests/test_http_response_mutations.mjs
+
+# Explicit recorder-library integration; missing CT_ARTIFACT is an error.
+test-environment-owner:
+    python3 tools/test_environment_metadata.py --owner

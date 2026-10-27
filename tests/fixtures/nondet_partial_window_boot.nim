@@ -14,4 +14,6 @@ proc resetSnapshot() = install(newRealBackend(1))
 proc mutateSnapshot() =
   let copy = env()
   copy["timeZone"] = %"caller-mutation"
+  copy["colorScheme"] = %99
+  copy["referrerOrigin"] = %"caller-mutation"
 {.emit: "globalThis.isonimReadEnv = `readSnapshot`; globalThis.isonimResetEnv = `resetSnapshot`; globalThis.isonimMutateEnv = `mutateSnapshot`;".}

@@ -138,3 +138,11 @@ standing ones as of the last sweep.
 
   This project is not in either CI job. It needs a sibling repo that is not
   in this checkout and is not listed in `.github/sibling-repos`.
+
+The focused environment metadata gate (`python3 tools/test_environment_metadata.py`,
+also in `just test-nondet`) uses the real browser platform directly. The separate
+strict owner-library integration gate is `just test-environment-owner`: set
+`CT_ARTIFACT` to the installed recorder package's `lib/codetracer-js-recorder`
+directory. Missing owner artifacts fail this explicit integration gate; they
+are never skipped. That gate imports the actual generated environment helper
+without activating recording or changing framework toolchain/dependency pins.
