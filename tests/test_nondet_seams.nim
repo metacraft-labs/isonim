@@ -3,10 +3,14 @@
 {.define: isonimNondetCoverage.}
 import std/[unittest, json, times, monotimes, tables, strutils]
 import nim_everywhere/platform
-import isonim/core/nondet
+import isonim/core/nondet {.all.}
 import nim_everywhere/time as neTime
 import nim_everywhere/http as neHttp
 import isonim/testing/test_utils
+
+# Resolve private fields in this module rather than inside unittest's macro.
+proc isPresent(observation: StorageObservation): bool = observation.present
+proc observedValue(observation: StorageObservation): string = observation.value
 
 suite "nondeterminism boundaries":
   test "scoped clock selects platform time timers and fetch and restores them":
@@ -78,6 +82,29 @@ suite "nondeterminism boundaries":
       expect ValueError: pushState("/new")
       expect ValueError: replaceState("/new")
       expect ValueError: discard env()
+  test "storage observations preserve absence and consume one read":
+    # Scripted storage permits native checks of browser-only seams. Chromium
+    # below exercises the identical helper against actual localStorage.
+    let b = newTestBackend()
+    install(b)
+    defer: nondet.install(NondetBackend(nil))
+    b.script("storageGet", @[newJNull(), %"", %"value", %"sentinel"])
+    let missing = storageObservation("missing")
+    check not isPresent(missing)
+    check observedValue(missing) == ""
+    let empty = storageObservation("empty")
+    check isPresent(empty)
+    check observedValue(empty) == ""
+    let full = storageObservation("full")
+    check isPresent(full)
+    check observedValue(full) == "value"
+    check storageGet("next") == "sentinel"
+    expect ValueError: discard storageGet("exhausted")
+    b.script("storageGet", @[newJNull(), %"", %42, JsonNode(nil)])
+    check storageGet("missing") == ""
+    check storageGet("empty") == ""
+    check storageGet("old-kind-fallback") == ""
+    check storageGet("old-nil-fallback") == ""
   test "scripted reads and timers":
     let b = newTestBackend()
     install(b)
@@ -202,6 +229,28 @@ when defined(js):
     doAssert measure(el).height == 29
     doAssert viewport().width > 0
     doAssert matchMedia("(min-width: 1px)")
+    {.emit: "localStorage.removeItem('xr-storage-missing'); localStorage.setItem('xr-storage-empty', '');".}
+    doAssert storageGet("xr-storage-missing") == ""
+    doAssert storageGet("xr-storage-empty") == ""
+    let missingStorage = storageObservation("xr-storage-missing")
+    doAssert not isPresent(missingStorage), "storage absence must survive the browser read"
+    doAssert observedValue(missingStorage) == ""
+    let emptyStorage = storageObservation("xr-storage-empty")
+    doAssert isPresent(emptyStorage) and observedValue(emptyStorage) == ""
+    # Delegate to real Storage.getItem, counting calls without replacing storage.
+    {.emit: "var xrStorageGet = Storage.prototype.getItem; var xrStorageReads = 0; Storage.prototype.getItem = function(k) { xrStorageReads++; return xrStorageGet.call(this, k); };".}
+    discard storageObservation("xr-storage-missing")
+    {.emit: "Storage.prototype.getItem = xrStorageGet;".}
+    proc storageReads(): int {.importjs: "(xrStorageReads)".}
+    doAssert storageReads() == 1
+    # A real access exception must not trigger a fallback read or an empty value.
+    {.emit: "Storage.prototype.getItem = function() { xrStorageReads++; throw new Error('xr-storage-denied'); }; xrStorageReads = 0;".}
+    var storageError = false
+    try: discard storageGet("denied")
+    except: storageError = true
+    {.emit: "Storage.prototype.getItem = xrStorageGet;".}
+    doAssert storageError
+    doAssert storageReads() == 1
     storageSet("xr-test", "real")
     doAssert storageGet("xr-test") == "real"
     {.emit: "document.cookie = 'xr-cookie=real; path=/';".}
@@ -298,7 +347,20 @@ else:
     nondet.install(NondetBackend(nil))
 
 when defined(js):
+  proc storageDeniedContext(): bool {.importjs: "(globalThis.xrStorageDeniedContext === true)".}
+  proc verifyOpaqueOriginStorage() =
+    # An actual opaque-origin browser document denies localStorage access.
+    # No replacement getter or synthetic exception supplies this control.
+    install(newRealBackend(1))
+    var denied = false
+    try: discard storageGet("opaque-origin")
+    except: denied = true
+    doAssert denied, "opaque-origin storage access must propagate its exception"
+    {.emit: "window.xrStorageDeniedComplete = true;".}
   proc runAsyncChecks() {.async.} =
+    if storageDeniedContext():
+      verifyOpaqueOriginStorage()
+      return
     await verifyRealTimers()
     await verifyRejectedFetch()
     if inBrowser(): await realBrowserSeams()

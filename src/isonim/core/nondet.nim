@@ -199,7 +199,7 @@ when defined(js):
   # `window` exists, so it reads only through that object and defaults every
   # absent member: partial hosts (Node fixtures, worker shims) define a
   # `window` without the bare browser globals.
-  proc rawRead(name, arg: cstring; el: JsObject): cstring {.importjs: "JSON.stringify((function(n,a,e){switch(n){case 'storageGet':return localStorage.getItem(a)||'';case 'cookieGet':return document.cookie;case 'location':return window.location.pathname;case 'measure':var r=e.getBoundingClientRect();return {x:r.x,y:r.y,width:r.width,height:r.height};case 'viewport':return {x:0,y:0,width:innerWidth,height:innerHeight};case 'matchMedia':return matchMedia(a).matches;case 'env':var w=window,l=w.location||{},v=w.navigator||{},d=w.document,u=String(v.userAgent||''),hy=globalThis['_'+String.fromCharCode(36)+'HY'],q=function(m){return typeof w.matchMedia==='function'&&w.matchMedia(m)?.matches===true;},t=d&&typeof d.querySelector==='function'?d.querySelector('meta[name=traceparent]'):null;return {url:String(l.href||''),ua:u,browserMajor:(u.match(new RegExp('(?:Chrome|Firefox|Version|Edg)/([0-9]+)'))||[])[1]||'',language:String(v.language||''),timezoneOffset:new Date().getTimezoneOffset(),viewport:{width:Number(w.innerWidth)||0,height:Number(w.innerHeight)||0},dpr:Number(w.devicePixelRatio)||1,prefersDark:q('(prefers-color-scheme: dark)'),prefersReducedMotion:q('(prefers-reduced-motion: reduce)'),buildId:hy?.buildId||'',assignment:hy?.assignment||{},traceparent:String(t?.content||'')};}})(#,#,#))", tags: [RawNondet].}
+  proc rawRead(name, arg: cstring; el: JsObject): cstring {.importjs: "JSON.stringify((function(n,a,e){switch(n){case 'storageGet':return localStorage.getItem(a);case 'cookieGet':return document.cookie;case 'location':return window.location.pathname;case 'measure':var r=e.getBoundingClientRect();return {x:r.x,y:r.y,width:r.width,height:r.height};case 'viewport':return {x:0,y:0,width:innerWidth,height:innerHeight};case 'matchMedia':return matchMedia(a).matches;case 'env':var w=window,l=w.location||{},v=w.navigator||{},d=w.document,u=String(v.userAgent||''),hy=globalThis['_'+String.fromCharCode(36)+'HY'],q=function(m){return typeof w.matchMedia==='function'&&w.matchMedia(m)?.matches===true;},t=d&&typeof d.querySelector==='function'?d.querySelector('meta[name=traceparent]'):null;return {url:String(l.href||''),ua:u,browserMajor:(u.match(new RegExp('(?:Chrome|Firefox|Version|Edg)/([0-9]+)'))||[])[1]||'',language:String(v.language||''),timezoneOffset:new Date().getTimezoneOffset(),viewport:{width:Number(w.innerWidth)||0,height:Number(w.innerHeight)||0},dpr:Number(w.devicePixelRatio)||1,prefersDark:q('(prefers-color-scheme: dark)'),prefersReducedMotion:q('(prefers-reduced-motion: reduce)'),buildId:hy?.buildId||'',assignment:hy?.assignment||{},traceparent:String(t?.content||'')};}})(#,#,#))", tags: [RawNondet].}
   proc rawWrite(name, key, value: cstring) {.importjs: "(function(n,k,v){if(n==='storageSet')localStorage.setItem(k,v);else window.history[n](null,'',v);})(#,#,#)", tags: [RawNondet].}
 
 proc readValue(name: string; arg = ""): JsonNode =
@@ -210,10 +210,17 @@ proc readValue(name: string; arg = ""): JsonNode =
   else:
     raise newException(ValueError, "browser boundary unavailable on native: " & name)
 
+type StorageObservation = tuple[present: bool, value: string]
+
+proc storageObservation(key: string): StorageObservation =
+  # One original read supplies both fields before the public facade erases null.
+  let observed = readValue("storageGet", key)
+  (present: not observed.isNil and observed.kind != JNull, value: observed.getStr())
+
 proc storageGet*(key: string): string {.tags: [StorageEffect].} =
   {.cast(tags: []).}:
     note("storageGet")
-    readValue("storageGet", key).getStr()
+    storageObservation(key).value
 proc storageSet*(key, value: string) {.tags: [StorageEffect].} =
   {.cast(tags: []).}:
     note("storageSet")
