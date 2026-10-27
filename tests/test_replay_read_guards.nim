@@ -24,6 +24,7 @@ c.script("cookieGet", @[%"custom-cookie"])
 c.script("wallNow", @[%0.5])
 c.script("random", @[%7])
 c.script("randomFloat", @[%0.25])
+c.script("matchMedia", @[%true, %false])
 c.script("viewport", @[%*{"x":1,"y":2,"width":333,"height":222}])
 doAssert storageGet("a") == ""
 doAssert storageGet("b") == ""
@@ -34,6 +35,8 @@ doAssert nondet.now().ticks == 125250000
 doAssert wallNow().toUnixFloat() == 0.5
 doAssert nondet.random() == 7
 doAssert randomFloat() == 0.25
+doAssert matchMedia("screen")
+doAssert not matchMedia("screen")
 let customViewport = viewport()
 doAssert customViewport == Rect(x:1,y:2,width:333,height:222)
 let id = nondet.scheduleAt(2, proc()=discard)

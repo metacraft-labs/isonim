@@ -171,7 +171,7 @@ uses actual Recorder→strict codec→installed runtime/cursor in Chromium, both
 and directly recordable builds, and a storage-dispatch inverse with unchanged
 positive clock/context controls. Explicit prior public env snapshot is internal
 constructor configuration, NOT reconstructed archive data or a public API. Only
-Clock2/storage/cookie and viewport are supported; all other paths refuse.
+Clock2/storage/cookie, viewport and media queries are supported; all other paths refuse.
 The same mandatory owner gate checks viewport through logged window width then
 height, using genuine browser observations after a resize, zero platform reads
 on replay, first/second-read mismatch latching and a source-restoration control
@@ -193,3 +193,9 @@ no private selector lookup/callback/getter in controlled collision hosts. The
 internal generator retains refusal/switch-away controls; restoring unconditional
 emission must fail BOTH ordinary and recordable oracles independently. These VM
 script-registration checks supplement the mandatory real-owner Chromium tests.
+
+The mandatory owner gate also checks media-query serialization through native
+unadopted CSSOM syntax objects and logged booleans. It traps live matching and
+layout, covers repeated reads and exact owner divergence, and rejects both raw
+matching restoration and authored-query serialization mutations. Missing owner
+artifacts fail this gate rather than skipping it.

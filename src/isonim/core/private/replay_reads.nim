@@ -59,3 +59,10 @@ when defined(js) and defined(isonimInternalReplayReads):
     ## Preserve the original width-then-height observations. No platform layout
     ## or boot snapshot can substitute for these dynamic, checked owner reads.
     parseJson($viewportRead(ReadReplayClock(clock).cursor))
+
+  proc mediaRead(cursor: JsObject; query: cstring): bool {.importjs: "(function(r,q){var media=new CSSStyleSheet({media:q}).media.mediaText;if(typeof media!=='string')throw new TypeError('internal read Replay requires media serialization');var value=JSON.parse(r.next('LayoutRead',{target:'win',prop:'matchMedia:'+media}).value);if(value===null||typeof value.matches!=='boolean')throw new TypeError('internal read Replay requires logged media boolean');return value.matches;})(#,#)".}
+  proc readReplayMedia*(clock: ClockBase; query: string): JsonNode =
+    ## Native CSSOM parses syntax in an unadopted sheet, without creating a live
+    ## media query list or consulting layout. Only the checked log supplies the
+    ## result. Keep parser/owner exceptions intact; never default missing data.
+    %mediaRead(ReadReplayClock(clock).cursor, query.cstring)

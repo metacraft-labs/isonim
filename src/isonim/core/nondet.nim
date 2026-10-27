@@ -245,6 +245,7 @@ proc readValue(name: string; arg = ""): JsonNode =
       of "storageGet": return readReplayStorage(b, 1, arg)
       of "cookieGet": return readReplayStorage(b, 3, "")
       of "viewport": return readReplayViewport(b)
+      of "matchMedia": return readReplayMedia(b, arg)
       else: refuseReadReplay(b, name)
   if b.scripted: return b.read(name)
   when defined(js):
@@ -312,7 +313,6 @@ proc viewport*(): Rect {.tags: [LayoutEffect].} =
     asRect(readValue("viewport"))
 proc matchMedia*(query: string): bool {.tags: [LayoutEffect].} =
   {.cast(tags: []).}:
-    refuseReadReplay(currentClock, "matchMedia")
     note("matchMedia")
     readValue("matchMedia", query).getBool()
 when defined(js):

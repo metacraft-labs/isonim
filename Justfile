@@ -2124,6 +2124,7 @@ test-nondet-bridge-owner:
 test-replay-reads-owner: test-replay-ssr-guard
     python3 tools/test_replay_reads_owner.py
     python3 tools/test_replay_viewport_owner.py
+    python3 tools/test_replay_media_owner.py
 
 # Artifact-free ordinary/recordable SSR byte fidelity and private-guard inverse.
 test-replay-ssr-guard:
