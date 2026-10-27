@@ -4,7 +4,7 @@
 ## The internal define is preparation-only. Normal/dormant builds omit even
 ## private RTTI/state and the guard calls; no runtime feature switch is added.
 when defined(js) and defined(isonimInternalReplayReads):
-  import std/json
+  import std/[json, times]
   import ../clock
   import std/jsffi
 
@@ -23,7 +23,7 @@ when defined(js) and defined(isonimInternalReplayReads):
   proc guardCollision(): bool {.importjs: "Object.getOwnPropertyDescriptor(globalThis,'__isonimInternalReadReplaySelected')!==undefined".}
   var guardInstalled = false
   proc installSelectionGuard(selected: proc(): bool) {.importjs: "Object.defineProperty(globalThis,'__isonimInternalReadReplaySelected',{value:Object.freeze({internalReadReplay:true,selected:#})})".}
-  proc clockRead(cursor: JsObject): float64 {.importjs: "(function(r){var c=r.next('Clock',{src:2}),d=new DataView(new ArrayBuffer(8));d.setBigUint64(0,c.bits,true);return d.getFloat64(0,true);})(#)".}
+  proc clockRead[T: SomeNumber](cursor: JsObject; source: int): T {.importjs: "(function(r,s){var c=r.next('Clock',{src:s}),d=new DataView(new ArrayBuffer(8));d.setBigUint64(0,c.bits,true);return d.getFloat64(0,true);})(#,#)".}
   proc storageRead(cursor: JsObject; area: int; key: cstring): cstring {.importjs: "(function(r,a,k){var s=r.next('StorageRead',{area:a,key:k});return JSON.stringify(s.present===0?null:s.value);})(#,#,#)".}
 
   proc newInternalReadReplay*(bootContext: JsonNode): ClockBase =
@@ -43,7 +43,16 @@ when defined(js) and defined(isonimInternalReplayReads):
       installSelectionGuard(proc(): bool = currentClock.isReadReplay)
       guardInstalled = true
 
-  method now(clock: ReadReplayClock): float64 = clockRead(clock.cursor)
+  method now(clock: ReadReplayClock): float64 = clockRead[float64](clock.cursor, 2)
+
+  proc readReplayWall*(clock: ClockBase): Time =
+    ## Match the stock Date-millisecond integer type and public unit conversion.
+    ## In particular, retain its genuine range failures; this does not normalize
+    ## negative remainders or widen the library's accepted seconds domain.
+    let millis = clockRead[int](ReadReplayClock(clock).cursor, 3)
+    initTime(convert(Milliseconds, Seconds, millis),
+      convert(Milliseconds, Nanoseconds,
+        millis mod convert(Seconds, Milliseconds, 1).int))
   method schedule(clock: ReadReplayClock; callback: proc(); delayMs: float64): int =
     raise newException(ValueError, "internal read Replay does not support schedule")
   method cancel(clock: ReadReplayClock; id: int) =

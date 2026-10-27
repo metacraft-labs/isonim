@@ -76,9 +76,10 @@ proc now*(): MonoTime {.tags: [ClockEffect].} =
       epoch + initDuration(nanoseconds = int64(backend().now() * 1_000_000))
 proc wallNow*(): Time {.tags: [ClockEffect].} =
   {.cast(tags: []).}:
-    refuseReadReplay(currentClock, "wallNow")
     note("wallNow")
     let b = backend()
+    when defined(js) and defined(isonimInternalReplayReads):
+      if b.isReadReplay: return readReplayWall(b)
     if b.scripted: return fromUnixFloat(b.read("wallNow").getFloat())
     getTime()
 proc scheduleAt*(afterMs: float64; cb: proc()): int {.tags: [ClockEffect].} =

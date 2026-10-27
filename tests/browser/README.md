@@ -171,7 +171,7 @@ uses actual Recorder→strict codec→installed runtime/cursor in Chromium, both
 and directly recordable builds, and a storage-dispatch inverse with unchanged
 positive clock/context controls. Explicit prior public env snapshot is internal
 constructor configuration, NOT reconstructed archive data or a public API. Only
-Clock2/storage/cookie, viewport, media queries and validated registered-IID measurement
+Clock2/wall Clock3, storage/cookie, viewport, media queries and validated registered-IID measurement
 are supported; all other paths refuse. Measurement requires stable IDs and the
 existing renderer registry to resolve the exact passed element. Unknown, missing,
 forged and superseded identities refuse before any layout or cursor read.
@@ -181,6 +181,13 @@ on replay, first/second-read mismatch latching and a source-restoration control
 that exposes raw getters plus an unconsumed log record. Unregistered and other target forms still
 refuse. No automatic replay,
 protocol declaration, RNG mapping, active recording or complete replay support follows.
+
+The wall clock gate compares all 20 native Date inputs against the current stock
+Time projection: 10 exact Time values and 10 preserved genuine RangeDefects.
+Replay consumes Clock3 without reading Date or another clock; existing negative
+and seconds-range library failures are not normalized away. All full exception
+traces are retained. Raw-Date, wrong-source and normalization source inverses
+must fail specifically while ordinary clock/context controls stay positive.
 
 The private implementation is additionally compiled only by the INTERNAL
 `isonimInternalReplayReads` preparation define; this is not a supported public

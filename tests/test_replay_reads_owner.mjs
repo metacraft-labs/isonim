@@ -89,6 +89,7 @@ try {
       "viewportRead",
       "readReplayMedia",
       "mediaRead",
+      "readReplayWall",
       "internalReadReplay:true",
       'module replay_reads"',
     ]) {
@@ -394,7 +395,7 @@ try {
         assert.equal(outcome.observation.cookie, outcome.recorded.cookie);
         assert.deepEqual(outcome.presence, [null, ""]);
         assert.equal(outcome.next, "Checkpoint");
-        assert.equal(outcome.refused.length, 36);
+        assert.equal(outcome.refused.length, 35);
         noRaw(outcome.counts);
       }
     } else if (mode.endsWith("mismatch")) {

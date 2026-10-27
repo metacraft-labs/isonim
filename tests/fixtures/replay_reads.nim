@@ -43,7 +43,6 @@ proc switchAway() {.exportc:"xrReadSwitchAway".} = install(newTestBackend())
 proc selectAgain() {.exportc:"xrReadSelectAgain".} = install(selected)
 proc script(): cstring {.exportc:"xrReadCaptureScript".} = generateHydrationScript().cstring
 
-exported("wallNow",proc()=discard wallNow())
 exported("random",proc()=discard nondet.random())
 exported("randomFloat",proc()=discard randomFloat())
 exported("scheduleAt",proc()=discard nondet.scheduleAt(0,proc()=discard))
