@@ -45,7 +45,6 @@ proc script(): cstring {.exportc:"xrReadCaptureScript".} = generateHydrationScri
 
 exported("random",proc()=discard nondet.random())
 exported("randomFloat",proc()=discard randomFloat())
-exported("requestFrame",proc()=discard requestFrame(proc()=discard))
 exported("fetch",proc()=discard nondet.fetch(HttpRequest(url:"/must-not-fetch")))
 exported("browserFetch",proc()=discard browserFetch("GET","/must-not-rpc",nil,"","","",nil))
 exported("storageSet",proc()=storageSet("key","must-not-write"))

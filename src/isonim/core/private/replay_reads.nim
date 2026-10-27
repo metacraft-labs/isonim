@@ -12,15 +12,18 @@ when defined(js) and defined(isonimInternalReplayReads):
     cursor: JsObject
     nextTimerId: int
     timerTasks: Table[int, JsObject]
+    frameTasks: Table[int, JsObject]
     activeCallbacks: int
     disposed: bool
 
   # Weak keys preserve one framework namespace per actual cursor without
-  # retaining completed sessions. Allocate only at the first private timer.
+  # retaining completed sessions. Timers and frames share this one namespace;
+  # allocate only at the first private task, never from the log's next record.
   var timerNamespaces: JsObject
   proc newTimerNamespaces(): JsObject {.importjs: "new WeakMap()".}
   proc nextTimerTask(namespaces, cursor: JsObject): JsObject {.importjs: "(function(m,r){var n=m.get(r);if(n===undefined)n=1n;m.set(r,n+1n);return n;})(#,#)".}
   proc registerTimer(cursor, task: JsObject; delay: int) {.importjs: "#.registerTask(#,1,#)".}
+  proc registerFrame(cursor, task: JsObject) {.importjs: "#.registerTask(#,3,0)".}
   proc onTimer(cursor, task: JsObject; callback: proc()) {.importjs: "#.onTask(#,#)".}
   proc offTimer(cursor, task: JsObject) {.importjs: "#.offTask(#)".}
   proc timerSessionFinished(cursor: JsObject): bool {.importjs: "(function(r){var s=r.status().state;return s==='done'||s==='diverged';})(#)".}
@@ -95,6 +98,36 @@ when defined(js) and defined(isonimInternalReplayReads):
       offTimer(clock.cursor, clock.timerTasks[id])
       clock.timerTasks.del(id)
 
+  proc readReplayFrame*(clock: ClockBase; callback: proc(ts: float64)): int =
+    ## Fixed private frame bridge. The public facade still erases timestamps;
+    ## the original logged delivery is retained for its private observation.
+    let selected = ReadReplayClock(clock)
+    if selected.disposed:
+      raise newException(ValueError, "internal read Replay frame clock is disposed")
+    inc selected.nextHandle
+    let id = selected.nextHandle
+    if timerNamespaces.isNil: timerNamespaces = newTimerNamespaces()
+    let task = nextTimerTask(timerNamespaces, selected.cursor)
+    registerFrame(selected.cursor, task)
+    selected.frameTasks[id] = task
+    selected.frameCancels[id] = proc() =
+      offTimer(selected.cursor, task)
+      selected.frameTasks.del(id)
+    onTimer(selected.cursor, task, proc() =
+      # One-shot ownership ends before decoding or calling application code.
+      offTimer(selected.cursor, task)
+      selected.frameTasks.del(id)
+      selected.frameCancels.del(id)
+      inc selected.activeCallbacks
+      try:
+        let timestamp = clockRead[float64](selected.cursor, 4)
+        when defined(isonimRecordable): beginDispatch(selected)
+        else: inc selected.dispatchSequence
+        callback(timestamp)
+      finally:
+        dec selected.activeCallbacks)
+    id
+
   proc disposeInternalReadReplay*(clock: ClockBase) =
     ## Explicit internal lifecycle only: the actual owner has finished, and no
     ## callback is on the stack. Selection changes preserve pending ownership.
@@ -107,6 +140,10 @@ when defined(js) and defined(isonimInternalReplayReads):
     for task in selected.timerTasks.values:
       offTimer(selected.cursor, task)
     selected.timerTasks.clear()
+    for task in selected.frameTasks.values:
+      offTimer(selected.cursor, task)
+    selected.frameTasks.clear()
+    selected.frameCancels.clear()
     selected.seamTimers.clear()
     selected.disposed = true
 

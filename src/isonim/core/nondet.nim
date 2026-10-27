@@ -129,6 +129,10 @@ proc requestFrameObservation(cb: proc(observation: FrameObservation)): int =
   # it. A timer fallback has no browser timestamp; do not sample another clock.
   let b = backend()
   when defined(js):
+    when defined(isonimInternalReplayReads):
+      if b.isReadReplay:
+        return readReplayFrame(b, proc(ts: float64) =
+          cb((browserTimestamp: some(ts))))
     if not b.scripted:
       inc b.nextHandle
       let id = b.nextHandle
@@ -143,7 +147,6 @@ proc requestFrameObservation(cb: proc(observation: FrameObservation)): int =
 
 proc requestFrame*(cb: proc()): int {.tags: [ClockEffect].} =
   {.cast(tags: []).}:
-    refuseReadReplay(currentClock, "requestFrame")
     note("requestFrame")
     requestFrameObservation(proc(observation: FrameObservation) = cb())
 proc random*(): uint64 {.tags: [RandomEffect].} =

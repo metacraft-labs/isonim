@@ -61,7 +61,7 @@ with tempfile.TemporaryDirectory(prefix="isonim-read-restoration-") as directory
 
 # Restore ONLY the nil predicate in isolated own source. The exact nil oracle
 # remains mandatory in the artifact-free driver; here the same transformation
-# must retain actual-owner active Replay/35-entry/cursor/context positives.
+# must retain actual-owner active Replay/29-entry/cursor/context positives.
 with tempfile.TemporaryDirectory(prefix="isonim-owner-nil-inverse-") as directory:
     temporary = Path(directory)
     source = temporary / "src"
@@ -76,4 +76,4 @@ with tempfile.TemporaryDirectory(prefix="isonim-owner-nil-inverse-") as director
         shutil.copyfile(root / "tests/fixtures" / name, fixtures / name)
     bundle = compile_js("replay-reads-nil-restored-active", [], source, fixtures / "replay_reads.nim")
     subprocess.run(["node", "tests/test_replay_reads_owner.mjs"], cwd=root, env={**env, "REPLAY_READS_BUNDLE": str(bundle), "REPLAY_READS_NIL_INVERSE": "1"}, check=True)
-    print("nil-check restoration: active actual-owner Replay/35-entry controls PASS")
+    print("nil-check restoration: active actual-owner Replay/29-entry controls PASS")

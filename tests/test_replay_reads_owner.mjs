@@ -91,6 +91,9 @@ try {
       "mediaRead",
       "readReplayWall",
       "timerNamespaces",
+      "frameTasks",
+      "registerFrame",
+      "readReplayFrame",
       "nextTimerTask",
       "disposeInternalReadReplay",
       "internalReadReplay:true",
@@ -398,9 +401,9 @@ try {
         assert.equal(outcome.observation.cookie, outcome.recorded.cookie);
         assert.deepEqual(outcome.presence, [null, ""]);
         assert.equal(outcome.next, "Checkpoint");
-        // Timer APIs have their own mandatory actual-owner ordering and
-        // cancellation gate; the remaining unsupported APIs still refuse.
-        assert.equal(outcome.refused.length, 30);
+        // Timer/frame APIs have mandatory actual-owner ordering, delivered-bit
+        // and cancellation gates; every remaining unsupported API still refuses.
+        assert.equal(outcome.refused.length, 29);
         noRaw(outcome.counts);
       }
     } else if (mode.endsWith("mismatch")) {

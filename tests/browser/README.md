@@ -171,8 +171,9 @@ uses actual Recorder→strict codec→installed runtime/cursor in Chromium, both
 and directly recordable builds, and a storage-dispatch inverse with unchanged
 positive clock/context controls. Explicit prior public env snapshot is internal
 constructor configuration, NOT reconstructed archive data or a public API. Only
-Clock2/wall Clock3, storage/cookie, viewport, media queries and validated registered-IID measurement
-are supported; all other paths refuse. Measurement requires stable IDs and the
+Clock2/wall Clock3, storage/cookie, viewport, media queries, validated registered-IID
+measurement and the timeout/frame preparation below are supported; all other paths
+refuse. Measurement requires stable IDs and the
 existing renderer registry to resolve the exact passed element. Unknown, missing,
 forged and superseded identities refuse before any layout or cursor read.
 The same mandatory owner gate checks viewport through logged window width then
@@ -231,3 +232,18 @@ identity-reset source mutations. This remains internal preparation: it installs
 no automatic recording, protocol declaration or supported public build API.
 Missing owner artifacts fail the gate. Ordinary/dormant artifacts omit its
 private timer state entirely.
+
+`test-replay-frames-owner`, also mandatory in `test-replay-reads-owner`, observes
+actual original browser animation-frame callbacks and their delivered timestamp
+bits. Replay matches frame registrations and dispatches through the actual owner
+loop, consumes Clock4 without platform calls, and retains those exact bits in the
+existing private observation before the public no-argument callback erases them.
+Timers and frames share task identity across clock instances. Native canaries
+prove canceled callbacks remain absent; mixed tasks, nested frames, microtasks,
+errors, selection changes and completion-only cleanup retain their ownership.
+Raw-frame, wrong-registration/clock, one-bit timestamp corruption, split-identity
+and missing-unregister/cleanup mutations discriminate their individual failures.
+The timestamp mutation leaves public callback/dispatch/DOM checkpoint controls
+passing. This is bounded library evidence with genuine DOM checkpoints, not full
+recording, sensitive-input protection or automatic replay activation. Missing
+owner artifacts fail; ordinary/dormant builds omit all private frame machinery.
