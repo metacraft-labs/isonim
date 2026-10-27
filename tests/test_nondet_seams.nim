@@ -1,7 +1,7 @@
 ## Scripted boundaries make nondeterministic values reproducible. Real timers
 ## still run on the actual event loop; native browser-only seams must reject.
 {.define: isonimNondetCoverage.}
-import std/[unittest, json, times, monotimes, tables, strutils]
+import std/[unittest, json, times, monotimes, tables, strutils, options]
 import nim_everywhere/platform
 import isonim/core/nondet {.all.}
 import nim_everywhere/time as neTime
@@ -11,8 +11,34 @@ import isonim/testing/test_utils
 # Resolve private fields in this module rather than inside unittest's macro.
 proc isPresent(observation: StorageObservation): bool = observation.present
 proc observedValue(observation: StorageObservation): string = observation.value
+proc frameTimestamp(observation: FrameObservation): Option[float64] = observation.browserTimestamp
 
 suite "nondeterminism boundaries":
+  test "timer frame fallback has no browser timestamp and preserves cancellation":
+    let b = newTestBackend(123.25)
+    install(b)
+    defer: nondet.install(NondetBackend(nil))
+    var calls: seq[string]
+    var nested: int
+    let cancelled = requestFrameObservation(proc(observation: FrameObservation) =
+      calls.add("cancelled"))
+    nondet.cancel(cancelled)
+    discard requestFrameObservation(proc(observation: FrameObservation) =
+      doAssert frameTimestamp(observation).isNone, "timer fallback must not invent a browser timestamp"
+      doAssert b.now() == 139.25
+      calls.add("observed")
+      nested = requestFrame(proc() = calls.add("nested")))
+    discard requestFrame(proc() = calls.add("facade"))
+    TestClock(b).advance(15.99)
+    check calls.len == 0
+    TestClock(b).advance(0.01)
+    check calls == @["observed", "facade"]
+    check b.dispatchSequence == 2
+    nondet.cancel(nested)
+    TestClock(b).advance(16)
+    check calls == @["observed", "facade"]
+    check b.dispatchSequence == 2
+    check b.seamTimers.len == 0
   test "scoped clock selects platform time timers and fetch and restores them":
     let outer = newTestBackend(11)
     let inner = newTestClock(42)
@@ -67,6 +93,21 @@ suite "nondeterminism boundaries":
       check seedIsSerializable()
     nondet.install(NondetBackend(nil))
   when not defined(js):
+    test "native real frame fallback runs once without a browser timestamp":
+      let b = newRealBackend(1)
+      install(b)
+      defer: nondet.install(NondetBackend(nil))
+      var calls = 0
+      discard requestFrameObservation(proc(observation: FrameObservation) =
+        doAssert frameTimestamp(observation).isNone
+        inc calls)
+      let cancelled = requestFrame(proc() = inc calls)
+      nondet.cancel(cancelled)
+      check calls == 0
+      waitFor neTime.sleepForRaw(40)
+      check calls == 1
+      check b.dispatchSequence == 1
+      check b.seamTimers.len == 0
     test "native browser-only seams explicitly reject unsupported operations":
       install(newRealBackend(1))
       defer: nondet.install(NondetBackend(nil))
@@ -221,6 +262,76 @@ when defined(js):
   import std/jsffi
   proc inBrowser(): bool {.importjs: "(typeof window !== 'undefined')".}
   proc testElement(): JsObject {.importjs: "(function(){var e=document.createElement('div');e.style.cssText='position:absolute;left:11px;top:13px;width:23px;height:29px';document.body.appendChild(e);return e;})()".}
+  proc verifyBrowserFrames() {.async.} =
+    let b = newRealBackend(1)
+    install(b)
+    # Both wrappers delegate to the real platform. Count clock reads only
+    # inside delivery, so test-driver observation cannot affect this oracle.
+    {.emit: """
+    var xrRafOriginal = window.requestAnimationFrame;
+    var xrCancelOriginal = window.cancelAnimationFrame;
+    var xrNowOriginal = performance.now;
+    globalThis.xrFrameProbe = {delivered: undefined, delivering: false, clockReads: 0, registrations: 0, cancels: 0};
+    window.requestAnimationFrame = function(cb) {
+      globalThis.xrFrameProbe.registrations++;
+      return xrRafOriginal.call(window, function(ts) {
+        globalThis.xrFrameProbe.delivered = ts; globalThis.xrFrameProbe.delivering = true;
+        try { cb(ts); } finally { globalThis.xrFrameProbe.delivering = false; }
+      });
+    };
+    window.cancelAnimationFrame = function(id) {
+      globalThis.xrFrameProbe.cancels++; return xrCancelOriginal.call(window, id);
+    };
+    performance.now = function() {
+      if (globalThis.xrFrameProbe.delivering) globalThis.xrFrameProbe.clockReads++;
+      return xrNowOriginal.call(performance);
+    };
+    """.}
+    proc sameDelivered(value: float64): bool {.importjs: "(function(v){return Number.isFinite(v) && Object.is(v, globalThis.xrFrameProbe.delivered);})(#)".}
+    proc frameClockReads(): int {.importjs: "(globalThis.xrFrameProbe.clockReads)".}
+    proc registrations(): int {.importjs: "(globalThis.xrFrameProbe.registrations)".}
+    proc cancellations(): int {.importjs: "(globalThis.xrFrameProbe.cancels)".}
+    try:
+      var ordinaryCalls = 0
+      let ordinary = newPromise proc(resolve: proc()) =
+        discard requestFrame(proc() =
+          inc ordinaryCalls
+          doAssert b.frameCancels.len == 0
+          resolve())
+      await ordinary
+      doAssert ordinaryCalls == 1, "ordinary frame facade must run once"
+      echo "ordinary-browser-frame-facade: PASS"
+      let cancelled = requestFrame(proc() =
+        raise newException(ValueError, "cancelled browser frame ran"))
+      nondet.cancel(cancelled)
+      nondet.cancel(cancelled)
+      var observedCalls = 0
+      var nestedCalls = 0
+      var observedId: int
+      let nestedDone = newPromise proc(resolve: proc()) =
+        observedId = requestFrameObservation(proc(observation: FrameObservation) =
+          inc observedCalls
+          doAssert b.frameCancels.len == 0, "delivered frame handle must be removed before callback"
+          nondet.cancel(observedId)
+          doAssert frameTimestamp(observation).isSome, "browser frame must retain its delivered timestamp"
+          doAssert sameDelivered(frameTimestamp(observation).get()), "browser frame must preserve exact delivered timestamp bits"
+          doAssert frameClockReads() == 0, "browser frame must not sample a second clock"
+          let nestedCancelled = requestFrame(proc() =
+            raise newException(ValueError, "nested cancelled browser frame ran"))
+          nondet.cancel(nestedCancelled)
+          discard requestFrame(proc() =
+            inc nestedCalls
+            doAssert b.frameCancels.len == 0
+            resolve()))
+      await nestedDone
+      doAssert observedCalls == 1 and nestedCalls == 1
+      doAssert b.dispatchSequence == 3
+      doAssert b.frameCancels.len == 0
+      doAssert registrations() == 5 and cancellations() == 2
+      doAssert b.seamCalls.getOrDefault("requestFrame") == 4
+      echo "delivered-browser-frame-observation: PASS"
+    finally:
+      {.emit: "window.requestAnimationFrame = xrRafOriginal; window.cancelAnimationFrame = xrCancelOriginal; performance.now = xrNowOriginal;".}
   proc realBrowserSeams() {.async.} =
     let b = newRealBackend(1)
     install(b)
@@ -363,5 +474,7 @@ when defined(js):
       return
     await verifyRealTimers()
     await verifyRejectedFetch()
-    if inBrowser(): await realBrowserSeams()
+    if inBrowser():
+      await verifyBrowserFrames()
+      await realBrowserSeams()
   discard runAsyncChecks()

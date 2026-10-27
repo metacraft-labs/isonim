@@ -2,7 +2,7 @@
 ## silently fall back to browser globals or the network.
 ## Each tagged seam encapsulates platform effects and replaces them with its
 ## specific boundary tag; the casts do not expose RawNondet to callers.
-import std/[times, monotimes, json, tables, random]
+import std/[times, monotimes, json, tables, random, options]
 when not defined(js): import std/sysrand
 when defined(js): import std/jsffi
 import ./clock
@@ -113,24 +113,31 @@ proc scheduleEvery*(intervalMs: float64; cb: proc()): int {.tags: [ClockEffect].
     arm()
     id
 when defined(js):
-  proc rawFrame(cb: proc()): int {.importjs: "requestAnimationFrame(function(){#();})", tags: [RawNondet].}
+  proc rawFrame(cb: proc(ts: float64)): int {.importjs: "requestAnimationFrame(#)", tags: [RawNondet].}
   proc rawCancelFrame(id: int) {.importjs: "cancelAnimationFrame(#)", tags: [RawNondet].}
+type FrameObservation = tuple[browserTimestamp: Option[float64]]
+
+proc requestFrameObservation(cb: proc(observation: FrameObservation)): int =
+  # Preserve the platform argument before the public no-argument facade erases
+  # it. A timer fallback has no browser timestamp; do not sample another clock.
+  let b = backend()
+  when defined(js):
+    if not b.scripted:
+      inc b.nextHandle
+      let id = b.nextHandle
+      let nativeId = rawFrame(proc(ts: float64) =
+        b.frameCancels.del(id)
+        when defined(isonimRecordable): beginDispatch(b)
+        else: inc b.dispatchSequence
+        cb((browserTimestamp: some(ts))))
+      b.frameCancels[id] = proc() = rawCancelFrame(nativeId)
+      return id
+  scheduleAt(16, proc() = cb((browserTimestamp: none(float64))))
+
 proc requestFrame*(cb: proc()): int {.tags: [ClockEffect].} =
   {.cast(tags: []).}:
     note("requestFrame")
-    let b = backend()
-    when defined(js):
-      if not b.scripted:
-        inc b.nextHandle
-        let id = b.nextHandle
-        let nativeId = rawFrame(proc() =
-          b.frameCancels.del(id)
-          when defined(isonimRecordable): beginDispatch(b)
-          else: inc b.dispatchSequence
-          cb())
-        b.frameCancels[id] = proc() = rawCancelFrame(nativeId)
-        return id
-    scheduleAt(16, cb)
+    requestFrameObservation(proc(observation: FrameObservation) = cb())
 proc random*(): uint64 {.tags: [RandomEffect].} =
   {.cast(tags: []).}:
     note("random")
