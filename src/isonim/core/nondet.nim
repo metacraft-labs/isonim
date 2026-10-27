@@ -6,6 +6,10 @@ import std/[times, monotimes, json, tables, random, options]
 when not defined(js): import std/sysrand
 when defined(js): import std/jsffi
 import ./clock
+when defined(js) and defined(isonimInternalReplayReads):
+  import ./private/replay_reads
+else:
+  template refuseReadReplay(clock, operation: untyped) = discard
 import nim_everywhere/[backend, async_compat, platform]
 import nim_everywhere/http as neHttp
 import nim_everywhere/raw_nondet
@@ -72,6 +76,7 @@ proc now*(): MonoTime {.tags: [ClockEffect].} =
       epoch + initDuration(nanoseconds = int64(backend().now() * 1_000_000))
 proc wallNow*(): Time {.tags: [ClockEffect].} =
   {.cast(tags: []).}:
+    refuseReadReplay(currentClock, "wallNow")
     note("wallNow")
     let b = backend()
     if b.scripted: return fromUnixFloat(b.read("wallNow").getFloat())
@@ -80,6 +85,7 @@ proc scheduleAt*(afterMs: float64; cb: proc()): int {.tags: [ClockEffect].} =
   ## Schedule after a delay, matching nim-everywhere's time facade.
   ## Effects of deferred callbacks belong to their later dispatch slot.
   {.cast(tags: []).}:
+    refuseReadReplay(currentClock, "scheduleAt")
     note("scheduleAt")
     let b = backend()
     inc b.nextHandle
@@ -90,6 +96,7 @@ proc scheduleAt*(afterMs: float64; cb: proc()): int {.tags: [ClockEffect].} =
     id
 proc cancel*(id: int) {.tags: [ClockEffect].} =
   {.cast(tags: []).}:
+    refuseReadReplay(currentClock, "cancel")
     note("cancel")
     let b = backend()
     if id in b.frameCancels:
@@ -100,6 +107,7 @@ proc cancel*(id: int) {.tags: [ClockEffect].} =
       b.seamTimers.del(id)
 proc scheduleEvery*(intervalMs: float64; cb: proc()): int {.tags: [ClockEffect].} =
   {.cast(tags: []).}:
+    refuseReadReplay(currentClock, "scheduleEvery")
     note("scheduleEvery")
     if intervalMs <= 0: raise newException(ValueError, "interval must be positive")
     let b = backend()
@@ -137,10 +145,12 @@ proc requestFrameObservation(cb: proc(observation: FrameObservation)): int =
 
 proc requestFrame*(cb: proc()): int {.tags: [ClockEffect].} =
   {.cast(tags: []).}:
+    refuseReadReplay(currentClock, "requestFrame")
     note("requestFrame")
     requestFrameObservation(proc(observation: FrameObservation) = cb())
 proc random*(): uint64 {.tags: [RandomEffect].} =
   {.cast(tags: []).}:
+    refuseReadReplay(currentClock, "random")
     note("random")
     let b = backend()
     when defined(isonimRecordable):
@@ -152,6 +162,7 @@ proc random*(): uint64 {.tags: [RandomEffect].} =
       b.randomState.next()
 proc randomFloat*(): float64 {.tags: [RandomEffect].} =
   {.cast(tags: []).}:
+    refuseReadReplay(currentClock, "randomFloat")
     note("randomFloat")
     let b = backend()
     when defined(isonimRecordable):
@@ -166,6 +177,7 @@ when defined(js):
       {.importjs: "(function(f,cb){return f.then(function(v){cb();return v;},function(e){cb();throw e;});})(#,#)".}
 proc fetch*(request: HttpRequest): PlatformFuture[HttpResponse] {.tags: [NetEffect].} =
   {.cast(tags: []).}:
+    refuseReadReplay(currentClock, "fetch")
     note("fetch")
     let b = backend()
     if b.scripted and b.fetchResponse == nil:
@@ -227,6 +239,12 @@ when defined(js):
 
 proc readValue(name: string; arg = ""): JsonNode =
   let b = backend()
+  when defined(js) and defined(isonimInternalReplayReads):
+    if b.isReadReplay:
+      case name
+      of "storageGet": return readReplayStorage(b, 1, arg)
+      of "cookieGet": return readReplayStorage(b, 3, "")
+      else: refuseReadReplay(b, name)
   if b.scripted: return b.read(name)
   when defined(js):
     return parseJson($rawRead(name.cstring, arg.cstring, nil))
@@ -246,6 +264,7 @@ proc storageGet*(key: string): string {.tags: [StorageEffect].} =
     storageObservation(key).value
 proc storageSet*(key, value: string) {.tags: [StorageEffect].} =
   {.cast(tags: []).}:
+    refuseReadReplay(currentClock, "storageSet")
     note("storageSet")
     let b = backend()
     if b.scripted: b.storage[key] = value
@@ -258,6 +277,7 @@ proc cookieGet*(): string {.tags: [StorageEffect].} =
     readValue("cookieGet").getStr()
 proc location*(): string {.tags: [DomEventEffect].} =
   {.cast(tags: []).}:
+    refuseReadReplay(currentClock, "location")
     note("location")
     readValue("location").getStr()
 type HistoryObservation = tuple[browserUrl: Option[string]]
@@ -275,25 +295,30 @@ proc historyObservation(name, url: string): HistoryObservation =
 
 proc pushState*(url: string) {.tags: [DomEventEffect].} =
   {.cast(tags: []).}:
+    refuseReadReplay(currentClock, "pushState")
     note("pushState")
     discard historyObservation("pushState", url)
 proc replaceState*(url: string) {.tags: [DomEventEffect].} =
   {.cast(tags: []).}:
+    refuseReadReplay(currentClock, "replaceState")
     note("replaceState")
     discard historyObservation("replaceState", url)
 proc asRect(value: JsonNode): Rect =
   Rect(x: value["x"].getFloat(), y: value["y"].getFloat(), width: value["width"].getFloat(), height: value["height"].getFloat())
 proc viewport*(): Rect {.tags: [LayoutEffect].} =
   {.cast(tags: []).}:
+    refuseReadReplay(currentClock, "viewport")
     note("viewport")
     asRect(readValue("viewport"))
 proc matchMedia*(query: string): bool {.tags: [LayoutEffect].} =
   {.cast(tags: []).}:
+    refuseReadReplay(currentClock, "matchMedia")
     note("matchMedia")
     readValue("matchMedia", query).getBool()
 when defined(js):
   proc measure*(el: JsObject): Rect {.tags: [LayoutEffect].} =
     {.cast(tags: []).}:
+      refuseReadReplay(currentClock, "measure")
       note("measure")
       let b = backend()
       if b.scripted: return asRect(b.read("measure"))
@@ -301,6 +326,7 @@ when defined(js):
 else:
   proc measure*(el: pointer): Rect {.tags: [LayoutEffect].} =
     {.cast(tags: []).}:
+      refuseReadReplay(currentClock, "measure")
       note("measure")
       asRect(readValue("measure"))
 proc env*(): JsonNode {.tags: [DomEventEffect].} =
@@ -349,6 +375,7 @@ when defined(js):
   proc browserFetch*(httpMethod, url, body: cstring; csrf, context: cstring;
       contentType: cstring; signal: JsObject): Future[JsObject] {.tags: [NetEffect].} =
     {.cast(tags: []).}:
+      refuseReadReplay(currentClock, "browserFetch")
       note("fetch")
       let b = backend()
       if b.scripted:
@@ -453,6 +480,7 @@ when defined(js):
   proc setListenerHook*(hook: proc(record: JsObject)) =
     ## Observe handler entry. Retain records until `finalized` before serializing.
     ## Passing nil disables observation without changing callback semantics.
+    refuseReadReplay(currentClock, "setListenerHook")
     {.emit: ["isonimEventListeners.setHook(", hook, ");"].}
   type ListenerDisposer* = proc()
   proc rawListen(node: JsObject; event: cstring; handler: JsObject;
@@ -468,6 +496,7 @@ when defined(js):
     ## the handler itself is passed through unchanged, so its identity is the
     ## deduplication key.
     {.cast(tags: []).}:
+      refuseReadReplay(currentClock, "listen")
       result = rawListen(node, event.cstring, toJs(handler), capture, proc(): int =
         let selected = backend()
         when defined(isonimRecordable): beginDispatch(selected)

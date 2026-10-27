@@ -5,6 +5,10 @@
 
 import std/algorithm
 import clock
+when defined(js) and defined(isonimInternalReplayReads):
+  import ./private/replay_reads
+else:
+  template refuseReadReplay(clock, operation: untyped) = discard
 
 type
   Task* = ref object
@@ -21,6 +25,7 @@ var isPerformingWork {.threadvar.}: bool
 proc requestCallback*(fn: proc(didTimeout: bool); timeoutMs: float64 = 5000.0): Task =
   ## Schedules a task with optional timeout.
   ## Returns a Task handle for cancellation.
+  refuseReadReplay(currentClock, "requestCallback")
   let clock = currentClock
   let startTime = if clock != nil: clock.now() else: 0.0
 
@@ -39,12 +44,14 @@ proc requestCallback*(fn: proc(didTimeout: bool); timeoutMs: float64 = 5000.0): 
 
 proc cancelCallback*(task: Task) =
   ## Cancels a scheduled task.
+  refuseReadReplay(currentClock, "cancelCallback")
   task.cancelled = true
   task.fn = nil
 
 proc flushTasks*() =
   ## Processes all pending tasks in priority order.
   ## Called by the clock after time advancement.
+  refuseReadReplay(currentClock, "flushTasks")
   if isPerformingWork: return
   isPerformingWork = true
   try:

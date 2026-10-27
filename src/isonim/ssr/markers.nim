@@ -108,7 +108,12 @@ proc generateHydrationScript*(eventNames: seq[string] = defaultHydrationEvents;
   result = "<script"
   if nonce.len > 0:
     result.add " nonce=\"" & nonce & "\""
-  result.add ">window._$HY||(e=>{let t=e=>e&&e.hasAttribute&&(e.hasAttribute(\"data-hk\")?e:t(e.host&&e.host.nodeType?e.host:e.parentNode));[\""
+  result.add ">"
+  when defined(isonimInternalReplayReads):
+    # Internal preparation only. Ordinary/recordable capture scripts retain
+    # their original bytes and never even look up a private selector property.
+    result.add "if(Object.getOwnPropertyDescriptor(globalThis,'__isonimInternalReadReplaySelected')?.value?.internalReadReplay===true&&globalThis.__isonimInternalReadReplaySelected.selected())throw new Error(\"internal read Replay does not support prehydration capture\");"
+  result.add "window._$HY||(e=>{let t=e=>e&&e.hasAttribute&&(e.hasAttribute(\"data-hk\")?e:t(e.host&&e.host.nodeType?e.host:e.parentNode));[\""
   for i, name in eventNames:
     if i > 0: result.add "\",\""
     result.add name

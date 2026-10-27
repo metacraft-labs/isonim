@@ -2001,7 +2001,7 @@ test-stable-id-mutants: build-tailwind
     node tools/test_iid_mutants.mjs
 
 # Platform boundaries include real layout and networking under Chromium.
-test-nondet: test-scripted-rpc-body test-http-response test-http-response-mutants
+test-nondet: test-scripted-rpc-body test-http-response test-http-response-mutants test-replay-ssr-guard
     python3 tests/test_core_layering.py
     nim c -r --out:build/test_nondet_default tests/test_nondet_default.nim
     nim js --out:build/test_nondet_default.js tests/test_nondet_default.nim
@@ -2012,6 +2012,7 @@ test-nondet: test-scripted-rpc-body test-http-response test-http-response-mutant
     python3 tools/test_environment_metadata.py
     python3 tools/test_boot_date_observation.py
     python3 tools/test_nondet_bridge.py
+    python3 tools/test_replay_reads.py
     nim c -r tests/test_nondet_seams.nim
     nim js tests/test_nondet_seams.nim
     python3 tools/run_nim_js_test.py tests/test_nondet_seams.js
@@ -2117,3 +2118,12 @@ test-boot-date-owner:
 # Explicit owner Recorder/runtime/cursor integration; missing artifact is fatal.
 test-nondet-bridge-owner:
     python3 tools/test_nondet_bridge_owner.py
+
+# Explicit mandatory owner-artifact acceptance gate for the internal read backend.
+# Ordinary test-nondet remains artifact/history-free.
+test-replay-reads-owner: test-replay-ssr-guard
+    python3 tools/test_replay_reads_owner.py
+
+# Artifact-free ordinary/recordable SSR byte fidelity and private-guard inverse.
+test-replay-ssr-guard:
+    python3 tools/test_replay_ssr_guard.py

@@ -160,3 +160,31 @@ transport routing, explicit hooks/clearing and source-restoration controls.
 Clock2 reads, not a fake replay provider. The intentionally incomplete probe
 backends leave storage visibly unconsumed; this is bridge preparation, not a
 recording/replay/conformance qualification or active framework declaration.
+
+### Internal ordinary-read foundation
+
+`just test-nondet` includes artifact-free C/windowless-JS custom-clock guard
+compatibility. Acceptance of the internal partial backend additionally REQUIRES
+`CT_ARTIFACT=<installed recorder package root> just test-replay-reads-owner`.
+Missing artifact fails closed; it is never an optional skip. This separate gate
+uses actual Recorder→strict codec→installed runtime/cursor in Chromium, both default
+and directly recordable builds, and a storage-dispatch inverse with unchanged
+positive clock/context controls. Explicit prior public env snapshot is internal
+constructor configuration, NOT reconstructed archive data or a public API. Only
+Clock2/storage/cookie are supported; all other paths refuse. No automatic replay,
+protocol declaration, RNG mapping, active recording or complete replay support follows.
+
+The private implementation is additionally compiled only by the INTERNAL
+`isonimInternalReplayReads` preparation define; this is not a supported public
+build flag/API. Ordinary/default and recordable artifacts omit its private
+RTTI/state/guards entirely. The explicit owner driver alone enables the private
+constructor; artifact-free custom compatibility also checks its negative guards.
+
+`test-replay-ssr-guard` is a mandatory artifact-free dependency of both
+`test-nondet` and `test-replay-reads-owner`. It compiles the ACTUAL native capture
+generator with ordinary, recordable and explicit internal defines. Ordinary and
+recordable output must match the exact published capture-body hash and perform
+no private selector lookup/callback/getter in controlled collision hosts. The
+internal generator retains refusal/switch-away controls; restoring unconditional
+emission must fail BOTH ordinary and recordable oracles independently. These VM
+script-registration checks supplement the mandatory real-owner Chromium tests.

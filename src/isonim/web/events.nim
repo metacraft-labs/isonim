@@ -10,6 +10,11 @@ when not defined(js):
   {.error: "isonim/web/events requires the JS backend".}
 
 import isonim/core/platform
+when defined(js) and defined(isonimInternalReplayReads):
+  import isonim/core/clock
+  import isonim/core/private/replay_reads
+else:
+  template refuseReadReplay(clock, operation: untyped) = discard
 import isonim/web/dom_api
 
 # Track which events have been delegated on the document.
@@ -49,6 +54,7 @@ proc eventHandler(e: Event) {.exportc.} =
 proc delegateEvents*(eventNames: openArray[cstring]) =
   ## Registers document-level handlers for the given event names.
   ## Each event type is only delegated once.
+  refuseReadReplay(currentClock, "delegateEvents")
   ensureDelegatedEvents()
   for name in eventNames:
     if name notin delegatedEvents:
@@ -57,6 +63,7 @@ proc delegateEvents*(eventNames: openArray[cstring]) =
 
 proc delegateEvents*(eventNames: openArray[string]) =
   ## String overload for backward compatibility.
+  refuseReadReplay(currentClock, "delegateEvents")
   ensureDelegatedEvents()
   for name in eventNames:
     let cs = cstring(name)
@@ -69,6 +76,7 @@ proc addEventListenerWeb*(node: Node, name: cstring, handler: EventHandler,
   ## Attach an event listener to a node.
   ## If delegate=true, stores the handler as a property for event delegation.
   ## If delegate=false, uses native addEventListener.
+  refuseReadReplay(currentClock, "addEventListenerWeb")
   if delegate:
     let propName = jsConcatCstrings(cstring"$$", name)
     node.setJsPropHandler(propName, handler)
@@ -82,6 +90,7 @@ proc addEventListenerWeb*(node: Node, name: string, handler: EventHandler,
 
 proc clearDelegatedEvents*() =
   ## Remove all delegated event handlers from the document.
+  refuseReadReplay(currentClock, "delegateEvents")
   ensureDelegatedEvents()
   # JsSet doesn't have a Nim iterator, use JS forEach
   {.emit: [delegatedEvents, ".forEach(function(name) { ", document, ".removeEventListener(name, ", eventHandler, "); });"].}

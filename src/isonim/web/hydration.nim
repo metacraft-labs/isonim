@@ -16,6 +16,11 @@ when not defined(js):
   {.error: "isonim/web/hydration requires the JS backend".}
 
 import std/jsffi
+when defined(js) and defined(isonimInternalReplayReads):
+  import isonim/core/clock
+  import isonim/core/private/replay_reads
+else:
+  template refuseReadReplay(clock, operation: untyped) = discard
 import isonim/web/dom_api
 import isonim/web/client
 import isonim/rxcore
@@ -28,6 +33,7 @@ proc gatherHydratable*(element: Node, root: cstring = cstring"") =
   ## Scans element for descendants with `data-hk` attributes and populates
   ## `sharedConfig.registry`.  If `root` is non-empty only keys that start
   ## with `root` are collected.
+  refuseReadReplay(currentClock, "gatherHydratable")
   if sharedConfig.registry == nil:
     sharedConfig.registry = newHydrationRegistry()
 
@@ -58,6 +64,7 @@ proc getNextElement*(tmplFn: proc(): Node): Node =
   ## During hydration returns the existing DOM node from the registry
   ## (keyed by the current hydration key).  Outside hydration, or if
   ## no matching node is found, falls back to calling `tmplFn()`.
+  refuseReadReplay(currentClock, "getNextElement")
   if not isHydrating():
     return tmplFn()
 
@@ -81,6 +88,7 @@ proc getNextElement*(tmplFn: proc(): Node): Node =
 proc getNextMatch*(el: Node, nodeName: cstring): Node =
   ## Walks nextSibling from `el` looking for a node whose nodeName matches.
   ## Returns the matching node or nil.
+  refuseReadReplay(currentClock, "getNextMatch")
   var current = el.nextSibling
   while not current.isNodeNil:
     var curName: cstring
@@ -97,6 +105,7 @@ proc getNextMatch*(el: Node, nodeName: cstring): Node =
 proc getNextMarker*(start: Node): (Node, seq[Node]) =
   ## Walks from `start` collecting nodes until a comment node (nodeType 8)
   ## is found. Returns the comment node and the list of in-between nodes.
+  refuseReadReplay(currentClock, "getNextMarker")
   var nodes: seq[Node] = @[]
   var current = start
   while not current.isNodeNil:
@@ -153,6 +162,7 @@ proc claimElement*(tag: cstring): Node =
   ## key, when it is a `tag`; nil otherwise (the caller creates a new one,
   ## and the miss is counted in `hydrationMismatches`). Consumes the key
   ## either way, as `getNextElement` does.
+  refuseReadReplay(currentClock, "claimElement")
   let key = getHydrationKey()
   if sharedConfig.registry == nil:
     {.emit: "isonimHy.mismatches++;".}
@@ -173,6 +183,7 @@ proc hydrationAppend*(parent, child: Node): bool =
   ## During hydration, places `child` in `parent` when `parent` is an
   ## adopted server element (see the module doc). Returns false when it is
   ## not, and the caller appends as usual.
+  refuseReadReplay(currentClock, "hydrationAppend")
   var adopted: bool
   {.emit: [adopted, " = (", parent, " != null && ", parent, ".__isonimHy === true);"].}
   if adopted:
@@ -182,6 +193,7 @@ proc hydrationAppend*(parent, child: Node): bool =
 proc hydrationMismatches*(): int =
   ## Elements the last `hydrate` could not adopt (no server element with
   ## their key, or one with another tag).
+  refuseReadReplay(currentClock, "hydrationMismatches")
   {.emit: [result, " = isonimHy.mismatches;"].}
 
 # ---------------------------------------------------------------------------
@@ -199,6 +211,7 @@ proc runHydrationEvents*() =
   ## e.g. un-toggle the checkbox the user just toggled. The original is
   ## available to handlers as `event.isonimReplayOf`. Default actions the
   ## browser already took (a navigation, a form submission) are not undone.
+  refuseReadReplay(currentClock, "runHydrationEvents")
   if sharedConfig.events.isNil:
     return
 
@@ -250,6 +263,8 @@ proc hydrate*(code: proc(): Node, element: Element,
   ##
   ## Without a `_$HY` (no server-rendered page), or when it is already
   ## done, this is `render`.
+
+  refuseReadReplay(currentClock, "hydrate")
 
   # Check if _$HY exists and whether hydration was already completed
   var hyExists, hyDone: bool
