@@ -21,7 +21,15 @@ env.setdefault('PLAYWRIGHT_CHROMIUM_EXECUTABLE',shutil.which('chromium') or '')
 fixture=root/'tests/fixtures/nondet_partial_window_boot.nim'
 def run(fixture,bundle,extra=(),paths=(),failure=None):
     subprocess.run(['nim','js',*extra,'--path:'+str(root/'src'),'--path:'+str(root.parent/'nim-everywhere/src'),*paths,'--out:'+str(bundle),str(fixture)],cwd=root,check=True)
+    retained = None
+    if paths:
+        retained = root / 'build/source-snapshot-evidence' / 'test_environment_metadata.py' / fixture.parent.name
+        retained.mkdir(parents=True, exist_ok=True)
+        shutil.copyfile(fixture.parent / 'isonim/core/nondet.nim', retained / 'nondet.nim')
+        shutil.copyfile(fixture.parent / 'isonim/core/private/rpc_http.nim', retained / 'rpc_http.nim')
+        shutil.copyfile(bundle, retained / 'inverse.js')
     completed=subprocess.run(['node','tests/test_environment_metadata.mjs'],cwd=root,env={**env,'ISONIM_ENV_BUNDLE':str(bundle)},text=True,stdout=subprocess.PIPE,stderr=subprocess.STDOUT)
+    if retained: (retained / 'browser.log').write_text(completed.stdout)
     print(completed.stdout,flush=True)
     if failure:
         assert completed.returncode!=0
@@ -38,8 +46,8 @@ for name,old,new,oracle in [
  ('collapsed','if(q(\'(prefers-color-scheme: light)\'))color=1;', 'if(q(\'(prefers-color-scheme: light)\'))color=0;', 'three-way environment color must distinguish light and no preference'),
  ('full-referrer',"ref=origin;",'ref=r;', 'environment referrer must retain origin only')]:
     with tempfile.TemporaryDirectory(prefix='environment-'+name+'-') as temporary:
-        tmp=Path(temporary);core=tmp/'isonim/core';core.mkdir(parents=True)
-        for path in (root/'src/isonim/core').glob('*.nim'):shutil.copyfile(path,core/path.name)
+        tmp=Path(temporary);core=tmp/'isonim/core'
+        shutil.copytree(root/'src/isonim/core',core)
         source=core/'nondet.nim';text=source.read_text();assert text.count(old)==1
         source.write_text(text.replace(old,new));copied=tmp/fixture.name;shutil.copyfile(fixture,copied)
         run(copied,tmp/'mutant.js',paths=('--path:'+str(tmp),),failure=oracle)

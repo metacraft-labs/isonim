@@ -14,9 +14,8 @@ root = Path(__file__).resolve().parent.parent
 with tempfile.TemporaryDirectory(prefix="rectangle-mutant-") as temporary:
     tmp = Path(temporary)
     core = tmp / "isonim/core"
-    core.mkdir(parents=True)
-    for path in (root / "src/isonim/core").glob("*.nim"):
-        shutil.copyfile(path, core / path.name)
+    # Preserve the real relative-import closure, including private RPC helpers.
+    shutil.copytree(root / "src/isonim/core", core)
     testing = tmp / "isonim/testing"
     testing.mkdir()
     shutil.copyfile(root / "src/isonim/testing/test_utils.nim", testing / "test_utils.nim")
@@ -32,11 +31,17 @@ with tempfile.TemporaryDirectory(prefix="rectangle-mutant-") as temporary:
                     "--path:" + str(root.parent / "nim-everywhere/src"),
                     "--path:" + str(tmp), "--out:" + str(bundle), str(test)],
                    cwd=root, check=True)
+    retained = root / "build/rectangle-mutant-evidence"
+    retained.mkdir(parents=True, exist_ok=True)
+    shutil.copyfile(source, retained / "nondet.nim")
+    shutil.copyfile(core / "private/rpc_http.nim", retained / "rpc_http.nim")
+    shutil.copyfile(bundle, retained / "rectangle-mutant.js")
     env = dict(os.environ, ISONIM_NONDET_BUNDLE=str(bundle))
     env.setdefault("PLAYWRIGHT_CHROMIUM_EXECUTABLE", shutil.which("chromium") or "")
     result = subprocess.run(["node", "tests/test_nondet_browser.mjs"], cwd=root,
                             env=env, text=True, stdout=subprocess.PIPE,
                             stderr=subprocess.STDOUT)
+    (retained / "browser.log").write_text(result.stdout)
     print(result.stdout)
     assert result.returncode != 0
     assert "eight-field rectangle observation missing top" in result.stdout
