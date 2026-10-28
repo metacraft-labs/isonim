@@ -6,7 +6,6 @@ import isonim/core/private/replay_reads
 import nim_everywhere/time as neTime
 import nim_everywhere/platform
 import nim_everywhere/http as neHttp
-import isonim/core/scheduler
 import isonim/web/[dom_api,events,hydration]
 import isonim/ssr/markers
 when defined(js): import std/jsffi
@@ -60,9 +59,6 @@ proc presence(key:cstring): cstring {.exportc:"xrReadPresence".} =
 
 exported("setListenerHook",proc()=setListenerHook(nil))
 exported("clearDelegatedEvents",proc()=clearDelegatedEvents())
-exported("requestCallback",proc()=discard requestCallback(proc(didTimeout:bool)=discard))
-exported("cancelCallback",proc()=cancelCallback(nil))
-exported("flushTasks",proc()=flushTasks())
 exported("neFetch",proc()=discard neHttp.fetchHttp(HttpRequest(url:"/never")))
 exported("gatherHydratable",proc()=gatherHydratable(document.getElementById("root").Node))
 exported("getNextElement",proc()=discard getNextElement(proc():Node=raise newException(ValueError,"RAW CALLBACK")))

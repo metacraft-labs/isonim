@@ -368,6 +368,9 @@ test-signals:
 # Run only clock/scheduler tests
 test-clock:
     python3 tests/test_scheduler_deferral.py
+    nim c -r --out:build/test_scheduler_queue tests/test_scheduler_queue.nim
+    nim js --out:build/test_scheduler_queue.js tests/test_scheduler_queue.nim
+    python3 tools/run_nim_js_test.py build/test_scheduler_queue.js
     nim c -r tests/test_clock.nim
     nim c -r tests/test_nondet_seams.nim
     nim js tests/test_clock.nim
@@ -2133,6 +2136,7 @@ test-replay-reads-owner: test-replay-ssr-guard
     python3 tools/test_replay_frames_owner.py
     python3 tools/test_replay_navigation_owner.py
     python3 tools/test_replay_storage_output_owner.py
+    python3 tools/test_replay_scheduler_owner.py
 
 # Artifact-free ordinary/recordable SSR byte fidelity and private-guard inverse.
 test-replay-ssr-guard:
@@ -2161,3 +2165,7 @@ test-replay-navigation-owner:
 # Explicit native storage output/actual-owner preparation gate.
 test-replay-storage-output-owner:
     python3 tools/test_replay_storage_output_owner.py
+
+# Explicit actual queue/checked owner Clock2 preparation gate.
+test-replay-scheduler-owner:
+    python3 tools/test_replay_scheduler_owner.py

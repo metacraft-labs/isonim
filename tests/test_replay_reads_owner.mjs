@@ -403,7 +403,7 @@ try {
         assert.equal(outcome.next, "Checkpoint");
         // Timer/frame APIs have mandatory actual-owner ordering, delivered-bit
         // and cancellation gates; every remaining unsupported API still refuses.
-        assert.equal(outcome.refused.length, 25);
+        assert.deepEqual(outcome.refused, ["random", "randomFloat", "fetch", "browserFetch", "measure", "listen", "delegateEventsC", "delegateEventsString", "addEventListenerWeb", "addEventListenerWebDelegated", "runHydrationEvents", "hydrate", "setListenerHook", "clearDelegatedEvents", "neFetch", "gatherHydratable", "getNextElement", "getNextMatch", "getNextMarker", "claimElement", "hydrationAppend", "hydrationMismatches"]);
         noRaw(outcome.counts);
       }
     } else if (mode.endsWith("mismatch")) {
