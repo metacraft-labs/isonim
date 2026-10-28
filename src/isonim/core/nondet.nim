@@ -268,7 +268,8 @@ proc storageGet*(key: string): string {.tags: [StorageEffect].} =
     storageObservation(key).value
 proc storageSet*(key, value: string) {.tags: [StorageEffect].} =
   {.cast(tags: []).}:
-    refuseReadReplay(currentClock, "storageSet")
+    when defined(js) and defined(isonimInternalReplayReads):
+      requireReadReplayStorageOutput(currentClock)
     note("storageSet")
     let b = backend()
     if b.scripted: b.storage[key] = value

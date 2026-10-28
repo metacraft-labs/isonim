@@ -261,3 +261,12 @@ linkage/exports or level1 refuse before mutation. Unavailable reflected URL or
 post-mutation helper failure makes private URL state unusable. Source inverses
 cover raw history/location, kind, authored URL, state reset and omitted holing.
 Ordinary/dormant outputs omit package imports, helper/module frames and URL state.
+
+The explicit `just test-replay-storage-output-owner` gate verifies native local
+storage writes in the deliberate private Replay preparation. Writes remain
+native outputs without a new wire record; logged reads remain independent of
+persisted browser state. Actual Recorder/codec/runtime/checkpoint tests inspect
+local and session storage separately, preserve native errors, and reject omitted,
+wrong-value and redirected writes while neutral logged reads still pass. The
+owner artifact is mandatory. This is bounded library preparation, with no public
+activation or complete typed privacy/conformance claim.

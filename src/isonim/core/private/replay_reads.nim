@@ -28,6 +28,8 @@ when defined(js) and defined(isonimInternalReplayReads):
   proc offTimer(cursor, task: JsObject) {.importjs: "#.offTask(#)".}
   proc timerSessionFinished(cursor: JsObject): bool {.importjs: "(function(r){var s=r.status().state;return s==='done'||s==='diverged';})(#)".}
 
+  proc requireStorageOutputLevel(cursor: JsObject) {.importjs: "(function(r){if(r.level!==0)throw new Error('internal storage output Replay requires actual owner level 0');})(#)".}
+
   proc isReadReplay*(clock: ClockBase): bool = clock != nil and clock of ReadReplayClock
 
   proc refuseReadReplay*(clock: ClockBase; operation: string) =
@@ -187,6 +189,12 @@ when defined(js) and defined(isonimInternalReplayReads):
     selected.frameCancels.clear()
     selected.seamTimers.clear()
     selected.disposed = true
+
+  proc requireReadReplayStorageOutput*(clock: ClockBase) =
+    ## Native storage writes are deterministic outputs, not cursor reads. This
+    ## bounded path does not certify typed sensitive sinks or level1 support.
+    if clock.isReadReplay:
+      requireStorageOutputLevel(ReadReplayClock(clock).cursor)
 
   proc readReplayStorage*(clock: ClockBase; area: int; key: string): JsonNode =
     ## Fixed read bridge, not an observer/provider extension point. Original
