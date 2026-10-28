@@ -1,7 +1,8 @@
 ## Tests for the shared static-site live-reload dev server
 ## (`isonim/server/static_dist_dev_server`). Covers the RFC 6455 primitives
 ## against the spec's own vectors, the text-frame encoder's length prefixes,
-## and the injected live-reload client placement.
+## the injected live-reload client placement, the source watcher, and how
+## request paths map to files, at the root and under a base path.
 
 import std/[unittest, strutils, os, tempfiles, tables, times]
 import isonim/server/static_dist_dev_server
@@ -117,3 +118,58 @@ suite "static_dist_dev_server — source watcher":
     let snapshot = s.snapshotSources()
     check snapshot.len == 1
     check (root / "page.nim") in snapshot
+
+suite "static_dist_dev_server — serving under a base path":
+  # Real files in a fresh temporary directory; no test doubles.
+  proc distTree(): string =
+    result = createTempDir("isonim-dist-", "")
+    createDir(result / "posts/first")
+    createDir(result / "assets")
+    writeFile(result / "index.html", "home\n")
+    writeFile(result / "posts/first/index.html", "first\n")
+    writeFile(result / "assets/site.css", "body{}\n")
+
+  test "without a base path the dist directory is the root":
+    let dist = distTree()
+    defer: removeDir(dist)
+    let s = newStaticDistDevServer(rebuildCommand = @["true"], distDir = dist)
+    check s.basePath == ""
+    check s.resolveFile("/") == dist / "index.html"
+    check s.resolveFile("/posts/first/") == dist / "posts/first/index.html"
+    check s.resolveFile("/assets/site.css?v=1") == dist / "assets/site.css"
+    check s.resolveFile("/blog/") == ""
+
+  test "with a base path the dist directory is served under it, and nothing else":
+    let dist = distTree()
+    defer: removeDir(dist)
+    let s = newStaticDistDevServer(rebuildCommand = @["true"], distDir = dist,
+      basePath = "/blog/")
+    check s.basePath == "/blog"
+    check s.resolveFile("/blog") == dist / "index.html"
+    check s.resolveFile("/blog/") == dist / "index.html"
+    check s.resolveFile("/blog/posts/first/") == dist / "posts/first/index.html"
+    check s.resolveFile("/blog/posts/first") == dist / "posts/first/index.html"
+    check s.resolveFile("/blog/assets/site.css") == dist / "assets/site.css"
+    # The files are not also served at the root, and a longer first segment
+    # that merely starts with the base path is not under it.
+    check s.resolveFile("/") == ""
+    check s.resolveFile("/posts/first/") == ""
+    check s.resolveFile("/assets/site.css") == ""
+    check s.resolveFile("/blogger/assets/site.css") == ""
+    # Without the segment boundary this would be `assets/site.css`, a real file.
+    check s.resolveFile("/blogassets/site.css") == ""
+    check s.resolveFile("/blog/../index.html") == ""
+
+  test "a nested base path and the root spelled as a slash":
+    let dist = distTree()
+    defer: removeDir(dist)
+    let nested = newStaticDistDevServer(rebuildCommand = @["true"], distDir = dist,
+      basePath = "/a/b")
+    check nested.resolveFile("/a/b/posts/first/") == dist / "posts/first/index.html"
+    check nested.resolveFile("/a/posts/first/") == ""
+    check newStaticDistDevServer(rebuildCommand = @["true"], basePath = "/").basePath == ""
+
+  test "a base path that is not a plain URL path is refused":
+    for bad in ["blog", "//host", "/a b", "/a?b", "/a#b", "/a/../b", "/./a", "/a//b", "/a\\b"]:
+      expect ValueError: discard normalizeBasePath(bad)
+    check normalizeBasePath("/blog///") == "/blog"

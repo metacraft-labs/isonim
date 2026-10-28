@@ -156,11 +156,33 @@ proc broadcast*(hub: ReloadHub; msg: string) =
 # Server config + state.
 # ---------------------------------------------------------------------------
 
+proc normalizeBasePath*(basePath: string): string =
+  ## A site's base path in the form `resolveFile` compares: `""` for the
+  ## root, otherwise one leading slash and no trailing one (`/blog/` becomes
+  ## `/blog`). Raises `ValueError` for anything that is not a plain URL path
+  ## (no `?`, `#`, backslash, whitespace or control character, and no `.` or
+  ## `..` segment).
+  result = basePath
+  while result.len > 0 and result[^1] == '/': result.setLen(result.len - 1)
+  if result.len == 0: return
+  var valid = result[0] == '/' and not result.startsWith("//") and
+    not result.contains({'?', '#', '\\', '\x00'..' ', '\x7f'})
+  if valid:
+    for segment in result[1 .. ^1].split('/'):
+      if segment in ["", ".", ".."]: valid = false
+  if not valid:
+    raise newException(ValueError, "base path must be a URL path such as /blog: " & basePath)
+
 type
   StaticDistDevServer* = ref object
     ## Config + live state for one dev-server instance. Construct with
     ## `newStaticDistDevServer` (or use the all-in-one `staticDistDevServer`).
     distDir*: string             ## directory the exporter writes / we serve
+    basePath*: string
+      ## URL path `distDir` is served under, for a site built for a sub-path
+      ## (with `/blog`, `distDir/index.html` is `/blog/`); empty serves it at
+      ## `/`. Requests outside the base path are 404, as on a host that
+      ## mounts the site there.
     rebuildCommand*: seq[string] ## argv of the real static-export pipeline
     watchRoots*: seq[string]     ## source roots (directories or files) scanned for edits
     watchExts*: seq[string]      ## extensions that count as a source change; empty = every file
@@ -182,9 +204,12 @@ proc newStaticDistDevServer*(
     siteName = "isonim site";
     liveReloadPath = defaultLiveReloadPath;
     reloadMessage = defaultReloadMessage;
-    pollIntervalMs = 300): StaticDistDevServer =
+    pollIntervalMs = 300;
+    basePath = ""): StaticDistDevServer =
+  ## Raises `ValueError` for a `basePath` that `normalizeBasePath` refuses.
   StaticDistDevServer(
     distDir: distDir,
+    basePath: normalizeBasePath(basePath),
     rebuildCommand: rebuildCommand,
     watchRoots: watchRoots,
     watchExts: watchExts,
@@ -263,14 +288,21 @@ proc changed*(prev, cur: Table[string, Time]): bool =
 # Static file serving out of the dist dir with clean-URL mapping.
 # ---------------------------------------------------------------------------
 
-proc resolveFile(s: StaticDistDevServer; urlPath: string): string =
-  ## Maps a request path to a file under `distDir`, honouring clean URLs.
-  ## Returns "" if nothing matches (404). Rejects `..` traversal.
+proc resolveFile*(s: StaticDistDevServer; urlPath: string): string =
+  ## Maps a request path to a file under `distDir`, honouring clean URLs and
+  ## `basePath`: the base path itself and every path under it map into
+  ## `distDir`, and any other path matches nothing. Returns "" if nothing
+  ## matches (404). Rejects `..` traversal.
   var p = urlPath
   let q = p.find('?')
   if q >= 0: p = p[0 ..< q]
   p = p.decodeUrl
   if "\x00" in p or ".." in p: return ""
+  if s.basePath.len > 0:
+    # Whole segments only: `/blogger` is not under `/blog`.
+    if p == s.basePath: p = "/"
+    elif p.startsWith(s.basePath & "/"): p = p[s.basePath.len .. ^1]
+    else: return ""
   if p == "/" or p.len == 0: return s.distDir / "index.html"
   let rel = p.strip(chars = {'/'})
   let direct = s.distDir / rel
@@ -372,7 +404,8 @@ proc staticDistDevServer*(
     liveReloadPath = defaultLiveReloadPath;
     port = 8080;
     host = "127.0.0.1";
-    pollIntervalMs = 300) =
+    pollIntervalMs = 300;
+    basePath = "") =
   ## All-in-one: construct a `StaticDistDevServer` and run it (blocks).
   ## The single entry point a site's `src/dev.nim` calls.
   let s = newStaticDistDevServer(
@@ -382,9 +415,10 @@ proc staticDistDevServer*(
     watchExts = watchExts,
     siteName = siteName,
     liveReloadPath = liveReloadPath,
-    pollIntervalMs = pollIntervalMs)
+    pollIntervalMs = pollIntervalMs,
+    basePath = basePath)
   stdout.writeLine s.siteName & " dev server -> http://" & host & ":" &
-    $port & "  (watching " & s.watchRoots.join(", ") &
+    $port & s.basePath & "/  (watching " & s.watchRoots.join(", ") &
     ", live reload on; Ctrl-C to stop)"
   stdout.flushFile()
   waitFor serve(s, port, host)
