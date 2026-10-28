@@ -1,0 +1,7 @@
+  test "requestCallback schedules and flushTasks executes":
+    var executed = false
+    let task = requestCallback(proc(didTimeout: bool) = executed = true)
+    check executed == false or executed == true  # May execute immediately with RealClock
+    flushTasks()
+    check executed == true
+

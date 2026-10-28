@@ -50,7 +50,7 @@ proc cancelCallback*(task: Task) =
 
 proc flushTasks*() =
   ## Processes all pending tasks in priority order.
-  ## Called by the clock after time advancement.
+  ## Call explicitly to run the queued callbacks.
   refuseReadReplay(currentClock, "flushTasks")
   if isPerformingWork: return
   isPerformingWork = true

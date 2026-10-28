@@ -76,11 +76,34 @@ suite "withTestClock":
 
 suite "Scheduler":
   test "requestCallback schedules and flushTasks executes":
-    var executed = false
-    let task = requestCallback(proc(didTimeout: bool) = executed = true)
-    check executed == false or executed == true  # May execute immediately with RealClock
-    flushTasks()
-    check executed == true
+    # Both clocks use the actual scheduler queue, not a fake scheduler.
+    for clock in [ClockBase(newRealClock()), ClockBase(newTestClock())]:
+      let previousClock = currentClock
+      currentClock = clock
+      try:
+        var executions = 0
+        var order: seq[int] = @[]
+        discard requestCallback(proc(didTimeout: bool) =
+          inc executions
+          order.add(2), 2000.0)
+        # RealClock makes no assumption about time between enqueue calls.
+        # Only deterministic TestClock asserts reversed deadline order.
+        let ordered = clock of TestClock
+        if ordered:
+          discard requestCallback(proc(didTimeout: bool) =
+            inc executions
+            order.add(1), 1000.0)
+        let expectedOrder = if ordered: @[1, 2] else: @[2]
+        check executions == 0  # Enqueue does not invoke callbacks.
+        check order == newSeq[int]()
+        flushTasks()
+        check executions == expectedOrder.len
+        check order == expectedOrder
+        flushTasks()
+        check executions == expectedOrder.len
+        check order == expectedOrder
+      finally:
+        currentClock = previousClock
 
   test "cancelCallback prevents execution":
     var executed = false

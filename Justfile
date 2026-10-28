@@ -367,9 +367,11 @@ test-signals:
 
 # Run only clock/scheduler tests
 test-clock:
+    python3 tests/test_scheduler_deferral.py
     nim c -r tests/test_clock.nim
     nim c -r tests/test_nondet_seams.nim
-    nim js -r tests/test_clock.nim
+    nim js tests/test_clock.nim
+    python3 tools/run_nim_js_test.py tests/test_clock.js
     nim js tests/test_nondet_seams.nim
     python3 tools/run_nim_js_test.py tests/test_nondet_seams.js
 
