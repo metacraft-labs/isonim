@@ -2142,6 +2142,7 @@ test-replay-reads-owner: test-replay-ssr-guard
     python3 tools/test_replay_navigation_owner.py
     python3 tools/test_replay_storage_output_owner.py
     python3 tools/test_replay_scheduler_owner.py
+    python3 tools/test_record_media_owner.py
 
 # Artifact-free ordinary/recordable SSR byte fidelity and private-guard inverse.
 test-replay-ssr-guard:
@@ -2193,6 +2194,10 @@ test-rpc-projection:
     node tests/test_rpc_network_browser.mjs
     python3 tools/check_rpc_raw_effects.py
     node tests/test_rpc_projection_mutations.mjs
+
+# Fixed private media originals; actual owner/strict reader/public Replay.
+test-record-media-owner:
+    python3 tools/test_record_media_owner.py
 
 # Fixed private viewport originals; actual owner/strict reader/public Replay.
 test-record-layout-owner:
