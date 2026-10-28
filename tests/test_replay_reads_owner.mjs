@@ -403,7 +403,7 @@ try {
         assert.equal(outcome.next, "Checkpoint");
         // Timer/frame APIs have mandatory actual-owner ordering, delivered-bit
         // and cancellation gates; every remaining unsupported API still refuses.
-        assert.equal(outcome.refused.length, 29);
+        assert.equal(outcome.refused.length, 26);
         noRaw(outcome.counts);
       }
     } else if (mode.endsWith("mismatch")) {

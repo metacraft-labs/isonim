@@ -4,7 +4,7 @@
 ## The internal define is preparation-only. Normal/dormant builds omit even
 ## private RTTI/state and the guard calls; no runtime feature switch is added.
 when defined(js) and defined(isonimInternalReplayReads):
-  import std/[json, times, math, tables]
+  import std/[json, times, math, tables, options]
   import ../clock
   import std/jsffi
 
@@ -42,6 +42,47 @@ when defined(js) and defined(isonimInternalReplayReads):
   proc installSelectionGuard(selected: proc(): bool) {.importjs: "Object.defineProperty(globalThis,'__isonimInternalReadReplaySelected',{value:Object.freeze({internalReadReplay:true,selected:#})})".}
   proc clockRead[T: SomeNumber](cursor: JsObject; source: int): T {.importjs: "(function(r,s){var c=r.next('Clock',{src:s}),d=new DataView(new ArrayBuffer(8));d.setBigUint64(0,c.bits,true);return d.getFloat64(0,true);})(#,#)".}
   proc storageRead(cursor: JsObject; area: int; key: cstring): cstring {.importjs: "(function(r,a,k){var s=r.next('StorageRead',{area:a,key:k});return JSON.stringify(s.present===0?null:s.value);})(#,#,#)".}
+
+  # Navigation shares a cursor's checked URL across clock instances. Keep the
+  # real unholed URL; the owner's hole token belongs only to checked arguments.
+  var navigationStates: JsObject
+  proc requireNavigationLevel(cursor: JsObject) {.importjs: "(function(r){if(r.level!==0)throw new Error('internal navigation Replay requires actual owner level 0');})(#)".}
+  proc navigationState(states, cursor: JsObject; bootUrl: cstring): JsObject {.importjs: "(function(m,r,u){var s=m.get(r);if(s){if(s.initial!==u)throw new Error('internal navigation Replay boot URL disagreement');if(!s.valid)throw new Error('internal navigation Replay URL state unavailable');return s;}var parsed=new URL(u);s={initial:u,current:parsed.href,pathname:parsed.pathname,valid:true};m.set(r,s);return s;})(#,#,#)".}
+  proc loadNavigationOwner(): JsObject {.importjs: "(function(){var o;try{o=require('\\x40codetracer/runtime-browser/dist/sensitive.js');}catch(e){throw new Error('internal navigation Replay requires bundled owner URL helpers');}for(var k of ['sensitiveState','currentSensitiveValues','holeText'])if(typeof o[k]!=='function')throw new Error('internal navigation Replay requires owner '+k);return o;})()".}
+  proc checkedNavigation(cursor, owner, state: JsObject; kind: int; url: cstring) {.importjs: "(function(r,o,s,k,u){var parsed;try{parsed=new URL(u);}catch(e){s.valid=false;throw new Error('internal navigation Replay reflected URL unavailable');}try{var sensitive=o.sensitiveState(window);r.next('Navigation',{kind:k,url:o.holeText(u,o.currentSensitiveValues(window,sensitive))});s.current=u;s.pathname=parsed.pathname;}catch(e){if(!r.failed)s.valid=false;throw e;}})(#,#,#,#,#)".}
+  proc invalidateNavigation(state: JsObject) {.importjs: "#.valid=false".}
+  proc navigationPath(cursor, state: JsObject): cstring {.importjs: "(function(r,s){if(r.failed)r.next('Navigation');return s.pathname;})(#,#)".}
+
+  proc readReplayNavigationState(clock: ClockBase): JsObject =
+    let selected = ReadReplayClock(clock)
+    requireNavigationLevel(selected.cursor)
+    if not selected.bootEnv.hasKey("url") or selected.bootEnv["url"].kind != JString:
+      raise newException(ValueError, "internal navigation Replay requires genuine boot URL")
+    if navigationStates.isNil: navigationStates = newTimerNamespaces()
+    navigationState(navigationStates, selected.cursor, selected.bootEnv["url"].getStr().cstring)
+
+  proc forwardNavigationFailure(cursor: JsObject) {.importjs: "(function(r){if(r.failed)r.next('Navigation');})(#)".}
+  proc readReplayLocation*(clock: ClockBase): string =
+    let selected = ReadReplayClock(clock)
+    requireNavigationLevel(selected.cursor)
+    # A later owner latch takes precedence even after a private URL failure.
+    forwardNavigationFailure(selected.cursor)
+    let state = readReplayNavigationState(clock)
+    $navigationPath(selected.cursor, state)
+
+  proc prepareReadReplayNavigation*(clock: ClockBase): JsObject =
+    ## Validate all linkage before allowing a native mutation. Merely importing
+    ## this module never evaluates owner code or creates its sensitive state.
+    discard readReplayNavigationState(clock)
+    loadNavigationOwner()
+
+  proc completeReadReplayNavigation*(clock: ClockBase; owner: JsObject;
+      kind: int; url: Option[string]) =
+    let state = readReplayNavigationState(clock)
+    if url.isNone:
+      invalidateNavigation(state)
+      raise newException(ValueError, "internal navigation Replay reflected URL unavailable")
+    checkedNavigation(ReadReplayClock(clock).cursor, owner, state, kind, url.get().cstring)
 
   proc newInternalReadReplay*(bootContext: JsonNode): ClockBase =
     ## Internal constructor only. No archive availability or RNG mapping claim.

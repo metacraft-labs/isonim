@@ -2129,6 +2129,7 @@ test-replay-reads-owner: test-replay-ssr-guard
     python3 tools/test_replay_wall_owner.py
     python3 tools/test_replay_timers_owner.py
     python3 tools/test_replay_frames_owner.py
+    python3 tools/test_replay_navigation_owner.py
 
 # Artifact-free ordinary/recordable SSR byte fidelity and private-guard inverse.
 test-replay-ssr-guard:
@@ -2149,3 +2150,7 @@ test-replay-timers-owner:
 # Deliberate private delivered-frame preparation; real owner is mandatory.
 test-replay-frames-owner:
     python3 tools/test_replay_frames_owner.py
+
+# Explicit private native navigation/actual-owner preparation gate.
+test-replay-navigation-owner:
+    python3 tools/test_replay_navigation_owner.py

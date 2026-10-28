@@ -245,6 +245,7 @@ proc readValue(name: string; arg = ""): JsonNode =
       case name
       of "storageGet": return readReplayStorage(b, 1, arg)
       of "cookieGet": return readReplayStorage(b, 3, "")
+      of "location": return %readReplayLocation(b)
       of "viewport": return readReplayViewport(b)
       of "matchMedia": return readReplayMedia(b, arg)
       else: refuseReadReplay(b, name)
@@ -280,7 +281,6 @@ proc cookieGet*(): string {.tags: [StorageEffect].} =
     readValue("cookieGet").getStr()
 proc location*(): string {.tags: [DomEventEffect].} =
   {.cast(tags: []).}:
-    refuseReadReplay(currentClock, "location")
     note("location")
     readValue("location").getStr()
 type HistoryObservation = tuple[browserUrl: Option[string]]
@@ -298,13 +298,25 @@ proc historyObservation(name, url: string): HistoryObservation =
 
 proc pushState*(url: string) {.tags: [DomEventEffect].} =
   {.cast(tags: []).}:
-    refuseReadReplay(currentClock, "pushState")
     note("pushState")
+    when defined(js) and defined(isonimInternalReplayReads):
+      if currentClock.isReadReplay:
+        let selected = currentClock
+        let owner = prepareReadReplayNavigation(selected)
+        let observed = historyObservation("pushState", url)
+        completeReadReplayNavigation(selected, owner, 1, observed.browserUrl)
+        return
     discard historyObservation("pushState", url)
 proc replaceState*(url: string) {.tags: [DomEventEffect].} =
   {.cast(tags: []).}:
-    refuseReadReplay(currentClock, "replaceState")
     note("replaceState")
+    when defined(js) and defined(isonimInternalReplayReads):
+      if currentClock.isReadReplay:
+        let selected = currentClock
+        let owner = prepareReadReplayNavigation(selected)
+        let observed = historyObservation("replaceState", url)
+        completeReadReplayNavigation(selected, owner, 2, observed.browserUrl)
+        return
     discard historyObservation("replaceState", url)
 proc asRect(value: JsonNode): Rect =
   Rect(x: value["x"].getFloat(), y: value["y"].getFloat(), width: value["width"].getFloat(), height: value["height"].getFloat())

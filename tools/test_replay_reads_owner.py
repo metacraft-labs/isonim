@@ -44,6 +44,7 @@ with tempfile.TemporaryDirectory(prefix="isonim-read-restoration-") as directory
       case name
       of "storageGet": return readReplayStorage(b, 1, arg)
       of "cookieGet": return readReplayStorage(b, 3, "")
+      of "location": return %readReplayLocation(b)
       of "viewport": return readReplayViewport(b)
       of "matchMedia": return readReplayMedia(b, arg)
       else: refuseReadReplay(b, name)
@@ -61,7 +62,7 @@ with tempfile.TemporaryDirectory(prefix="isonim-read-restoration-") as directory
 
 # Restore ONLY the nil predicate in isolated own source. The exact nil oracle
 # remains mandatory in the artifact-free driver; here the same transformation
-# must retain actual-owner active Replay/29-entry/cursor/context positives.
+# must retain actual-owner active Replay/26-entry/cursor/context positives.
 with tempfile.TemporaryDirectory(prefix="isonim-owner-nil-inverse-") as directory:
     temporary = Path(directory)
     source = temporary / "src"

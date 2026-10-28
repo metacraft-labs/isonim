@@ -247,3 +247,17 @@ The timestamp mutation leaves public callback/dispatch/DOM checkpoint controls
 passing. This is bounded library evidence with genuine DOM checkpoints, not full
 recording, sensitive-input protection or automatic replay activation. Missing
 owner artifacts fail; ordinary/dormant builds omit all private frame machinery.
+
+`test-replay-navigation-owner`, mandatory in `test-replay-reads-owner`, checks
+private level0 navigation through the actual public facade, native History,
+owner sanitizer/codec/cursor/loop and DOM checkpoints. History intentionally
+mutates once before checking reflected URL, preserving browser base resolution
+and original exceptions. Shared cursor state retains the unholed checked URL;
+location returns its pathname. Actual owner helpers hole checked URL arguments
+using the runtime's shared sensitive state; level0 can include password fields.
+This does not implement typed level1 sinks or full privacy acceptance. Helpers
+link lexically from the real installed package and initialize lazily; missing
+linkage/exports or level1 refuse before mutation. Unavailable reflected URL or
+post-mutation helper failure makes private URL state unusable. Source inverses
+cover raw history/location, kind, authored URL, state reset and omitted holing.
+Ordinary/dormant outputs omit package imports, helper/module frames and URL state.
