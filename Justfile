@@ -454,6 +454,10 @@ test-ssr:
 test-web:
     nim js -r tests/test_web.nim
 
+# Actual native callback identity and removal, including a compiled inverse.
+test-delegated-clear:
+    python3 tools/test_delegated_clear.py
+
 # --- Tailwind CSS extracts ---
 
 # --- IsoNim Design Review CLI (REV-M1 + REV-M4) ---

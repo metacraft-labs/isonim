@@ -21,11 +21,7 @@ import isonim/web/dom_api
 # Uses JS-native Set to avoid pulling std/sets (and its hash table) into the bundle.
 # Disambiguate against std/sets.HashSet (re-exported transitively from platform).
 var delegatedEvents: platform.HashSet[NativeString]
-
-proc ensureDelegatedEvents() =
-  ## Lazily initialize the set (JS Set can't be initialized at module scope as threadvar).
-  if delegatedEvents.isNil:
-    delegatedEvents = platform.newHashSet[NativeString]()
+var delegatedHandler: EventHandler
 
 proc jsConcatCstrings(a, b: cstring): cstring {.importcpp: "(# + #)".}
 
@@ -51,6 +47,15 @@ proc eventHandler(e: Event) {.exportc.} =
     # Walk up the tree
     node = node.parentNode
 
+proc ensureDelegatedEvents() =
+  ## Keep initialization lazy so importing events needs no document.
+  if delegatedEvents.isNil:
+    delegatedEvents = platform.newHashSet[NativeString]()
+    # Converting a Nim proc to a JS closure can bind a new function object.
+    # Retain that conversion once: native removal requires the exact function
+    # passed to registration, including across both overloads and later clears.
+    delegatedHandler = eventHandler
+
 proc delegateEvents*(eventNames: openArray[cstring]) =
   ## Registers document-level handlers for the given event names.
   ## Each event type is only delegated once.
@@ -59,7 +64,7 @@ proc delegateEvents*(eventNames: openArray[cstring]) =
   for name in eventNames:
     if name notin delegatedEvents:
       delegatedEvents.incl(name)
-      document.Node.addEventListener(name, eventHandler)
+      document.Node.addEventListener(name, delegatedHandler)
 
 proc delegateEvents*(eventNames: openArray[string]) =
   ## String overload for backward compatibility.
@@ -69,7 +74,7 @@ proc delegateEvents*(eventNames: openArray[string]) =
     let cs = cstring(name)
     if cs notin delegatedEvents:
       delegatedEvents.incl(cs)
-      document.Node.addEventListener(cs, eventHandler)
+      document.Node.addEventListener(cs, delegatedHandler)
 
 proc addEventListenerWeb*(node: Node, name: cstring, handler: EventHandler,
     delegate: bool = false) =
@@ -93,5 +98,5 @@ proc clearDelegatedEvents*() =
   refuseReadReplay(currentClock, "delegateEvents")
   ensureDelegatedEvents()
   # JsSet doesn't have a Nim iterator, use JS forEach
-  {.emit: [delegatedEvents, ".forEach(function(name) { ", document, ".removeEventListener(name, ", eventHandler, "); });"].}
+  {.emit: [delegatedEvents, ".forEach(function(name) { ", document, ".removeEventListener(name, ", delegatedHandler, "); });"].}
   delegatedEvents.clear()
