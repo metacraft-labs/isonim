@@ -2150,6 +2150,10 @@ test-replay-measure-owner:
 test-replay-wall-owner:
     python3 tools/test_replay_wall_owner.py
 
+# Deliberate private Record primitives, strict owner codec and public Replay.
+test-record-clocks-owner:
+    python3 tools/test_record_clocks_owner.py
+
 # Deliberate private timeout preparation; real owner is mandatory.
 test-replay-timers-owner:
     python3 tools/test_replay_timers_owner.py
