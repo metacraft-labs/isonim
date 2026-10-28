@@ -2188,3 +2188,7 @@ test-rpc-projection:
     node tests/test_rpc_network_browser.mjs
     python3 tools/check_rpc_raw_effects.py
     node tests/test_rpc_projection_mutations.mjs
+
+# Fixed private viewport originals; actual owner/strict reader/public Replay.
+test-record-layout-owner:
+    python3 tools/test_record_layout_owner.py
