@@ -4,6 +4,30 @@
 import ./markdown
 import ../ssr/escape
 
+const
+  tableScrollClass* = "table-scroll"
+    ## Class of the element wrapping every rendered table. A stylesheet gives
+    ## it `overflow-x: auto` so a wide table scrolls inside its own box.
+  tableRegionLabel* = "Table"
+    ## Accessible name of that wrapper. GFM tables have no caption to point
+    ## `aria-labelledby` at, so the region is named by `aria-label`.
+
+# Wide content scrolls inside its own box rather than widening the page, so
+# every box that can scroll must be reachable from the keyboard: WCAG 2.2
+# SC 2.1.1 (https://www.w3.org/TR/WCAG22/#keyboard), checked by axe-core's
+# `scrollable-region-focusable` rule
+# (https://dequeuniversity.com/rules/axe/4.10/scrollable-region-focusable).
+# Not every browser makes a scroller focusable by itself, and without script
+# the renderer cannot know which blocks will overflow, so every code block
+# and every table wrapper carries `tabindex="0"`, as Hugo and Shiki do for
+# code. The table wrapper is a named region, so a screen reader announces
+# what received focus (the pattern in
+# https://adrianroselli.com/2020/11/under-engineered-responsive-tables.html).
+const
+  codeBlockOpen = "<pre tabindex=\"0\">"
+  tableScrollOpen = "<div class=\"" & tableScrollClass &
+    "\" role=\"region\" tabindex=\"0\" aria-label=\"" & tableRegionLabel & "\">"
+
 proc titleAttribute*(title: string): string =
   if title.len > 0: " title=\"" & escapeAttr(title) & "\"" else: ""
 
@@ -94,9 +118,9 @@ proc renderProseHtml*(blocks: seq[Block]): string =
         result.add fragmentHtml(blk.generated)
         continue
       let language = if blk.lang.len > 0: " class=\"language-" & escapeAttr(blk.lang) & "\"" else: ""
-      result.add "<pre><code" & language & ">" & escapeHtml(blk.code) & "</code></pre>"
+      result.add codeBlockOpen & "<code" & language & ">" & escapeHtml(blk.code) & "</code></pre>"
     of bkTable:
-      result.add "<table><thead><tr>"
+      result.add tableScrollOpen & "<table><thead><tr>"
       for n, header in blk.headers:
         result.add "<th>" & (if n < blk.headerSpans.len: proseSpansHtml(blk.headerSpans[n]) else: escapeHtml(header)) & "</th>"
       result.add "</tr></thead><tbody>"
@@ -105,7 +129,7 @@ proc renderProseHtml*(blocks: seq[Block]): string =
         for c, cell in row:
           result.add "<td>" & (if n < blk.cellSpans.len and c < blk.cellSpans[n].len: proseSpansHtml(blk.cellSpans[n][c]) else: escapeHtml(cell)) & "</td>"
         result.add "</tr>"
-      result.add "</tbody></table>"
+      result.add "</tbody></table></div>"
     of bkAdmonition:
       result.add "<aside>"
       for para in blk.bodyParagraphs: result.add "<p>" & proseSpansHtml(para) & "</p>"

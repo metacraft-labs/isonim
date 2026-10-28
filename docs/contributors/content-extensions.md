@@ -42,6 +42,16 @@ nested quotes, tabs, notes, captions, lists and directive bodies. A pre-parse
 transform owns the coordinates of the text it returns. An unconfigured tool
 fails when its syntax is used; a document without that syntax needs no tool.
 
+`renderProseHtml` emits every fenced code block as `<pre tabindex="0">` and
+wraps every table in
+`<div class="table-scroll" role="region" tabindex="0" aria-label="Table">`
+(`tableScrollClass`, `tableRegionLabel`). A stylesheet can then let long
+lines and wide tables scroll inside their own box (`overflow-x: auto`)
+without leaving them out of reach of the keyboard: a scrolling box must be
+focusable (WCAG 2.2 SC 2.1.1; axe-core's `scrollable-region-focusable`), and
+not every browser makes one focusable by itself. Without script the
+renderer cannot tell which blocks will overflow, so every one is focusable.
+
 Math supports `$inline$`, `$$display$$` and fenced `math`. A single-dollar
 opener must precede a non-space, and its closer must follow a non-space.
 Unmatched delimiters stay literal. Escaped dollars and code spans/fences stay

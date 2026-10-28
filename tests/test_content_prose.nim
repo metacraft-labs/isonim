@@ -111,7 +111,37 @@ suite "long-form prose":
     check b.fenceAttrs.highlightLines == @[1, 2, 3]
     check b.fenceAttrs.diff
     check b.fenceAttrs.diffLines == @[DiffLine(line: 1, kind: dlAdded), DiffLine(line: 2, kind: dlRemoved)]
-    check renderProseHtml(@[b]) == "<pre><code class=\"language-nim\">+added\n-removed\n keep</code></pre>"
+    check renderProseHtml(@[b]) == "<pre tabindex=\"0\"><code class=\"language-nim\">+added\n-removed\n keep</code></pre>"
+
+  test "code blocks are keyboard-focusable scroll boxes, with or without a language":
+    # A long line scrolls inside the block; tabindex lets a keyboard user
+    # reach and scroll it (WCAG 2.2 SC 2.1.1, axe scrollable-region-focusable).
+    check renderProseHtml(parseMarkdownDoc("```\nplain <code> & text\n```")) ==
+      "<pre tabindex=\"0\"><code>plain &lt;code&gt; &amp; text</code></pre>"
+    check renderProseHtml(parseMarkdownDoc("```sh\necho \"" & repeat('x', 200) & "\"\n```")) ==
+      "<pre tabindex=\"0\"><code class=\"language-sh\">echo \"" & repeat('x', 200) & "\"</code></pre>"
+    # Inline code is not a scroll box and stays a bare <code>.
+    check renderProseHtml(parseMarkdownDoc("Use `x`.")) == "<p>Use <code>x</code>.</p>"
+
+  test "tables sit in a focusable, named scroll region":
+    let doc = parseMarkdownDoc("| A | B |\n| --- | --- |\n| 1 & 2 | <x> |")
+    check tableScrollClass == "table-scroll"
+    check tableRegionLabel == "Table"
+    check renderProseHtml(doc) ==
+      "<div class=\"table-scroll\" role=\"region\" tabindex=\"0\" aria-label=\"Table\">" &
+      "<table><thead><tr><th>A</th><th>B</th></tr></thead><tbody>" &
+      "<tr><td>1 &amp; 2</td><td>&lt;x&gt;</td></tr>" &
+      "</tbody></table></div>"
+
+  test "nested tables and code blocks get the same scroll boxes":
+    # Quotes and footnotes render their bodies through the same renderer.
+    let html = renderProseHtml(parseMarkdownDoc(
+      "> | A |\n> | - |\n> | 1 |\n>\n> ```\n> code\n> ```\n\nNote[^n].\n\n[^n]: See:\n\n    ```\n    in note\n    ```"))
+    check html.startsWith("<blockquote><div class=\"table-scroll\" role=\"region\" tabindex=\"0\" aria-label=\"Table\"><table>")
+    check html.count("<pre tabindex=\"0\">") == html.count("<pre")
+    check html.count("<pre") == 2
+    check html.count("<table>") == 1
+    check html.count("</table></div>") == 1
 
   test "long fences protect shorter fences and marker-like code":
     let doc = parseMarkdownDoc("````text\n```\n<!--more-->\n[^a]: code\n> quote\n````\n\nreal")
