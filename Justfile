@@ -2173,3 +2173,9 @@ test-replay-storage-output-owner:
 # Explicit actual queue/checked owner Clock2 preparation gate.
 test-replay-scheduler-owner:
     python3 tools/test_replay_scheduler_owner.py
+
+# Native HTTP composition preserves historical Chromium outcomes/Promise turns.
+test-ne-http-projection:
+    cd ../nim-everywhere && nim js -d:extractedHttpComposition --path:src tests/http_projection_fixture.nim
+    node tests/test_ne_http_projection_browser.mjs
+    cd ../nim-everywhere && node tests/test_http_projection_mutations.mjs --browser
