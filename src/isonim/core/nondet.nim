@@ -500,6 +500,8 @@ when defined(js):
     {.cast(tags: []).}:
       refuseReadReplay(currentClock, "listen")
       result = rawListen(node, event.cstring, toJs(handler), capture, proc(): int =
+        # A retained native registration can outlive a backend selection.
+        refuseReadReplay(currentClock, "listen")
         let selected = backend()
         when defined(isonimRecordable): beginDispatch(selected)
         else: inc selected.dispatchSequence

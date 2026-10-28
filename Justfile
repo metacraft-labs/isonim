@@ -2131,6 +2131,7 @@ test-nondet-bridge-owner:
 # Explicit mandatory owner-artifact acceptance gate for the internal read backend.
 # Ordinary test-nondet remains artifact/history-free.
 test-replay-reads-owner: test-replay-ssr-guard
+    python3 tools/test_listener_delivery_owner.py
     python3 tools/test_replay_reads_owner.py
     python3 tools/test_replay_viewport_owner.py
     python3 tools/test_replay_media_owner.py
@@ -2200,3 +2201,7 @@ test-record-layout-owner:
 # Two real owner runs must compile changed non-leaf inputs and retain both runs.
 test-record-layout-freshness:
     python3 tools/test_record_layout_freshness.py
+
+# Previously registered native callbacks refuse before unsupported private reads.
+test-listener-delivery-owner:
+    python3 tools/test_listener_delivery_owner.py

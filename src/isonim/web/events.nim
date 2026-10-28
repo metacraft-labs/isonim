@@ -28,6 +28,8 @@ proc jsConcatCstrings(a, b: cstring): cstring {.importcpp: "(# + #)".}
 proc eventHandler(e: Event) {.exportc.} =
   ## The document-level handler that walks up the DOM tree looking for
   ## delegated event handlers stored as $$<eventName> properties on nodes.
+  # Registration may predate selection; refuse before inspecting the event.
+  refuseReadReplay(currentClock, "delegateEvents")
   var node = e.target
   let key = jsConcatCstrings(cstring"$$", e.`type`)
 
