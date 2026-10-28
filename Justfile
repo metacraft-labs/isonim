@@ -2143,6 +2143,7 @@ test-replay-reads-owner: test-replay-ssr-guard
     python3 tools/test_replay_storage_output_owner.py
     python3 tools/test_replay_scheduler_owner.py
     python3 tools/test_record_media_owner.py
+    python3 tools/test_record_measure_owner.py
 
 # Artifact-free ordinary/recordable SSR byte fidelity and private-guard inverse.
 test-replay-ssr-guard:
@@ -2210,3 +2211,7 @@ test-record-layout-freshness:
 # Previously registered native callbacks refuse before unsupported private reads.
 test-listener-delivery-owner:
     python3 tools/test_listener_delivery_owner.py
+
+# Fixed native registered-IID measurement; strict codec and public Replay.
+test-record-measure-owner:
+    python3 tools/test_record_measure_owner.py
