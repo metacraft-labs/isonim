@@ -46,6 +46,8 @@ tests/test_server_functions
 tests/test_ssr_routing
 tests/test_form_actions
 tests/test_rpc_dispatch
+tests/test_traceparent_meta
+tests/routing/t_manifest_streaming_buffered
 tests/test_route_manifest
 tests/test_file_routes
 tests/test_content_markdown
