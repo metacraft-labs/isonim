@@ -2196,3 +2196,7 @@ test-rpc-projection:
 # Fixed private viewport originals; actual owner/strict reader/public Replay.
 test-record-layout-owner:
     python3 tools/test_record_layout_owner.py
+
+# Two real owner runs must compile changed non-leaf inputs and retain both runs.
+test-record-layout-freshness:
+    python3 tools/test_record_layout_freshness.py

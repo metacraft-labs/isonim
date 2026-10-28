@@ -25,7 +25,8 @@ async function bundle(source){return (await build({stdin:{resolveDir:artifact,co
 // One bundle shares the exact Recorder class across Nim require and imports.
 const compiled=await bundle(imports+readFileSync(process.env.RECORD_LAYOUT_BUNDLE,'utf8')+'\nObject.assign(globalThis,{rlInit,rlRead,rlSwitchTest,rlSelected});');
 const owner=await bundle(imports), replay=readFileSync(process.env.RECORD_LAYOUT_REPLAY,'utf8');
-const capture=readFileSync(root+'/build/replay-reads-context.js','utf8');
+assert(process.env.RECORD_LAYOUT_CONTEXT,'RECORD_LAYOUT_CONTEXT required: current compiled context cannot fall back');
+const capture=readFileSync(process.env.RECORD_LAYOUT_CONTEXT,'utf8');
 const modes=process.env.RECORD_LAYOUT_INVERSE?['positive']:['positive','ownership','width-throw','height-throw','stopped','faulted','invalid','numeric'];
 const server=createServer((req,res)=>res.end('<!doctype html><main>Private viewport</main>'));
 await new Promise(r=>server.listen(0,'127.0.0.1',r));const url='http://127.0.0.1:'+server.address().port;

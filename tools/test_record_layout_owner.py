@@ -2,30 +2,39 @@
 """Actual private viewport/owner qualification; no artifact or semantic skips.
 
 Source inverses compile the actual module and retain source/emission/logs under
-build/record-layout-inverses. Raw ceiling fixtures include the real leaf solely
+fresh retained run directories under build/record-layout-inverses. No invocation
+reuses source snapshots, outputs or compiler caches from earlier qualification.
+Raw ceiling fixtures include the real leaf solely
 to expose the private raw binding; no production test hook is added.
 """
 from pathlib import Path
 import os
 import shutil
 import subprocess
+import tempfile
 
 root = Path(__file__).resolve().parent.parent
 artifact = os.environ.get('CT_ARTIFACT')
 if not artifact:
     raise SystemExit('CT_ARTIFACT required: actual installed owner integration cannot skip')
 assert (Path(artifact) / 'packages/boundary-shim/dist/browser/recorder.js').is_file(), 'actual installed Recorder required'
+output_parent = root / 'build/record-layout-inverses'
+output_parent.mkdir(parents=True, exist_ok=True)
+out = Path(tempfile.mkdtemp(prefix='run-', dir=output_parent))
+print('retained qualification directory: ' + str(out), flush=True)
 env = dict(os.environ)
 env.setdefault('PLAYWRIGHT_CHROMIUM_EXECUTABLE', shutil.which('chromium') or '')
 base = ['-d:isonimInternalRecordLayout']
 
 def compile_js(name, fixture, flags=(), source=None, reject=False):
-    output = root / 'build' / (name + '.js')
+    output = out / (name + '.js')
     cmd = ['nim', 'js', *flags]
     if source:
         cmd += ['--path:' + str(source), '--path:' + str(root.parent / 'nim-everywhere/src')]
-    cmd += ['--nimcache:' + str(root / 'build/nimcache' / name), '--out:' + str(output), str(fixture)]
+    cmd += ['--nimcache:' + str(out / 'nimcache' / name), '--out:' + str(output), str(fixture)]
     p = subprocess.run(cmd, cwd=root, text=True, stdout=subprocess.PIPE, stderr=subprocess.STDOUT)
+    (out / (name + '-compile.log')).write_text(p.stdout)
+    (out / (name + '-command.txt')).write_text(repr(cmd) + '\nexit: ' + str(p.returncode) + '\n')
     print(p.stdout, flush=True)
     if reject:
         assert p.returncode != 0 and 'RawNondet' in p.stdout and 'unlisted effect' in p.stdout, 'exact RawNondet ceiling rejection'
@@ -33,9 +42,9 @@ def compile_js(name, fixture, flags=(), source=None, reject=False):
         assert p.returncode == 0, 'actual source must compile before semantic qualification: ' + name
     return output
 
-for boundary in [[], ['-d:recordLayoutRaw']]:
-    compile_js('record-layout-effect', 'tests/fixtures/record_layout_effect.nim', [*base, *boundary])
-    compile_js('record-layout-reject', 'tests/fixtures/record_layout_effect.nim', [*base, *boundary, '-d:recordLayoutReject'], reject=True)
+for i, boundary in enumerate([[], ['-d:recordLayoutRaw']]):
+    compile_js('record-layout-effect-' + str(i), 'tests/fixtures/record_layout_effect.nim', [*base, *boundary])
+    compile_js('record-layout-reject-' + str(i), 'tests/fixtures/record_layout_effect.nim', [*base, *boundary, '-d:recordLayoutReject'], reject=True)
 
 lazy = compile_js('record-layout-import', 'tests/fixtures/record_layout_import.nim', base)
 assert 'function rlUncalled(' in lazy.read_text() and 'boundary-shim/dist/browser/recorder.js' in lazy.read_text()
@@ -49,12 +58,16 @@ for name, flags in [('default', []), ('recordable', ['-d:isonimRecordable'])]:
     assert a.read_bytes() == b.read_bytes(), 'same fixture/compiler paths: exact unused-define public bytes'
     assert all(s not in a.read_text() for s in ['record_layout.nim', 'RecordLayoutPrimitives', 'boundary-shim'])
     subprocess.run(['python3', 'tools/run_nim_js_test.py', str(a)], cwd=root, check=True)
-compile_js('replay-reads-context', 'tests/fixtures/replay_reads_context.nim')
+context = compile_js('replay-reads-context', 'tests/fixtures/replay_reads_context.nim')
+env['RECORD_LAYOUT_CONTEXT'] = str(context)
 replay = compile_js('record-layout-replay', 'tests/fixtures/record_layout_replay.nim', ['-d:isonimInternalReplayReads'])
 for name, flags in [('default', []), ('recordable', ['-d:isonimRecordable']), ('release', ['-d:release']), ('both', ['-d:isonimInternalReplayReads', '-d:isonimInternalRecordClocks'])]:
     js = compile_js('record-layout-' + name, 'tests/fixtures/record_layout.nim', [*base, *flags])
     matching = compile_js('record-layout-replay-' + name, 'tests/fixtures/record_layout_replay.nim', ['-d:isonimInternalReplayReads', *flags])
-    subprocess.run(['node', 'tests/test_record_layout_owner.mjs'], cwd=root, env={**env, 'RECORD_LAYOUT_BUNDLE': str(js), 'RECORD_LAYOUT_REPLAY': str(matching), 'RECORD_LAYOUT_RESULTS': str(root / 'build' / ('record-layout-results-' + name + '.jsonl'))}, check=True)
+    p = subprocess.run(['node', 'tests/test_record_layout_owner.mjs'], cwd=root, env={**env, 'RECORD_LAYOUT_BUNDLE': str(js), 'RECORD_LAYOUT_REPLAY': str(matching), 'RECORD_LAYOUT_RESULTS': str(out / ('record-layout-results-' + name + '.jsonl'))}, text=True, stdout=subprocess.PIPE, stderr=subprocess.STDOUT)
+    (out / ('record-layout-' + name + '-browser.log')).write_text(p.stdout)
+    print(p.stdout, flush=True)
+    p.check_returncode()
 
 original = (root / 'src/isonim/core/private/record_layout.nim').read_text()
 width = "var width=c.width.call(c.window);c.rec.guard(function(){c.rec.emit('LayoutRead',{target:'win',prop:'innerWidth',value:JSON.stringify(width===undefined?null:width)});});"
@@ -72,11 +85,10 @@ mutations = {
 }
 
 def source_copy(name, text):
-    directory = root / 'build/record-layout-inverses' / name
-    directory.mkdir(parents=True, exist_ok=True)
+    directory = out / name
+    directory.mkdir()
     source = directory / 'src'
-    if not source.exists():
-        shutil.copytree(root / 'src', source)
+    shutil.copytree(root / 'src', source)
     (source / 'isonim/core/private/record_layout.nim').write_text(text)
     fixtures = directory / 'tests/fixtures'
     fixtures.mkdir(parents=True, exist_ok=True)
@@ -92,6 +104,7 @@ for name, (old, new, assertion) in mutations.items():
     (source.parent / 'semantic.log').write_text(p.stdout)
     print(p.stdout, flush=True)
     assert p.returncode != 0 and 'layout semantic: ' + assertion in p.stdout, 'compiled inverse must fail its named semantic assertion: ' + name
+    assert p.returncode == 1 and 'AssertionError [ERR_ASSERTION]: layout semantic: ' + assertion in p.stdout and 'TypeError' not in p.stdout, 'compiled inverse must reach its actual named AssertionError: ' + name
     print('compiled viewport inverse ' + name + ': REJECTED at ' + assertion, flush=True)
 
 # An inferred effect is equally real: dropping a redundant export annotation
