@@ -5,6 +5,7 @@
 import std/[times, monotimes, json, tables, random, options]
 when not defined(js): import std/sysrand
 when defined(js): import std/jsffi
+when defined(js): import ./private/rpc_http
 import ./clock
 when defined(js) and defined(isonimInternalReplayReads):
   import ./private/replay_reads
@@ -362,26 +363,10 @@ when defined(js):
     ## the response headers (`fetch` rejects) or after them, while the body
     ## is read (`text()` rejects).  The final `catch` covers the whole chain,
     ## so an `AbortError` never reaches the caller as an exception.
-    {.cast(tags: []).}:
-     var init: JsObject
-     {.emit: """
-    var headers = {"X-CSRF-Token": `csrf`, "X-Isonim-Context": `context`};
-    if (`contentType` !== "") headers["Content-Type"] = `contentType`;
-    `init` = {method: `httpMethod`, headers: headers, credentials: "same-origin"};
-    if (`body` !== null) `init`.body = `body`;
-    if (`signal`) `init`.signal = `signal`;
-     """.}
-     let pending = neHttp.fetchBrowserResponseRaw(rawBackendAccess, url, init)
-     {.emit: """
-    `result` = `pending`
-      .then(function (r) {
-        return r.text().then(function (t) { return {status: r.status, text: t}; });
-      })
-      .catch(function (e) {
-        var aborted = (e && e.name === "AbortError") || (`signal` && `signal`.aborted);
-        return {status: aborted ? -1 : 0, text: String(e)};
-      });
-     """.}
+    let init = buildRpcRequestInitRaw(rawBackendAccess, httpMethod, body, csrf,
+      context, contentType, signal)
+    let pending = neHttp.fetchBrowserResponseRaw(rawBackendAccess, url, init)
+    projectRpcResponseRaw(rawBackendAccess, pending, signal)
 
 when defined(js):
   proc rpcResult(status: int; body: cstring): JsObject

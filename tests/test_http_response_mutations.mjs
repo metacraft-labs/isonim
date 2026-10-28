@@ -10,7 +10,7 @@ const mutations = [
   [
     "rpc-abort",
     "src",
-    "isonim/core/nondet.nim",
+    "isonim/core/private/rpc_http.nim",
     "aborted ? -1 : 0",
     "0",
     "RPC abort remains a fulfilled -1 outcome",
@@ -54,6 +54,7 @@ try {
       ],
       { encoding: "utf8" },
     );
+    await writeFile(join(dir, "compile.log"), run.stdout + run.stderr);
     assert.equal(run.status, 0, run.stdout + run.stderr);
     run = spawnSync(
       process.execPath,
@@ -64,6 +65,7 @@ try {
         timeout: 30000,
       },
     );
+    await writeFile(join(dir, "browser.log"), run.stdout + run.stderr);
     assert.equal(run.signal, null, "must fail named assertion, not timeout");
     assert.notEqual(run.status, 0, "mutant passed " + name);
     assert(
@@ -73,5 +75,7 @@ try {
     console.log("rejected " + name + ": " + diagnostic);
   }
 } finally {
+  if (process.env.HTTP_RESPONSE_MUTATION_RECEIPTS)
+    await cp(work, process.env.HTTP_RESPONSE_MUTATION_RECEIPTS, { recursive: true });
   await rm(work, { recursive: true, force: true });
 }

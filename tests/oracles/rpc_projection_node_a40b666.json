@@ -1,0 +1,1548 @@
+{
+  "facade": {
+    "ready": {
+      "trace": [
+        "fetch",
+        "returned",
+        "text",
+        "body-ready",
+        "body-turn1",
+        "body-turn2",
+        "body-turn3",
+        "body-turn4",
+        "fulfilled",
+        "body-turn5",
+        "body-turn6",
+        "body-turn7",
+        "body-turn8"
+      ],
+      "calls": [
+        {
+          "url": "http://example.invalid/rpc",
+          "method": "POST",
+          "keys": [
+            "method",
+            "headers",
+            "credentials",
+            "body",
+            "signal"
+          ],
+          "headers": [
+            [
+              "X-CSRF-Token",
+              "csrf"
+            ],
+            [
+              "X-Isonim-Context",
+              "context"
+            ],
+            [
+              "Content-Type",
+              "text/x-rpc"
+            ]
+          ],
+          "body": "payload",
+          "hasBody": true,
+          "signal": true,
+          "credentials": "same-origin"
+        }
+      ],
+      "reads": 1,
+      "completions": 1,
+      "dispatches": 1,
+      "outcome": {
+        "status": 207,
+        "text": "ready"
+      },
+      "sync": false
+    },
+    "nil-body": {
+      "trace": [
+        "fetch",
+        "returned",
+        "text",
+        "body-ready",
+        "body-turn1",
+        "body-turn2",
+        "body-turn3",
+        "body-turn4",
+        "fulfilled",
+        "body-turn5",
+        "body-turn6",
+        "body-turn7",
+        "body-turn8"
+      ],
+      "calls": [
+        {
+          "url": "http://example.invalid/rpc",
+          "method": "POST",
+          "keys": [
+            "method",
+            "headers",
+            "credentials",
+            "signal"
+          ],
+          "headers": [
+            [
+              "X-CSRF-Token",
+              "csrf"
+            ],
+            [
+              "X-Isonim-Context",
+              "context"
+            ],
+            [
+              "Content-Type",
+              "text/x-rpc"
+            ]
+          ],
+          "body": null,
+          "hasBody": false,
+          "signal": true,
+          "credentials": "same-origin"
+        }
+      ],
+      "reads": 1,
+      "completions": 1,
+      "dispatches": 1,
+      "outcome": {
+        "status": 207,
+        "text": "ready"
+      },
+      "sync": false
+    },
+    "empty-body": {
+      "trace": [
+        "fetch",
+        "returned",
+        "text",
+        "body-ready",
+        "body-turn1",
+        "body-turn2",
+        "body-turn3",
+        "body-turn4",
+        "fulfilled",
+        "body-turn5",
+        "body-turn6",
+        "body-turn7",
+        "body-turn8"
+      ],
+      "calls": [
+        {
+          "url": "http://example.invalid/rpc",
+          "method": "POST",
+          "keys": [
+            "method",
+            "headers",
+            "credentials",
+            "body",
+            "signal"
+          ],
+          "headers": [
+            [
+              "X-CSRF-Token",
+              "csrf"
+            ],
+            [
+              "X-Isonim-Context",
+              "context"
+            ],
+            [
+              "Content-Type",
+              "text/x-rpc"
+            ]
+          ],
+          "body": "",
+          "hasBody": true,
+          "signal": true,
+          "credentials": "same-origin"
+        }
+      ],
+      "reads": 1,
+      "completions": 1,
+      "dispatches": 1,
+      "outcome": {
+        "status": 207,
+        "text": "ready"
+      },
+      "sync": false
+    },
+    "no-content-type": {
+      "trace": [
+        "fetch",
+        "returned",
+        "text",
+        "body-ready",
+        "body-turn1",
+        "body-turn2",
+        "body-turn3",
+        "body-turn4",
+        "fulfilled",
+        "body-turn5",
+        "body-turn6",
+        "body-turn7",
+        "body-turn8"
+      ],
+      "calls": [
+        {
+          "url": "http://example.invalid/rpc",
+          "method": "POST",
+          "keys": [
+            "method",
+            "headers",
+            "credentials",
+            "body",
+            "signal"
+          ],
+          "headers": [
+            [
+              "X-CSRF-Token",
+              "csrf"
+            ],
+            [
+              "X-Isonim-Context",
+              "context"
+            ]
+          ],
+          "body": "payload",
+          "hasBody": true,
+          "signal": true,
+          "credentials": "same-origin"
+        }
+      ],
+      "reads": 1,
+      "completions": 1,
+      "dispatches": 1,
+      "outcome": {
+        "status": 207,
+        "text": "ready"
+      },
+      "sync": false
+    },
+    "falsy-signal": {
+      "trace": [
+        "fetch",
+        "returned",
+        "text",
+        "body-ready",
+        "body-turn1",
+        "body-turn2",
+        "body-turn3",
+        "body-turn4",
+        "fulfilled",
+        "body-turn5",
+        "body-turn6",
+        "body-turn7",
+        "body-turn8"
+      ],
+      "calls": [
+        {
+          "url": "http://example.invalid/rpc",
+          "method": "POST",
+          "keys": [
+            "method",
+            "headers",
+            "credentials",
+            "body"
+          ],
+          "headers": [
+            [
+              "X-CSRF-Token",
+              "csrf"
+            ],
+            [
+              "X-Isonim-Context",
+              "context"
+            ],
+            [
+              "Content-Type",
+              "text/x-rpc"
+            ]
+          ],
+          "body": "payload",
+          "hasBody": true,
+          "signal": false,
+          "credentials": "same-origin"
+        }
+      ],
+      "reads": 1,
+      "completions": 1,
+      "dispatches": 1,
+      "outcome": {
+        "status": 207,
+        "text": "ready"
+      },
+      "sync": false
+    },
+    "throw": {
+      "trace": [
+        "fetch",
+        "threw"
+      ],
+      "calls": [
+        {
+          "url": "http://example.invalid/rpc",
+          "method": "POST",
+          "keys": [
+            "method",
+            "headers",
+            "credentials",
+            "body",
+            "signal"
+          ],
+          "headers": [
+            [
+              "X-CSRF-Token",
+              "csrf"
+            ],
+            [
+              "X-Isonim-Context",
+              "context"
+            ],
+            [
+              "Content-Type",
+              "text/x-rpc"
+            ]
+          ],
+          "body": "payload",
+          "hasBody": true,
+          "signal": true,
+          "credentials": "same-origin"
+        }
+      ],
+      "reads": 0,
+      "completions": 0,
+      "dispatches": 0,
+      "outcome": null,
+      "sync": true
+    },
+    "init-throw": {
+      "trace": [
+        "threw"
+      ],
+      "calls": [],
+      "reads": 0,
+      "completions": 0,
+      "dispatches": 0,
+      "outcome": null,
+      "sync": true
+    },
+    "head-error": {
+      "trace": [
+        "fetch",
+        "returned",
+        "fulfilled"
+      ],
+      "calls": [
+        {
+          "url": "http://example.invalid/rpc",
+          "method": "POST",
+          "keys": [
+            "method",
+            "headers",
+            "credentials",
+            "body",
+            "signal"
+          ],
+          "headers": [
+            [
+              "X-CSRF-Token",
+              "csrf"
+            ],
+            [
+              "X-Isonim-Context",
+              "context"
+            ],
+            [
+              "Content-Type",
+              "text/x-rpc"
+            ]
+          ],
+          "body": "payload",
+          "hasBody": true,
+          "signal": true,
+          "credentials": "same-origin"
+        }
+      ],
+      "reads": 0,
+      "completions": 1,
+      "dispatches": 1,
+      "outcome": {
+        "status": 0,
+        "text": "Error: native token"
+      },
+      "sync": false
+    },
+    "head-primitive": {
+      "trace": [
+        "fetch",
+        "returned",
+        "fulfilled"
+      ],
+      "calls": [
+        {
+          "url": "http://example.invalid/rpc",
+          "method": "POST",
+          "keys": [
+            "method",
+            "headers",
+            "credentials",
+            "body",
+            "signal"
+          ],
+          "headers": [
+            [
+              "X-CSRF-Token",
+              "csrf"
+            ],
+            [
+              "X-Isonim-Context",
+              "context"
+            ],
+            [
+              "Content-Type",
+              "text/x-rpc"
+            ]
+          ],
+          "body": "payload",
+          "hasBody": true,
+          "signal": true,
+          "credentials": "same-origin"
+        }
+      ],
+      "reads": 0,
+      "completions": 1,
+      "dispatches": 1,
+      "outcome": {
+        "status": 0,
+        "text": "0"
+      },
+      "sync": false
+    },
+    "head-abort": {
+      "trace": [
+        "fetch",
+        "returned",
+        "fulfilled"
+      ],
+      "calls": [
+        {
+          "url": "http://example.invalid/rpc",
+          "method": "POST",
+          "keys": [
+            "method",
+            "headers",
+            "credentials",
+            "body",
+            "signal"
+          ],
+          "headers": [
+            [
+              "X-CSRF-Token",
+              "csrf"
+            ],
+            [
+              "X-Isonim-Context",
+              "context"
+            ],
+            [
+              "Content-Type",
+              "text/x-rpc"
+            ]
+          ],
+          "body": "payload",
+          "hasBody": true,
+          "signal": true,
+          "credentials": "same-origin"
+        }
+      ],
+      "reads": 0,
+      "completions": 1,
+      "dispatches": 1,
+      "outcome": {
+        "status": -1,
+        "text": "AbortError: native abort"
+      },
+      "sync": false
+    },
+    "signal-abort": {
+      "trace": [
+        "fetch",
+        "returned",
+        "fulfilled"
+      ],
+      "calls": [
+        {
+          "url": "http://example.invalid/rpc",
+          "method": "POST",
+          "keys": [
+            "method",
+            "headers",
+            "credentials",
+            "body",
+            "signal"
+          ],
+          "headers": [
+            [
+              "X-CSRF-Token",
+              "csrf"
+            ],
+            [
+              "X-Isonim-Context",
+              "context"
+            ],
+            [
+              "Content-Type",
+              "text/x-rpc"
+            ]
+          ],
+          "body": "payload",
+          "hasBody": true,
+          "signal": true,
+          "credentials": "same-origin"
+        }
+      ],
+      "reads": 0,
+      "completions": 1,
+      "dispatches": 1,
+      "outcome": {
+        "status": -1,
+        "text": "Error: native token"
+      },
+      "sync": false
+    },
+    "body-error": {
+      "trace": [
+        "fetch",
+        "returned",
+        "text",
+        "body-ready",
+        "body-turn1",
+        "body-turn2",
+        "body-turn3",
+        "body-turn4",
+        "fulfilled",
+        "body-turn5",
+        "body-turn6",
+        "body-turn7",
+        "body-turn8"
+      ],
+      "calls": [
+        {
+          "url": "http://example.invalid/rpc",
+          "method": "POST",
+          "keys": [
+            "method",
+            "headers",
+            "credentials",
+            "body",
+            "signal"
+          ],
+          "headers": [
+            [
+              "X-CSRF-Token",
+              "csrf"
+            ],
+            [
+              "X-Isonim-Context",
+              "context"
+            ],
+            [
+              "Content-Type",
+              "text/x-rpc"
+            ]
+          ],
+          "body": "payload",
+          "hasBody": true,
+          "signal": true,
+          "credentials": "same-origin"
+        }
+      ],
+      "reads": 1,
+      "completions": 1,
+      "dispatches": 1,
+      "outcome": {
+        "status": 0,
+        "text": "Error: native token"
+      },
+      "sync": false
+    },
+    "body-abort": {
+      "trace": [
+        "fetch",
+        "returned",
+        "text",
+        "body-ready",
+        "body-turn1",
+        "body-turn2",
+        "body-turn3",
+        "body-turn4",
+        "fulfilled",
+        "body-turn5",
+        "body-turn6",
+        "body-turn7",
+        "body-turn8"
+      ],
+      "calls": [
+        {
+          "url": "http://example.invalid/rpc",
+          "method": "POST",
+          "keys": [
+            "method",
+            "headers",
+            "credentials",
+            "body",
+            "signal"
+          ],
+          "headers": [
+            [
+              "X-CSRF-Token",
+              "csrf"
+            ],
+            [
+              "X-Isonim-Context",
+              "context"
+            ],
+            [
+              "Content-Type",
+              "text/x-rpc"
+            ]
+          ],
+          "body": "payload",
+          "hasBody": true,
+          "signal": true,
+          "credentials": "same-origin"
+        }
+      ],
+      "reads": 1,
+      "completions": 1,
+      "dispatches": 1,
+      "outcome": {
+        "status": -1,
+        "text": "AbortError: native abort"
+      },
+      "sync": false
+    },
+    "text-throw": {
+      "trace": [
+        "fetch",
+        "returned",
+        "text",
+        "fulfilled"
+      ],
+      "calls": [
+        {
+          "url": "http://example.invalid/rpc",
+          "method": "POST",
+          "keys": [
+            "method",
+            "headers",
+            "credentials",
+            "body",
+            "signal"
+          ],
+          "headers": [
+            [
+              "X-CSRF-Token",
+              "csrf"
+            ],
+            [
+              "X-Isonim-Context",
+              "context"
+            ],
+            [
+              "Content-Type",
+              "text/x-rpc"
+            ]
+          ],
+          "body": "payload",
+          "hasBody": true,
+          "signal": true,
+          "credentials": "same-origin"
+        }
+      ],
+      "reads": 1,
+      "completions": 1,
+      "dispatches": 1,
+      "outcome": {
+        "status": 0,
+        "text": "Error: native token"
+      },
+      "sync": false
+    },
+    "projection-error": {
+      "trace": [
+        "fetch",
+        "returned",
+        "text",
+        "body-ready",
+        "body-turn1",
+        "body-turn2",
+        "body-turn3",
+        "body-turn4",
+        "fulfilled",
+        "body-turn5",
+        "body-turn6",
+        "body-turn7",
+        "body-turn8"
+      ],
+      "calls": [
+        {
+          "url": "http://example.invalid/rpc",
+          "method": "POST",
+          "keys": [
+            "method",
+            "headers",
+            "credentials",
+            "body",
+            "signal"
+          ],
+          "headers": [
+            [
+              "X-CSRF-Token",
+              "csrf"
+            ],
+            [
+              "X-Isonim-Context",
+              "context"
+            ],
+            [
+              "Content-Type",
+              "text/x-rpc"
+            ]
+          ],
+          "body": "payload",
+          "hasBody": true,
+          "signal": true,
+          "credentials": "same-origin"
+        }
+      ],
+      "reads": 1,
+      "completions": 1,
+      "dispatches": 1,
+      "outcome": {
+        "status": 0,
+        "text": "Error: native token"
+      },
+      "sync": false
+    },
+    "error-string-throw": {
+      "trace": [
+        "fetch",
+        "returned",
+        "rejected"
+      ],
+      "calls": [
+        {
+          "url": "http://example.invalid/rpc",
+          "method": "POST",
+          "keys": [
+            "method",
+            "headers",
+            "credentials",
+            "body",
+            "signal"
+          ],
+          "headers": [
+            [
+              "X-CSRF-Token",
+              "csrf"
+            ],
+            [
+              "X-Isonim-Context",
+              "context"
+            ],
+            [
+              "Content-Type",
+              "text/x-rpc"
+            ]
+          ],
+          "body": "payload",
+          "hasBody": true,
+          "signal": true,
+          "credentials": "same-origin"
+        }
+      ],
+      "reads": 0,
+      "completions": 1,
+      "dispatches": 1,
+      "outcome": {
+        "same": true
+      },
+      "sync": false
+    }
+  },
+  "raw": {
+    "ready": {
+      "trace": [
+        "fetch",
+        "returned",
+        "text",
+        "body-ready",
+        "body-turn1",
+        "body-turn2",
+        "body-turn3",
+        "fulfilled",
+        "body-turn4",
+        "body-turn5",
+        "body-turn6",
+        "body-turn7",
+        "body-turn8"
+      ],
+      "calls": [
+        {
+          "url": "http://example.invalid/rpc",
+          "method": "POST",
+          "keys": [
+            "method",
+            "headers",
+            "credentials",
+            "body",
+            "signal"
+          ],
+          "headers": [
+            [
+              "X-CSRF-Token",
+              "csrf"
+            ],
+            [
+              "X-Isonim-Context",
+              "context"
+            ],
+            [
+              "Content-Type",
+              "text/x-rpc"
+            ]
+          ],
+          "body": "payload",
+          "hasBody": true,
+          "signal": true,
+          "credentials": "same-origin"
+        }
+      ],
+      "reads": 1,
+      "completions": 1,
+      "dispatches": 0,
+      "outcome": {
+        "status": 207,
+        "text": "ready"
+      },
+      "sync": false
+    },
+    "nil-body": {
+      "trace": [
+        "fetch",
+        "returned",
+        "text",
+        "body-ready",
+        "body-turn1",
+        "body-turn2",
+        "body-turn3",
+        "fulfilled",
+        "body-turn4",
+        "body-turn5",
+        "body-turn6",
+        "body-turn7",
+        "body-turn8"
+      ],
+      "calls": [
+        {
+          "url": "http://example.invalid/rpc",
+          "method": "POST",
+          "keys": [
+            "method",
+            "headers",
+            "credentials",
+            "signal"
+          ],
+          "headers": [
+            [
+              "X-CSRF-Token",
+              "csrf"
+            ],
+            [
+              "X-Isonim-Context",
+              "context"
+            ],
+            [
+              "Content-Type",
+              "text/x-rpc"
+            ]
+          ],
+          "body": null,
+          "hasBody": false,
+          "signal": true,
+          "credentials": "same-origin"
+        }
+      ],
+      "reads": 1,
+      "completions": 1,
+      "dispatches": 0,
+      "outcome": {
+        "status": 207,
+        "text": "ready"
+      },
+      "sync": false
+    },
+    "empty-body": {
+      "trace": [
+        "fetch",
+        "returned",
+        "text",
+        "body-ready",
+        "body-turn1",
+        "body-turn2",
+        "body-turn3",
+        "fulfilled",
+        "body-turn4",
+        "body-turn5",
+        "body-turn6",
+        "body-turn7",
+        "body-turn8"
+      ],
+      "calls": [
+        {
+          "url": "http://example.invalid/rpc",
+          "method": "POST",
+          "keys": [
+            "method",
+            "headers",
+            "credentials",
+            "body",
+            "signal"
+          ],
+          "headers": [
+            [
+              "X-CSRF-Token",
+              "csrf"
+            ],
+            [
+              "X-Isonim-Context",
+              "context"
+            ],
+            [
+              "Content-Type",
+              "text/x-rpc"
+            ]
+          ],
+          "body": "",
+          "hasBody": true,
+          "signal": true,
+          "credentials": "same-origin"
+        }
+      ],
+      "reads": 1,
+      "completions": 1,
+      "dispatches": 0,
+      "outcome": {
+        "status": 207,
+        "text": "ready"
+      },
+      "sync": false
+    },
+    "no-content-type": {
+      "trace": [
+        "fetch",
+        "returned",
+        "text",
+        "body-ready",
+        "body-turn1",
+        "body-turn2",
+        "body-turn3",
+        "fulfilled",
+        "body-turn4",
+        "body-turn5",
+        "body-turn6",
+        "body-turn7",
+        "body-turn8"
+      ],
+      "calls": [
+        {
+          "url": "http://example.invalid/rpc",
+          "method": "POST",
+          "keys": [
+            "method",
+            "headers",
+            "credentials",
+            "body",
+            "signal"
+          ],
+          "headers": [
+            [
+              "X-CSRF-Token",
+              "csrf"
+            ],
+            [
+              "X-Isonim-Context",
+              "context"
+            ]
+          ],
+          "body": "payload",
+          "hasBody": true,
+          "signal": true,
+          "credentials": "same-origin"
+        }
+      ],
+      "reads": 1,
+      "completions": 1,
+      "dispatches": 0,
+      "outcome": {
+        "status": 207,
+        "text": "ready"
+      },
+      "sync": false
+    },
+    "falsy-signal": {
+      "trace": [
+        "fetch",
+        "returned",
+        "text",
+        "body-ready",
+        "body-turn1",
+        "body-turn2",
+        "body-turn3",
+        "fulfilled",
+        "body-turn4",
+        "body-turn5",
+        "body-turn6",
+        "body-turn7",
+        "body-turn8"
+      ],
+      "calls": [
+        {
+          "url": "http://example.invalid/rpc",
+          "method": "POST",
+          "keys": [
+            "method",
+            "headers",
+            "credentials",
+            "body"
+          ],
+          "headers": [
+            [
+              "X-CSRF-Token",
+              "csrf"
+            ],
+            [
+              "X-Isonim-Context",
+              "context"
+            ],
+            [
+              "Content-Type",
+              "text/x-rpc"
+            ]
+          ],
+          "body": "payload",
+          "hasBody": true,
+          "signal": false,
+          "credentials": "same-origin"
+        }
+      ],
+      "reads": 1,
+      "completions": 1,
+      "dispatches": 0,
+      "outcome": {
+        "status": 207,
+        "text": "ready"
+      },
+      "sync": false
+    },
+    "throw": {
+      "trace": [
+        "fetch",
+        "threw"
+      ],
+      "calls": [
+        {
+          "url": "http://example.invalid/rpc",
+          "method": "POST",
+          "keys": [
+            "method",
+            "headers",
+            "credentials",
+            "body",
+            "signal"
+          ],
+          "headers": [
+            [
+              "X-CSRF-Token",
+              "csrf"
+            ],
+            [
+              "X-Isonim-Context",
+              "context"
+            ],
+            [
+              "Content-Type",
+              "text/x-rpc"
+            ]
+          ],
+          "body": "payload",
+          "hasBody": true,
+          "signal": true,
+          "credentials": "same-origin"
+        }
+      ],
+      "reads": 0,
+      "completions": 0,
+      "dispatches": 0,
+      "outcome": null,
+      "sync": true
+    },
+    "init-throw": {
+      "trace": [
+        "threw"
+      ],
+      "calls": [],
+      "reads": 0,
+      "completions": 0,
+      "dispatches": 0,
+      "outcome": null,
+      "sync": true
+    },
+    "head-error": {
+      "trace": [
+        "fetch",
+        "returned",
+        "fulfilled"
+      ],
+      "calls": [
+        {
+          "url": "http://example.invalid/rpc",
+          "method": "POST",
+          "keys": [
+            "method",
+            "headers",
+            "credentials",
+            "body",
+            "signal"
+          ],
+          "headers": [
+            [
+              "X-CSRF-Token",
+              "csrf"
+            ],
+            [
+              "X-Isonim-Context",
+              "context"
+            ],
+            [
+              "Content-Type",
+              "text/x-rpc"
+            ]
+          ],
+          "body": "payload",
+          "hasBody": true,
+          "signal": true,
+          "credentials": "same-origin"
+        }
+      ],
+      "reads": 0,
+      "completions": 1,
+      "dispatches": 0,
+      "outcome": {
+        "status": 0,
+        "text": "Error: native token"
+      },
+      "sync": false
+    },
+    "head-primitive": {
+      "trace": [
+        "fetch",
+        "returned",
+        "fulfilled"
+      ],
+      "calls": [
+        {
+          "url": "http://example.invalid/rpc",
+          "method": "POST",
+          "keys": [
+            "method",
+            "headers",
+            "credentials",
+            "body",
+            "signal"
+          ],
+          "headers": [
+            [
+              "X-CSRF-Token",
+              "csrf"
+            ],
+            [
+              "X-Isonim-Context",
+              "context"
+            ],
+            [
+              "Content-Type",
+              "text/x-rpc"
+            ]
+          ],
+          "body": "payload",
+          "hasBody": true,
+          "signal": true,
+          "credentials": "same-origin"
+        }
+      ],
+      "reads": 0,
+      "completions": 1,
+      "dispatches": 0,
+      "outcome": {
+        "status": 0,
+        "text": "0"
+      },
+      "sync": false
+    },
+    "head-abort": {
+      "trace": [
+        "fetch",
+        "returned",
+        "fulfilled"
+      ],
+      "calls": [
+        {
+          "url": "http://example.invalid/rpc",
+          "method": "POST",
+          "keys": [
+            "method",
+            "headers",
+            "credentials",
+            "body",
+            "signal"
+          ],
+          "headers": [
+            [
+              "X-CSRF-Token",
+              "csrf"
+            ],
+            [
+              "X-Isonim-Context",
+              "context"
+            ],
+            [
+              "Content-Type",
+              "text/x-rpc"
+            ]
+          ],
+          "body": "payload",
+          "hasBody": true,
+          "signal": true,
+          "credentials": "same-origin"
+        }
+      ],
+      "reads": 0,
+      "completions": 1,
+      "dispatches": 0,
+      "outcome": {
+        "status": -1,
+        "text": "AbortError: native abort"
+      },
+      "sync": false
+    },
+    "signal-abort": {
+      "trace": [
+        "fetch",
+        "returned",
+        "fulfilled"
+      ],
+      "calls": [
+        {
+          "url": "http://example.invalid/rpc",
+          "method": "POST",
+          "keys": [
+            "method",
+            "headers",
+            "credentials",
+            "body",
+            "signal"
+          ],
+          "headers": [
+            [
+              "X-CSRF-Token",
+              "csrf"
+            ],
+            [
+              "X-Isonim-Context",
+              "context"
+            ],
+            [
+              "Content-Type",
+              "text/x-rpc"
+            ]
+          ],
+          "body": "payload",
+          "hasBody": true,
+          "signal": true,
+          "credentials": "same-origin"
+        }
+      ],
+      "reads": 0,
+      "completions": 1,
+      "dispatches": 0,
+      "outcome": {
+        "status": -1,
+        "text": "Error: native token"
+      },
+      "sync": false
+    },
+    "body-error": {
+      "trace": [
+        "fetch",
+        "returned",
+        "text",
+        "body-ready",
+        "body-turn1",
+        "body-turn2",
+        "body-turn3",
+        "fulfilled",
+        "body-turn4",
+        "body-turn5",
+        "body-turn6",
+        "body-turn7",
+        "body-turn8"
+      ],
+      "calls": [
+        {
+          "url": "http://example.invalid/rpc",
+          "method": "POST",
+          "keys": [
+            "method",
+            "headers",
+            "credentials",
+            "body",
+            "signal"
+          ],
+          "headers": [
+            [
+              "X-CSRF-Token",
+              "csrf"
+            ],
+            [
+              "X-Isonim-Context",
+              "context"
+            ],
+            [
+              "Content-Type",
+              "text/x-rpc"
+            ]
+          ],
+          "body": "payload",
+          "hasBody": true,
+          "signal": true,
+          "credentials": "same-origin"
+        }
+      ],
+      "reads": 1,
+      "completions": 1,
+      "dispatches": 0,
+      "outcome": {
+        "status": 0,
+        "text": "Error: native token"
+      },
+      "sync": false
+    },
+    "body-abort": {
+      "trace": [
+        "fetch",
+        "returned",
+        "text",
+        "body-ready",
+        "body-turn1",
+        "body-turn2",
+        "body-turn3",
+        "fulfilled",
+        "body-turn4",
+        "body-turn5",
+        "body-turn6",
+        "body-turn7",
+        "body-turn8"
+      ],
+      "calls": [
+        {
+          "url": "http://example.invalid/rpc",
+          "method": "POST",
+          "keys": [
+            "method",
+            "headers",
+            "credentials",
+            "body",
+            "signal"
+          ],
+          "headers": [
+            [
+              "X-CSRF-Token",
+              "csrf"
+            ],
+            [
+              "X-Isonim-Context",
+              "context"
+            ],
+            [
+              "Content-Type",
+              "text/x-rpc"
+            ]
+          ],
+          "body": "payload",
+          "hasBody": true,
+          "signal": true,
+          "credentials": "same-origin"
+        }
+      ],
+      "reads": 1,
+      "completions": 1,
+      "dispatches": 0,
+      "outcome": {
+        "status": -1,
+        "text": "AbortError: native abort"
+      },
+      "sync": false
+    },
+    "text-throw": {
+      "trace": [
+        "fetch",
+        "returned",
+        "text",
+        "fulfilled"
+      ],
+      "calls": [
+        {
+          "url": "http://example.invalid/rpc",
+          "method": "POST",
+          "keys": [
+            "method",
+            "headers",
+            "credentials",
+            "body",
+            "signal"
+          ],
+          "headers": [
+            [
+              "X-CSRF-Token",
+              "csrf"
+            ],
+            [
+              "X-Isonim-Context",
+              "context"
+            ],
+            [
+              "Content-Type",
+              "text/x-rpc"
+            ]
+          ],
+          "body": "payload",
+          "hasBody": true,
+          "signal": true,
+          "credentials": "same-origin"
+        }
+      ],
+      "reads": 1,
+      "completions": 1,
+      "dispatches": 0,
+      "outcome": {
+        "status": 0,
+        "text": "Error: native token"
+      },
+      "sync": false
+    },
+    "projection-error": {
+      "trace": [
+        "fetch",
+        "returned",
+        "text",
+        "body-ready",
+        "body-turn1",
+        "body-turn2",
+        "body-turn3",
+        "fulfilled",
+        "body-turn4",
+        "body-turn5",
+        "body-turn6",
+        "body-turn7",
+        "body-turn8"
+      ],
+      "calls": [
+        {
+          "url": "http://example.invalid/rpc",
+          "method": "POST",
+          "keys": [
+            "method",
+            "headers",
+            "credentials",
+            "body",
+            "signal"
+          ],
+          "headers": [
+            [
+              "X-CSRF-Token",
+              "csrf"
+            ],
+            [
+              "X-Isonim-Context",
+              "context"
+            ],
+            [
+              "Content-Type",
+              "text/x-rpc"
+            ]
+          ],
+          "body": "payload",
+          "hasBody": true,
+          "signal": true,
+          "credentials": "same-origin"
+        }
+      ],
+      "reads": 1,
+      "completions": 1,
+      "dispatches": 0,
+      "outcome": {
+        "status": 0,
+        "text": "Error: native token"
+      },
+      "sync": false
+    },
+    "error-string-throw": {
+      "trace": [
+        "fetch",
+        "returned",
+        "rejected"
+      ],
+      "calls": [
+        {
+          "url": "http://example.invalid/rpc",
+          "method": "POST",
+          "keys": [
+            "method",
+            "headers",
+            "credentials",
+            "body",
+            "signal"
+          ],
+          "headers": [
+            [
+              "X-CSRF-Token",
+              "csrf"
+            ],
+            [
+              "X-Isonim-Context",
+              "context"
+            ],
+            [
+              "Content-Type",
+              "text/x-rpc"
+            ]
+          ],
+          "body": "payload",
+          "hasBody": true,
+          "signal": true,
+          "credentials": "same-origin"
+        }
+      ],
+      "reads": 0,
+      "completions": 1,
+      "dispatches": 0,
+      "outcome": {
+        "same": true
+      },
+      "sync": false
+    }
+  }
+}

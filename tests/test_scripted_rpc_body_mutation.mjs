@@ -29,6 +29,7 @@ try {
     ],
     { encoding: "utf8" },
   );
+  await writeFile(join(work, "compile.log"), run.stdout + run.stderr);
   assert.equal(run.status, 0, run.stdout + run.stderr);
   const receipt = join(work, "receipt.json");
   run = spawnSync(process.execPath, ["tests/test_scripted_rpc_body.mjs"], {
@@ -40,6 +41,7 @@ try {
     encoding: "utf8",
     timeout: 30000,
   });
+  await writeFile(join(work, "browser.log"), run.stdout + run.stderr);
   assert.equal(run.signal, null, "mutant must fail assertions, not time out");
   assert.notEqual(
     run.status,
@@ -76,5 +78,7 @@ try {
     "nil-body projection mutant REJECTED; four ordinary controls remain green",
   );
 } finally {
+  if (process.env.SCRIPTED_RPC_BODY_MUTATION_RECEIPTS)
+    await cp(work, process.env.SCRIPTED_RPC_BODY_MUTATION_RECEIPTS, { recursive: true });
   await rm(work, { recursive: true, force: true });
 }

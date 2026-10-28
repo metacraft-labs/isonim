@@ -2179,3 +2179,12 @@ test-ne-http-projection:
     cd ../nim-everywhere && nim js -d:extractedHttpComposition --path:src tests/http_projection_fixture.nim
     node tests/test_ne_http_projection_browser.mjs
     cd ../nim-everywhere && node tests/test_http_projection_mutations.mjs --browser
+
+# Fixed RPC helpers retain native construction, projection and settlement timing.
+test-rpc-projection:
+    nim js -d:extractedRpcComposition --out:build/rpc_projection_fixture.js tests/rpc_projection_fixture.nim
+    node tests/test_rpc_projection.mjs
+    node tests/test_rpc_projection_browser.mjs
+    node tests/test_rpc_network_browser.mjs
+    python3 tools/check_rpc_raw_effects.py
+    node tests/test_rpc_projection_mutations.mjs

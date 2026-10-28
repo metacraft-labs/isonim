@@ -33,7 +33,8 @@ for name,flags in variants:
 # current-source inverse mutation, not a historical git object dependency.
 with tempfile.TemporaryDirectory(prefix='bridge-restoration-') as temporary:
     tmp=Path(temporary);core=tmp/'isonim/core';core.mkdir(parents=True)
-    for path in (root/'src/isonim/core').glob('*.nim'):shutil.copyfile(path,core/path.name)
+    # Preserve the real module graph, including fixed private RPC helpers.
+    shutil.copytree(root/'src/isonim/core',core,dirs_exist_ok=True)
     source=core/'nondet.nim';text=source.read_text()
     needle='  elif currentBackendHook == nil: install(currentClock)\n'
     assert text.count(needle)==1;text=text.replace(needle,'')
@@ -42,6 +43,8 @@ with tempfile.TemporaryDirectory(prefix='bridge-restoration-') as temporary:
     source.write_text(text)
     copied=tmp/fixture.name;shutil.copyfile(fixture,copied)
     shutil.copyfile(fixture.parent/'nondet_bridge_bootstrap.nim',tmp/'nondet_bridge_bootstrap.nim')
+    if env.get('NONDET_BRIDGE_MUTATION_RECEIPTS'):
+        shutil.copytree(tmp,env['NONDET_BRIDGE_MUTATION_RECEIPTS'],dirs_exist_ok=True)
     for target,extra in [('c',[]),('js',['-d:nodejs'])]:
         output=compile_one(target,'restored-'+target,[*extra,'-d:bridgePreselect'],copied,('--path:'+str(tmp),))
         result=subprocess.run(['node',str(output)] if target=='js' else [str(output)],cwd=root,text=True,stdout=subprocess.PIPE,stderr=subprocess.STDOUT)
