@@ -94,6 +94,37 @@ suite "ResponseBody: a nil writer raises":
     expect ResponseTooLargeError:
       b.flush()
 
+suite "ResponseBody.unsentBytes":
+  test "a nil writer raises ValueError, like write and flush":
+    let b: ResponseBody = nil
+    expect ValueError:
+      discard b.unsentBytes
+  test "a writer without an unsent report answers 0":
+    var got = 0
+    proc w(data: openArray[char]) = got += data.len
+    proc f() = discard
+    let b = newResponseBody(w, f)
+    b.write("abc")
+    check got == 3
+    check b.unsentBytes == 0
+  test "a writer that reports what it holds: unsentBytes is that report":
+    var held = 0
+    proc w(data: openArray[char]) = held += data.len
+    proc f() = discard
+    proc u(): int = held
+    let b = newResponseBody(w, f, u)
+    b.write("abcd")
+    check b.unsentBytes == 4
+    held = 1
+    check b.unsentBytes == 1
+  test "the report's own error keeps its type (a request that has ended)":
+    proc w(data: openArray[char]) = discard
+    proc f() = discard
+    proc u(): int = raise newException(ClientConnectionError, "gone")
+    let b = newResponseBody(w, f, u)
+    expect ClientConnectionError:
+      discard b.unsentBytes
+
 suite "dispatchRpc: a server function writing to the nil writer":
   test "is answered 500 internal, the ValueError kept for the log":
     sawNilWriter = false

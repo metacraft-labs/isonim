@@ -7,7 +7,12 @@
 ## route dispatch can write to it; `ngx-isonim` (src/response_body.nim)
 ## creates it over its transport.
 ##
-## `write` queues bytes and `flush` sends what is queued.  On a streaming
+## `write` queues bytes and `flush` sends what is queued.  `unsentBytes`
+## is how much of what was written the client has not read yet: what is
+## queued, plus what the server holds after a flush and has not written to
+## the socket (a slow client).  A handler that streams for a long time reads
+## it to bound what one slow client may cost and ends the response itself
+## (isonim-routing-server-functions.md, "Request Context").  On a streaming
 ## transport the first `flush` also sends the status line and headers
 ## (committing the response), and each flush puts its bytes on the wire
 ## immediately (as HTTP chunks).  On a buffered transport `flush` does
@@ -50,6 +55,7 @@ type
   ResponseBody* = ref object
     writeImpl: proc(data: openArray[char])
     flushImpl: proc()
+    unsentImpl: proc(): int
     failure*: ref CatchableError
       ## The original error when a write through `outputStream` failed
       ## (faststreams only lets IOError through its callbacks).
@@ -58,9 +64,12 @@ type
       fsCreated: bool
 
 proc newResponseBody*(writeImpl: proc(data: openArray[char]);
-                      flushImpl: proc()): ResponseBody =
-  ## Used by the transport (serve.nim).
-  ResponseBody(writeImpl: writeImpl, flushImpl: flushImpl)
+                      flushImpl: proc();
+                      unsentImpl: proc(): int = nil): ResponseBody =
+  ## Used by the server's transport.  `unsentImpl` reports the bytes
+  ## written and not yet read by the client; a server that sends every
+  ## flush before `flush` returns and queues nothing passes nil (0).
+  ResponseBody(writeImpl: writeImpl, flushImpl: flushImpl, unsentImpl: unsentImpl)
 
 proc requireWriter(b: ResponseBody; op: string) =
   ## Raises `ValueError` for a nil writer.  `ValueError`, not an `IOError`:
@@ -89,6 +98,13 @@ proc flush*(b: ResponseBody) =
   ## commits).  Raises `ValueError` when `b` is nil.
   b.requireWriter("flush")
   b.flushImpl()
+
+proc unsentBytes*(b: ResponseBody): int =
+  ## The bytes written that the client has not read yet (module header).
+  ## Raises `ValueError` when `b` is nil, and what the server raises once
+  ## the request has ended (`ClientConnectionError`).
+  b.requireWriter("unsentBytes")
+  if b.unsentImpl.isNil: 0 else: b.unsentImpl()
 
 when defined(useFaststreams) and not defined(isNginxTest):
   proc outputStream*(b: ResponseBody): OutputStream =

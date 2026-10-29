@@ -1,4 +1,4 @@
-## Must NOT compile: `stream` on a data entry
+## Must NOT compile: `stream` on a state-changing data entry
 ## (tests/routing/t_manifest_streaming.nim).
 import isonim/routing/manifest
 
@@ -9,4 +9,5 @@ type
     id: int
 
 routeManifest StreamDataRoute:
-  get rItem, "/items/:id", ItemRequest, ItemResponse, stream = true
+  post rItem, "/items/:id", ItemRequest, ItemResponse, stream = true,
+       csrf = csrfSession

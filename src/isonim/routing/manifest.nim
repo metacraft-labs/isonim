@@ -40,7 +40,7 @@
 ## | `target` | `""` | where a progressive entry's no-JS form is redirected (303); "" = the same-origin `Referer`, else `/` |
 ## | `json` | `false` | pages only: the page also answers `Page.data` as JSON, for an `Accept` preferring `application/json` and, when its pattern ends in a path parameter, for a `.json` suffix on it |
 ## | `cacheOverrides` | `[]` | `[cpPrivateNoStore, ...]`: the policies the canonicalization hook or the handler may give one response instead of `cache` (`ctx.setCachePolicy`); each must be at least as strict as `cache` (a compile-time error otherwise); not on `rpc` |
-## | `stream` | `false` | pages only: a streaming page, whose handler is `proc(ctx, req, page: PageStream): Future[Resp]`: it flushes its shell, then reads and streams the rest, and returns the page's data (route_dispatch.nim, `runStreamRoute`) |
+## | `stream` | `false` | pages: a streaming page, whose handler is `proc(ctx, req, page: PageStream): Future[Resp]`: it flushes its shell, then reads and streams the rest, and returns the page's data (route_dispatch.nim, `runStreamRoute`); `get` entries: a streaming data entry, whose handler is `proc(ctx, req, stream: DataStream): Future[void]` and which declares no response type (`runStreamData`; it has a `<name>Path` and no `<name>Call`) |
 ##
 ## Omitted types are named after the entry: `rTopic` uses `TopicRequest`
 ## and `TopicResponse` (a page's handler returns `Page[TopicResponse]`; a
@@ -203,9 +203,13 @@ proc parseEntry(stmt: NimNode): EntryDef =
     if result.kind != rkPage:
       error(nameStr & ": `json` applies to page entries only (a data " &
         "entry answers JSON already)", stmt)
-  if result.stream and result.kind != rkPage:
-    error(nameStr & ": `stream` applies to page entries only (a data " &
-      "entry answers JSON, which is never streamed)", stmt)
+  if result.stream and not (result.kind == rkPage or
+                            (result.kind == rkApi and result.httpMethod == "GET")):
+    error(nameStr & ": `stream` applies to page and get entries only (a " &
+      "state-changing entry answers one JSON value)", stmt)
+  if result.stream and result.kind == rkApi and positional.len > 1:
+    error(nameStr & ": a streaming get entry declares no response type " &
+      "(its handler writes the body through a DataStream)", positional[1])
   if result.kind == rkRpc and result.cacheOverrides.len > 0:
     error("the `rpc` entry takes no `cacheOverrides`: server functions " &
       "are always cpPrivateNoStore", stmt)
@@ -283,9 +287,15 @@ proc handlerType(e: EntryDef): NimNode =
           nnkBracketExpr.newTree(ident"Page", e.respType)),
         ctxDef, newIdentDefs(ident"req", e.reqType)), newEmptyNode())
   else:
-    nnkProcTy.newTree(nnkFormalParams.newTree(
-      nnkBracketExpr.newTree(ident"Future", e.respType),
-      ctxDef, newIdentDefs(ident"req", e.reqType)), newEmptyNode())
+    if e.stream:
+      nnkProcTy.newTree(nnkFormalParams.newTree(
+        nnkBracketExpr.newTree(ident"Future", ident"void"),
+        ctxDef, newIdentDefs(ident"req", e.reqType),
+        newIdentDefs(ident"stream", ident"DataStream")), newEmptyNode())
+    else:
+      nnkProcTy.newTree(nnkFormalParams.newTree(
+        nnkBracketExpr.newTree(ident"Future", e.respType),
+        ctxDef, newIdentDefs(ident"req", e.reqType)), newEmptyNode())
 
 macro routeManifest*(enumName: untyped; body: untyped): untyped =
   ## Declares a route manifest (see the module documentation).
@@ -399,9 +409,12 @@ macro routeManifest*(enumName: untyped; body: untyped): untyped =
       let respT = if e.kind == rkPage and not e.stream:
                     nnkBracketExpr.newTree(ident"Page", e.respType)
                   else: e.respType
-      let runProc = if e.stream: ident"runStreamRoute" else: ident"runRoute"
-      let call = newCall(nnkBracketExpr.newTree(runProc, e.reqType, respT),
-                         ctxP, s, h)
+      let call =
+        if e.stream and e.kind == rkApi:
+          newCall(nnkBracketExpr.newTree(ident"runStreamData", e.reqType), ctxP, s, h)
+        else:
+          let runProc = if e.stream: ident"runStreamRoute" else: ident"runRoute"
+          newCall(nnkBracketExpr.newTree(runProc, e.reqType, respT), ctxP, s, h)
       runner = newProc(params = [nnkBracketExpr.newTree(ident"Future", ident"void"),
                                  newIdentDefs(ctxP, ident"RequestContext")],
                        body = call, procType = nnkLambda)
@@ -457,6 +470,8 @@ macro routeManifest*(enumName: untyped; body: untyped): untyped =
     let reqT = e.reqType
     case e.kind
     of rkApi:
+      if e.stream:
+        continue      # a streaming data entry: `<name>Path` only
       let callProc = ident($e.name & "Call")
       let respT = e.respType
       let m = newLit(e.httpMethod)

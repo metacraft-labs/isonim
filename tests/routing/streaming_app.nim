@@ -46,6 +46,29 @@
 ##
 ## `sWhole` (`/stream/w/:id`): the same document as a `Page`.
 ## `sPrivate` (`/stream/private/:id`): a shell and a body.
+##
+## `sEvents` (`/stream/e/:id`), a streaming data entry answering
+## `text/event-stream`, by id:
+##
+## * 2: before its first flush makes the response `cpPrivateNoStore`
+##   (accepted), reported in `X-Early-Override`;
+## * 3: writes an event without flushing, then raises `RouteNotFound`: the
+##   404, none of the event;
+## * 4: after its first flush asks for `cpPrivateNoStore` (refused: committed) and
+##   sets a header (`ResponseCommittedError`); writes both answers as
+##   events (`late-override`, `late-header`);
+## * 5: never flushes: answered whole, with its content type;
+## * 6: after its first flush raises `ValueError`: the response is
+##   terminated;
+## * 7: redirects, then flushes, which raises `ValueError`; reports it in
+##   `X-Flush-Refused` and returns: the redirect, no body;
+## * 8: writes an event without flushing, then raises `StreamOverloaded`:
+##   the mapped `503`;
+## * any id: `X-Accel-Buffering: no`, the event `open`, flushed; then, with
+##   `gate`, one byte read from `127.0.0.1:<gate>`; then `count` (default
+##   3) events `n`, each flushed, each carrying the stream's `unsentBytes`
+##   just before it was written; then the event `end`.
+## `sPrivateEvents` (`/stream/private-e/:id`): the event `open`.
 
 import std/[asyncdispatch, asyncnet, options]
 import isonim/routing/route_dispatch
@@ -178,6 +201,69 @@ proc privatePage(ctx: RequestContext; req: PrivateRequest;
   page.write("<p id=\"rest\">private</p>")
   return FeedResponse(id: req.id, items: @["private"])
 
+proc event(name, data: string): string =
+  ## One Server-Sent Events record (https://html.spec.whatwg.org/multipage/server-sent-events.html).
+  "event: " & name & "\ndata: " & data & "\n\n"
+
+proc eventsStream(ctx: RequestContext; req: EventsRequest;
+                  stream: DataStream): Future[void] {.async.} =
+  stream.contentType = "text/event-stream"
+  ctx.response.setHeader("X-Accel-Buffering", "no")
+  case req.id
+  of 2:
+    ctx.response.setHeader("X-Early-Override", $ctx.setCachePolicy(cpPrivateNoStore))
+  of 3:
+    stream.write(event("leaked", "before not-found"))
+    routeNotFound()
+  of 7:
+    ctx.response.redirect(streamingRedirectTarget)
+    stream.write(event("leaked", "by the refused flush"))
+    var refused = "none"
+    try:
+      stream.flush()
+    except ValueError:
+      refused = "ValueError"
+    ctx.response.setHeader("X-Flush-Refused", refused)
+    return
+  of 8:
+    stream.write(event("leaked", "before the overload"))
+    raise newException(StreamOverloaded, "sEvents 8 overloaded before its first flush")
+  else:
+    discard
+  stream.write(event("open", $req.id))
+  if req.id != 5:
+    stream.flush()
+  var got = "-"
+  if req.gate.isSome:
+    got = await readGate(req.gate.get)
+  case req.id
+  of 4:
+    let accepted = ctx.setCachePolicy(cpPrivateNoStore)
+    var headerAnswer = "accepted"
+    try:
+      ctx.response.setHeader("X-Late", "1")
+    except ResponseCommittedError:
+      headerAnswer = "ResponseCommittedError"
+    stream.write(event("late-override", $accepted))
+    stream.write(event("late-header", headerAnswer))
+  of 6:
+    await sleepAsync(0)
+    raise newException(ValueError, "sEvents 6 raised after its first flush")
+  else:
+    discard
+  for n in 1 .. req.count.get(3):
+    stream.write(event("n", $n & " gate=" & got & " unsent=" & $stream.unsentBytes))
+    if req.id != 5:
+      stream.flush()
+  stream.write(event("end", $req.id))
+
+proc privateEvents(ctx: RequestContext; req: PrivateEventsRequest;
+                   stream: DataStream): Future[void] {.async.} =
+  stream.contentType = "text/event-stream"
+  stream.write(event("open", $req.id))
+  stream.flush()
+
 proc streamingApp*(): RequestHandler =
   manifestApp(StreamingRouteHandlers(sFeed: feedPage, sWhole: wholePage,
-                                     sPrivate: privatePage))
+                                     sPrivate: privatePage, sEvents: eventsStream,
+                                     sPrivateEvents: privateEvents))

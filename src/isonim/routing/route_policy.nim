@@ -126,7 +126,9 @@ proc entryTests(specs: seq[RouteSpec]; route, httpMethod, path, query: string;
                 isRpc: bool;
                 canonical = ccNone; json = false; jsonSuffix = false;
                 overrides: seq[CachePolicy] = @[];
-                stream = false): seq[RoutePolicyTest] =
+                stream = false; streamData = false): seq[RoutePolicyTest] =
+  ## `streamData`: a streaming data entry, whose served answer may never
+  ## end, so only its refusals are tested (no check reads a 2xx body).
   # A csrfSession mutation needs a session even where anyone may call it.
   let creds =
     if credentialsFor(auth) == crNone and csrf.kind == ckSession and
@@ -195,11 +197,12 @@ proc entryTests(specs: seq[RouteSpec]; route, httpMethod, path, query: string;
       result.add r
 
   # The cache policy of a served response.
-  var c = base(pcCache)
-  c.expectCacheControl = cacheControl(cache)
-  if canonical != ccNone:
-    c.expectStatus = @[200, 301, 302, 308]
-  result.add c
+  if not streamData:
+    var c = base(pcCache)
+    c.expectCacheControl = cacheControl(cache)
+    if canonical != ccNone:
+      c.expectStatus = @[200, 301, 302, 308]
+    result.add c
 
   # The JSON variant of a page (by suffix and by Accept).
   if jsonSuffix:
@@ -222,7 +225,7 @@ proc entryTests(specs: seq[RouteSpec]; route, httpMethod, path, query: string;
 
   # Each per-response policy the entry declares, on the request the
   # application names for it (route_tests.nim, PolicyEnv.cacheOverridePath).
-  for p in overrides:
+  for p in (if streamData: @[] else: overrides):
     var o = base(pcCacheOverride)
     o.path = ""
     o.overridePolicy = p
@@ -272,7 +275,8 @@ proc buildPolicyTests*(specs: seq[RouteSpec];
         samples[i].query, samples[i].body, s.auth, s.csrf, s.cache,
         s.progressive, s.target, isRpc = false, canonical = s.canonical,
         json = s.json, jsonSuffix = s.json and jsonSuffixApplies(s.path),
-        overrides = s.cacheOverrides, stream = s.stream)
+        overrides = s.cacheOverrides, stream = s.stream and s.kind == rkPage,
+        streamData = s.stream and s.kind == rkApi)
 
 proc `$`*(t: RoutePolicyTest): string =
   t.route & " " & $t.check & ": " & t.httpMethod & " " & t.path &

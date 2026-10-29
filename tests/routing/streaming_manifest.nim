@@ -12,7 +12,10 @@
 ## * `sWhole`: the same page in the `Page`-returning form (the negative
 ##   control: answered whole);
 ## * `sPrivate`: a streaming page that needs a session, whose generated
-##   refusals must come before any shell.
+##   refusals must come before any shell;
+## * `sEvents`: a streaming data entry (`get … stream = true`), an event
+##   stream (isonim-routing-server-functions.md, "Streaming Data Entries");
+## * `sPrivateEvents`: the same, needing a session (its generated refusals).
 
 import std/options
 import isonim/routing/manifest
@@ -36,10 +39,24 @@ type
   PrivateRequest* = object
     id*: int
 
+  EventsRequest* = object
+    id*: int
+    gate*: Option[int]
+      ## As FeedRequest's: read one byte after the first flush.
+    count*: Option[int]
+      ## How many events to write after the gate (default 3).
+
+  PrivateEventsRequest* = object
+    id*: int
+
 routeManifest StreamingRoute:
   page sFeed,    "/stream/f/:id", FeedRequest, FeedResponse,
        stream = true, json = true, cacheOverrides = [cpPrivateNoStore]
   page sWhole,   "/stream/w/:id", WholeRequest, FeedResponse,
        json = true, cacheOverrides = [cpPrivateNoStore]
   page sPrivate, "/stream/private/:id", PrivateRequest, FeedResponse,
+       stream = true, auth = aSession, cache = cpPrivateNoStore
+  get  sEvents,  "/stream/e/:id", EventsRequest, stream = true,
+       cacheOverrides = [cpPrivateNoStore]
+  get  sPrivateEvents, "/stream/private-e/:id", PrivateEventsRequest,
        stream = true, auth = aSession, cache = cpPrivateNoStore

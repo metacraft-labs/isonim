@@ -41,6 +41,13 @@
 #                         as answered: the streamed response ends normally
 #                         instead of being terminated.
 #   mapped-no-retry-after the mapped answer without its Retry-After.
+#   data-headers-after-flush
+#                         a streaming data entry's headers (content type,
+#                         cache policy) applied after its first flush.
+#   data-error-sends-queued
+#                         a streaming data entry's error before its first
+#                         flush answered by flushing what it queued (a 200
+#                         with the leaked event) instead of the pipeline.
 #
 # The buffered-* mutants are of t_manifest_streaming_buffered.nim, the
 # host without a writer (in-process): that test is built against a mutated
@@ -54,6 +61,8 @@
 #   buffered-not-committed
 #                         the response left uncommitted at the first flush
 #                         on such a host: its setters still work after it.
+#   buffered-data-not-committed
+#                         the same for a streaming data entry.
 #
 # The inproc-mapped-* mutants are of t_manifest_mapped_exceptions.nim
 # (in-process, every place a mapped exception can reach the pipeline),
@@ -223,6 +232,27 @@ streaming_mutant mapped-no-retry-after "${mapped_before}" isonim/server/context.
       ctx.response.setHeader(\"Retry-After\", \$answer.retryAfter)" \
   "    discard"
 
+# ---- streaming data entries (isonim-routing-server-functions.md,
+# "Streaming Data Entries") ----
+
+data_first="a streaming data entry: its first event arrives before the read, with its content type and the entry's policy; the rest follow"
+data_before="a streaming data entry: before its first flush the pipeline answers; after it an error terminates; one that never flushes is whole"
+
+streaming_mutant data-headers-after-flush "${data_first}" isonim/routing/route_dispatch.nim \
+  "    stream.commitHeaders()
+    if ctx.bodyWriter.isNil:" \
+  "    stream.emit(flush = true)
+    stream.commitHeaders()
+    if ctx.bodyWriter.isNil:"
+
+streaming_mutant data-error-sends-queued "${data_before}" isonim/routing/route_dispatch.nim \
+  "    ctx.failBeforeCommit(e, pre.before)
+    return
+  if ctx.response.isRedirect and not stream.committed:" \
+  "    stream.flush()
+    return
+  if ctx.response.isRedirect and not stream.committed:"
+
 # ---- the host without a writer (in-process) ----
 
 WS="$(cd "${ROOT}/.." && pwd)"
@@ -279,8 +309,20 @@ buffered_mutant buffered-hook-without-writer \
 buffered_mutant buffered-not-committed \
   "after the shell: setCachePolicy is refused and reported, a header setter raises ResponseCommittedError" \
   isonim/routing/route_dispatch.nim \
-  "      ctx.response.markCommitted()" \
-  "      discard"
+  "      # is fixed exactly as a streaming server would have fixed it.
+      ctx.response.markCommitted()" \
+  "      # is fixed exactly as a streaming server would have fixed it.
+      discard"
+
+buffered_mutant buffered-data-not-committed \
+  "a per-response policy set before the first flush is the committed one; after it setCachePolicy is refused, a header setter raises" \
+  isonim/routing/route_dispatch.nim \
+  "    stream.commitHeaders()
+    if ctx.bodyWriter.isNil:
+      ctx.response.markCommitted()" \
+  "    stream.commitHeaders()
+    if ctx.bodyWriter.isNil:
+      discard"
 
 # ---- mapped exceptions, in-process (t_manifest_mapped_exceptions.nim) ----
 

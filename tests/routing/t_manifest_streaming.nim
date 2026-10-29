@@ -206,11 +206,14 @@ proc pageHeaderNames(p: Parsed): seq[string] =
 const revalidate = cacheHeaders(cpPrivateRevalidate)
 
 suite "test_manifest_streaming_page":
-  test "stream on an entry that is not a page does not compile":
+  test "stream on an entry that is not a page or a get does not compile, nor a streaming get with a response type":
     let notPage = nimCompile("manifest_stream_not_page.nim")
     check not notPage.ok
-    check "`stream` applies to page entries only" in notPage.output
-    check spec(sFeed).stream and not spec(sWhole).stream
+    check "`stream` applies to page and get entries only" in notPage.output
+    let withResp = nimCompile("manifest_stream_get_response.nim")
+    check not withResp.ok
+    check "a streaming get entry declares no response type" in withResp.output
+    check spec(sFeed).stream and not spec(sWhole).stream and spec(sEvents).stream
 
   let fixture = startFixture("isonim-manifest-streaming")
 
@@ -425,6 +428,61 @@ suite "test_manifest_streaming_page":
     check pageData(p.body) == pageData(streamed.body)
     check bootstrapMarker notin p.body      # a Page gets no bootstrap
 
+  test "a streaming data entry: its first event arrives before the read, with its content type and the entry's policy; the rest follow":
+    let gate = newAsyncSocket()
+    gate.setSockOpt(OptReuseAddr, true)
+    gate.bindAddr(Port(0), "127.0.0.1")
+    gate.listen()
+    let gatePort = int(gate.getLocalAddr()[1])
+    let r = waitFor fixture.openRaw("/stream/e/1?gate=" & $gatePort)
+    let gotOpen = waitFor r.until(proc(p: Parsed): bool =
+      "event: open" in p.body)
+    let atOpen = r.parse
+    check gotOpen
+    check atOpen.status == 200
+    check atOpen.chunked
+    check not atOpen.ended
+    check "event: n" notin atOpen.body
+    check atOpen.header("content-type") == "text/event-stream"
+    check atOpen.header("cache-control") == revalidate[0][1]
+    check atOpen.header("x-accel-buffering") == "no"
+    check not atOpen.has("x-page-hook")
+    let accepting = gate.accept()
+    check waitFor accepting.withTimeout(deadlineMs)
+    if accepting.finished and not accepting.failed:
+      let peer = accepting.read
+      waitFor peer.send("Z")
+      peer.close()
+    let ended = waitFor r.until(proc(p: Parsed): bool = p.ended)
+    gate.close()
+    let p = r.parse
+    r.sock.close()
+    check ended
+    check p.body.count("event: n") == 3
+    check "data: 1 gate=Z " in p.body
+    check p.body.endsWith("event: end\ndata: 1\n\n")
+
+  test "a streaming data entry: before its first flush the pipeline answers; after it an error terminates; one that never flushes is whole":
+    let nf = fixture.whole("/stream/e/3")
+    check nf.status == 404 and "leaked" notin nf.body
+    let mapped = fixture.whole("/stream/e/8")
+    check mapped.status == 503 and mapped.header("retry-after") == "1"
+    check "leaked" notin mapped.body
+    let late = fixture.whole("/stream/e/6")
+    check late.status == 200 and late.chunked and not late.ended
+    check "event: open" in late.body
+    let whole = fixture.whole("/stream/e/5")
+    check whole.status == 200 and not whole.chunked and whole.ended
+    check whole.header("content-type") == "text/event-stream"
+    check whole.body.count("event: n") == 3
+    let early = fixture.whole("/stream/e/2")
+    check early.header("cache-control") == cacheHeaders(cpPrivateNoStore)[0][1]
+    let refusedBefore = fixture.refusalsOf()
+    let committed = fixture.whole("/stream/e/4")
+    check "event: late-override\ndata: false" in committed.body
+    check "event: late-header\ndata: ResponseCommittedError" in committed.body
+    check fixture.refusalsOf().len == refusedBefore.len + 1
+
   test "the generated policy tests of the streaming entries pass":
     let env = PolicyEnv(baseUrl: fixture.baseUrl,
       cookies: proc(c: Credentials): string =
@@ -446,7 +504,10 @@ suite "test_manifest_streaming_page":
     var failures: seq[string]
     for t in tests:
       if t.route == "sWhole": continue   # a Page; checked as streamed=false
-      check t.streamPage
+      if t.route in ["sEvents", "sPrivateEvents"]:
+        check not t.streamPage           # a data entry: refusals only
+      else:
+        check t.streamPage
       let failure = env.runPolicyTest(t)
       if failure.len > 0: failures.add failure
     for f in failures: echo "    ", f
@@ -454,6 +515,12 @@ suite "test_manifest_streaming_page":
     check tests.anyIt(it.route == "sPrivate" and it.check == pcAuth)
     check tests.anyIt(it.route == "sFeed" and it.check == pcCacheOverride)
     check tests.filterIt(it.route == "sWhole").allIt(not it.streamPage)
+    # A streaming data entry's served answer may never end: its tests are
+    # its refusals, none of which reads a 2xx body.
+    check tests.anyIt(it.route == "sPrivateEvents" and it.check == pcAuth)
+    check tests.anyIt(it.route == "sEvents" and it.check == pcMethod)
+    check not tests.anyIt(it.route in ["sEvents", "sPrivateEvents"] and
+                          it.check in {pcCache, pcCacheOverride})
     # The runner's own guards.
     for t in tests:
       if t.route == "sFeed" and t.check == pcCache:

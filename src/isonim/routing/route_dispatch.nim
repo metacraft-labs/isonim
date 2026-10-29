@@ -52,7 +52,12 @@
 ##   failure propagates to the server, which terminates the response).
 ##   After the handler returns: the page-data script, the hydration
 ##   bootstrap with the response's nonce (`ctx.hydration`), and the
-##   stream's tail.  A JSON variant is never streamed.
+##   stream's tail.  A JSON variant is never streamed;
+## * **streaming data entries** (`get … stream = true`, `runStreamData`):
+##   the handler writes any body through a `DataStream` over the same
+##   writer.  The first flush is the commit point (the stream's content
+##   type and the response's cache policy are applied just before it, and
+##   the policy is fixed); no page hook, page data, bootstrap or tail.
 ##
 ## Responses the pipeline produces itself carry `Cache-Control: private,
 ## no-store`, so no cache keeps a refusal.
@@ -61,7 +66,7 @@ import std/[asyncdispatch, json, options, strutils]
 import ../server/[context, rpc]
 # Only the writer: under -d:useFaststreams response_body also exports
 # faststreams' outputs (whose buffers define a `Page` of their own).
-from ../server/response_body import ResponseBody, write, flush
+from ../server/response_body import ResponseBody, write, flush, unsentBytes
 import ../ssr/markers
 import match, route_spec
 
@@ -555,6 +560,108 @@ proc runStreamRoute*[Req, Resp](ctx: RequestContext; spec: RouteSpec;
     ctx.applyCachePolicy(ctx.responseCachePolicy)
     return
   page.finishStream(data)
+
+# --------------------------------------------------------------------------
+# Streaming data entries (isonim-routing-server-functions.md, "Streaming
+# Data Entries")
+# --------------------------------------------------------------------------
+
+type
+  DataStream* = ref object
+    ## A streaming data entry's body on its way to the client.  `write`
+    ## queues, `flush` sends; the first flush commits the response's status
+    ## and headers.  Nothing queued reaches the server before a flush, so a
+    ## handler that fails before its first flush is answered by the
+    ## pipeline (404, 400, a mapped status, 500) with none of its bytes.
+    ctx: RequestContext
+    spec: RouteSpec
+    pending: string
+    committed: bool
+    contentType*: string
+      ## The response's content type, applied at the commit point (default
+      ## `application/octet-stream`).
+
+proc committed*(stream: DataStream): bool =
+  ## Whether the first flush has happened (the headers are committed).
+  stream.committed
+
+proc write*(stream: DataStream; data: string) =
+  ## Queues `data`; it is sent at the next `flush` (or when the handler
+  ## returns).
+  stream.pending.add data
+
+proc unsentBytes*(stream: DataStream): int =
+  ## The bytes written that the client has not read yet: those queued here
+  ## and those the server's writer holds (`ResponseBody.unsentBytes`).
+  ## Raises what the writer raises once the request has ended.
+  result = stream.pending.len
+  let w = stream.ctx.bodyWriter
+  if not w.isNil:
+    result += w.unsentBytes
+
+proc emit(stream: DataStream; flush: bool) =
+  let ctx = stream.ctx
+  if stream.pending.len > 0 or flush:
+    let w = ctx.bodyWriter
+    let data = move stream.pending
+    stream.pending = ""
+    if w.isNil:
+      ctx.responseBody.add data
+    else:
+      if data.len > 0:
+        w.write(data)
+      if flush:
+        w.flush()
+
+proc commitHeaders(stream: DataStream) =
+  ## The response's headers, just before they are sent: the content type
+  ## and exactly one cache policy's headers.  From now on the cache policy
+  ## cannot change.
+  let ctx = stream.ctx
+  ctx.response.contentType = stream.contentType
+  ctx.applyCachePolicy(ctx.responseCachePolicy)
+  ctx.fixCachePolicy()
+  stream.committed = true
+
+proc flush*(stream: DataStream) =
+  ## Sends what is queued; the first flush commits the response.  Raises
+  ## `ValueError` on a redirected response, and what the server's writer
+  ## raises (`ClientConnectionError`, `ResponseTooLargeError`).
+  let ctx = stream.ctx
+  if not stream.committed:
+    if ctx.response.isRedirect:
+      raise newException(ValueError, "the response redirected to " &
+        ctx.response.location & "; a redirect carries no body")
+    stream.commitHeaders()
+    if ctx.bodyWriter.isNil:
+      ctx.response.markCommitted()
+  stream.emit(flush = true)
+
+proc runStreamData*[Req](ctx: RequestContext; spec: RouteSpec;
+    handler: proc(ctx: RequestContext; req: Req;
+                  stream: DataStream): Future[void]): Future[void] {.async.} =
+  ## The pipeline of a streaming data entry around its handler (module
+  ## documentation, "streaming data entries").
+  let pre = await routePrelude[Req](ctx, spec)
+  if not pre.ok:
+    return
+  let stream = DataStream(ctx: ctx, spec: spec, contentType: "application/octet-stream")
+  try:
+    await handler(ctx, pre.req, stream)
+  except CatchableError as e:
+    if stream.committed:
+      # The headers are sent: no status can be answered any more.  The
+      # server terminates the response and logs the error.
+      raise e
+    ctx.failBeforeCommit(e, pre.before)
+    return
+  if ctx.response.isRedirect and not stream.committed:
+    stream.pending.setLen(0)
+    ctx.applyCachePolicy(ctx.responseCachePolicy)
+    return
+  if not stream.committed:
+    stream.commitHeaders()
+  stream.emit(flush = false)
 
 proc runAny*(ctx: RequestContext; spec: RouteSpec;
              handler: proc(ctx: RequestContext): Future[void]): Future[void] {.async.} =

@@ -39,6 +39,14 @@
 ## (fails the vacuity guard), and the response left uncommitted at the first
 ## flush on such a host (fails the commit-point and after-commit tests).
 ##
+## The streaming data entries (`sEvents`, "Streaming Data Entries") are
+## run the same way: the first flush commits with the entry's policy and
+## the stream's content type and no page hook, data or tail; before it the
+## pipeline answers, after it errors propagate; `unsentBytes` is the queued
+## bytes plus what a host writer holds (a writer of this test that holds
+## everything it is given, the one mock: it stands for a client that reads
+## nothing, which an in-process host has no other way to show).
+##
 ## No mocks: the dispatch, the handlers and the gate socket are real; the
 ## only thing absent is the server, which is the case under test.  No
 ## timing bounds: every wait is for an event, with a deadline that only
@@ -46,7 +54,7 @@
 
 import std/[unittest, asyncdispatch, asyncnet, net, json, strutils]
 import isonim/routing/[manifest, route_dispatch]
-import isonim/server/context
+import isonim/server/[context, response_body]
 import isonim/ssr/markers
 import streaming_app
 
@@ -62,7 +70,8 @@ proc recordRefusal(ctx: RequestContext; requested, kept: CachePolicy) =
 
 proc installHooks() =
   serverHooks = ServerHooks(onCachePolicyRefused: recordRefusal,
-                            pageHeaders: streamingPageHeaders)
+                            pageHeaders: streamingPageHeaders,
+                            mappedExceptions: mappedStreamingExceptions())
 
 proc newCtx(target: string; headers: seq[(string, string)] = @[];
             hydration = true): RequestContext =
@@ -272,3 +281,107 @@ suite "test_manifest_streaming_page_buffered":
     for name in ["Cache-Control", "Vary"]:
       check whole.response.header(name) == streamed.response.header(name)
     check pageData(whole.responseBody) == pageData(streamed.responseBody)
+
+# --------------------------------------------------------------------------
+# Streaming data entries (isonim-routing-server-functions.md, "Streaming
+# Data Entries"), on the same writerless host.
+# --------------------------------------------------------------------------
+
+type CountingWriter = ref object
+  ## A host writer that holds what it is given until the test says the
+  ## client read it: `unsentBytes` must report it.
+  held: int
+  sent: string
+  flushes: int
+
+proc writerOf(w: CountingWriter): ResponseBody =
+  proc write(data: openArray[char]) =
+    for c in data: w.sent.add c
+    w.held += data.len
+  proc flush() = inc w.flushes
+  proc unsent(): int = w.held
+  newResponseBody(write, flush, unsent)
+
+proc events(body: string): seq[(string, string)] =
+  for rec in body.split("\n\n"):
+    if rec.len == 0: continue
+    var name, data = ""
+    for line in rec.split('\n'):
+      if line.startsWith("event: "): name = line[7 .. ^1]
+      elif line.startsWith("data: "): data = line[6 .. ^1]
+    result.add (name, data)
+
+const noStore = cacheHeaders(cpPrivateNoStore)
+
+suite "test_manifest_streaming_data_buffered":
+  test "vacuity guard: a writerless host gets the events in order, committed at the first flush with the entry's policy":
+    let (ctx, err) = serve("/stream/e/1")
+    check ctx.bodyWriter.isNil
+    check err.isNil
+    check ctx.response.committed
+    check ctx.response.contentType == "text/event-stream"
+    check ctx.response.header("X-Accel-Buffering") == "no"
+    check ctx.response.header("Cache-Control") == revalidate[0][1]
+    check ctx.response.header("X-Page-Hook") == ""
+    let ev = events(ctx.responseBody)
+    check ev.len == 5
+    check ev[0] == ("open", "1")
+    check ev[1] == ("n", "1 gate=- unsent=0")
+    check ev[4] == ("end", "1")
+    check pageDataScriptId notin ctx.responseBody
+    check bootstrapMarker notin ctx.responseBody
+
+  test "unsentBytes is the queued bytes plus what the host's writer holds":
+    let ctx = newCtx("/stream/e/1")
+    let w = CountingWriter()
+    ctx.setBodyWriter(w.writerOf())
+    check serve(ctx).isNil
+    let ev = events(w.sent)
+    # Each `n` reports what the writer held before it was written: the
+    # earlier records, none of them read by the "client".
+    check ev[1][1] == "1 gate=- unsent=" & $("event: open\ndata: 1\n\n".len)
+    let before3 = w.sent.find("event: n\ndata: 3")
+    check ev[3][1] == "3 gate=- unsent=" & $before3
+    check w.flushes >= 4
+    check ctx.bodyWriter.unsentBytes == w.held
+
+  test "a per-response policy set before the first flush is the committed one; after it setCachePolicy is refused, a header setter raises":
+    let (early, err1) = serve("/stream/e/2")
+    check err1.isNil
+    check early.response.header("X-Early-Override") == "true"
+    check early.response.header("Cache-Control") == noStore[0][1]
+    let before = refusals.len
+    let (late, err2) = serve("/stream/e/4")
+    check err2.isNil
+    let ev = events(late.responseBody)
+    check ("late-override", "false") in ev
+    check ("late-header", "ResponseCommittedError") in ev
+    check late.response.header("Cache-Control") == revalidate[0][1]
+    check late.response.header("X-Late") == ""
+    check refusals.len == before + 1
+
+  test "before the first flush: RouteNotFound is the 404, a mapped exception its status, with none of the events":
+    for (id, status) in [(3, 404), (8, 503)]:
+      let (ctx, err) = serve("/stream/e/" & $id)
+      check err.isNil
+      check ctx.response.status == status
+      check not ctx.response.committed
+      check ctx.response.contentType == "application/json"
+      check "leaked" notin ctx.responseBody
+
+  test "after the first flush an error propagates; a redirect is answered without a body and its flush raises":
+    let (ctx, err) = serve("/stream/e/6")
+    check not err.isNil
+    check ctx.response.committed
+    let (redir, err2) = serve("/stream/e/7")
+    check err2.isNil
+    check redir.response.status == 302
+    check redir.responseBody.len == 0
+    check redir.response.header("X-Flush-Refused") == "ValueError"
+
+  test "a stream that never flushes is answered whole with its content type":
+    let (ctx, err) = serve("/stream/e/5")
+    check err.isNil
+    check not ctx.response.committed
+    check ctx.response.contentType == "text/event-stream"
+    check events(ctx.responseBody).len == 5
