@@ -47,12 +47,12 @@ for mutation in ['history','kind','relative','state','location','holing']:
         path=tmp/'src/isonim/core/private/replay_reads.nim';code=path.read_text()
         if mutation=='history':
             path=tmp/'src/isonim/core/nondet.nim';code=path.read_text()
-            old='''      if currentClock.isReadReplay:
-        let selected = currentClock
-        let owner = prepareReadReplayNavigation(selected)'''
-            new='''      if false and currentClock.isReadReplay:
-        let selected = currentClock
-        let owner = prepareReadReplayNavigation(selected)'''
+            old='''        if currentClock.isReadReplay:
+          let selected = currentClock
+          let owner = prepareReadReplayNavigation(selected)'''
+            new='''        if false and currentClock.isReadReplay:
+          let selected = currentClock
+          let owner = prepareReadReplayNavigation(selected)'''
             assert code.count(old)==2;code=code.replace(old,new)
         elif mutation=='kind':
             path=tmp/'src/isonim/core/nondet.nim';code=path.read_text()
@@ -81,5 +81,9 @@ for mutation in ['history','kind','relative','state','location','holing']:
             old='url:o.holeText(u,o.currentSensitiveValues(window,sensitive))';new='url:u'
             assert code.count(old)==1;code=code.replace(old,new)
         path.write_text(code)
+        # Optional exclusive receipts preserve the actual mutated inputs before
+        # compilation; construction or compilation failures cannot count as a kill.
+        if env.get('REPLAY_NAV_MUTATION_RECEIPTS'):
+            shutil.copytree(tmp,Path(env['REPLAY_NAV_MUTATION_RECEIPTS'])/mutation)
         output=compile('replay-navigation-inverse-'+mutation,source=tmp/'src',fixture=fixtures/'replay_navigation.nim')
         run(output,native,REPLAY_NAV_INVERSE=mutation,REPLAY_NAV_RECEIPT=str(root/'build'/('replay-navigation-inverse-'+mutation+'.json')))
