@@ -17,9 +17,10 @@
 #                  staleReason (client_context.nim) without its navigation
 #                  branch: the response whose navigation changed after its
 #                  body was read is applied.
-#   body-abort     rawBrowserFetch (nondet.nim) treating only an abort that
-#                  rejects fetch() as a drop: an abort while the body is
-#                  read reaches the caller as an exception.
+#   body-abort     projectRpcResponseRaw (core/private/rpc_http.nim)
+#                  treating only an abort that rejects fetch() as a drop:
+#                  an abort while the body is read reaches the caller as
+#                  an exception.
 #   canonical-first
 #                  the manifest dispatch running the canonicalization hook
 #                  before authentication: the generated
@@ -70,6 +71,31 @@ run_spec() {
       --reporter=line --grep "${grep}" >"${log}" 2>&1)
 }
 
+# A failure count alone can accept a wait that never reached an assertion.
+# Native body-read AbortError is intentional in body-abort; test/transport
+# timeouts, browser crashes and launch/navigation failures are never catches.
+require_semantic_failure() {
+  python3 - "$1" <<'PY_CHECK'
+import re, sys
+text = re.sub(r"\x1b\[[0-9;]*[A-Za-z]", "", open(sys.argv[1]).read())
+if re.search(r"TimeoutError|Test timeout|timed out|Target[^\n]*closed|Page crashed|page\.goto:|browserType\.launch:", text, re.I):
+    sys.exit("mutant rejected: timeout, crash or fixture failure is not a semantic catch\n" + text)
+PY_CHECK
+}
+
+require_stale_value_failures() {
+  # Require every failure to name the actual forbidden value assertion.
+  python3 - "$1" "$2" "$3" <<'PY_CHECK'
+import re, sys
+text = re.sub(r"\x1b\[[0-9;]*[A-Za-z]", "", open(sys.argv[1]).read())
+count, value = int(sys.argv[2]), sys.argv[3]
+message = "Error: stale response must not change the applied value"
+received = re.findall(r'^\s*Received:\s*"([^"\n]*)"\s*$', text, re.M)
+if text.count(message) != count or received != [value] * count:
+    sys.exit("mutant rejected: expected direct stale-value assertion failures\n" + text)
+PY_CHECK
+}
+
 caught=0
 missed=0
 
@@ -98,6 +124,7 @@ if run_spec "${WORK}/sync-rpc.log" "concurrent request" \
   echo "MISSED sync-rpc: the concurrency test passed against the mutant"
   missed=$((missed + 1))
 else
+  require_semantic_failure "${WORK}/sync-rpc.log"
   grep -q "1 failed" "${WORK}/sync-rpc.log" && grep -q "fastDone" "${WORK}/sync-rpc.log" ||
     { cat "${WORK}/sync-rpc.log"; exit 1; }
   echo "caught sync-rpc: the concurrency test failed at" \
@@ -122,7 +149,9 @@ if run_spec "${WORK}/no-generation.log" "reaches the client and is dropped" \
   echo "MISSED no-generation: the stale responses were dropped anyway"
   missed=$((missed + 1))
 else
+  require_semantic_failure "${WORK}/no-generation.log"
   grep -q "2 failed" "${WORK}/no-generation.log" || { cat "${WORK}/no-generation.log"; exit 1; }
+  require_stale_value_failures "${WORK}/no-generation.log" 2 stale
   echo "caught no-generation: account and incarnation cases failed (stale responses applied)"
   caught=$((caught + 1))
 fi
@@ -154,8 +183,10 @@ if run_spec "${WORK}/no-navigation-generation.log" "after the body is read" \
   echo "MISSED no-navigation-generation: the stale response was dropped anyway"
   missed=$((missed + 1))
 else
+  require_semantic_failure "${WORK}/no-navigation-generation.log"
   grep -q "1 failed" "${WORK}/no-navigation-generation.log" ||
     { cat "${WORK}/no-navigation-generation.log"; exit 1; }
+  require_stale_value_failures "${WORK}/no-navigation-generation.log" 1 late-nav
   echo "caught no-navigation-generation: the response whose navigation changed" \
     "after its body was read was applied"
   caught=$((caught + 1))
@@ -168,13 +199,13 @@ run_spec "${WORK}/no-navigation-generation-control.log" \
     cat "${WORK}/no-navigation-generation-control.log"; exit 1; }
 
 # --- body-abort --------------------------------------------------------------
-client_mutant body-abort isonim/core/nondet.nim \
-  '    `result` = fetch(`url`, init)
+client_mutant body-abort isonim/core/private/rpc_http.nim \
+  '    `result` = `pending`
       .then(function (r) {
         return r.text().then(function (t) { return {status: r.status, text: t}; });
       })
       .catch(function (e) {' \
-  '    `result` = fetch(`url`, init)
+  '    `result` = `pending`
       .then(function (r) {
         return r.text().then(function (t) { return {status: r.status, text: t}; });
       }, function (e) {'
@@ -183,6 +214,7 @@ if run_spec "${WORK}/body-abort.log" "while the body is read" \
   echo "MISSED body-abort: the abort during the body read was dropped anyway"
   missed=$((missed + 1))
 else
+  require_semantic_failure "${WORK}/body-abort.log"
   grep -q "1 failed" "${WORK}/body-abort.log" && grep -q "AbortError" "${WORK}/body-abort.log" ||
     { cat "${WORK}/body-abort.log"; exit 1; }
   echo "caught body-abort: the abort during the body read surfaced as an AbortError"
@@ -224,6 +256,7 @@ if ISONIM_NGINX_MODULE="${WORK}/canonical-first/ngx_http_isonim_module.so" \
   echo "MISSED canonical-first: the generated policy tests passed"
   missed=$((missed + 1))
 else
+  require_semantic_failure "${WORK}/canonical-first.log"
   grep -q "pcAuthBeforeCanonical" "${WORK}/canonical-first.log" ||
     { cat "${WORK}/canonical-first.log"; exit 1; }
   # Only the canonicalized entry may fail (its pcAuth/pcRole requests are the
@@ -254,6 +287,7 @@ if SPEC_PROJECT=ssr-hydration run_spec "${WORK}/no-data-hk.log" "preserves SSR c
   echo "MISSED no-data-hk: the identity check passed without hydration keys"
   missed=$((missed + 1))
 else
+  require_semantic_failure "${WORK}/no-data-hk.log"
   grep -q "2 failed" "${WORK}/no-data-hk.log" && grep -q "unmarked" "${WORK}/no-data-hk.log" ||
     { cat "${WORK}/no-data-hk.log"; exit 1; }
   echo "caught no-data-hk: the hydrated nodes were not the server's (both SSR modes)"
@@ -276,6 +310,7 @@ if SPEC_PROJECT=ssr-hydration run_spec "${WORK}/redispatch-replay.log" "event re
   echo "MISSED redispatch-replay: the replayed click was applied once anyway"
   missed=$((missed + 1))
 else
+  require_semantic_failure "${WORK}/redispatch-replay.log"
   grep -q "2 failed" "${WORK}/redispatch-replay.log" ||
     { cat "${WORK}/redispatch-replay.log"; exit 1; }
   grep -q "hydrationCheckboxReads" "${WORK}/redispatch-replay.log" ||

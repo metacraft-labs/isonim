@@ -107,12 +107,30 @@ async function state(page: Page): Promise<State> {
 
 async function expectUnchanged(page: Page, before: State) {
   const after = await state(page);
-  expect(after.value).toBe(before.value);
+  expect(after.value, "stale response must not change the applied value").toBe(before.value);
   expect(after.effectRuns).toBe(before.effectRuns);
   expect(after.cacheSize).toBe(before.cacheSize);
   expect(after.storage).toBe(before.storage);
   expect(await page.locator("#value").textContent()).toBe(before.value);
   return after;
+}
+
+// A correctly dropped call deliberately never settles. Observe its real drop
+// hook OR an actual forbidden application/error, so deleting the generation
+// guard reaches the unchanged-state assertions instead of timing out on a
+// drop that the mutant suppressed. No synthetic completion or timeout tuning.
+async function waitForDropOrApplication(page: Page, before: State) {
+  await page.waitForFunction((before) => {
+    const current = window.fx.state();
+    return current.dropped !== before.dropped ||
+      current.value !== before.value ||
+      current.effectRuns !== before.effectRuns ||
+      current.cacheSize !== before.cacheSize ||
+      window.localStorage.getItem("fx.value") !== before.storage ||
+      document.querySelector("#value")?.textContent !== before.value ||
+      window.__fxErrors.length > 0;
+  }, before);
+  expect(await page.evaluate(() => window.__fxErrors)).toEqual([]);
 }
 
 test.beforeEach(async ({ page }) => {
@@ -132,18 +150,22 @@ for (const c of [
   },
 ]) {
   test(`${c.name}: the delayed response reaches the client and is dropped`, async ({ page }) => {
+    const errors: string[] = [];
+    page.on("pageerror", (e) => errors.push(String(e)));
+    await page.evaluate(() => { window.__fxErrors = []; });
     const before = await state(page);
     const sent = page.waitForRequest(delayed("/api/v1/delayed"));
     const arrived = page.waitForResponse(delayed("/api/v1/delayed"));
     await page.evaluate(() => {
-      window.fx.load(800, "stale", "account");
+      window.fx.load(800, "stale", "account").catch((e: unknown) => window.__fxErrors.push(String(e)));
     });
     expect((await sent).headers()["x-isonim-context"]).toBe("inc-1:0");
     await page.evaluate(c.change);
     const resp = await arrived;
     expect(resp.status()).toBe(200);
     expect(await resp.json()).toEqual({ value: "stale" });
-    await page.waitForFunction((n) => window.fx.state().dropped > n, before.dropped);
+    await waitForDropOrApplication(page, before);
+    expect(errors).toEqual([]);
     const after = await expectUnchanged(page, before);
     expect(after.dropped).toBe(before.dropped + 1);
     expect(after.dropReason).toBe(c.reason);
@@ -217,6 +239,9 @@ test("navigation after the body is read: only the generation check drops it", as
   });
   await page.goto("/");
   await page.waitForFunction(() => window.fxReady === true);
+  const errors: string[] = [];
+  page.on("pageerror", (e) => errors.push(String(e)));
+  await page.evaluate(() => { window.__fxErrors = []; });
   const before = await state(page);
   const navBefore = await page.evaluate(() => window.fx.state().navigationGeneration);
   const arrived = page.waitForResponse(delayed("/api/v1/delayed-nav"));
@@ -226,13 +251,14 @@ test("navigation after the body is read: only the generation check drops it", as
   });
   await page.evaluate(() => {
     window.__navigateAfterBody = "/api/v1/delayed-nav";
-    window.fx.load(100, "late-nav", "navigation");
+    window.fx.load(100, "late-nav", "navigation").catch((e: unknown) => window.__fxErrors.push(String(e)));
   });
   const resp = await arrived;
   expect(resp.status()).toBe(200);
   expect(await resp.json()).toEqual({ value: "late-nav" });
   expect(await resp.finished()).toBeNull(); // completed, not aborted
-  await page.waitForFunction((n) => window.fx.state().dropped > n, before.dropped);
+  await waitForDropOrApplication(page, before);
+  expect(errors).toEqual([]);
   expect(failed).toBe(false);
   expect(await page.evaluate(() => window.__navigateAfterBody)).toBeNull(); // it ran
   expect(await page.evaluate(() => window.fx.state().navigationGeneration)).toBe(navBefore + 1);
