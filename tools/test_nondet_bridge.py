@@ -39,7 +39,7 @@ with tempfile.TemporaryDirectory(prefix='bridge-restoration-') as temporary:
     needle='  elif currentBackendHook == nil: install(currentClock)\n'
     assert text.count(needle)==1;text=text.replace(needle,'')
     needle='if currentBackendHook == nil: installBridge()\n'
-    assert text.count(needle)==1;text=text.replace(needle,'')
+    assert text.count(needle)==1;text=text.replace(needle,'discard\n')
     source.write_text(text)
     copied=tmp/fixture.name;shutil.copyfile(fixture,copied)
     shutil.copyfile(fixture.parent/'nondet_bridge_bootstrap.nim',tmp/'nondet_bridge_bootstrap.nim')
