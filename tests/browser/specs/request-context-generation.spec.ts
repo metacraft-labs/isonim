@@ -159,7 +159,7 @@ for (const c of [
     await page.evaluate(() => {
       window.fx.load(800, "stale", "account").catch((e: unknown) => window.__fxErrors.push(String(e)));
     });
-    expect((await sent).headers()["x-isonim-context"]).toBe("inc-1:0");
+    expect((await sent).headers()["isonim-context"]).toBe("inc-1:0");
     await page.evaluate(c.change);
     const resp = await arrived;
     expect(resp.status()).toBe(200);

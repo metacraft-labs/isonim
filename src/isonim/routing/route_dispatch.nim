@@ -24,8 +24,9 @@
 ## Manifest".  Four parts of it live here:
 ##
 ## * **JSON variants of a page** (`json = true`): a `.json` suffix on the
-##   last path parameter is removed before decoding and the hook
-##   (`pvJsonSuffix`); without it, `Accept` decides after the hook
+##   last path parameter, when the pattern ends in one, is removed before
+##   decoding and the hook (`pvJsonSuffix`); without it, `Accept` decides
+##   after the hook
 ##   (`pvJsonAccept`, `prefersJson`).  A JSON answer is `Page.data` as JSON;
 ##   every 2xx answer of such a page has `Vary` naming `Accept`;
 ## * **the per-response cache policy**: the response starts with the
@@ -222,7 +223,7 @@ proc takeJsonSuffix(ctx: RequestContext; spec: RouteSpec) =
   ## For a page with a JSON variant: removes `.json` from the last path
   ## parameter and records `pvJsonSuffix`.
   ctx.pageVariant = pvHtml
-  if spec.kind != rkPage or not spec.json:
+  if spec.kind != rkPage or not spec.json or not jsonSuffixApplies(spec.path):
     return
   let names = patternParams(spec.path)
   if names.len == 0:

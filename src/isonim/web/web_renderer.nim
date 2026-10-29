@@ -78,6 +78,20 @@ proc appendChild*(r: WebRenderer; parent: Node, child: Node) =
     return
   dom_api.appendChild(parent, child)
 
+proc appendRawHtml*(r: WebRenderer; parent: Element; html: string) =
+  ## `raw <html>` in a `ui(r):` block: appends the nodes `html` parses to
+  ## (trusted markup only: sanitized content an application stored, never
+  ## a member's raw text). While `hydrate` runs and `parent` is an adopted
+  ## server element, the server's nodes for the same markup are kept in
+  ## place instead (`hydrationAppendRaw`), so the fragment's elements keep
+  ## their identity; markup that differs is a counted mismatch, and the
+  ## client's nodes replace the server's.
+  noteOp(boSetInnerHtml, 1, html)
+  if isHydrating() and hydrationAppendRaw(Node(parent), cstring(html)):
+    return
+  {.emit: ["""var t = document.createElement('template'); t.innerHTML = """, cstring(html),
+           """; """, parent, """.appendChild(t.content);"""].}
+
 # ---------------------------------------------------------------------------
 # Attributes
 # ---------------------------------------------------------------------------

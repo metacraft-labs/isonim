@@ -8,22 +8,27 @@ import {spawnSync} from 'node:child_process';
 import assert from 'node:assert/strict';
 const work=await mkdtemp(join(tmpdir(),'rpc-projection-inverses-'));
 const native=`    let init = buildRpcRequestInitRaw(rawBackendAccess, httpMethod, body, csrf,
-      context, contentType, signal)
+      context, contentType, signal, extra)
     let pending = neHttp.fetchBrowserResponseRaw(rawBackendAccess, url, init)
     projectRpcResponseRaw(rawBackendAccess, pending, signal)`;
 const mutations=[
  ['promise-executor','isonim/core/nondet.nim',native,`    result = newPromise proc(resolve: proc(value: JsObject)) =
       let init = buildRpcRequestInitRaw(rawBackendAccess, httpMethod, body, csrf,
-        context, contentType, signal)
+        context, contentType, signal, extra)
       let pending = neHttp.fetchBrowserResponseRaw(rawBackendAccess, url, init)
       let projected = projectRpcResponseRaw(rawBackendAccess, pending, signal)
       {.emit: "\u0060resolve\u0060(\u0060projected\u0060);".}`,'RPC init/fetch throws synchronously with original identity'],
- ['extra-continuation','isonim/core/private/rpc_http.nim','      });','      }).then(function(value) { return value; });','RPC exact projected native chain return identity'],
+ ['extra-continuation','isonim/core/private/rpc_http.nim','\n      });','\n      }).then(function(value) { return value; });','RPC exact projected native chain return identity'],
  ['extra-body-continuation','isonim/core/private/rpc_http.nim','return r.text().then(function (t)','return r.text().then(function (t) { return t; }).then(function (t)','immutable RPC pre-extraction outcome and Promise-turn oracle'],
  ['abort-signal','isonim/core/private/rpc_http.nim',' || (`signal` && `signal`.aborted)','','RPC exact status classification'],
  ['error-string','isonim/core/private/rpc_http.nim','String(e)','String(e && e.message || e)','RPC original String(error) projection'],
  ['empty-body','isonim/core/private/rpc_http.nim','`body` !== null','`body` !== null && `body` !== ""','RPC nil versus explicit empty body'],
- ['header-order','isonim/core/private/rpc_http.nim','{"X-CSRF-Token": `csrf`, "X-Isonim-Context": `context`}','{"X-Isonim-Context": `context`, "X-CSRF-Token": `csrf`}','RPC original header insertion order'],
+ ['header-order','isonim/core/private/rpc_http.nim','{"X-CSRF-Token": `csrf`, "Isonim-Context": `context`}','{"Isonim-Context": `context`, "X-CSRF-Token": `csrf`}','RPC original header insertion order'],
+ // The context hint must not be sent under the edge-stripped X-Isonim-* name.
+ ['old-context-header','isonim/core/private/rpc_http.nim','"Isonim-Context": `context`','"X-Isonim-Context": `context`','RPC original header insertion order'],
+ ['extra-dropped','isonim/core/private/rpc_http.nim','    if (`extra`) for (var k in `extra`) headers[k] = `extra`[k];\n','','RPC original header insertion order'],
+ ['retry-after-dropped','isonim/core/private/rpc_http.nim','retryAfter: r.headers.get("Retry-After") || ""','retryAfter: ""','RPC Retry-After projection'],
+ ['commit-dropped','isonim/core/private/rpc_http.nim','commit: r.headers.get("Isonim-Commit") || ""','commit: ""','RPC Isonim-Commit projection'],
 ];
 for(const [name,relative,old,replacement,diagnostic] of mutations) {
  const dir=join(work,name);await cp('src',join(dir,'src'),{recursive:true});await mkdir(join(dir,'tests'));

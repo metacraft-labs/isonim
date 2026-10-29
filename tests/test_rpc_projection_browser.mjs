@@ -24,6 +24,6 @@ try {
   return actual;
  },{fixture,modes:rpcModes,source:rpcSample.toString()});
  if(process.env.CAPTURE_RPC_PROJECTION_ORACLE)await writeFile(process.env.CAPTURE_RPC_PROJECTION_ORACLE,JSON.stringify(actual,null,2)+'\n');
- else assert.deepEqual(actual,JSON.parse(await readFile('tests/oracles/rpc_projection_chromium_a40b666.json','utf8')),'immutable RPC pre-extraction outcome and Promise-turn oracle');
+ else assert.deepEqual(actual,JSON.parse(await readFile('tests/oracles/rpc_projection_chromium_isonim_context_headers.json','utf8')),'immutable RPC pre-extraction outcome and Promise-turn oracle');
  console.log('PASS Chromium native RPC projection '+browser.version());
 }finally{await browser.close();}

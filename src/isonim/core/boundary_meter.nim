@@ -166,7 +166,10 @@ var meter*: BoundaryMeter
 # about the boundary rather than an unfairness in the instrument.
 
 when defined(js):
-  {.emit: """
+  when not defined(isonimNoBoundaryMeter):
+    # The codec's JS half; `-d:isonimNoBoundaryMeter` (noteOp a no-op)
+    # leaves it out of the bundle.
+    {.emit: """
 var isonimBM_enc = new TextEncoder();
 var isonimBM_dec = new TextDecoder('utf-8');
 var isonimBM_buf = new Uint8Array(1 << 16);
@@ -290,7 +293,14 @@ proc totalCrossings*(m: BoundaryMeter): int =
 proc nowNs(): int64 {.inline.} =
   (getMonoTime() - MonoTime()).inNanoseconds
 
-proc noteOp*(op: BoundaryOp; handles: int; strs: varargs[string]) =
+when defined(isonimNoBoundaryMeter):
+  template noteOp*(op: BoundaryOp; handles: int; strs: varargs[string]) =
+    ## `-d:isonimNoBoundaryMeter`: the meter compiled out, for a production
+    ## bundle whose size is budgeted (no renderer operation is recorded, and
+    ## `meterEnabled` has no effect).
+    discard
+else:
+ proc noteOp*(op: BoundaryOp; handles: int; strs: varargs[string]) =
   ## Record one renderer operation.
   ##
   ## Returns immediately when the meter is off, which is what makes the

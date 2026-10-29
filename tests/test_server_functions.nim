@@ -44,6 +44,11 @@ proc whoAmI(ctx: RequestContext; suffix: string): Future[string]
 proc boom(): Future[int] {.server.} =
   raise newException(ValueError, "boom")
 
+proc retried(tag: string): Future[int] {.server.} =
+  ## The JS suite's resend cases: its Node server answers by `tag`
+  ## (a 503 with or without `Retry-After`, then 200), never this body.
+  return tag.len
+
 proc subscribe(email: string): Future[bool] {.action(target = "/thanks").} =
   return email.contains('@')
 
@@ -139,6 +144,24 @@ when not defined(js):
       check not r.ok
       check "csrfNone is only valid for safe methods" in r.output
 
+    proc nimJs(file, flags: string): tuple[ok: bool, output: string] =
+      let src = currentSourcePath().parentDir.parentDir / "src"
+      let (output, code) = execCmdEx("nim js --compileOnly --hints:off -d:nimStringHash2 " & flags & " --path:" &
+        quoteShell(src) & " --out:" & quoteShell(getTempDir() / "isonim_json_decode_int64.js") & " " &
+        quoteShell(fixtures / file))
+      (code == 0, output)
+
+    test "a --jsbigint64:off client refuses an int64 field (a string is exact)":
+      let r = nimJs("json_decode_int64.nim", "--jsbigint64:off")
+      check not r.ok
+      check "is not exact in a --jsbigint64:off build" in r.output
+      let s = nimJs("json_decode_int64.nim", "--jsbigint64:off -d:asString")
+      check s.ok
+      if not s.ok: echo s.output
+      let b = nimJs("json_decode_int64.nim", "--jsbigint64:on")
+      check b.ok
+      if not b.ok: echo b.output
+
     test "negative control: a well-formed server function compiles":
       let r = nimCheck("server_fn_ok.nim")
       check r.ok
@@ -164,11 +187,36 @@ else:
       const args = body ? JSON.parse(body) : {};
       const name = req.url.split("/").pop();
       let out, status = 200;
+      // `retried`: the resend cases, per `args.tag` (rpc_client.nim: one
+      // resend, with the same key, after a 503 whose Retry-After is
+      // delta-seconds within 0..60).
+      const tries = globalThis.__tries ??= {};
+      if (name === "retried") {
+        const n = tries[args.tag] = (tries[args.tag] ?? 0) + 1;
+        globalThis.__received[globalThis.__received.length - 1].at = Date.now();
+        const retryAfter = {after1: "1", after0: "0", always: "0", toolong: "61",
+                            date: "Wed, 21 Oct 2026 07:28:00 GMT"}[args.tag];
+        if (args.tag === "always" || n === 1) {
+          const h = {"Content-Type": "application/json"};
+          if (retryAfter !== undefined) h["Retry-After"] = retryAfter;
+          res.writeHead(503, h);
+          res.end(JSON.stringify({error: "unavailable"}));
+          return;
+        }
+        res.writeHead(200, {"Content-Type": "application/json"});
+        res.end(JSON.stringify(n));
+        return;
+      }
       if (name === "add") out = args.a + args.b;
       else if (name === "makePoint") out = {x: args.x, y: args.y};
       else if (name === "greet") out = "Hello, " + args.name + "!";
       else { status = 500; out = {error: "internal"}; }
-      res.writeHead(status, {"Content-Type": "application/json"});
+      const hdrs = {"Content-Type": "application/json"};
+      // Commit positions (read-your-writes): `add` commits at 0/16B3748,
+      // `greet` reports an older one, which the client must not adopt.
+      if (name === "add") hdrs["Isonim-Commit"] = "cell-1:0/16B3748";
+      if (name === "greet") hdrs["Isonim-Commit"] = "cell-1:0/16B0000";
+      res.writeHead(status, hdrs);
       res.end(JSON.stringify(out));
     });
   });
@@ -201,12 +249,34 @@ else:
     doAssert $r0.method.to(cstring) == "POST"
     doAssert $r0.url.to(cstring) == "/api/test_server_functions/add"
     doAssert $r0.headers["x-csrf-token"].to(cstring) == "tok-123"
-    doAssert $r0.headers["x-isonim-context"].to(cstring) == "inc-1:0"
+    doAssert $r0.headers["isonim-context"].to(cstring) == "inc-1:0"
     doAssert $r0.headers["content-type"].to(cstring) == "application/json"
     doAssert parseJson($r0.body.to(cstring)) == %*{"a": 2, "b": 3}
 
+    doAssert r0.headers["isonim-after"].isUndefined   # no write answered yet
+
     doAssert (await makePoint(7, 8)) == Point(x: 7, y: 8)
+    # The write's `Isonim-Commit` comes back as `Isonim-After`.
+    doAssert $received(1).headers["isonim-after"].to(cstring) == "cell-1:0/16B3748"
     doAssert (await greet("JS")) == "Hello, JS!"
+    discard await add(1, 1)
+    # `greet` answered an older position of the same cell: still the newest.
+    doAssert $received(3).headers["isonim-after"].to(cstring) == "cell-1:0/16B3748"
+    # A new account generation forgets the position.
+    bumpAccountGeneration()
+    doAssert (await makePoint(1, 2)) == Point(x: 1, y: 2)
+    doAssert received(4).headers["isonim-after"].isUndefined
+    # The window is 60 s on the page's clock; a malformed position is ignored.
+    noteCommit("cell-2:A/1", 1000.0)
+    doAssert afterHeaderValue(1000.0 + 59_999.0) == "cell-2:A/1"
+    doAssert afterHeaderValue(1000.0 + 60_000.0) == ""
+    noteCommit("cell-2:A/1", 2000.0)
+    noteCommit("cell-2:not-an-lsn", 2000.0)
+    doAssert afterHeaderValue(2000.0) == "cell-2:A/1"
+    noteCommit("cell-2:9/FFFFFFFF", 2000.0)      # older than A/1
+    doAssert afterHeaderValue(2000.0) == "cell-2:A/1"
+    noteCommit("cell-2:A/2", 2000.0)
+    doAssert afterHeaderValue(2000.0) == "cell-2:A/2"
 
     # A non-2xx answer rejects with RpcError.
     var failed = false
@@ -218,6 +288,36 @@ else:
       doAssert "internal" in e.body
     doAssert failed
 
+    # A write answered 503 with `Retry-After` is resent once, with its key,
+    # no earlier than the delay; anything else is not resent.
+    proc attempts(tag: string): seq[JsObject] =
+      var all: seq[JsObject]
+      {.emit: [all, " = globalThis.__received.filter(r => r.url.endsWith('/retried') && JSON.parse(r.body).tag === ", cstring(tag), ");"].}
+      all
+    doAssert (await retried("after1")) == 2
+    let a1 = attempts("after1")
+    doAssert a1.len == 2
+    let key1 = $a1[0].headers["idempotency-key"].to(cstring)
+    doAssert key1.len == 36                       # a UUID
+    doAssert $a1[1].headers["idempotency-key"].to(cstring) == key1
+    # Date.now() is whole milliseconds: a wait of >= 1000 ms reads >= 999.
+    let gap = a1[1].at.to(float) - a1[0].at.to(float)
+    doAssert gap >= 999.0, "the resend did not wait for Retry-After: " & $gap & " ms"
+    doAssert (await retried("after0")) == 2
+    doAssert attempts("after0").len == 2
+    for tag in ["noheader", "toolong", "date", "always"]:
+      var status = 0
+      try:
+        discard await retried(tag)
+      except RpcError as e:
+        status = e.status
+      doAssert status == 503, tag
+      doAssert attempts(tag).len == (if tag == "always": 2 else: 1), tag
+    doAssert $attempts("always")[1].headers["idempotency-key"].to(cstring) ==
+      $attempts("always")[0].headers["idempotency-key"].to(cstring)
+    # Another write draws another key.
+    doAssert $attempts("after0")[0].headers["idempotency-key"].to(cstring) != key1
+
     # The context argument is not sent.
     doAssert whoAmIUrl == "/api/test_server_functions/whoAmI"
 
@@ -225,7 +325,7 @@ else:
     # (The needle is built at run time so that this check is not itself an
     # occurrence.)
     doAssert ("XMLHttp" & "Request") notin $ownSource()
-    echo "[OK] server functions over fetch (JS): 6 checks"
+    echo "[OK] server functions over fetch (JS): 6 checks, the commit position sent back, and the 503 resend"
     {.emit: "globalThis.__server.close();".}
 
   discard main()

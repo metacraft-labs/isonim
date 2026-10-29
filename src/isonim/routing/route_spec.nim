@@ -58,6 +58,14 @@ proc patternParams*(pattern: string): seq[string] =
     if seg.len > 1 and seg[0] == ':':
       result.add seg[1 .. ^1]
 
+proc jsonSuffixApplies*(pattern: string): bool =
+  ## Whether a page with a JSON variant also answers it for a `.json`
+  ## suffix: only when its pattern ends in a `:param` segment, which the
+  ## suffix goes on. A page whose pattern ends otherwise (`/latest`,
+  ## `/u/:username/summary`) answers its JSON variant by `Accept` alone.
+  let segs = pattern.split('/')
+  segs.len > 0 and segs[^1].len > 1 and segs[^1][0] == ':'
+
 proc encodePathSegment*(s: string): string =
   ## Percent-encodes one path segment (RFC 3986 unreserved characters are
   ## kept).
@@ -97,10 +105,10 @@ proc fieldValues*[T](req: T): seq[(string, string)] =
     else:
       result.add((name, paramText(value)))
 
-proc buildPath*[T](pattern: string; req: T): string =
-  ## The path of `pattern` with each `:param` replaced by the request's
-  ## field of that name.
-  let values = fieldValues(req)
+proc buildPathFrom*(pattern: string; values: openArray[(string, string)]): string =
+  ## The path of `pattern` with each `:param` replaced by the value of that
+  ## name. Not generic, so a client bundle carries it once, however many
+  ## request types it builds paths for (`buildPath`).
   for seg in pattern.split('/'):
     if seg.len == 0:
       continue
@@ -120,12 +128,22 @@ proc buildPath*[T](pattern: string; req: T): string =
   if result.len == 0:
     result = "/"
 
-proc queryString*[T](req: T; exclude: openArray[string]): string =
-  ## The request's fields other than `exclude` as a query string (no `?`).
-  for (k, v) in fieldValues(req):
+proc buildPath*[T](pattern: string; req: T): string =
+  ## The path of `pattern` with each `:param` replaced by the request's
+  ## field of that name.
+  buildPathFrom(pattern, fieldValues(req))
+
+proc queryStringFrom*(values: openArray[(string, string)];
+                      exclude: openArray[string]): string =
+  ## `values` other than `exclude` as a query string (no `?`).
+  for (k, v) in values:
     if k notin exclude:
       if result.len > 0: result.add '&'
       result.add encodeQueryComponent(k) & "=" & encodeQueryComponent(v)
+
+proc queryString*[T](req: T; exclude: openArray[string]): string =
+  ## The request's fields other than `exclude` as a query string (no `?`).
+  queryStringFrom(fieldValues(req), exclude)
 
 proc bodyJson*[T](req: T; exclude: openArray[string]): JsonNode =
   ## The request's fields other than `exclude` as a JSON object.
@@ -179,7 +197,10 @@ proc sampleBody*[T](pattern: string): JsonNode =
   var dummy: T
   for name, value in dummy.fieldPairs:
     if name notin pathNames:
-      when value is Option:
+      # An `Option` and a `seq` may be left out (route_dispatch.nim), and a
+      # form cannot carry a list, so neither is in the sample (the no-JS
+      # form test posts this body form-encoded).
+      when value is Option or value is seq:
         discard
       elif value is enum:
         result[name] = %($low(typeof(value)))

@@ -70,9 +70,30 @@ const
   csrfHeaderName* = "X-CSRF-Token"
   csrfFieldName* = "_csrf"
   anonCsrfCookieName* = "__Host-Anon-CSRF"
-  contextHeaderName* = "X-Isonim-Context"
+  contextHeaderName* = "Isonim-Context"
     ## `<incarnation_id>:<account_generation>` on every request a generated
     ## client sends; echoed on the response (URL-Schema.md §5.4).
+  afterHeaderName* = "Isonim-After"
+    ## `<cell_id>:<lsn>`: the newest commit position the client received
+    ## (`commitHeaderName`) in the last 60 s, on every request a generated
+    ## client sends (URL-Schema.md §5.4; IsoNim-Forum.md §3.8.5,
+    ## "Read-your-writes").
+  commitHeaderName* = "Isonim-Commit"
+    ## `<cell_id>:<lsn>` on a successful write's response: the position at
+    ## or after the write's commit, which the client sends back as
+    ## `afterHeaderName`.
+    ##
+    ## THE NAMES. These are client hints, not platform headers: a platform
+    ## edge removes every inbound `X-Isonim-*` header (isonim-platform-
+    ## control-plane.md §5.3.1, FLOW-4), so a client header in that prefix
+    ## never reaches the application. They carry no `X-` prefix (RFC 6648).
+    ##
+    ## UNTRUSTED. The client sets both request headers, so neither grants
+    ## anything: `Isonim-Context` only lets the server refuse a write made
+    ## under a stale incarnation (409 `context_stale`), and `Isonim-After`
+    ## only lets it wait for, or route a read to, a commit position. Every
+    ## authorization decision is the session's, the CSRF token's and the
+    ## route's, whatever the hints say.
 
 template csrfExempt*(reason: static string): CsrfPolicy =
   ## A CSRF exemption.  `reason` must name one of `csrfExemptions`; any

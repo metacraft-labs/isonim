@@ -170,18 +170,19 @@ proc genServerFn(prc: NimNode; options: seq[NimNode]; isAction: bool): NimNode =
   var publicProc = prc.copyNimTree()
   if defined(js):
     # The browser stub: POST the arguments, await the typed result.
-    var argsExpr: NimNode
-    if argNames.len == 0:
-      argsExpr = newCall(ident"newJObject")
-    else:
-      var table = newNimNode(nnkTableConstr)
-      for n in argNames:
-        table.add newColonExpr(newLit($n), n)
-      argsExpr = newCall(ident"%*", table)
+    # The arguments as a JS object serialized by the browser
+    # (json_decode.nim's `toJsAny`), not through a `JsonNode`.
+    let objSym = genSym(nskLet, "args")
+    var build = newStmtList(newLetStmt(objSym, newCall(ident"newJsObject")))
+    for n in argNames:
+      build.add newAssignment(nnkBracketExpr.newTree(objSym, newCall(ident"cstring", newLit($n))),
+                              newCall(ident"toJsAny", n))
+    build.add newCall(ident"jsonStringify", objSym)
+    let argsExpr = nnkBlockExpr.newTree(newEmptyNode(), build)
     var body = newStmtList()
     if ctxParam != nil:
       body.add newNimNode(nnkDiscardStmt).add(ctxParam)
-    body.add newCall(newNimNode(nnkBracketExpr).add(ident"rpcCall", valueType),
+    body.add newCall(newNimNode(nnkBracketExpr).add(ident"rpcCallText", valueType),
       urlConst, argsExpr, opts.contextScope)
     publicProc.body = body
     publicProc.pragma = (if keptPragmas.len > 0: keptPragmas else: newEmptyNode())

@@ -177,10 +177,12 @@ suite "nondeterminism boundaries":
     b.script("viewport", @[%*{"x": 0, "y": 0, "width": 800, "height": 600}])
     b.script("measure", @[%*{"x": 1, "y": 2, "width": 3, "height": 4}])
     b.script("env", @[%*{"language": "bg"}])
+    b.script("randomUuid", @[%"00000000-0000-4000-8000-000000000001"])
     check nondet.now().ticks == 0
     check wallNow().toUnixFloat() == 123.5
     check nondet.random() == 7
     check randomFloat() == 0.25
+    check randomUuid() == "00000000-0000-4000-8000-000000000001"
     check storageGet("key") == "value"
     storageSet("key", "new")
     check b.storage["key"] == "new"
@@ -486,7 +488,7 @@ when defined(js):
       doAssert req.body == "payload"
       doAssert req.headers == @[
         HttpHeader(name: "X-CSRF-Token", value: "csrf"),
-        HttpHeader(name: "X-Isonim-Context", value: "ctx"),
+        HttpHeader(name: "Isonim-Context", value: "ctx"),
         HttpHeader(name: "Content-Type", value: "text/plain")]
       newCompletedFuture(HttpResponse(status: 202, body: "scripted-rpc"))
     let rpc = await browserFetch("POST", "/rpc-script", "payload", "csrf", "ctx", "text/plain", nil)

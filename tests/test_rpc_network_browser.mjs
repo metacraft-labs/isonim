@@ -13,7 +13,7 @@ const server=createServer(async(req,res)=>{
  if(u.pathname==='/fixture.js'){res.setHeader('Content-Type','text/javascript');res.end(fixture);return;}
  let body='';for await(const chunk of req)body+=chunk;
  const id=u.searchParams.get('id');
- requests.push({id,method:req.method,body,csrf:req.headers['x-csrf-token'],context:req.headers['x-isonim-context'],type:req.headers['content-type']});
+ requests.push({id,method:req.method,body,csrf:req.headers['x-csrf-token'],context:req.headers['isonim-context'],oldContext:req.headers['x-isonim-context'],type:req.headers['content-type']});
  // The browser may natively retry a reused connection closed before headers.
  // A released head failure remains a failed endpoint, including that retry;
  // no application retry or transport replacement is installed by this test.
@@ -21,7 +21,7 @@ const server=createServer(async(req,res)=>{
  if(u.pathname==='/head'||u.pathname==='/body'){
   slots.set(id,res);
   if(u.pathname==='/body'){res.writeHead(207,{'Content-Type':'text/plain'});res.flushHeaders();res.write('first-');}
- }else{res.writeHead(207,{'Content-Type':'text/plain'});res.end('actual:'+body);}
+ }else{res.writeHead(207,{'Content-Type':'text/plain','Retry-After':'3','Isonim-Commit':'0/16B3750'});res.end('actual:'+body);}
 });
 await new Promise(r=>server.listen(0,'127.0.0.1',r));
 const base='http://127.0.0.1:'+server.address().port;
@@ -36,10 +36,10 @@ try{
    const id=path+'-body-'+String(body);
    const done=await page.evaluate(async({path,body,id})=>{
     rpcProbe.reset();const result=await rpcProbe[path]('POST','/ready?id='+id,body,'csrf','context','text/x-rpc',null);
-    return {status:result.status,text:result.text,dispatches:rpcProbe.count()};
+    return {status:result.status,text:result.text,retryAfter:result.retryAfter,commit:result.commit,dispatches:rpcProbe.count()};
    },{path,body,id});
-   assert.deepEqual(done,{status:207,text:'actual:'+(body??''),dispatches:path==='facade'?1:0});
-   assert.deepEqual(requests.filter(r=>r.id===id),[{id,method:'POST',body:body??'',csrf:'csrf',context:'context',type:'text/x-rpc'}],'RPC real request body/headers/count');
+   assert.deepEqual(done,{status:207,text:'actual:'+(body??''),retryAfter:'3',commit:'0/16B3750',dispatches:path==='facade'?1:0},'RPC real response and Retry-After/Isonim-Commit projection');
+   assert.deepEqual(requests.filter(r=>r.id===id),[{id,method:'POST',body:body??'',csrf:'csrf',context:'context',oldContext:undefined,type:'text/x-rpc'}],'RPC real request body/headers/count');
   }
   for(const phase of ['head','body'])for(const finish of ['complete','abort','fail']){
    const id=path+'-'+phase+'-'+finish;
@@ -68,7 +68,7 @@ try{
    const received=requests.filter(r=>r.id===id);
    if(phase==='head'&&finish==='fail'){
     assert(received.length>0,'RPC native head failure reached server');
-    for(const request of received)assert.deepEqual(request,{id,method:'POST',body:'payload',csrf:'csrf',context:'context',type:'text/x-rpc'},'native connection retries preserve request');
+    for(const request of received)assert.deepEqual(request,{id,method:'POST',body:'payload',csrf:'csrf',context:'context',oldContext:undefined,type:'text/x-rpc'},'native connection retries preserve request');
    }else assert.equal(received.length,1,'RPC actual native request count');
    if(finish==='abort')res.destroy();
   }

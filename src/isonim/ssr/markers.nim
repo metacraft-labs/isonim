@@ -58,16 +58,29 @@ proc resetHydrationCounter*() =
   ## Restarts the element count of the current render.
   hydrationCounter = 0
 
-proc beginHydratableRender*(renderId = ""): HydrationKeyScope =
-  ## Starts a hydratable render: keys on, counted from 1, prefixed with
-  ## `renderId`. Returns the state to give back to `endHydratableRender`.
+proc beginHydratableRender*(renderId = ""; firstKey = 1): HydrationKeyScope =
+  ## Starts a hydratable render: keys on, counted from `firstKey` (1 for a
+  ## render of its own), prefixed with `renderId`. Returns the state to give
+  ## back to `endHydratableRender`.
+  ##
+  ## `firstKey` continues the count of an earlier render of the same page:
+  ## a page written in parts (a streamed document shell, then its body after
+  ## the data reads) whose client hydrates it as one tree, so the parts'
+  ## keys must be one sequence. The earlier part's `hydrationKeysUsed`
+  ## plus one is where the next part starts.
+  doAssert firstKey >= 1, "hydration keys count from 1"
   result = HydrationKeyScope(counter: hydrationCounter, active: hydrationActive,
                              prefix: hydrationPrefix)
   when defined(isonimStableIds):
     result.stableScope = beginStableRender()
-  hydrationCounter = 0
+  hydrationCounter = firstKey - 1
   hydrationActive = true
   hydrationPrefix = renderId
+
+proc hydrationKeysUsed*(): int =
+  ## The last key number the current hydratable render handed out (0 when
+  ## none): read before `endHydratableRender`.
+  hydrationCounter
 
 proc endHydratableRender*(saved: HydrationKeyScope) =
   ## Ends the hydratable render begun by `beginHydratableRender`.
@@ -81,6 +94,15 @@ template withHydrationKeys*(renderId: string; body: untyped): untyped =
   ## Runs `body` as a hydratable render (for a renderer that produces its
   ## page without `renderToString` and friends).
   let savedKeyScope = beginHydratableRender(renderId)
+  try:
+    body
+  finally:
+    endHydratableRender(savedKeyScope)
+
+template withHydrationKeysFrom*(renderId: string; firstKey: int; body: untyped): untyped =
+  ## `withHydrationKeys` whose count starts at `firstKey`
+  ## (`beginHydratableRender`: a later part of a page written in parts).
+  let savedKeyScope = beginHydratableRender(renderId, firstKey)
   try:
     body
   finally:

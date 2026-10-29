@@ -34,7 +34,7 @@ type
     signatureHeaders*: proc(t: RoutePolicyTest): seq[(string, string)]
       ## The headers that make `t` a validly signed request.
     contextHeader*: string
-      ## The `X-Isonim-Context` a generated client would send
+      ## The `Isonim-Context` a generated client would send
       ## (`<incarnation>:<account generation>`); "" sends none.
     cacheOverridePath*: proc(t: RoutePolicyTest): string
       ## For `pcCacheOverride`: the path (and query) of a request to

@@ -4,14 +4,20 @@
 // their native methods unchanged, witnessing actual returned identity without
 // adding continuations. These are not transport acceptance: the HTTP browser
 // suite separately exercises genuinely delayed local I/O and native aborts.
+// Every constructed Response carries `Retry-After` and `Isonim-Commit` (absent
+// only in 'no-response-headers'), so the projection of both is observed; the
+// 'extra-headers' mode passes rpc_client.nim's added request headers.
 import assert from 'node:assert/strict';
 export const rpcModes = ['ready', 'nil-body', 'empty-body', 'no-content-type',
   'falsy-signal', 'throw', 'init-throw', 'head-error', 'head-primitive',
   'head-abort', 'signal-abort', 'body-error', 'body-abort', 'text-throw',
-  'projection-error', 'error-string-throw'];
+  'projection-error', 'error-string-throw', 'extra-headers', 'no-response-headers'];
 
 export async function rpcSample(probe, path, mode) {
   probe.reset();
+  // Inside the function: Chromium evaluates its source text on its own.
+  const extraHeaders = {'Isonim-After': 'cell-a:0/16B3748', 'Idempotency-Key': 'key-1'};
+  const responseHeaders = {'Retry-After': '7', 'Isonim-Commit': '0/16B3750'};
   const trace = [], calls = [];
   let reads = 0, completions = 0, projected, outcome, nativeBodyFailure;
   const token = Error('native token');
@@ -20,17 +26,21 @@ export async function rpcSample(probe, path, mode) {
   const signal = mode === 'falsy-signal' ? null : controller.signal;
   const body = mode === 'nil-body' ? null : mode === 'empty-body' ? '' : 'payload';
   const contentType = mode === 'no-content-type' || mode === 'init-throw' ? '' : 'text/x-rpc';
+  const extra = mode === 'extra-headers' ? extraHeaders : null;
   const nativeFetch = globalThis.fetch;
   globalThis.fetch = (url, init) => {
     assert.equal(init.signal, signal || undefined, 'RPC supplied signal identity');
     assert.equal(Object.getPrototypeOf(init.headers), Object.prototype, 'RPC ordinary header object');
     assert.equal(Object.hasOwn(init, 'body'), body !== null, 'RPC nil versus explicit empty body');
     if (body !== null) assert.equal(init.body, body, 'RPC body identity');
-    assert.deepEqual(Object.keys(init.headers), contentType === '' ?
-      ['X-CSRF-Token', 'X-Isonim-Context'] :
-      ['X-CSRF-Token', 'X-Isonim-Context', 'Content-Type'], 'RPC original header insertion order');
+    assert.deepEqual(Object.keys(init.headers), (contentType === '' ?
+      ['X-CSRF-Token', 'Isonim-Context'] :
+      ['X-CSRF-Token', 'Isonim-Context', 'Content-Type']).concat(extra ? Object.keys(extra) : []),
+      'RPC original header insertion order');
     assert.equal(init.headers['X-CSRF-Token'], 'csrf', 'RPC CSRF value');
-    assert.equal(init.headers['X-Isonim-Context'], 'context', 'RPC context value');
+    assert.equal(init.headers['Isonim-Context'], 'context', 'RPC context value');
+    if (extra) for (const k of Object.keys(extra))
+      assert.equal(init.headers[k], extra[k], 'RPC extra header value');
     if (contentType !== '') assert.equal(init.headers['Content-Type'], contentType, 'RPC content type value');
     assert.equal(init.credentials, 'same-origin', 'RPC same-origin credentials');
     assert.equal(init.method, 'POST', 'RPC method identity');
@@ -49,7 +59,8 @@ export async function rpcSample(probe, path, mode) {
     else {
       const error = mode === 'body-abort' ? abort : token;
       const response = new Response(mode === 'body-error' || mode === 'body-abort' ?
-        new ReadableStream({start(c) {c.error(error);}}) : 'ready', {status:207});
+        new ReadableStream({start(c) {c.error(error);}}) : 'ready',
+        {status:207, headers: mode === 'no-response-headers' ? {} : responseHeaders});
       if(mode === 'projection-error') Object.defineProperty(response,'status',{get() {throw token;}});
       const text = response.text;
       response.text = function() {
@@ -78,7 +89,7 @@ export async function rpcSample(probe, path, mode) {
   if (mode === 'init-throw') Object.defineProperty(Object.prototype,'body',{
     configurable:true, set() {throw token;}});
   let pending, caught;
-  try { pending = probe[path]('POST','http://example.invalid/rpc',body,'csrf','context',contentType,signal); trace.push('returned'); }
+  try { pending = probe[path]('POST','http://example.invalid/rpc',body,'csrf','context',contentType,signal,extra); trace.push('returned'); }
   catch(error) {caught=error;trace.push('threw');}
   finally {if(mode === 'init-throw')delete Object.prototype.body;globalThis.fetch=nativeFetch;}
   const sync = mode === 'throw' || mode === 'init-throw';
@@ -91,7 +102,8 @@ export async function rpcSample(probe, path, mode) {
     assert.equal(caught,undefined,'RPC ordinary call returns normally');
     assert(pending instanceof Promise,'RPC native Promise return');
     assert.equal(pending === projected,path !== 'facade','RPC exact projected native chain return identity');
-    pending.then(value => {completions++; trace.push('fulfilled');outcome={status:value.status,text:value.text};},
+    pending.then(value => {completions++; trace.push('fulfilled');
+      outcome={status:value.status,text:value.text,retryAfter:value.retryAfter,commit:value.commit};},
       error => {completions++;trace.push('rejected');outcome={same:error===token};});
     await pending.catch(()=>{});
     for(let i=0;i<10;i++)await Promise.resolve();
@@ -108,9 +120,12 @@ export async function rpcSample(probe, path, mode) {
       assert.equal(outcome.status,isAbort ? -1 : isFailure ? 0 : 207,'RPC exact status classification');
       assert.equal(outcome.text,mode === 'head-primitive' ? '0' :
         isAbort || isFailure ? String(error) : 'ready','RPC original String(error) projection '+mode+' actual='+outcome.text);
+      const headed = !isAbort && !isFailure && mode !== 'no-response-headers';
+      assert.equal(outcome.retryAfter,headed ? responseHeaders['Retry-After'] : '','RPC Retry-After projection '+mode);
+      assert.equal(outcome.commit,headed ? responseHeaders['Isonim-Commit'] : '','RPC Isonim-Commit projection '+mode);
     }
   }
   assert.equal(calls.length,mode === 'init-throw' ? 0 : 1,'RPC native request count');
-  assert.equal(reads,['ready','nil-body','empty-body','no-content-type','falsy-signal','body-error','body-abort','text-throw','projection-error'].includes(mode) ? 1 : 0,'RPC exactly one body consumption');
+  assert.equal(reads,['ready','nil-body','empty-body','no-content-type','falsy-signal','body-error','body-abort','text-throw','projection-error','extra-headers','no-response-headers'].includes(mode) ? 1 : 0,'RPC exactly one body consumption');
   return {trace,calls,reads,completions,dispatches:probe.count(),outcome:outcome ?? null,sync};
 }

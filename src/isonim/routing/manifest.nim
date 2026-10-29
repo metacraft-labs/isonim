@@ -38,7 +38,7 @@
 ## | `prefix` | `false` | the pattern also matches every path below it |
 ## | `progressive` | `false` (`true` for `action`) | a `POST` a no-JS form may submit |
 ## | `target` | `""` | where a progressive entry's no-JS form is redirected (303); "" = the same-origin `Referer`, else `/` |
-## | `json` | `false` | pages only: the page also answers `Page.data` as JSON, for a `.json` suffix on its last path parameter (the pattern must end in one) or an `Accept` preferring `application/json` |
+## | `json` | `false` | pages only: the page also answers `Page.data` as JSON, for an `Accept` preferring `application/json` and, when its pattern ends in a path parameter, for a `.json` suffix on it |
 ## | `cacheOverrides` | `[]` | `[cpPrivateNoStore, ...]`: the policies the canonicalization hook or the handler may give one response instead of `cache` (`ctx.setCachePolicy`); each must be at least as strict as `cache` (a compile-time error otherwise); not on `rpc` |
 ## | `stream` | `false` | pages only: a streaming page, whose handler is `proc(ctx, req, page: PageStream): Future[Resp]`: it flushes its shell, then reads and streams the rest, and returns the page's data (route_dispatch.nim, `runStreamRoute`) |
 ##
@@ -62,8 +62,12 @@
 ##
 ## **Generated, JS target.**  `<name>Call(req): Future[Resp]` for each data
 ## and mutation entry (fetch, CSRF and context headers, stale responses
-## dropped: route_client.nim); `<name>Navigate(req)` and
-## `<name>Link(parent, req, text)` for each page.
+## dropped, an idempotency key and one resend of a write answered `503`
+## with `Retry-After`: route_client.nim, rpc_client.nim);
+## `<name>Navigate(req)` and `<name>Link(parent, req, text)` for each page;
+## `<name>Data(req): Future[Resp]` for each page with `json = true` (its
+## JSON variant, by `Accept`, navigation-scoped: what a client router
+## renders a page from without loading its document).
 
 import std/[macros, strutils, sets]
 import route_spec, navigate, client_context
@@ -199,10 +203,6 @@ proc parseEntry(stmt: NimNode): EntryDef =
     if result.kind != rkPage:
       error(nameStr & ": `json` applies to page entries only (a data " &
         "entry answers JSON already)", stmt)
-    let segs = result.path.split('/')
-    if segs.len == 0 or segs[^1].len < 2 or segs[^1][0] != ':':
-      error(nameStr & ": `json` needs a pattern that ends in a :param " &
-        "segment (the `.json` suffix goes on it), got " & result.path, stmt)
   if result.stream and result.kind != rkPage:
     error(nameStr & ": `stream` applies to page entries only (a data " &
       "entry answers JSON, which is never streamed)", stmt)
@@ -462,8 +462,11 @@ macro routeManifest*(enumName: untyped; body: untyped): untyped =
       let m = newLit(e.httpMethod)
       let pat = newLit(e.path)
       let scope = e.contextScope
+      # A template, so a client is compiled only where it is called: a
+      # bundle pays (in size, and in json_decode.nim's checks of its types)
+      # only for the routes it uses.
       jsSide.add quote do:
-        proc `callProc`*(req: `reqT`): Future[`respT`] =
+        template `callProc`*(req: `reqT`): Future[`respT`] =
           callRoute[`reqT`, `respT`](`m`, `pat`, req, `scope`)
     of rkPage:
       let navProc = ident($e.name & "Navigate")
@@ -473,6 +476,14 @@ macro routeManifest*(enumName: untyped; body: untyped): untyped =
           navigate(`pathProc`(req))
         proc `linkProc`*[P](parent: P; req: `reqT`; text: string) =
           Link(parent, `pathProc`(req), text)
+      if e.json:
+        let dataProc = ident($e.name & "Data")
+        let respT = e.respType
+        let pat = newLit(e.path)
+        let scope = e.contextScope
+        jsSide.add quote do:
+          template `dataProc`*(req: `reqT`): Future[`respT`] =
+            callPageData[`reqT`, `respT`](`pat`, req, `scope`)
     else:
       discard
 

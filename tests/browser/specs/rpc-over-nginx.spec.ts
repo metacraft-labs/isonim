@@ -65,7 +65,7 @@ test("async server functions return typed results over POST", async ({ page }) =
   const sent = await req;
   expect(sent.method()).toBe("POST");
   expect(sent.headers()["content-type"]).toBe("application/json");
-  expect(sent.headers()["x-isonim-context"]).toBe("inc-1:0");
+  expect(sent.headers()["isonim-context"]).toBe("inc-1:0");
   expect(sent.headers()["x-csrf-token"]?.length).toBeGreaterThan(40);
   expect(JSON.parse(sent.postData() ?? "")).toEqual({ a: 2, b: 40 });
   expect(await page.evaluate(() => window.fx.describe(2, 3, "pair"))).toEqual({

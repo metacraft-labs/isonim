@@ -2,7 +2,7 @@
 ## silently fall back to browser globals or the network.
 ## Each tagged seam encapsulates platform effects and replaces them with its
 ## specific boundary tag; the casts do not expose RawNondet to callers.
-import std/[times, monotimes, json, tables, random, options]
+import std/[times, monotimes, json, tables, random, options, strutils]
 when not defined(js): import std/sysrand
 when defined(js): import std/jsffi
 when defined(js): import ./private/rpc_http
@@ -16,6 +16,40 @@ import nim_everywhere/http as neHttp
 import nim_everywhere/raw_nondet
 export raw_nondet
 export clock, async_compat
+
+const directNondet = defined(js) and defined(isonimDirectNondet)
+  ## `-d:isonimDirectNondet` (JS target only): the browser seams below call
+  ## the browser directly, without the backend (its clock, scripted reads,
+  ## dispatch sequence, seam coverage and read replay). For a production
+  ## bundle that is never recorded, replayed or scripted and has a size
+  ## budget: the clock and its tables are then not in the bundle. A test that
+  ## scripts the backend builds without it.
+
+when directNondet:
+  when defined(isonimInternalReplayReads):
+    {.error: "-d:isonimDirectNondet bypasses the backend; it cannot replay reads".}
+  {.emit: """
+var isonimDirect = {
+  n: 0, c: new Map(), seq: 0,
+  add: function (cancel) { var id = ++this.n; this.c.set(id, cancel); return id; },
+  at: function (ms, cb) { var self = this, id = ++this.n;
+    var t = setTimeout(function () { self.c.delete(id); cb(); }, ms);
+    this.c.set(id, function () { clearTimeout(t); }); return id; },
+  every: function (ms, cb) { var t = setInterval(cb, ms); return this.add(function () { clearInterval(t); }); },
+  frame: function (cb) { var self = this, id = ++this.n;
+    var t = requestAnimationFrame(function () { self.c.delete(id); cb(); });
+    this.c.set(id, function () { cancelAnimationFrame(t); }); return id; },
+  cancel: function (id) { var f = this.c.get(id); if (f) { this.c.delete(id); f(); } }
+};
+""".}
+  proc directAt(ms: float64; cb: proc()): int {.importjs: "isonimDirect.at(#, #)".}
+  proc directEvery(ms: float64; cb: proc()): int {.importjs: "isonimDirect.every(#, #)".}
+  proc directFrame(cb: proc()): int {.importjs: "isonimDirect.frame(#)".}
+  proc directCancel(id: int) {.importjs: "isonimDirect.cancel(#)".}
+  proc directNow(): float64 {.importjs: "performance.now(@)".}
+  proc directPath(): cstring =
+    {.emit: [result, " = window.location.pathname;"].}
+  proc directHistory(op, url: cstring) {.importjs: "window.history[#](null, '', #)".}
 
 type
   ClockEffect* = object of RootEffect
@@ -31,7 +65,7 @@ type
 const seamTable* = ["now", "wallNow", "scheduleAt", "scheduleEvery",
   "requestFrame", "cancel", "random", "randomFloat", "fetch",
   "storageGet", "storageSet", "cookieGet", "measure", "viewport",
-  "matchMedia", "location", "pushState", "replaceState", "env"]
+  "matchMedia", "location", "pushState", "replaceState", "env", "randomUuid"]
 
 proc install*(b: NondetBackend)
 
@@ -70,11 +104,24 @@ proc read(b: NondetBackend; name: string): JsonNode =
   result = b.reads[name][0]
   b.reads[name].delete(0)
 proc now*(): MonoTime {.tags: [ClockEffect].} =
-  {.cast(tags: []).}:
-    note("now")
-    block:
-      var epoch: MonoTime
-      epoch + initDuration(nanoseconds = int64(backend().now() * 1_000_000))
+  when directNondet:
+    var epoch: MonoTime
+    return epoch + initDuration(nanoseconds = int64(directNow() * 1_000_000))
+  else:
+    {.cast(tags: []).}:
+      note("now")
+      block:
+        var epoch: MonoTime
+        epoch + initDuration(nanoseconds = int64(backend().now() * 1_000_000))
+proc nowMs*(): float64 {.tags: [ClockEffect].} =
+  ## `now()` in milliseconds as a float, without the `MonoTime`/`Duration`
+  ## arithmetic (a size-budgeted bundle's clock reads; the same seam).
+  when directNondet:
+    return directNow()
+  else:
+    {.cast(tags: []).}:
+      note("now")
+      return backend().now()
 proc wallNow*(): Time {.tags: [ClockEffect].} =
   {.cast(tags: []).}:
     note("wallNow")
@@ -86,40 +133,51 @@ proc wallNow*(): Time {.tags: [ClockEffect].} =
 proc scheduleAt*(afterMs: float64; cb: proc()): int {.tags: [ClockEffect].} =
   ## Schedule after a delay, matching nim-everywhere's time facade.
   ## Effects of deferred callbacks belong to their later dispatch slot.
-  {.cast(tags: []).}:
-    note("scheduleAt")
-    let b = backend()
-    inc b.nextHandle
-    let id = b.nextHandle
-    b.seamTimers[id] = b.schedule(proc() =
-      b.seamTimers.del(id)
-      cb(), afterMs)
-    id
-proc cancel*(id: int) {.tags: [ClockEffect].} =
-  {.cast(tags: []).}:
-    note("cancel")
-    let b = backend()
-    if id in b.frameCancels:
-      b.frameCancels[id]()
-      b.frameCancels.del(id)
-    if id in b.seamTimers:
-      b.cancel(b.seamTimers[id])
-      b.seamTimers.del(id)
-proc scheduleEvery*(intervalMs: float64; cb: proc()): int {.tags: [ClockEffect].} =
-  {.cast(tags: []).}:
-    note("scheduleEvery")
-    if intervalMs <= 0: raise newException(ValueError, "interval must be positive")
-    let b = backend()
-    inc b.nextHandle
-    let id = b.nextHandle
-    var arm: proc()
-    arm = proc() =
+  when directNondet:
+    return directAt(afterMs, cb)
+  else:
+    {.cast(tags: []).}:
+      note("scheduleAt")
+      let b = backend()
+      inc b.nextHandle
+      let id = b.nextHandle
       b.seamTimers[id] = b.schedule(proc() =
-        if id notin b.seamTimers: return
-        cb()
-        if id in b.seamTimers: arm(), intervalMs)
-    arm()
-    id
+        b.seamTimers.del(id)
+        cb(), afterMs)
+      id
+proc cancel*(id: int) {.tags: [ClockEffect].} =
+  when directNondet:
+    directCancel(id)
+    return
+  else:
+    {.cast(tags: []).}:
+      note("cancel")
+      let b = backend()
+      if id in b.frameCancels:
+        b.frameCancels[id]()
+        b.frameCancels.del(id)
+      if id in b.seamTimers:
+        b.cancel(b.seamTimers[id])
+        b.seamTimers.del(id)
+proc scheduleEvery*(intervalMs: float64; cb: proc()): int {.tags: [ClockEffect].} =
+  when directNondet:
+    if intervalMs <= 0: raise newException(ValueError, "interval must be positive")
+    return directEvery(intervalMs, cb)
+  else:
+    {.cast(tags: []).}:
+      note("scheduleEvery")
+      if intervalMs <= 0: raise newException(ValueError, "interval must be positive")
+      let b = backend()
+      inc b.nextHandle
+      let id = b.nextHandle
+      var arm: proc()
+      arm = proc() =
+        b.seamTimers[id] = b.schedule(proc() =
+          if id notin b.seamTimers: return
+          cb()
+          if id in b.seamTimers: arm(), intervalMs)
+      arm()
+      id
 when defined(js):
   proc rawFrame(cb: proc(ts: float64)): int {.importjs: "requestAnimationFrame(#)", tags: [RawNondet].}
   proc rawCancelFrame(id: int) {.importjs: "cancelAnimationFrame(#)", tags: [RawNondet].}
@@ -147,9 +205,12 @@ proc requestFrameObservation(cb: proc(observation: FrameObservation)): int =
   scheduleAt(16, proc() = cb((browserTimestamp: none(float64))))
 
 proc requestFrame*(cb: proc()): int {.tags: [ClockEffect].} =
-  {.cast(tags: []).}:
-    note("requestFrame")
-    requestFrameObservation(proc(observation: FrameObservation) = cb())
+  when directNondet:
+    return directFrame(cb)
+  else:
+    {.cast(tags: []).}:
+      note("requestFrame")
+      requestFrameObservation(proc(observation: FrameObservation) = cb())
 proc random*(): uint64 {.tags: [RandomEffect].} =
   {.cast(tags: []).}:
     refuseReadReplay(currentClock, "random")
@@ -174,6 +235,36 @@ proc randomFloat*(): float64 {.tags: [RandomEffect].} =
     else:
       if b.scripted: return b.read("randomFloat").getFloat()
       b.randomState.rand(1.0)
+when defined(js):
+  proc rawRandomUuid(): cstring {.importjs: "crypto.randomUUID()", tags: [RawNondet].}
+proc randomUuid*(): string {.tags: [RandomEffect].} =
+  ## A version 4 UUID from the platform's CSPRNG (RFC 9562 §5.4): the
+  ## browser's `crypto.randomUUID()`, the OS's on native. Unlike `random`,
+  ## it is not drawn from the page's seeded generator, whose 32-bit seed
+  ## makes it unfit for identifiers that must not collide across clients
+  ## (an idempotency key, rpc_client.nim). Scripted backends read it; a read
+  ## replay refuses it, as it refuses `random`.
+  when directNondet:
+    {.cast(tags: []).}:
+      return $rawRandomUuid()
+  else:
+    {.cast(tags: []).}:
+      refuseReadReplay(currentClock, "randomUuid")
+      note("randomUuid")
+      let b = backend()
+      if b.scripted: return b.read("randomUuid").getStr()
+      when defined(js):
+        result = $rawRandomUuid()
+      else:
+        var bytes: array[16, byte]
+        if not urandom(bytes): raise newException(IOError, "cannot draw a UUID")
+        bytes[6] = (bytes[6] and 0x0f) or 0x40
+        bytes[8] = (bytes[8] and 0x3f) or 0x80
+        const hexDigits = "0123456789abcdef"
+        for i, v in bytes:
+          if i in [4, 6, 8, 10]: result.add '-'
+          result.add hexDigits[int(v shr 4)]
+          result.add hexDigits[int(v and 0x0f)]
 when defined(js):
   proc settled[T](future: Future[T]; cb: proc()): Future[T]
       {.importjs: "(function(f,cb){return f.then(function(v){cb();return v;},function(e){cb();throw e;});})(#,#)".}
@@ -282,9 +373,13 @@ proc cookieGet*(): string {.tags: [StorageEffect].} =
     note("cookieGet")
     readValue("cookieGet").getStr()
 proc location*(): string {.tags: [DomEventEffect].} =
-  {.cast(tags: []).}:
-    note("location")
-    readValue("location").getStr()
+  when directNondet:
+    {.cast(tags: []).}:
+      return $directPath()
+  else:
+    {.cast(tags: []).}:
+      note("location")
+      readValue("location").getStr()
 type HistoryObservation = tuple[browserUrl: Option[string]]
 
 proc historyObservation(name, url: string): HistoryObservation =
@@ -299,27 +394,35 @@ proc historyObservation(name, url: string): HistoryObservation =
     raise newException(ValueError, "browser history unavailable on native")
 
 proc pushState*(url: string) {.tags: [DomEventEffect].} =
-  {.cast(tags: []).}:
-    note("pushState")
-    when defined(js) and defined(isonimInternalReplayReads):
-      if currentClock.isReadReplay:
-        let selected = currentClock
-        let owner = prepareReadReplayNavigation(selected)
-        let observed = historyObservation("pushState", url)
-        completeReadReplayNavigation(selected, owner, 1, observed.browserUrl)
-        return
-    discard historyObservation("pushState", url)
+  when directNondet:
+    directHistory("pushState", cstring(url))
+    return
+  else:
+    {.cast(tags: []).}:
+      note("pushState")
+      when defined(js) and defined(isonimInternalReplayReads):
+        if currentClock.isReadReplay:
+          let selected = currentClock
+          let owner = prepareReadReplayNavigation(selected)
+          let observed = historyObservation("pushState", url)
+          completeReadReplayNavigation(selected, owner, 1, observed.browserUrl)
+          return
+      discard historyObservation("pushState", url)
 proc replaceState*(url: string) {.tags: [DomEventEffect].} =
-  {.cast(tags: []).}:
-    note("replaceState")
-    when defined(js) and defined(isonimInternalReplayReads):
-      if currentClock.isReadReplay:
-        let selected = currentClock
-        let owner = prepareReadReplayNavigation(selected)
-        let observed = historyObservation("replaceState", url)
-        completeReadReplayNavigation(selected, owner, 2, observed.browserUrl)
-        return
-    discard historyObservation("replaceState", url)
+  when directNondet:
+    directHistory("replaceState", cstring(url))
+    return
+  else:
+    {.cast(tags: []).}:
+      note("replaceState")
+      when defined(js) and defined(isonimInternalReplayReads):
+        if currentClock.isReadReplay:
+          let selected = currentClock
+          let owner = prepareReadReplayNavigation(selected)
+          let observed = historyObservation("replaceState", url)
+          completeReadReplayNavigation(selected, owner, 2, observed.browserUrl)
+          return
+      discard historyObservation("replaceState", url)
 proc asRect(value: JsonNode): Rect =
   Rect(x: value["x"].getFloat(), y: value["y"].getFloat(), width: value["width"].getFloat(), height: value["height"].getFloat())
 proc viewport*(): Rect {.tags: [LayoutEffect].} =
@@ -357,61 +460,96 @@ proc env*(): JsonNode {.tags: [DomEventEffect].} =
 
 when defined(js):
   proc rawBrowserFetch(httpMethod, url, body: cstring; csrf, context: cstring;
-                contentType: cstring; signal: JsObject): Future[JsObject] {.tags: [RawNondet].} =
-    ## Resolves with `{status, text}`; never rejects.  A network failure is
+                contentType: cstring; signal: JsObject;
+                extra: JsObject = nil): Future[JsObject] {.tags: [RawNondet].} =
+    ## Resolves with `{status, text, retryAfter, commit}` (rpc_http.nim);
+    ## never rejects.  A network failure is
     ## status 0; an abort is status -1 wherever in the chain it lands: before
     ## the response headers (`fetch` rejects) or after them, while the body
     ## is read (`text()` rejects).  The final `catch` covers the whole chain,
     ## so an `AbortError` never reaches the caller as an exception.
     let init = buildRpcRequestInitRaw(rawBackendAccess, httpMethod, body, csrf,
-      context, contentType, signal)
+      context, contentType, signal, extra)
     let pending = neHttp.fetchBrowserResponseRaw(rawBackendAccess, url, init)
     projectRpcResponseRaw(rawBackendAccess, pending, signal)
 
 when defined(js):
-  proc rpcResult(status: int; body: cstring): JsObject
-      {.importjs: "({status:#,text:#})".}
+  proc rpcResult(status: int; body, retryAfter, commit: cstring): JsObject
+      {.importjs: "({status:#,text:#,retryAfter:#,commit:#})".}
   proc scriptedRpc(future: Future[HttpResponse]): Future[JsObject] {.async.} =
+    # The scripted answer carries the same projection as the native one
+    # (rpc_http.nim): `Retry-After` and `Isonim-Commit`, "" when absent.
     let response = await future
-    return rpcResult(response.status, response.body.cstring)
+    var retryAfter, commit = ""
+    for h in response.headers:
+      if h.name.toLowerAscii == "retry-after": retryAfter = h.value
+      elif h.name.toLowerAscii == "isonim-commit": commit = h.value
+    return rpcResult(response.status, response.body.cstring, retryAfter.cstring, commit.cstring)
+  proc extraHeaderPairs(extra: JsObject): seq[(string, string)] =
+    if extra.isNil: return
+    var keys: seq[cstring]
+    {.emit: [keys, " = Object.keys(", extra, ");"].}
+    for k in keys:
+      var v: cstring
+      {.emit: [v, " = String(", extra, "[", k, "]);"].}
+      result.add(($k, $v))
   proc browserFetch*(httpMethod, url, body: cstring; csrf, context: cstring;
-      contentType: cstring; signal: JsObject): Future[JsObject] {.tags: [NetEffect].} =
-    {.cast(tags: []).}:
-      refuseReadReplay(currentClock, "browserFetch")
-      note("fetch")
-      let b = backend()
-      if b.scripted:
-        if b.fetchResponse == nil: raise newException(ValueError, "missing scripted fetch")
-        # Public no-body RPC calls pass nil; the buffered scripted request
-        # represents absence with an empty Nim string, not a nil cstring read.
-        var req = HttpRequest(url: $url, body: (if body == nil: "" else: $body))
-        req.headers = @[
-          HttpHeader(name: "X-CSRF-Token", value: $csrf),
-          HttpHeader(name: "X-Isonim-Context", value: $context)]
-        if contentType != "":
-          req.headers.add(HttpHeader(name: "Content-Type", value: $contentType))
-        for m in HttpMethod:
-          if m.httpMethodName() == $httpMethod: req.httpMethod = m
-        return settled(scriptedRpc(b.fetchResponse(req)), proc() =
-          when defined(isonimRecordable): beginDispatch(b)
-          else: inc b.dispatchSequence)
-      settled(rawBrowserFetch(httpMethod, url, body, csrf, context, contentType, signal),
-        proc() =
-          when defined(isonimRecordable): beginDispatch(b)
-          else: inc b.dispatchSequence)
+      contentType: cstring; signal: JsObject;
+      extra: JsObject = nil): Future[JsObject] {.tags: [NetEffect].} =
+    ## `{status, text, retryAfter, commit}` of one request (rawBrowserFetch);
+    ## `extra` adds request headers (an object of names to values, or nil).
+    when directNondet:
+      {.cast(tags: []).}:
+        return rawBrowserFetch(httpMethod, url, body, csrf, context, contentType, signal, extra)
+    else:
+      {.cast(tags: []).}:
+        refuseReadReplay(currentClock, "browserFetch")
+        note("fetch")
+        let b = backend()
+        if b.scripted:
+          if b.fetchResponse == nil: raise newException(ValueError, "missing scripted fetch")
+          # Public no-body RPC calls pass nil; the buffered scripted request
+          # represents absence with an empty Nim string, not a nil cstring read.
+          var req = HttpRequest(url: $url, body: (if body == nil: "" else: $body))
+          req.headers = @[
+            HttpHeader(name: "X-CSRF-Token", value: $csrf),
+            HttpHeader(name: "Isonim-Context", value: $context)]
+          if contentType != "":
+            req.headers.add(HttpHeader(name: "Content-Type", value: $contentType))
+          for (k, v) in extraHeaderPairs(extra):
+            req.headers.add(HttpHeader(name: k, value: v))
+          for m in HttpMethod:
+            if m.httpMethodName() == $httpMethod: req.httpMethod = m
+          return settled(scriptedRpc(b.fetchResponse(req)), proc() =
+            when defined(isonimRecordable): beginDispatch(b)
+            else: inc b.dispatchSequence)
+        settled(rawBrowserFetch(httpMethod, url, body, csrf, context, contentType, signal, extra),
+          proc() =
+            when defined(isonimRecordable): beginDispatch(b)
+            else: inc b.dispatchSequence)
 
 when defined(js):
   proc hasBrowserWindow(): bool {.importjs: "(typeof window !== 'undefined')".}
   if hasBrowserWindow():
     # Install before application code reads a boundary, and freeze boot
     # environment before navigation or later viewport changes can alter it.
-    discard backend()
-    discard env()
+    # `-d:isonimNoBootEnv` skips the snapshot (a production bundle that
+    # neither records nor replays sessions: the snapshot is the recorder's
+    # input, and parsing and copying it costs a size-budgeted bundle the
+    # JSON tree's code).
+    when not directNondet:
+      discard backend()
+    when not defined(isonimNoBootEnv) and not directNondet:
+      discard env()
 
 # A clock-only bootstrap can select currentClock before importing this module,
 # and native/windowless callers may select one later. Keep a lazy bridge ready
 # without replacing an explicit hook or eagerly allocating/seeding RealClock.
-if currentBackendHook == nil: installBridge()
+# `-d:isonimDirectNondet` leaves the hook unset, as it leaves the backend
+# unselected: its seams never consult the backend, and nim-everywhere's own
+# platform defaults then serve any caller of the hook directly.
+when not directNondet:
+  if currentBackendHook == nil: installBridge()
 
 when defined(js):
   # The listener boundary is typed over the renderer's event object, so core
@@ -497,14 +635,23 @@ when defined(js):
     ## `E` is the event type the handler receives (the web renderer's `Event`);
     ## the handler itself is passed through unchanged, so its identity is the
     ## deduplication key.
-    {.cast(tags: []).}:
-      refuseReadReplay(currentClock, "listen")
-      result = rawListen(node, event.cstring, toJs(handler), capture, proc(): int =
-        # A retained native registration can outlive a backend selection.
+    when directNondet:
+      {.cast(tags: []).}:
+        var sequence = 0
+        return rawListen(node, event.cstring, toJs(handler), capture, proc(): int =
+          inc sequence
+          sequence, proc(): float64 = directNow(),
+          proc(dispose: ListenerDisposer) =
+            if getOwner() != nil: onCleanup(dispose))
+    else:
+      {.cast(tags: []).}:
         refuseReadReplay(currentClock, "listen")
-        let selected = backend()
-        when defined(isonimRecordable): beginDispatch(selected)
-        else: inc selected.dispatchSequence
-        int(selected.dispatchSequence), proc(): float64 = backend().now(),
-        proc(dispose: ListenerDisposer) =
-          if getOwner() != nil: onCleanup(dispose))
+        result = rawListen(node, event.cstring, toJs(handler), capture, proc(): int =
+          # A retained native registration can outlive a backend selection.
+          refuseReadReplay(currentClock, "listen")
+          let selected = backend()
+          when defined(isonimRecordable): beginDispatch(selected)
+          else: inc selected.dispatchSequence
+          int(selected.dispatchSequence), proc(): float64 = backend().now(),
+          proc(dispose: ListenerDisposer) =
+            if getOwner() != nil: onCleanup(dispose))

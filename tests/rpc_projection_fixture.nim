@@ -6,18 +6,18 @@ include ../src/isonim/core/nondet
 proc resetRpc() = install(newRealBackend(1))
 proc rpcDispatches(): int = backend().dispatchSequence.int
 proc facadeRpc(httpMethod, url, body, csrf, context, contentType: cstring;
-    signal: JsObject): Future[JsObject] =
-  browserFetch(httpMethod, url, body, csrf, context, contentType, signal)
+    signal, extra: JsObject): Future[JsObject] =
+  browserFetch(httpMethod, url, body, csrf, context, contentType, signal, extra)
 proc rawRpc(httpMethod, url, body, csrf, context, contentType: cstring;
-    signal: JsObject): Future[JsObject] =
-  rawBrowserFetch(httpMethod, url, body, csrf, context, contentType, signal)
+    signal, extra: JsObject): Future[JsObject] =
+  rawBrowserFetch(httpMethod, url, body, csrf, context, contentType, signal, extra)
 {.emit: "globalThis.rpcProbe = {reset: `resetRpc`, count: `rpcDispatches`, facade: `facadeRpc`, raw: `rawRpc`};".}
 
 when defined(extractedRpcComposition):
   proc composeRpc(httpMethod, url, body, csrf, context, contentType: cstring;
-      signal: JsObject): Future[JsObject] =
+      signal, extra: JsObject): Future[JsObject] =
     let init = buildRpcRequestInitRaw(rawBackendAccess, httpMethod, body, csrf,
-      context, contentType, signal)
+      context, contentType, signal, extra)
     let pending = neHttp.fetchBrowserResponseRaw(rawBackendAccess, url, init)
     projectRpcResponseRaw(rawBackendAccess, pending, signal)
   {.emit: "rpcProbe.composition = `composeRpc`;".}

@@ -190,6 +190,38 @@ proc hydrationAppend*(parent, child: Node): bool =
     {.emit: ["isonimHy.append(", parent, ", ", child, ");"].}
   adopted
 
+proc hydrationAppendRaw*(parent: Node; html: cstring): bool =
+  ## During hydration, places the nodes of a `raw` fragment in `parent`
+  ## when `parent` is an adopted server element: if the server's nodes at
+  ## the cursor are equal (`isEqualNode`) to what `html` parses to, they
+  ## are kept and the cursor moves past them; otherwise the mismatch is
+  ## counted and the parsed nodes go in at the cursor (the server's stale
+  ## ones are removed as unclaimed). Returns false when `parent` is not
+  ## adopted, and the caller appends as usual.
+  var adopted: bool
+  {.emit: [adopted, " = (", parent, " != null && ", parent, ".__isonimHy === true);"].}
+  if not adopted:
+    return false
+  {.emit: ["""
+    var tpl = document.createElement('template');
+    tpl.innerHTML = """, html, """;
+    var fresh = Array.prototype.slice.call(tpl.content.childNodes);
+    var cur = """, parent, """.__isonimHyCursor;
+    if (cur && cur.parentNode !== """, parent, """) cur = null;
+    var n = cur, same = true;
+    for (var i = 0; i < fresh.length; i++) {
+      if (!n || !n.isEqualNode(fresh[i])) { same = false; break; }
+      n = n.nextSibling;
+    }
+    if (same) {
+      """, parent, """.__isonimHyCursor = n;
+    } else {
+      isonimHy.mismatches++;
+      for (var j = 0; j < fresh.length; j++) """, parent, """.insertBefore(fresh[j], cur);
+    }
+  """].}
+  true
+
 proc hydrationMismatches*(): int =
   ## Elements the last `hydrate` could not adopt (no server element with
   ## their key, or one with another tag).

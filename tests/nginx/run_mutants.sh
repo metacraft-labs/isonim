@@ -200,14 +200,12 @@ run_spec "${WORK}/no-navigation-generation-control.log" \
 
 # --- body-abort --------------------------------------------------------------
 client_mutant body-abort isonim/core/private/rpc_http.nim \
-  '    `result` = `pending`
-      .then(function (r) {
-        return r.text().then(function (t) { return {status: r.status, text: t}; });
+  '                  commit: r.headers.get("Isonim-Commit") || ""};
+        });
       })
       .catch(function (e) {' \
-  '    `result` = `pending`
-      .then(function (r) {
-        return r.text().then(function (t) { return {status: r.status, text: t}; });
+  '                  commit: r.headers.get("Isonim-Commit") || ""};
+        });
       }, function (e) {'
 if run_spec "${WORK}/body-abort.log" "while the body is read" \
     ISONIM_FIXTURE_WWW="${WORK}/body-abort/www"; then

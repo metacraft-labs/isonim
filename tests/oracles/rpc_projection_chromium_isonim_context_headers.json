@@ -33,7 +33,7 @@
               "csrf"
             ],
             [
-              "X-Isonim-Context",
+              "Isonim-Context",
               "context"
             ],
             [
@@ -52,7 +52,9 @@
       "dispatches": 1,
       "outcome": {
         "status": 207,
-        "text": "ready"
+        "text": "ready",
+        "retryAfter": "7",
+        "commit": "0/16B3750"
       },
       "sync": false
     },
@@ -88,7 +90,7 @@
               "csrf"
             ],
             [
-              "X-Isonim-Context",
+              "Isonim-Context",
               "context"
             ],
             [
@@ -107,7 +109,9 @@
       "dispatches": 1,
       "outcome": {
         "status": 207,
-        "text": "ready"
+        "text": "ready",
+        "retryAfter": "7",
+        "commit": "0/16B3750"
       },
       "sync": false
     },
@@ -144,7 +148,7 @@
               "csrf"
             ],
             [
-              "X-Isonim-Context",
+              "Isonim-Context",
               "context"
             ],
             [
@@ -163,7 +167,9 @@
       "dispatches": 1,
       "outcome": {
         "status": 207,
-        "text": "ready"
+        "text": "ready",
+        "retryAfter": "7",
+        "commit": "0/16B3750"
       },
       "sync": false
     },
@@ -200,7 +206,7 @@
               "csrf"
             ],
             [
-              "X-Isonim-Context",
+              "Isonim-Context",
               "context"
             ]
           ],
@@ -215,7 +221,9 @@
       "dispatches": 1,
       "outcome": {
         "status": 207,
-        "text": "ready"
+        "text": "ready",
+        "retryAfter": "7",
+        "commit": "0/16B3750"
       },
       "sync": false
     },
@@ -251,7 +259,7 @@
               "csrf"
             ],
             [
-              "X-Isonim-Context",
+              "Isonim-Context",
               "context"
             ],
             [
@@ -270,7 +278,9 @@
       "dispatches": 1,
       "outcome": {
         "status": 207,
-        "text": "ready"
+        "text": "ready",
+        "retryAfter": "7",
+        "commit": "0/16B3750"
       },
       "sync": false
     },
@@ -296,7 +306,7 @@
               "csrf"
             ],
             [
-              "X-Isonim-Context",
+              "Isonim-Context",
               "context"
             ],
             [
@@ -350,7 +360,7 @@
               "csrf"
             ],
             [
-              "X-Isonim-Context",
+              "Isonim-Context",
               "context"
             ],
             [
@@ -369,7 +379,9 @@
       "dispatches": 1,
       "outcome": {
         "status": 0,
-        "text": "Error: native token"
+        "text": "Error: native token",
+        "retryAfter": "",
+        "commit": ""
       },
       "sync": false
     },
@@ -396,7 +408,7 @@
               "csrf"
             ],
             [
-              "X-Isonim-Context",
+              "Isonim-Context",
               "context"
             ],
             [
@@ -415,7 +427,9 @@
       "dispatches": 1,
       "outcome": {
         "status": 0,
-        "text": "0"
+        "text": "0",
+        "retryAfter": "",
+        "commit": ""
       },
       "sync": false
     },
@@ -442,7 +456,7 @@
               "csrf"
             ],
             [
-              "X-Isonim-Context",
+              "Isonim-Context",
               "context"
             ],
             [
@@ -461,7 +475,9 @@
       "dispatches": 1,
       "outcome": {
         "status": -1,
-        "text": "AbortError: native abort"
+        "text": "AbortError: native abort",
+        "retryAfter": "",
+        "commit": ""
       },
       "sync": false
     },
@@ -488,7 +504,7 @@
               "csrf"
             ],
             [
-              "X-Isonim-Context",
+              "Isonim-Context",
               "context"
             ],
             [
@@ -507,7 +523,9 @@
       "dispatches": 1,
       "outcome": {
         "status": -1,
-        "text": "Error: native token"
+        "text": "Error: native token",
+        "retryAfter": "",
+        "commit": ""
       },
       "sync": false
     },
@@ -544,7 +562,7 @@
               "csrf"
             ],
             [
-              "X-Isonim-Context",
+              "Isonim-Context",
               "context"
             ],
             [
@@ -563,7 +581,9 @@
       "dispatches": 1,
       "outcome": {
         "status": 0,
-        "text": "Error: native token"
+        "text": "TypeError: Failed to fetch",
+        "retryAfter": "",
+        "commit": ""
       },
       "sync": false
     },
@@ -600,7 +620,7 @@
               "csrf"
             ],
             [
-              "X-Isonim-Context",
+              "Isonim-Context",
               "context"
             ],
             [
@@ -618,8 +638,10 @@
       "completions": 1,
       "dispatches": 1,
       "outcome": {
-        "status": -1,
-        "text": "AbortError: native abort"
+        "status": 0,
+        "text": "TypeError: Failed to fetch",
+        "retryAfter": "",
+        "commit": ""
       },
       "sync": false
     },
@@ -647,7 +669,7 @@
               "csrf"
             ],
             [
-              "X-Isonim-Context",
+              "Isonim-Context",
               "context"
             ],
             [
@@ -666,7 +688,9 @@
       "dispatches": 1,
       "outcome": {
         "status": 0,
-        "text": "Error: native token"
+        "text": "Error: native token",
+        "retryAfter": "",
+        "commit": ""
       },
       "sync": false
     },
@@ -703,7 +727,7 @@
               "csrf"
             ],
             [
-              "X-Isonim-Context",
+              "Isonim-Context",
               "context"
             ],
             [
@@ -722,7 +746,9 @@
       "dispatches": 1,
       "outcome": {
         "status": 0,
-        "text": "Error: native token"
+        "text": "Error: native token",
+        "retryAfter": "",
+        "commit": ""
       },
       "sync": false
     },
@@ -749,7 +775,7 @@
               "csrf"
             ],
             [
-              "X-Isonim-Context",
+              "Isonim-Context",
               "context"
             ],
             [
@@ -768,6 +794,130 @@
       "dispatches": 1,
       "outcome": {
         "same": true
+      },
+      "sync": false
+    },
+    "extra-headers": {
+      "trace": [
+        "fetch",
+        "returned",
+        "text",
+        "body-ready",
+        "body-turn1",
+        "body-turn2",
+        "body-turn3",
+        "body-turn4",
+        "fulfilled",
+        "body-turn5",
+        "body-turn6",
+        "body-turn7",
+        "body-turn8"
+      ],
+      "calls": [
+        {
+          "url": "http://example.invalid/rpc",
+          "method": "POST",
+          "keys": [
+            "method",
+            "headers",
+            "credentials",
+            "body",
+            "signal"
+          ],
+          "headers": [
+            [
+              "X-CSRF-Token",
+              "csrf"
+            ],
+            [
+              "Isonim-Context",
+              "context"
+            ],
+            [
+              "Content-Type",
+              "text/x-rpc"
+            ],
+            [
+              "Isonim-After",
+              "cell-a:0/16B3748"
+            ],
+            [
+              "Idempotency-Key",
+              "key-1"
+            ]
+          ],
+          "body": "payload",
+          "hasBody": true,
+          "signal": true,
+          "credentials": "same-origin"
+        }
+      ],
+      "reads": 1,
+      "completions": 1,
+      "dispatches": 1,
+      "outcome": {
+        "status": 207,
+        "text": "ready",
+        "retryAfter": "7",
+        "commit": "0/16B3750"
+      },
+      "sync": false
+    },
+    "no-response-headers": {
+      "trace": [
+        "fetch",
+        "returned",
+        "text",
+        "body-ready",
+        "body-turn1",
+        "body-turn2",
+        "body-turn3",
+        "body-turn4",
+        "fulfilled",
+        "body-turn5",
+        "body-turn6",
+        "body-turn7",
+        "body-turn8"
+      ],
+      "calls": [
+        {
+          "url": "http://example.invalid/rpc",
+          "method": "POST",
+          "keys": [
+            "method",
+            "headers",
+            "credentials",
+            "body",
+            "signal"
+          ],
+          "headers": [
+            [
+              "X-CSRF-Token",
+              "csrf"
+            ],
+            [
+              "Isonim-Context",
+              "context"
+            ],
+            [
+              "Content-Type",
+              "text/x-rpc"
+            ]
+          ],
+          "body": "payload",
+          "hasBody": true,
+          "signal": true,
+          "credentials": "same-origin"
+        }
+      ],
+      "reads": 1,
+      "completions": 1,
+      "dispatches": 1,
+      "outcome": {
+        "status": 207,
+        "text": "ready",
+        "retryAfter": "",
+        "commit": ""
       },
       "sync": false
     }
@@ -806,7 +956,7 @@
               "csrf"
             ],
             [
-              "X-Isonim-Context",
+              "Isonim-Context",
               "context"
             ],
             [
@@ -825,7 +975,9 @@
       "dispatches": 0,
       "outcome": {
         "status": 207,
-        "text": "ready"
+        "text": "ready",
+        "retryAfter": "7",
+        "commit": "0/16B3750"
       },
       "sync": false
     },
@@ -861,7 +1013,7 @@
               "csrf"
             ],
             [
-              "X-Isonim-Context",
+              "Isonim-Context",
               "context"
             ],
             [
@@ -880,7 +1032,9 @@
       "dispatches": 0,
       "outcome": {
         "status": 207,
-        "text": "ready"
+        "text": "ready",
+        "retryAfter": "7",
+        "commit": "0/16B3750"
       },
       "sync": false
     },
@@ -917,7 +1071,7 @@
               "csrf"
             ],
             [
-              "X-Isonim-Context",
+              "Isonim-Context",
               "context"
             ],
             [
@@ -936,7 +1090,9 @@
       "dispatches": 0,
       "outcome": {
         "status": 207,
-        "text": "ready"
+        "text": "ready",
+        "retryAfter": "7",
+        "commit": "0/16B3750"
       },
       "sync": false
     },
@@ -973,7 +1129,7 @@
               "csrf"
             ],
             [
-              "X-Isonim-Context",
+              "Isonim-Context",
               "context"
             ]
           ],
@@ -988,7 +1144,9 @@
       "dispatches": 0,
       "outcome": {
         "status": 207,
-        "text": "ready"
+        "text": "ready",
+        "retryAfter": "7",
+        "commit": "0/16B3750"
       },
       "sync": false
     },
@@ -1024,7 +1182,7 @@
               "csrf"
             ],
             [
-              "X-Isonim-Context",
+              "Isonim-Context",
               "context"
             ],
             [
@@ -1043,7 +1201,9 @@
       "dispatches": 0,
       "outcome": {
         "status": 207,
-        "text": "ready"
+        "text": "ready",
+        "retryAfter": "7",
+        "commit": "0/16B3750"
       },
       "sync": false
     },
@@ -1069,7 +1229,7 @@
               "csrf"
             ],
             [
-              "X-Isonim-Context",
+              "Isonim-Context",
               "context"
             ],
             [
@@ -1123,7 +1283,7 @@
               "csrf"
             ],
             [
-              "X-Isonim-Context",
+              "Isonim-Context",
               "context"
             ],
             [
@@ -1142,7 +1302,9 @@
       "dispatches": 0,
       "outcome": {
         "status": 0,
-        "text": "Error: native token"
+        "text": "Error: native token",
+        "retryAfter": "",
+        "commit": ""
       },
       "sync": false
     },
@@ -1169,7 +1331,7 @@
               "csrf"
             ],
             [
-              "X-Isonim-Context",
+              "Isonim-Context",
               "context"
             ],
             [
@@ -1188,7 +1350,9 @@
       "dispatches": 0,
       "outcome": {
         "status": 0,
-        "text": "0"
+        "text": "0",
+        "retryAfter": "",
+        "commit": ""
       },
       "sync": false
     },
@@ -1215,7 +1379,7 @@
               "csrf"
             ],
             [
-              "X-Isonim-Context",
+              "Isonim-Context",
               "context"
             ],
             [
@@ -1234,7 +1398,9 @@
       "dispatches": 0,
       "outcome": {
         "status": -1,
-        "text": "AbortError: native abort"
+        "text": "AbortError: native abort",
+        "retryAfter": "",
+        "commit": ""
       },
       "sync": false
     },
@@ -1261,7 +1427,7 @@
               "csrf"
             ],
             [
-              "X-Isonim-Context",
+              "Isonim-Context",
               "context"
             ],
             [
@@ -1280,7 +1446,9 @@
       "dispatches": 0,
       "outcome": {
         "status": -1,
-        "text": "Error: native token"
+        "text": "Error: native token",
+        "retryAfter": "",
+        "commit": ""
       },
       "sync": false
     },
@@ -1317,7 +1485,7 @@
               "csrf"
             ],
             [
-              "X-Isonim-Context",
+              "Isonim-Context",
               "context"
             ],
             [
@@ -1336,7 +1504,9 @@
       "dispatches": 0,
       "outcome": {
         "status": 0,
-        "text": "Error: native token"
+        "text": "TypeError: Failed to fetch",
+        "retryAfter": "",
+        "commit": ""
       },
       "sync": false
     },
@@ -1373,7 +1543,7 @@
               "csrf"
             ],
             [
-              "X-Isonim-Context",
+              "Isonim-Context",
               "context"
             ],
             [
@@ -1391,8 +1561,10 @@
       "completions": 1,
       "dispatches": 0,
       "outcome": {
-        "status": -1,
-        "text": "AbortError: native abort"
+        "status": 0,
+        "text": "TypeError: Failed to fetch",
+        "retryAfter": "",
+        "commit": ""
       },
       "sync": false
     },
@@ -1420,7 +1592,7 @@
               "csrf"
             ],
             [
-              "X-Isonim-Context",
+              "Isonim-Context",
               "context"
             ],
             [
@@ -1439,7 +1611,9 @@
       "dispatches": 0,
       "outcome": {
         "status": 0,
-        "text": "Error: native token"
+        "text": "Error: native token",
+        "retryAfter": "",
+        "commit": ""
       },
       "sync": false
     },
@@ -1476,7 +1650,7 @@
               "csrf"
             ],
             [
-              "X-Isonim-Context",
+              "Isonim-Context",
               "context"
             ],
             [
@@ -1495,7 +1669,9 @@
       "dispatches": 0,
       "outcome": {
         "status": 0,
-        "text": "Error: native token"
+        "text": "Error: native token",
+        "retryAfter": "",
+        "commit": ""
       },
       "sync": false
     },
@@ -1522,7 +1698,7 @@
               "csrf"
             ],
             [
-              "X-Isonim-Context",
+              "Isonim-Context",
               "context"
             ],
             [
@@ -1541,6 +1717,130 @@
       "dispatches": 0,
       "outcome": {
         "same": true
+      },
+      "sync": false
+    },
+    "extra-headers": {
+      "trace": [
+        "fetch",
+        "returned",
+        "text",
+        "body-ready",
+        "body-turn1",
+        "body-turn2",
+        "body-turn3",
+        "fulfilled",
+        "body-turn4",
+        "body-turn5",
+        "body-turn6",
+        "body-turn7",
+        "body-turn8"
+      ],
+      "calls": [
+        {
+          "url": "http://example.invalid/rpc",
+          "method": "POST",
+          "keys": [
+            "method",
+            "headers",
+            "credentials",
+            "body",
+            "signal"
+          ],
+          "headers": [
+            [
+              "X-CSRF-Token",
+              "csrf"
+            ],
+            [
+              "Isonim-Context",
+              "context"
+            ],
+            [
+              "Content-Type",
+              "text/x-rpc"
+            ],
+            [
+              "Isonim-After",
+              "cell-a:0/16B3748"
+            ],
+            [
+              "Idempotency-Key",
+              "key-1"
+            ]
+          ],
+          "body": "payload",
+          "hasBody": true,
+          "signal": true,
+          "credentials": "same-origin"
+        }
+      ],
+      "reads": 1,
+      "completions": 1,
+      "dispatches": 0,
+      "outcome": {
+        "status": 207,
+        "text": "ready",
+        "retryAfter": "7",
+        "commit": "0/16B3750"
+      },
+      "sync": false
+    },
+    "no-response-headers": {
+      "trace": [
+        "fetch",
+        "returned",
+        "text",
+        "body-ready",
+        "body-turn1",
+        "body-turn2",
+        "body-turn3",
+        "fulfilled",
+        "body-turn4",
+        "body-turn5",
+        "body-turn6",
+        "body-turn7",
+        "body-turn8"
+      ],
+      "calls": [
+        {
+          "url": "http://example.invalid/rpc",
+          "method": "POST",
+          "keys": [
+            "method",
+            "headers",
+            "credentials",
+            "body",
+            "signal"
+          ],
+          "headers": [
+            [
+              "X-CSRF-Token",
+              "csrf"
+            ],
+            [
+              "Isonim-Context",
+              "context"
+            ],
+            [
+              "Content-Type",
+              "text/x-rpc"
+            ]
+          ],
+          "body": "payload",
+          "hasBody": true,
+          "signal": true,
+          "credentials": "same-origin"
+        }
+      ],
+      "reads": 1,
+      "completions": 1,
+      "dispatches": 0,
+      "outcome": {
+        "status": 207,
+        "text": "ready",
+        "retryAfter": "",
+        "commit": ""
       },
       "sync": false
     }

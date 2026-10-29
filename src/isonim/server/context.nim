@@ -19,8 +19,9 @@
 ##   found it (nil when there is none);
 ## * `csrf`: the result of the CSRF verification the server ran before the
 ##   handler (`cvVerified`, `cvSafeMethod`, `cvExempt`, or why it failed);
-## * `clientContext`: the `X-Isonim-Context` header the generated client
-##   sent (URL-Schema.md §5.4);
+## * `clientContext`: the `Isonim-Context` header the generated client
+##   sent, and `clientAfter`, its `Isonim-After` (URL-Schema.md §5.4): both
+##   are client hints that grant nothing (policy.nim, "UNTRUSTED");
 ## * `pathParams`: the parameters the route pattern matched;
 ## * `bodyWriter`: the server's response body writer (`ResponseBody`), when
 ##   the server streams (nil otherwise), and `hydration`: whether the
@@ -93,11 +94,21 @@ else:
       ## hook's `coNotFound` (404, nothing the hook or handler set is kept).
 
     ClientContextHeader* = object
-      ## The parsed `X-Isonim-Context: <incarnation_id>:<account_generation>`.
+      ## The parsed `Isonim-Context: <incarnation_id>:<account_generation>`.
       present*: bool        ## the header was sent
       valid*: bool          ## and parsed
       incarnationId*: string
       accountGeneration*: int
+
+    ClientAfterHeader* = object
+      ## The parsed `Isonim-After: <cell_id>:<lsn>`, the newest commit
+      ## position the client received. A hint for reads (wait for, or read
+      ## from a node that has replayed, this position); it authorizes
+      ## nothing, and a malformed one is ignored (`valid` false).
+      present*: bool        ## the header was sent
+      valid*: bool          ## and parsed
+      cellId*: string
+      lsn*: string          ## PostgreSQL's `pg_lsn` text, `<hex>/<hex>`
 
     RequestContext* = ref object
       request*: SsrRequest
@@ -106,6 +117,7 @@ else:
       sessionResolved*: bool
       csrf*: CsrfVerdict
       clientContext*: ClientContextHeader
+      clientAfter*: ClientAfterHeader
       pathParams*: seq[(string, string)]
       responseBody*: string
         ## The body a handler produced (`write`, `respondJson`); the server
@@ -159,8 +171,14 @@ else:
         ## Without one, every `aSignature` request is refused (401).
       currentIncarnation*: proc(): string
         ## The instance's current incarnation id.  When set, a
-        ## state-changing request whose `X-Isonim-Context` names another
+        ## state-changing request whose `Isonim-Context` names another
         ## incarnation is refused with 409 `context_stale`.
+      resolveIncarnation*: proc(ctx: RequestContext): Future[string]
+        ## The same for a server of many instances: the current incarnation
+        ## of the instance `ctx` is for, asynchronously (an application
+        ## that reads it from its database).  It outranks
+        ## `currentIncarnation`.  "" means the instance has no incarnation
+        ## on record, and nothing is refused.
       allowedOrigins*: seq[string]
         ## The origins (`scheme://host[:port]`) state-changing requests may
         ## come from.  Empty: the origin's host must equal the request's
@@ -196,6 +214,30 @@ else:
     except ValueError:
       result.valid = false
 
+  proc isLsnText*(s: string): bool =
+    ## `s` is a `pg_lsn` in its text form: two hexadecimal numbers of 1 to 8
+    ## digits around a `/` (https://www.postgresql.org/docs/current/datatype-pg-lsn.html).
+    let slash = s.find('/')
+    if slash < 1 or slash > 8 or s.len - slash - 1 < 1 or s.len - slash - 1 > 8:
+      return false
+    for i, c in s:
+      if i != slash and c notin HexDigits: return false
+    true
+
+  proc parseAfterHeader*(value: string): ClientAfterHeader =
+    ## Parses `<cell_id>:<lsn>` (the cell id is opaque, and holds no `:`).
+    result.present = true
+    let v = value.strip()
+    let colon = v.rfind(':')
+    if colon <= 0 or v.len > 200:
+      return
+    result.cellId = v[0 ..< colon]
+    result.lsn = v[colon + 1 .. ^1]
+    result.valid = ':' notin result.cellId and isLsnText(result.lsn)
+    if not result.valid:
+      result.cellId = ""
+      result.lsn = ""
+
   proc newRequestContext*(req: SsrRequest;
                           resp: SsrResponse = nil): RequestContext =
     ## A context for `req`.  The session is not resolved yet
@@ -205,6 +247,8 @@ else:
                             csrf: cvNotChecked)
     if req.hasHeader(contextHeaderName):
       result.clientContext = parseContextHeader(req.header(contextHeaderName))
+    if req.hasHeader(afterHeaderName):
+      result.clientAfter = parseAfterHeader(req.header(afterHeaderName))
 
   proc bodyWriter*[C: RequestContext](ctx: C): ResponseBody =
     ## The server's response body writer for this request, nil when the
@@ -430,12 +474,33 @@ else:
   # ------------------------------------------------------------------------
 
   proc contextIsStale*(ctx: RequestContext): bool =
-    ## A state-changing request whose `X-Isonim-Context` names an
-    ## incarnation other than the instance's current one.
+    ## A state-changing request whose `Isonim-Context` names an
+    ## incarnation other than the instance's current one
+    ## (`serverHooks.currentIncarnation`).
     let current = serverHooks.currentIncarnation
     current != nil and isStateChanging(ctx.request.httpMethod) and
       ctx.clientContext.present and
       (not ctx.clientContext.valid or ctx.clientContext.incarnationId != current())
+
+  proc contextIsStaleAsync*(ctx: RequestContext): Future[bool] {.async.} =
+    ## `contextIsStale`, through `serverHooks.resolveIncarnation` when the
+    ## application set it (the incarnation of the request's own instance).
+    let resolve = serverHooks.resolveIncarnation
+    if resolve == nil:
+      return ctx.contextIsStale()
+    if not isStateChanging(ctx.request.httpMethod) or not ctx.clientContext.present:
+      return false
+    let current = await resolve(ctx)
+    if current.len == 0:
+      return false
+    return not ctx.clientContext.valid or ctx.clientContext.incarnationId != current
+
+  proc setCommitPosition*(ctx: RequestContext; cellId, lsn: string) =
+    ## A successful write's commit position on its response
+    ## (`commitHeaderName`), which the generated client sends back as
+    ## `Isonim-After`. Nothing is set for an empty or malformed position.
+    if cellId.len > 0 and ':' notin cellId and isLsnText(lsn):
+      ctx.response.setHeader(commitHeaderName, cellId & ":" & lsn)
 
   proc echoContextHeader*(ctx: RequestContext) =
     if ctx.request.hasHeader(contextHeaderName):
@@ -444,7 +509,7 @@ else:
 
   proc isNoJsFormSubmission*(ctx: RequestContext): bool =
     ## A form the browser submitted by itself: a form-encoded `POST` that
-    ## carries no `X-Isonim-Context` (generated clients always send it).
+    ## carries no `Isonim-Context` (generated clients always send it).
     ctx.request.httpMethod == "POST" and
       not ctx.request.hasHeader(contextHeaderName) and
       ctx.request.mediaType in ["application/x-www-form-urlencoded",

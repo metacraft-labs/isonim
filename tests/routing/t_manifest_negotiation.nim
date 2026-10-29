@@ -131,9 +131,12 @@ suite "test_manifest_json_variant_cache_override_and_handler_404":
     let notPage = nimCompile("manifest_json_not_page.nim")
     check not notPage.ok
     check "`json` applies to page entries only" in notPage.output
+    # A page whose pattern ends in no parameter answers its JSON variant by
+    # `Accept` alone (a client router's list pages); it compiles, and no
+    # `.json` suffix test is generated for it.
     let noParam = nimCompile("manifest_json_no_param.nim")
-    check not noParam.ok
-    check "ends in a :param segment" in noParam.output
+    check noParam.ok
+    if not noParam.ok: echo noParam.output
     let ok = nimCompile("manifest_negotiation_ok.nim")
     check ok.ok
     if not ok.ok: echo ok.output

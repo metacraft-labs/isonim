@@ -236,6 +236,45 @@ suite "dispatchRpc — client context (URL-Schema.md §5.4)":
       headers = @[(contextHeaderName, "garbage")])
     check malformed.response.status == 409
 
+  test "the context hints are read under their names, and widen nothing":
+    # `Isonim-Context` / `Isonim-After` are client hints (policy.nim,
+    # "UNTRUSTED"): forged to match the instance, or with any position,
+    # they never stand in for a session, a role or a CSRF token.
+    serverHooks.currentIncarnation = proc(): string = "inc-2"
+    # The `X-Isonim-*` spelling a platform edge strips is not read at all.
+    let old = run request(echoUrl, """{"a":1,"s":""}""",
+      headers = @[(contextHeaderName, ""), ("X-Isonim-Context", "inc-1:3")])
+    check old.response.status == 200
+    check not old.clientContext.present
+    let hints = @[(contextHeaderName, "inc-2:0"), (afterHeaderName, "cell-1:FFFFFFFF/FFFFFFFF")]
+    let anonymous = run request("/api/test_rpc_dispatch/whoAmI", "{}", cookies = "", headers = hints)
+    check anonymous.response.status == 401
+    check anonymous.clientAfter.valid and anonymous.clientAfter.lsn == "FFFFFFFF/FFFFFFFF"
+    check run(request("/api/test_rpc_dispatch/staffOnly", "{}", headers = hints)).response.status == 403
+    check run(request("/api/test_rpc_dispatch/adminOnly", "{}", cookies = "sid=sam",
+                      headers = hints)).response.status == 403
+    let noToken = run request("/api/test_rpc_dispatch/whoAmI", "{}", token = "", headers = hints)
+    check noToken.response.status == 403
+    check run(request("/api/test_rpc_dispatch/whoAmI", "{}", headers = hints)).response.status == 200
+    serverHooks.currentIncarnation = nil
+
+  test "Isonim-After: a malformed position is ignored, never an error":
+    for bad in ["", "garbage", "cell-1:", ":0/1", "cell-1:0/", "cell-1:/1", "cell-1:0/1G",
+                "cell-1:123456789/1", "a:b:0/1", "cell-1:0/1/2", repeat('x', 300) & ":0/1"]:
+      let c = run request(echoUrl, """{"a":1,"s":""}""", headers = @[(afterHeaderName, bad & " ")])
+      check c.response.status == 200
+      if bad.len > 0:
+        check c.clientAfter.present and not c.clientAfter.valid and c.clientAfter.lsn == ""
+    let ok = parseAfterHeader("6f1c-cell:16/B374D848")
+    check ok.valid and ok.cellId == "6f1c-cell" and ok.lsn == "16/B374D848"
+
+  test "a write's commit position is set only when well formed":
+    let c = newRequestContext(newSsrRequest("POST", "/x", "/x", "", @[], "127.0.0.1", ""))
+    c.setCommitPosition("cell-1", "not an lsn")
+    check c.response.header(commitHeaderName) == ""
+    c.setCommitPosition("cell-1", "0/16B3748")
+    check c.response.header(commitHeaderName) == "cell-1:0/16B3748"
+
 suite "dispatchRpc — redirect-after-POST":
   setup: installHooks()
 

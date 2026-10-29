@@ -20,7 +20,7 @@
 ## 3. authentication (`401 unauthenticated`, `403 forbidden`);
 ## 4. CSRF (`403 csrf`, with the verdict as `detail`);
 ## 5. the client context: a stale incarnation is `409 context_stale`
-##    (URL-Schema.md §5.4); `X-Isonim-Context` is echoed;
+##    (URL-Schema.md §5.4); `Isonim-Context` is echoed;
 ## 6. the handler, whose result is the JSON response body (`200`), with
 ##    `Cache-Control: private, no-cache, no-store, must-revalidate`.  An
 ##    action submitted by a browser form without JavaScript answers `303`
@@ -238,7 +238,7 @@ else:
     if not verdict.csrfPassed:
       ctx.respondError(403, "csrf", $verdict)
       return false
-    if ctx.contextIsStale():
+    if await ctx.contextIsStaleAsync():
       ctx.respondError(409, "context_stale")
       return false
     return true

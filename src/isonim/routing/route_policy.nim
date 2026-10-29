@@ -16,7 +16,7 @@
 ## | `pcCache` | a valid request | `2xx`, `Cache-Control` exactly the policy's (absent for `cpNone`) |
 ## | `pcNoJsForm` | a progressive entry or action submitted as a plain form | `303` to its target |
 ## | `pcAuthBeforeCanonical` | an entry with a `canonical` policy that needs credentials: none (and, for `aStaff`/`aAdmin`, a session one role short) | `401` (`403`) and no `Location`: authentication ran before the canonicalization hook |
-## | `pcJsonSuffix` | a page with `json = true`: the sample path with `.json` on its last parameter | `2xx` `application/json` that parses, exactly the entry's `Cache-Control`, `Vary` naming `Accept` (or the hook's redirect, keeping `.json` on its `Location`) |
+## | `pcJsonSuffix` | a page with `json = true` whose pattern ends in a parameter: the sample path with `.json` on it | `2xx` `application/json` that parses, exactly the entry's `Cache-Control`, `Vary` naming `Accept` (or the hook's redirect, keeping `.json` on its `Location`) |
 ## | `pcJsonAccept` | the same page with `Accept: application/json` | as `pcJsonSuffix` (a redirect's `Location` is not checked) |
 ## | `pcCacheOverride` | for each policy in an entry's `cacheOverrides` (an `any` entry's too, as a `GET`): the request the application names for it (`PolicyEnv.cacheOverridePath`) | `2xx` or a redirect with exactly that policy's headers |
 ##
@@ -124,7 +124,7 @@ proc entryTests(specs: seq[RouteSpec]; route, httpMethod, path, query: string;
                 body: JsonNode; auth: AuthPolicy; csrf: CsrfPolicy;
                 cache: CachePolicy; progressive: bool; target: string;
                 isRpc: bool;
-                canonical = ccNone; json = false;
+                canonical = ccNone; json = false; jsonSuffix = false;
                 overrides: seq[CachePolicy] = @[];
                 stream = false): seq[RoutePolicyTest] =
   # A csrfSession mutation needs a session even where anyone may call it.
@@ -202,7 +202,7 @@ proc entryTests(specs: seq[RouteSpec]; route, httpMethod, path, query: string;
   result.add c
 
   # The JSON variant of a page (by suffix and by Accept).
-  if json:
+  if jsonSuffix:
     var js = base(pcJsonSuffix)
     js.path = path & ".json" & (if query.len > 0: "?" & query else: "")
     js.expectCacheControl = cacheControl(cache)
@@ -211,6 +211,7 @@ proc entryTests(specs: seq[RouteSpec]; route, httpMethod, path, query: string;
     if canonical != ccNone:
       js.expectStatus = @[200, 301, 302, 308]
     result.add js
+  if json:
     var ja = base(pcJsonAccept)
     ja.accept = "application/json"
     ja.expectCacheControl = cacheControl(cache)
@@ -270,7 +271,8 @@ proc buildPolicyTests*(specs: seq[RouteSpec];
       result.add entryTests(specs, s.name, s.httpMethod, samples[i].path,
         samples[i].query, samples[i].body, s.auth, s.csrf, s.cache,
         s.progressive, s.target, isRpc = false, canonical = s.canonical,
-        json = s.json, overrides = s.cacheOverrides, stream = s.stream)
+        json = s.json, jsonSuffix = s.json and jsonSuffixApplies(s.path),
+        overrides = s.cacheOverrides, stream = s.stream)
 
 proc `$`*(t: RoutePolicyTest): string =
   t.route & " " & $t.check & ": " & t.httpMethod & " " & t.path &
