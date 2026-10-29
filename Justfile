@@ -231,8 +231,10 @@ test-c:
     # `outputStream` exists only in ngx-isonim's module configuration.
     nim c -r -d:useFaststreams -d:isServer -d:asyncBackend=nginx --out:build/tests/test_response_body_faststreams tests/test_response_body_faststreams.nim
     nim c -r -d:useFaststreams -d:isServer -d:asyncBackend=nginx -d:release -d:danger --out:build/tests/test_response_body_faststreams_danger tests/test_response_body_faststreams.nim
-    # IFP-M30: streaming pages on a host without a body writer (in-process).
+    # Streaming pages on a host without a body writer (in-process).
     nim c -r -d:isonimRpcPrefix=/api/v1/rpc tests/routing/t_manifest_streaming_buffered.nim
+    # Exceptions the application maps to a status (in-process).
+    nim c -r -d:isonimRpcPrefix=/api/v1/rpc tests/routing/t_manifest_mapped_exceptions.nim
     nim c -r tests/test_form_actions.nim
     nim c -r tests/test_rpc_dispatch.nim
     nim c -r tests/test_static_dist_dev_server.nim
@@ -365,7 +367,7 @@ test-js: build-tailwind
     nim js -r --out:build/tests/test_static_metadata.js --nimcache:build/nimcache/test_static_metadata_js tests/test_static_metadata.nim
     nim js -r --out:build/tests/test_static_feeds.js --nimcache:build/nimcache/test_static_feeds_js tests/test_static_feeds.nim
     nim js -r --out:build/tests/test_static_image_meta.js --nimcache:build/nimcache/test_static_image_meta_js tests/test_static_image_meta.nim
-    # The Web Worker target's message codec and build guard (IFP-M3).
+    # The Web Worker target's message codec and build guard.
     nim js -r tests/test_web_worker.nim
 
 # Run only signal tests
@@ -1255,12 +1257,12 @@ demo-build:
 build-nginx-fixture: build-tailwind
     bash tests/nginx/build_fixture.sh
 
-# Server functions over HTTP, the typed route manifest (IFP-M2) and the SSR
-# -> hydrate -> interact round trip (IFP-M3) against real nginx with the
+# Server functions over HTTP, the typed route manifest and the SSR
+# -> hydrate -> interact round trip against real nginx with the
 # real ngx-isonim module: the route-manifest test (its generated policy
-# tests run against nginx), the route-manifest negotiation test (IFP-M26:
+# tests run against nginx), the route-manifest negotiation test (the
 # JSON variants, per-response cache policies, handler-raised not-found), the
-# streaming-page test (IFP-M30; its in-process twin for a host without a
+# streaming-page test (its in-process twin for a host without a
 # writer, t_manifest_streaming_buffered.nim, is in `test-c`, and its mutants
 # in run_streaming_mutants.sh), the nginx-rpc and ssr-hydration Playwright
 # projects, and the falsifying mutations of those projects.  Needs the
@@ -1388,7 +1390,7 @@ test-browser-smoke: build-tailwind build-hmr-fixture build-hmr-parametric-fixtur
 test-browser-demo: demo-build
     cd tests/browser && PLAYWRIGHT_CHROMIUM_EXECUTABLE="${PLAYWRIGHT_CHROMIUM_EXECUTABLE:-$(command -v chromium)}" npx playwright test --project=demo-app
 
-# The Web Worker build target's fixture (IFP-M3; IsoNim.md § Web Worker
+# The Web Worker build target's fixture (IsoNim.md § Web Worker
 # Target): a compile module built as a worker chunk (preview.worker.js), the
 # page script that drives it through a WorkerBridge (main.js), and the
 # negative control with the same module linked into the page script

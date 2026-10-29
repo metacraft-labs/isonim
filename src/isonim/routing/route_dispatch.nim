@@ -37,6 +37,12 @@
 ## * **not found**: the hook's `coNotFound` and a `RouteNotFound` raised by
 ##   the hook or the handler are one answer (`notFound`): the response is
 ##   put back to what it was before the hook ran, then answered 404;
+## * **mapped exceptions**: an exception whose type the application mapped
+##   (`serverHooks.mappedExceptions`, `mapException[E]`), raised before the
+##   response is committed by the policy stage's resolvers, the hook or the
+##   handler, is answered with the mapping's status, `Retry-After` and
+##   `Cache-Control: private, no-store` (`answerMapped`) instead of `500`;
+##   after a streaming page's commit point it propagates like any other;
 ## * **streaming pages** (`stream = true`, `runStreamRoute`): the handler
 ##   writes through a `PageStream` over the server's body writer
 ##   (`ctx.bodyWriter`).  Its first flush is the commit point: the content
@@ -282,6 +288,12 @@ proc canonicalStage(ctx: RequestContext; spec: RouteSpec;
     outcome = await canonicalizer(ctx, spec.name, spec.canonical)
   except RouteNotFound:
     outcome = canonicalNotFound()
+  except CatchableError as e:
+    # A mapped exception is its status; any other propagates to the server
+    # (its 500), as before mappings existed.
+    if ctx.answerMapped(e, before):
+      return false
+    raise e
   case outcome.kind
   of coContinue:
     return true
@@ -336,10 +348,14 @@ proc routePrelude[Req](ctx: RequestContext;
 proc failBeforeCommit(ctx: RequestContext; e: ref CatchableError;
                       before: ResponseSnapshot) =
   ## A handler's exception while nothing is sent: the pipeline's answer.
+  ## The framework's own exceptions first, then the application's mapped
+  ## ones, then `500`.
   if e of RouteNotFound:
     ctx.notFound(before)
   elif e of RpcBadRequest:
     ctx.respondError(400, "bad_request", e.msg)
+  elif ctx.answerMapped(e, before):
+    discard
   else:
     ctx.failure = e
     ctx.responseBody.setLen(0)
@@ -521,8 +537,9 @@ proc runStreamRoute*[Req, Resp](ctx: RequestContext; spec: RouteSpec;
     data = await handler(ctx, pre.req, page)
   except CatchableError as e:
     if page.committed:
-      # The headers are sent: no 404, 400 or 500 can be answered any more.
-      # The server terminates the response and logs the error.
+      # The headers are sent: no 404, 400, 500 or mapped status can be
+      # answered any more.  The server terminates the response and logs the
+      # error.
       raise e
     ctx.failBeforeCommit(e, pre.before)
     return
@@ -562,6 +579,8 @@ proc runAny*(ctx: RequestContext; spec: RouteSpec;
     ctx.notFound(before)
     return
   except CatchableError as e:
+    if ctx.answerMapped(e, before):
+      return
     ctx.failure = e
     ctx.responseBody.setLen(0)
     ctx.respondError(500, "internal")

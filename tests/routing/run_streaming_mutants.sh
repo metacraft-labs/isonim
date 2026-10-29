@@ -34,6 +34,13 @@
 #                         an internal error (500) instead of 400.
 #   custom-tail-ignored   the dispatch writes the default tail, whatever
 #                         page.tail the handler set.
+#   mapped-ignored        an exception the application mapped
+#                         (serverHooks.mappedExceptions) answered 500 before
+#                         the commit point, as if unmapped.
+#   mapped-after-commit   a mapped exception after the commit point treated
+#                         as answered: the streamed response ends normally
+#                         instead of being terminated.
+#   mapped-no-retry-after the mapped answer without its Retry-After.
 #
 # The buffered-* mutants are of t_manifest_streaming_buffered.nim, the
 # host without a writer (in-process): that test is built against a mutated
@@ -47,6 +54,18 @@
 #   buffered-not-committed
 #                         the response left uncommitted at the first flush
 #                         on such a host: its setters still work after it.
+#
+# The inproc-mapped-* mutants are of t_manifest_mapped_exceptions.nim
+# (in-process, every place a mapped exception can reach the pipeline),
+# built the same way, after its own unmutated control:
+#
+#   inproc-mapped-ignored   failBeforeCommit without the mapping.
+#   inproc-mapped-after-commit
+#                           the committed branch of a streaming page treats a
+#                           mapped exception as answered.
+#   inproc-mapped-no-retry-after
+#                           answerMapped without Retry-After.
+#   inproc-mapped-by-name   the type test replaced by a comparison of names.
 #
 # Needs what tests/nginx/build_fixture.sh needs (the ngx-isonim sibling,
 # nix); run inside the dev shell, as `just test-nginx` does.
@@ -181,17 +200,41 @@ streaming_mutant custom-tail-ignored \
   "  page.pending.add page.tail" \
   "  page.pending.add defaultPageTail"
 
+mapped_before="before the shell: a mapped exception is its status with Retry-After and no-store, with none of the page"
+mapped_after="after the shell: a mapped exception terminates the response like any other, logged"
+
+streaming_mutant mapped-ignored "${mapped_before}" isonim/routing/route_dispatch.nim \
+  "  elif ctx.answerMapped(e, before):
+    discard" \
+  "  elif false:
+    discard"
+
+streaming_mutant mapped-after-commit "${mapped_after}" isonim/routing/route_dispatch.nim \
+  "      # error.
+      raise e" \
+  "      # error.
+      var answer: ErrorAnswer
+      if mappedAnswer(e, answer):
+        return
+      raise e"
+
+streaming_mutant mapped-no-retry-after "${mapped_before}" isonim/server/context.nim \
+  "    if answer.retryAfter > 0:
+      ctx.response.setHeader(\"Retry-After\", \$answer.retryAfter)" \
+  "    discard"
+
 # ---- the host without a writer (in-process) ----
 
 WS="$(cd "${ROOT}/.." && pwd)"
 
-# build_buffered <src> <out>: t_manifest_streaming_buffered.nim against
-# <src> only (no config.nims: they would put this checkout's src/ first).
+# build_buffered <src> <out> [<test>]: <test> (default
+# t_manifest_streaming_buffered) against <src> only (no config.nims: they
+# would put this checkout's src/ first).
 build_buffered() {
   nim c --hints:off --skipParentCfg --skipProjCfg \
     --nimcache:"$2.nimcache" -d:isonimRpcPrefix=/api/v1/rpc \
     --path:"$1" --path:"${WS}/nim-everywhere/src" \
-    -o:"$2" "${ROOT}/tests/routing/t_manifest_streaming_buffered.nim" \
+    -o:"$2" "${ROOT}/tests/routing/${3:-t_manifest_streaming_buffered}.nim" \
     >"$2-build.log" 2>&1 ||
     { tail -30 "$2-build.log"; exit 1; }
 }
@@ -204,15 +247,16 @@ if ! "${WORK}/buffered-control" >"${WORK}/buffered-control.log" 2>&1; then
 fi
 
 # buffered_mutant <name> <failing test> <file under src/> <original> <replacement> [...]
+# (the test is $INPROC_TEST, default t_manifest_streaming_buffered)
 buffered_mutant() {
-  local name="$1" expect="$2" file="$3"
+  local name="$1" expect="$2" file="$3" test="${INPROC_TEST:-t_manifest_streaming_buffered}"
   shift 3
   rm -rf "${WORK}/${name}-src"
   cp -r "${ROOT}/src" "${WORK}/${name}-src"
   mutate "${WORK}/${name}-src/${file}" "$@"
-  build_buffered "${WORK}/${name}-src" "${WORK}/${name}"
+  build_buffered "${WORK}/${name}-src" "${WORK}/${name}" "${test}"
   if "${WORK}/${name}" >"${WORK}/${name}.log" 2>&1; then
-    echo "MISSED ${name}: t_manifest_streaming_buffered passed"
+    echo "MISSED ${name}: ${test} passed"
     missed=$((missed + 1))
   elif grep -qF "[FAILED] ${expect}" "${WORK}/${name}.log"; then
     echo "caught ${name}: [FAILED] ${expect}"
@@ -237,6 +281,51 @@ buffered_mutant buffered-not-committed \
   isonim/routing/route_dispatch.nim \
   "      ctx.response.markCommitted()" \
   "      discard"
+
+# ---- mapped exceptions, in-process (t_manifest_mapped_exceptions.nim) ----
+
+build_buffered "${ROOT}/src" "${WORK}/mapped-control" t_manifest_mapped_exceptions
+if ! "${WORK}/mapped-control" >"${WORK}/mapped-control.log" 2>&1; then
+  echo "t_manifest_mapped_exceptions fails unmutated:"
+  cat "${WORK}/mapped-control.log"
+  exit 1
+fi
+
+export INPROC_TEST=t_manifest_mapped_exceptions
+
+buffered_mutant inproc-mapped-ignored \
+  "a Page-returning page: a mapped exception is its status with Retry-After and no-store" \
+  isonim/routing/route_dispatch.nim \
+  "  elif ctx.answerMapped(e, before):
+    discard" \
+  "  elif false:
+    discard"
+
+buffered_mutant inproc-mapped-after-commit \
+  "a streaming page after its shell: a mapped exception propagates as an unmapped one does" \
+  isonim/routing/route_dispatch.nim \
+  "      # error.
+      raise e" \
+  "      # error.
+      var answer: ErrorAnswer
+      if mappedAnswer(e, answer):
+        return
+      raise e"
+
+buffered_mutant inproc-mapped-no-retry-after \
+  "a server function: the mapped status; unmapped is still 500" \
+  isonim/server/context.nim \
+  "    if answer.retryAfter > 0:
+      ctx.response.setHeader(\"Retry-After\", \$answer.retryAfter)" \
+  "    discard"
+
+buffered_mutant inproc-mapped-by-name \
+  "the mapping is by type: subtypes, the first match, and a same-named type" \
+  isonim/server/context.nim \
+  "      e of (ref E)" \
+  "      e.name == \$E"
+
+unset INPROC_TEST
 
 echo "streaming mutants caught: ${caught}, missed: ${missed}"
 [ "${missed}" -eq 0 ]

@@ -18,7 +18,10 @@
 ##   the shell `setCachePolicy` is refused (and reported) and the headers
 ##   are fixed; `RouteNotFound` or an error after the shell terminates the
 ##   response (logged), before it they are the pipeline's 404 and 500 with
-##   none of the page, `RpcBadRequest` the 400 and a redirect the redirect
+##   none of the page, an exception the application mapped
+##   (`serverHooks.mappedExceptions`) its status with `Retry-After` and
+##   `private, no-store`, while after the shell it terminates the response
+##   like any other, `RpcBadRequest` the 400 and a redirect the redirect
 ##   with the entry's policy and no body (`page.flush()` on it raising
 ##   `ValueError`); a page that never flushes is answered whole; a custom
 ##   `page.tail` is written last; the JSON variant is answered whole; no
@@ -312,6 +315,32 @@ suite "test_manifest_streaming_page":
     check err.status == 500
     check parseJson(err.body) == %*{"error": "internal"}
     check "leaked" notin nf.body & err.body
+
+  test "before the shell: a mapped exception is its status with Retry-After and no-store, with none of the page":
+    let p = fixture.whole("/stream/f/14")
+    check p.status == 503
+    check p.ended and not p.chunked
+    check p.header("retry-after") == "1"
+    check p.header("content-type") == "application/json"
+    check p.header("cache-control") == errorCacheControl
+    check parseJson(p.body) == %*{"error": "unavailable"}
+    check not p.has("x-before-overload")
+    check not p.has("content-security-policy") and not p.has("x-page-hook")
+    check "leaked" notin p.body
+    # Not a server fault: nothing is logged for it.
+    check "sFeed 14 overloaded" notin readFile(fixture.errorLog)
+
+  test "after the shell: a mapped exception terminates the response like any other, logged":
+    let p = fixture.whole("/stream/f/15")
+    check p.status == 200           # committed before the failure
+    check p.chunked
+    check "id=\"shell\"" in p.body
+    check not p.ended               # no terminating chunk
+    check not p.has("retry-after")
+    check "rest:" notin p.body and "unavailable" notin p.body
+    let log = readFile(fixture.errorLog)
+    check "sFeed 15 overloaded after its shell" in log
+    check "response terminated after the headers were sent (GET /stream/f/15" in log
 
   test "before the shell: RpcBadRequest is the 400, with none of the page":
     let p = fixture.whole("/stream/f/12")

@@ -33,6 +33,11 @@
 ## * 12: writes HTML without flushing, then raises `RpcBadRequest`: `400`,
 ##   none of the HTML;
 ## * 13: sets its own `page.tail` (`#custom-tail` before `</body></html>`);
+## * 14: sets a header and writes HTML without flushing, then raises
+##   `StreamOverloaded`, which the fixture maps (`mappedStreamingExceptions`):
+##   `503` with `Retry-After: 1`, none of the HTML or the header;
+## * 15: after its shell raises `StreamOverloaded`: the response is
+##   terminated, as for 7 (the mapping applies only before the commit);
 ## * any id: the shell (`#shell`), then, with `gate`, one byte read from
 ##   `127.0.0.1:<gate>` (`#rest`), then the body; the data is
 ##   `{id, items: ["a", <byte>]}`.  Its JSON variant flushes nothing.
@@ -57,6 +62,16 @@ const
   shellHtml* = "<!doctype html><html><head><meta charset=\"utf-8\">" &
     "<title>stream</title></head><body><h1 id=\"shell\">shell</h1>"
     ## What a streaming page flushes first; the test waits for it.
+
+type
+  StreamOverloaded* = object of CatchableError
+    ## Raised by sFeed 14 and 15; the fixture maps it to 503 with
+    ## `Retry-After: 1` (`mappedStreamingExceptions`).
+
+proc mappedStreamingExceptions*(): seq[ExceptionMapping] =
+  ## The fixture's `serverHooks.mappedExceptions` (isonim-routing-server-
+  ## functions.md, "Mapped Exceptions").
+  @[mapException[StreamOverloaded](503, "unavailable", retryAfter = 1)]
 
 proc isStreamingRoute*(route: string): bool =
   for s in routeSpecs(StreamingRoute):
@@ -111,6 +126,10 @@ proc feedPage(ctx: RequestContext; req: FeedRequest;
     raise newException(RpcBadRequest, "sFeed 12 is a bad request")
   of 13:
     page.tail = customTail
+  of 14:
+    ctx.response.setHeader("X-Before-Overload", "1")
+    page.write("<p>leaked before the overload</p>")
+    raise newException(StreamOverloaded, "sFeed 14 overloaded before its shell")
   else:
     discard
   if req.id == 8:
@@ -136,6 +155,9 @@ proc feedPage(ctx: RequestContext; req: FeedRequest;
   of 7:
     await sleepAsync(0)
     raise newException(ValueError, "sFeed 7 raised after its shell")
+  of 15:
+    await sleepAsync(0)
+    raise newException(StreamOverloaded, "sFeed 15 overloaded after its shell")
   else:
     discard
   page.write("<p id=\"rest\">rest:" & got & "</p>")

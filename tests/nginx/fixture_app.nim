@@ -122,7 +122,8 @@ proc installHooks*() =
       return ctx.request.header("X-Signature") == "valid-" & route,
     currentIncarnation: proc(): string = incarnationId,
     onCachePolicyRefused: recordCacheRefusal,
-    pageHeaders: streamingPageHeaders)
+    pageHeaders: streamingPageHeaders,
+    mappedExceptions: mappedStreamingExceptions())
   # One hook for both manifests: each answers for its own entries.
   canonicalizer = proc(ctx: RequestContext; route: string;
                        policy: CanonicalPolicy): Future[CanonicalOutcome] =

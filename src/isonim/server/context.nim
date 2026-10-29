@@ -163,6 +163,22 @@ else:
       ## Verifies a signed request (`aSignature`) for the named route or
       ## server function.
 
+    ErrorAnswer* = object
+      ## How the dispatch answers an exception the application mapped
+      ## (isonim-routing-server-functions.md, "Mapped Exceptions").
+      status*: int       ## 400 to 599
+      error*: string     ## the JSON body's `error`
+      retryAfter*: int   ## seconds for `Retry-After`; 0 sends none
+
+    ExceptionMapping* = object
+      ## One entry of `serverHooks.mappedExceptions`, made by
+      ## `mapException[E]`.  The type test is `of` on the exception object
+      ## (so `E`'s subtypes match too), never a comparison of names: a type
+      ## of the same name in another module is a different type, and a
+      ## renamed type keeps its mapping.
+      matches: proc(e: ref CatchableError): bool {.nimcall, raises: [].}
+      answer*: ErrorAnswer
+
     ServerHooks* = object
       ## What the application tells the server.  Every field is optional.
       resolveSession*: SessionResolver
@@ -196,6 +212,13 @@ else:
         ## committed and before the cache policy's headers are written, for
         ## streaming and `Page`-returning pages alike; never for a JSON
         ## variant, a redirect or an error.
+      mappedExceptions*: seq[ExceptionMapping]
+        ## The application's exceptions that are not server faults, each
+        ## with the status the dispatch answers it with instead of `500`
+        ## (`mapException[E]`): e.g. a refusal of the application's own
+        ## admission limit, `503` with `Retry-After`.  Consulted in order,
+        ## the first match wins, so a subtype is listed before its parent.
+        ## Applies only while the response is not committed (`answerMapped`).
 
   var serverHooks* {.threadvar.}: ServerHooks
     ## The application's hooks.  Set once at startup (ngx-isonim: from the
@@ -612,3 +635,87 @@ else:
     ## Writes the headers of `policy` on the response.
     for (k, v) in cacheHeaders(policy):
       ctx.response.setHeader(k, v)
+
+  # ------------------------------------------------------------------------
+  # Mapped exceptions (isonim-routing-server-functions.md, "Mapped
+  # Exceptions")
+  # ------------------------------------------------------------------------
+
+  proc mapException*[E: CatchableError](status: int; error: string;
+                                        retryAfter = 0): ExceptionMapping =
+    ## An entry of `serverHooks.mappedExceptions`: an exception of type `E`
+    ## (or a subtype) that reaches the dispatch before the response is
+    ## committed is answered `status` with `{"error": error}`,
+    ## `Cache-Control: private, no-store` and, when `retryAfter` > 0,
+    ## `Retry-After: <retryAfter>`, instead of `500`.
+    ##
+    ## ```nim
+    ## serverHooks.mappedExceptions = @[
+    ##   mapException[AdmissionRefused](503, "unavailable", retryAfter = 1)]
+    ## ```
+    ##
+    ## Refused at compile time: `CatchableError` itself (a catch-all would
+    ## answer every programming error as something other than a server
+    ## fault) and `RouteNotFound` or its subtypes (its answer is the fixed
+    ## 404 of "Not Found").  Raises `ValueError` for a status outside 400 to
+    ## 599, an empty `error` or a negative `retryAfter`: a mapping that
+    ## would answer a success or a redirect is a startup error, never a
+    ## response.
+    when RouteNotFound is E:
+      {.error: "mapException: " & $E & " would also map RouteNotFound, " &
+               "whose answer is the dispatch's 404; map a specific type".}
+    elif E is RouteNotFound:
+      {.error: "mapException: " & $E & " is a RouteNotFound, whose answer " &
+               "is the dispatch's 404".}
+    if status notin 400 .. 599:
+      raise newException(ValueError, "mapException[" & $E & "]: status " &
+        $status & " is not an error status (400 to 599)")
+    if error.len == 0:
+      raise newException(ValueError, "mapException[" & $E & "]: empty error")
+    if retryAfter < 0:
+      raise newException(ValueError, "mapException[" & $E &
+        "]: negative retryAfter " & $retryAfter)
+    proc matches(e: ref CatchableError): bool {.nimcall, raises: [].} =
+      e of (ref E)
+    ExceptionMapping(matches: matches, answer: ErrorAnswer(
+      status: status, error: error, retryAfter: retryAfter))
+
+  proc mappedAnswer*(e: ref CatchableError;
+                     answer: var ErrorAnswer): bool =
+    ## Whether the application mapped `e`'s type
+    ## (`serverHooks.mappedExceptions`, the first match); its answer in
+    ## `answer`.
+    if e.isNil:
+      return false
+    for m in serverHooks.mappedExceptions:
+      if m.matches != nil and m.matches(e):
+        answer = m.answer
+        return true
+    false
+
+  proc responseIsCommitted*(ctx: RequestContext): bool =
+    ## Whether the response's status and headers are on their way: the
+    ## response was committed, or a streaming page's commit point fixed its
+    ## headers.
+    ctx.cachePolicyFixed or ctx.response.committed
+
+  proc answerMapped*(ctx: RequestContext; e: ref CatchableError;
+                     before: ResponseSnapshot): bool =
+    ## Answers `e` with its mapped status when the application mapped its
+    ## type and the response is not committed yet: the response is put back
+    ## to `before` (nothing the hook or the handler set is kept, as for
+    ## "Not Found"), then the pipeline's error with `Cache-Control: private,
+    ## no-store` and the mapping's `Retry-After`.  The exception is not kept
+    ## on `ctx.failure`: a mapped exception is not a server fault.  False
+    ## (the response untouched) when `e` is not mapped or the response is
+    ## committed: after the commit point no status can be answered, and the
+    ## caller lets the exception propagate as before.
+    var answer: ErrorAnswer
+    if ctx.responseIsCommitted() or not mappedAnswer(e, answer):
+      return false
+    ctx.response.restore(before)
+    ctx.responseBody.setLen(0)
+    ctx.respondError(answer.status, answer.error)
+    if answer.retryAfter > 0:
+      ctx.response.setHeader("Retry-After", $answer.retryAfter)
+    true

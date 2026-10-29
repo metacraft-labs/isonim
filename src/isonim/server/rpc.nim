@@ -225,23 +225,32 @@ else:
                         csrf: CsrfPolicy;
                         formToken: string): Future[bool] {.async.} =
     ## Authentication, CSRF and the client context, in that order.  False
-    ## when the request was refused (the response is set).
-    let authStatus = await ctx.checkAuth(auth, route)
-    if authStatus != 0:
-      ctx.refuseAuth(authStatus)
-      return false
-    if csrf.kind == ckSession:
-      # The session token is needed even when the route lets anonymous
-      # callers in.
-      await ctx.resolveSession()
-    let verdict = ctx.verifyCsrf(csrf, formToken)
-    if not verdict.csrfPassed:
-      ctx.respondError(403, "csrf", $verdict)
-      return false
-    if await ctx.contextIsStaleAsync():
-      ctx.respondError(409, "context_stale")
-      return false
-    return true
+    ## when the request was refused (the response is set).  An exception
+    ## the application mapped (`serverHooks.mappedExceptions`), raised by
+    ## its session resolver, signature verifier or incarnation resolver, is
+    ## answered with its status here (a refusal); any other propagates.
+    let before = ctx.response.snapshot()
+    try:
+      let authStatus = await ctx.checkAuth(auth, route)
+      if authStatus != 0:
+        ctx.refuseAuth(authStatus)
+        return false
+      if csrf.kind == ckSession:
+        # The session token is needed even when the route lets anonymous
+        # callers in.
+        await ctx.resolveSession()
+      let verdict = ctx.verifyCsrf(csrf, formToken)
+      if not verdict.csrfPassed:
+        ctx.respondError(403, "csrf", $verdict)
+        return false
+      if await ctx.contextIsStaleAsync():
+        ctx.respondError(409, "context_stale")
+        return false
+      return true
+    except CatchableError as e:
+      if ctx.answerMapped(e, before):
+        return false
+      raise e
 
   proc redirectAfterPost*(ctx: RequestContext; target: string) =
     ## `303 See Other` to `target` (or the same-origin Referer, or "/").
@@ -286,6 +295,7 @@ else:
     if not await ctx.enforcePolicies(ep.name, ep.auth, ep.csrf, formToken):
       return
     var resultNode: JsonNode
+    let before = ctx.response.snapshot()
     try:
       rejectUnknownArgs(args, ep.params)
       resultNode = await ep.handler(ctx, args)
@@ -293,6 +303,10 @@ else:
       ctx.respondError(400, "bad_request", e.msg)
       return
     except CatchableError as e:
+      # An exception the application mapped is its status; any other is
+      # a server fault.
+      if ctx.answerMapped(e, before):
+        return
       ctx.failure = e
       ctx.responseBody.setLen(0)
       ctx.respondError(500, "internal")

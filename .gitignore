@@ -48,6 +48,7 @@ tests/test_form_actions
 tests/test_rpc_dispatch
 tests/test_traceparent_meta
 tests/routing/t_manifest_streaming_buffered
+tests/routing/t_manifest_mapped_exceptions
 tests/test_route_manifest
 tests/test_file_routes
 tests/test_content_markdown
