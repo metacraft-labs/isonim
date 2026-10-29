@@ -169,6 +169,16 @@ proc show*[R, N](
   var currentNode: N
   var hasNode = false
   var currentState = false
+  var disposeBranch: proc()
+  let branchOwner = getOwner()
+  # The condition can rerun without changing branches. Its computation must
+  # not own the retained branch's effects: rerunning a computation disposes
+  # its children before the unchanged-state guard runs. Give the branch its
+  # own root and release it only on replacement or when Show is unmounted.
+  onCleanup proc() =
+    if not disposeBranch.isNil:
+      disposeBranch()
+      disposeBranch = nil
 
   createRenderEffect proc() =
     let newState = condition()
@@ -177,23 +187,29 @@ proc show*[R, N](
 
     # Remove current node if any
     if hasNode:
+      disposeBranch()
+      disposeBranch = nil
       renderer.removeChild(parent, currentNode)
       hasNode = false
 
     currentState = newState
 
-    if newState:
-      when stableIdsEnabled:
-        withStableScope(renderStableScope): currentNode = body()
-      else:
-        currentNode = body()
-      hasNode = true
-      renderer.appendChild(parent, currentNode)
-    elif fallback != nil:
-      when stableIdsEnabled:
-        withStableScope(renderStableScope): currentNode = fallback()
-      else:
-        currentNode = fallback()
+    let renderBranch = if newState: body else: fallback
+    if not renderBranch.isNil:
+      try:
+        runWithOwner(branchOwner, proc() =
+          createRoot proc(dispose: proc()) =
+            disposeBranch = dispose
+            when stableIdsEnabled:
+              withStableScope(renderStableScope): currentNode = renderBranch()
+            else:
+              currentNode = renderBranch()
+        )
+      except:
+        if not disposeBranch.isNil:
+          disposeBranch()
+          disposeBranch = nil
+        raise
       hasNode = true
       renderer.appendChild(parent, currentNode)
 

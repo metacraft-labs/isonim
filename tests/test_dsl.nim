@@ -202,6 +202,57 @@ suite "DSL":
       check parent.children.len == 1
       check parent.children[0].textContent == "visible"
 
+  test "show retains reactive descendants until its branch changes":
+    let renderer = MockRenderer()
+    let value = createSignal(1)
+    let parent = renderer.createElement("div")
+    var disposeShow: proc()
+    var constructions, cleanups: int
+    createRoot proc(dispose: proc()) =
+      disposeShow = dispose
+      show(renderer, parent,
+        proc(): bool = value.val >= 0,
+        proc(): MockNode =
+          inc constructions
+          onCleanup proc() = inc cleanups
+          let node = renderer.createElement("span")
+          createRenderEffect proc() =
+            renderer.setTextContent(node, $value.val)
+          node,
+        proc(): MockNode =
+          inc constructions
+          onCleanup proc() = inc cleanups
+          let node = renderer.createElement("em")
+          createRenderEffect proc() =
+            renderer.setTextContent(node, $value.val)
+          node)
+    let first = parent.children[0]
+    value.val = 2
+    check parent.children[0] == first
+    check first.textContent == "2"
+    check constructions == 1
+    check cleanups == 0
+
+    value.val = -1
+    check cleanups == 1
+    check constructions == 2
+    let fallback = parent.children[0]
+    value.val = -2
+    check parent.children[0] == fallback
+    check fallback.textContent == "-2"
+    check constructions == 2
+    check cleanups == 1
+
+    value.val = 3
+    check parent.children[0].textContent == "3"
+    check constructions == 3
+    check cleanups == 2
+    let last = parent.children[0]
+    disposeShow()
+    check cleanups == 3
+    value.val = 4
+    check last.textContent == "3"
+
   test "test_error_boundary_catches":
     ## ErrorBoundary renders fallback when child throws
     createRoot do (dispose: proc()):
