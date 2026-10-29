@@ -31,6 +31,41 @@ const
 proc titleAttribute*(title: string): string =
   if title.len > 0: " title=\"" & escapeAttr(title) & "\"" else: ""
 
+proc imageAlt*(span: InlineSpan): string =
+  ## The `alt` an image span is rendered with: empty for one marked
+  ## `{decorative}`, whatever its brackets hold, else its alt text.
+  if span.decorative: "" else: span.text
+
+proc proseImages*(blocks: seq[Block]): seq[InlineSpan] =
+  ## Every image span of the prose subset `renderProseHtml` renders, in
+  ## document order: in headings, paragraphs, list items, maths-enabled
+  ## table cells, admonitions, quotes, figures and footnotes, and inside
+  ## struck-through text. A consumer checks them against its own alt-text
+  ## policy with `InlineSpan.line` for the location.
+  proc spans(list: seq[InlineSpan]; found: var seq[InlineSpan]) =
+    for span in list:
+      if span.kind == ikImage: found.add span
+      spans(span.children, found)
+  for blk in blocks:
+    case blk.kind
+    of bkHeading: spans(blk.headingSpans, result)
+    of bkParagraph: spans(blk.spans, result)
+    of bkList:
+      for item in blk.items: spans(item, result)
+    of bkTable:
+      for header in blk.headerSpans: spans(header, result)
+      for row in blk.cellSpans:
+        for cell in row: spans(cell, result)
+    of bkAdmonition:
+      for paragraph in blk.bodyParagraphs: spans(paragraph, result)
+    of bkBlockquote: result.add proseImages(blk.quoteBlocks)
+    of bkFigure:
+      spans(@[blk.figureImage], result)
+      spans(blk.caption, result)
+    of bkFootnotes:
+      for note in blk.footnotes: result.add proseImages(note.blocks)
+    else: discard
+
 proc footnoteBackLabel*(note: Footnote; occurrence: int): string =
   "Back to reference " & $note.number &
     (if occurrence == 0: "" else: " (" & $(occurrence + 1) & ")")
@@ -47,7 +82,7 @@ proc proseSpansHtml*(spans: seq[InlineSpan]): string =
     of ikLink:
       result.add "<a href=\"" & escapeAttr(span.href) & "\"" & titleAttribute(span.title) & ">" & (if span.children.len > 0: proseSpansHtml(span.children) else: escapeHtml(span.text)) & "</a>"
     of ikImage:
-      result.add "<img src=\"" & escapeAttr(span.href) & "\" alt=\"" & escapeAttr(span.text) & "\"" & titleAttribute(span.title) & ">"
+      result.add "<img src=\"" & escapeAttr(span.href) & "\" alt=\"" & escapeAttr(imageAlt(span)) & "\"" & titleAttribute(span.title) & ">"
     of ikSymRef:
       if span.href.len > 0: result.add "<a href=\"" & escapeAttr(span.href) & "\">"
       result.add "<code>" & escapeHtml(span.text) & "</code>"
@@ -163,7 +198,7 @@ proc renderProseExtension*[R, E](r: R; blk: Block;
     let el = r.createElement("figure")
     let img = r.createElement("img")
     r.setAttribute(img, "src", blk.figureImage.href)
-    r.setAttribute(img, "alt", blk.figureImage.text)
+    r.setAttribute(img, "alt", imageAlt(blk.figureImage))
     if blk.figureImage.title.len > 0: r.setAttribute(img, "title", blk.figureImage.title)
     r.appendChild(el, img)
     let caption = r.createElement("figcaption")

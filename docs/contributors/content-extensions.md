@@ -52,6 +52,28 @@ focusable (WCAG 2.2 SC 2.1.1; axe-core's `scrollable-region-focusable`), and
 not every browser makes one focusable by itself. Without script the
 renderer cannot tell which blocks will overflow, so every one is focusable.
 
+An image written `![](src){decorative}` is decorative: the span's
+`decorative` flag is set, the marker is consumed, and `renderProseHtml`
+writes `alt=""` (`imageAlt(span)`). CommonMark cannot tell an empty alt text
+from a missing one, so the marker records that the author meant it. Image
+spans also carry their source `line` (in the `firstLine` coordinates), and
+`proseImages(blocks)` lists every image of the prose subset in document
+order, so a site builder can refuse `![](src)` without the marker and name
+the file and line. `{decorative}` anywhere else stays text.
+
+The static-site image pipeline (`isonim/static/assets`, `rewritePageImages`)
+applies the HTML rules to built pages: an `<img>` without an `alt` attribute,
+or with alt text of only whitespace, is an error, and `alt=""` is accepted.
+Images inside the page's `<main>` element (`mainContentRange`; the whole
+page when it has none) get `decoding="async"`, and every one after the first
+`loading="lazy"`; images outside it, such as a header logo, are left as the
+layout wrote them. An external image must be a `data:` URL or on an origin in
+`ImageVariantConfig.remoteOrigins` (normalised by `parseWebOrigin` in
+`isonim/static/urls`); anything else, including a protocol-relative URL, is
+an error. `avifQuality` and `webpQuality` (1-100; 0 selects
+`defaultAvifQuality` 50 and `defaultWebpQuality` 75) set the libvips encoder
+quality and are part of each variant's cache key.
+
 Math supports `$inline$`, `$$display$$` and fenced `math`. A single-dollar
 opener must precede a non-space, and its closer must follow a non-space.
 Unmatched delimiters stay literal. Escaped dollars and code spans/fences stay

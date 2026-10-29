@@ -69,3 +69,25 @@ suite "static metadata boundaries":
         check not isW3cDatetime(bad)
         expect SitemapError:
           discard renderSitemap([SitemapEntry(loc: "/", lastmod: bad)])
+
+suite "web origins":
+  test "webOrigin serialises http(s) origins and refuses everything else":
+    # RFC 6454 §6.2: lower-case scheme and host, the default port left out.
+    check webOrigin("https://cdn.example.net/a/b.png?x#y") == "https://cdn.example.net"
+    check webOrigin("HTTPS://CDN.Example.NET:443/a.png") == "https://cdn.example.net"
+    check webOrigin("http://example.org:80") == "http://example.org"
+    check webOrigin("http://example.org:8080/x") == "http://example.org:8080"
+    check webOrigin("https://example.org.:8443") == "https://example.org:8443"
+    check webOrigin("https://[2001:db8::1]:444/x") == "https://[2001:db8::1]:444"
+    for other in ["/assets/a.png", "a.png", "//cdn.example.net/a.png", "data:image/png;base64,AA",
+        "ftp://example.org/a.png", "https://user@example.org/a.png", "https:///a.png",
+        "https://exa_mple.org/", "https://example.org:0/", "https://example.org:65536/",
+        "https://example.org:8x/", "https://-example.org/", "https://[zz]/", ""]:
+      check webOrigin(other) == ""
+
+  test "parseWebOrigin accepts an origin with at most a trailing slash":
+    check parseWebOrigin("https://CDN.example.net/") == "https://cdn.example.net"
+    check parseWebOrigin("http://localhost:4000") == "http://localhost:4000"
+    for bad in ["https://cdn.example.net/images", "https://cdn.example.net?x", "https://cdn.example.net#x",
+        "cdn.example.net", "//cdn.example.net", "ftp://cdn.example.net", "https://a@cdn.example.net", ""]:
+      expect ValueError: discard parseWebOrigin(bad)

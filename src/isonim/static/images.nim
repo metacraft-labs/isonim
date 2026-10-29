@@ -8,7 +8,8 @@
 ##   enlarging it;
 ## - `imgTags`, `rewriteImgTags` and `responsiveImageHtml` find the `<img>`
 ##   elements of a built page and turn one into a `<picture>` with one
-##   `<source srcset>` per format, `width`, `height` and `loading`.
+##   `<source srcset>` per format, `width`, `height`, `loading` and
+##   `decoding`; `mainContentRange` finds the page's main content.
 ##
 ## Producing the variant files needs an image tool and lives in
 ## `isonim/static/assets` (`ResponsiveImages`, C only). This module is pure
@@ -64,6 +65,14 @@ type
     ## order and the byte range `first ..< last` the tag occupies.
     attributes*: seq[ImgAttribute]
     first*, last*: int
+
+const
+  defaultAvifQuality* = 50
+    ## AVIF variant quality when a site sets none (libvips `Q`, 1-100). AVIF
+    ## keeps detail at a lower Q than WebP, so its default is lower.
+  defaultWebpQuality* = 75
+    ## WebP variant quality when a site sets none, the default of Hugo and
+    ## libwebp.
 
 proc imageError(message: string) {.noreturn.} =
   raise newException(ImageError, message)
@@ -497,6 +506,50 @@ proc imgTags*(html: string): seq[ImgTag] =
     else:
       i = j
 
+proc mainContentRange*(html: string): tuple[first, last: int] =
+  ## The byte range `first ..< last` of the content of `html`'s `<main>`
+  ## element, the page's dominant content
+  ## (https://html.spec.whatwg.org/multipage/grouping-content.html#the-main-element),
+  ## or the whole document when it has none. Comments and raw text are
+  ## skipped as `imgTags` skips them. A page has at most one visible
+  ## `<main>`; the first one counts, up to its end tag (or the document's
+  ## end when that is missing).
+  result = (0, html.len)
+  let lower = html.toLowerAscii
+  var opened = false
+  var i = 0
+  while true:
+    i = html.find('<', i)
+    if i < 0 or i + 1 >= html.len: return
+    if html.hasPrefix(i, "<!--"):
+      let close = html.find("-->", i + 4)
+      if close < 0: return
+      i = close + 3
+      continue
+    let closing = html[i + 1] == '/'
+    var j = i + 1 + ord(closing)
+    let nameStart = j
+    while j < html.len and html[j] in Letters: inc j
+    let name = lower[nameStart ..< j]
+    if j < html.len and html[j] notin tagSpace + {'/', '>'}:
+      inc i
+      continue
+    if name == "main" and not closing and not opened:
+      let close = html.find('>', j)
+      if close < 0: return
+      result = (close + 1, html.len)
+      opened = true
+      i = close + 1
+    elif name == "main" and closing and opened:
+      result.last = i
+      return
+    elif name in ["script", "style", "textarea", "title"] and not closing:
+      let close = lower.find("</" & name, j)
+      if close < 0: return
+      i = close + 2
+    else:
+      i = j
+
 proc attr*(tag: ImgTag; name: string): string =
   ## The decoded value of attribute `name`, or "".
   for attribute in tag.attributes:
@@ -541,11 +594,13 @@ proc parseDimension(value: string): int =
   try: parseInt(text) except ValueError: -1
 
 proc responsiveImageHtml*(tag: ImgTag; info: ImageInfo;
-    variants: openArray[ImageVariant]; lazy: bool; sizes = ""): string =
+    variants: openArray[ImageVariant]; lazy: bool; sizes = "";
+    asyncDecoding = false): string =
   ## The element that replaces `tag`: the `<img>` with `width` and `height`
   ## (the author's own when both are given, one given scales the other by
-  ## the source's ratio, otherwise the source's size) and `loading="lazy"`
-  ## when `lazy` and the author set no `loading`; wrapped, when there are
+  ## the source's ratio, otherwise the source's size), `loading="lazy"`
+  ## when `lazy` and `decoding="async"` when `asyncDecoding`, each only when
+  ## the author did not set that attribute; wrapped, when there are
   ## variants and the author wrote no `srcset`, in a `<picture>` with one
   ## `<source>` per format in the order the variants first name it. `sizes`
   ## defaults to the source's width capped by the viewport
@@ -565,6 +620,7 @@ proc responsiveImageHtml*(tag: ImgTag; info: ImageInfo;
       img.setAttr("width", $info.width)
       img.setAttr("height", $info.height)
   if lazy and not img.hasAttr("loading"): img.setAttr("loading", "lazy")
+  if asyncDecoding and not img.hasAttr("decoding"): img.setAttr("decoding", "async")
   if variants.len == 0 or tag.hasAttr("srcset"): return renderImgTag(img)
   let sizesValue =
     if sizes.len > 0: sizes

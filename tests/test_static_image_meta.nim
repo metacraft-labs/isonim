@@ -191,3 +191,35 @@ suite "img markup":
     check parseImageFormat("AVIF") == ifAvif
     check mediaType(ifWebp) == "image/webp" and extension(ifJpeg) == "jpg"
     expect ImageError: discard parseImageFormat("bmp")
+
+suite "content images and decoding":
+  test "async decoding is added only when asked, and the author's own value wins":
+    let info = ImageInfo(format: ifPng, width: 10, height: 5)
+    let plain = imgTags("<img src=a alt=a>")[0]
+    check responsiveImageHtml(plain, info, [], lazy = false, asyncDecoding = true) ==
+      "<img src=\"a\" alt=\"a\" width=\"10\" height=\"5\" decoding=\"async\">"
+    check responsiveImageHtml(plain, info, [], lazy = true, asyncDecoding = true) ==
+      "<img src=\"a\" alt=\"a\" width=\"10\" height=\"5\" loading=\"lazy\" decoding=\"async\">"
+    # Negative control: without the flag nothing is added (the default).
+    check "decoding" notin responsiveImageHtml(plain, info, [], lazy = true)
+    let own = imgTags("<img src=a alt=a decoding=sync loading=eager>")[0]
+    check responsiveImageHtml(own, info, [], lazy = true, asyncDecoding = true) ==
+      "<img src=\"a\" alt=\"a\" decoding=\"sync\" loading=\"eager\" width=\"10\" height=\"5\">"
+
+  test "the main element's content range, skipping comments and raw text":
+    let html = "<header><img src=logo alt=L></header><!-- <main> -->" &
+      "<script>var m = \"<main>\";</script><MAIN class=\"site-main\">" &
+      "<img src=a alt=a><mainly></mainly></main><footer><img src=f alt=f></footer>"
+    let range = mainContentRange(html)
+    check html[range.first ..< range.last] == "<img src=a alt=a><mainly></mainly>"
+    let tags = imgTags(html)
+    var inside: seq[string]
+    for tag in tags:
+      if tag.first >= range.first and tag.first < range.last: inside.add tag.attr("src")
+    check inside == @["a"]
+    # Without a main element the whole document is the content.
+    let plain = "<p><img src=a alt=a></p>"
+    check mainContentRange(plain) == (0, plain.len)
+    # An unclosed main runs to the end of the document.
+    let open = "<main><img src=a alt=a>"
+    check mainContentRange(open) == (6, open.len)

@@ -13,12 +13,14 @@
 ## Responsive images: `ResponsiveImages` measures every image a
 ## built page shows, resizes each raster once into AVIF and WebP variants
 ## with an injected libvips, and rewrites the page's `<img>` elements into
-## `<picture>` elements with `srcset`, `width`, `height` and `loading`
+## `<picture>` elements with `srcset`, `width`, `height`, `loading` and
+## `decoding`, enforcing alt text and an allow-list of remote image origins
 ## (see the section below and `isonim/static/images`).
 
 import std/[os, sets, strutils, json, sequtils, algorithm, osproc, streams, strtabs, tables, tempfiles]
 import ./images
 import ./buildinfo
+import ./urls
 export images
 
 {.push warning[Deprecated]: off.}
@@ -226,9 +228,8 @@ const
   vipsThreads = "4"  ## Fixed, not the host's core count (see above).
   imageVariantRevision = "isonim-image-variants-1"
     ## Changes whenever the arguments below change, so cached variants made
-    ## with other settings are never reused.
-  avifSaveOptions = "[Q=50,effort=4,keep=none]"
-  webpSaveOptions = "[Q=75,effort=4,keep=none]"
+    ## with other settings are never reused. The quality is part of each
+    ## variant's key on its own (`saveOptions`).
 
 type
   ImageVariantConfig* = object
@@ -239,6 +240,12 @@ type
     formats*: seq[ImageFormat]    ## Variant formats: `ifAvif`, `ifWebp`.
     maxSourceBytes*: int          ## A larger source is an error; 0: no limit.
     cacheDir*: string             ## Optional; variants are reused from here.
+    avifQuality*, webpQuality*: int
+                                  ## Encoder quality, 1-100 (libvips `Q`); 0:
+                                  ## `defaultAvifQuality` / `defaultWebpQuality`.
+    remoteOrigins*: seq[string]   ## Origins (`https://cdn.example.net`) whose
+                                  ## images a page may show; an image on any
+                                  ## other origin is an error.
 
   ImageReferenceKind* = enum
     irFile       ## a file of the site
@@ -275,7 +282,19 @@ proc newResponsiveImages*(config: ImageVariantConfig;
       raise newException(ImageError, "image variants are written as avif or webp, not " & $format)
   for width in config.widths:
     if width <= 0: raise newException(ImageError, "an image width must be positive")
-  ResponsiveImages(config: config, urlFor: urlFor)
+  var checked = config
+  for (name, quality) in [("avif", config.avifQuality), ("webp", config.webpQuality)]:
+    if quality notin 0 .. 100:
+      raise newException(ImageError, "the " & name & " quality must be from 1 to 100, not " & $quality)
+  if checked.avifQuality == 0: checked.avifQuality = defaultAvifQuality
+  if checked.webpQuality == 0: checked.webpQuality = defaultWebpQuality
+  checked.remoteOrigins = @[]
+  for origin in config.remoteOrigins:
+    let parsed =
+      try: parseWebOrigin(origin)
+      except ValueError as cause: raise newException(ImageError, "a remote image origin is " & cause.msg)
+    if parsed notin checked.remoteOrigins: checked.remoteOrigins.add parsed
+  ResponsiveImages(config: checked, urlFor: urlFor)
 
 proc vipsExecutable(images: ResponsiveImages): string =
   let path = images.config.vipsPath
@@ -310,10 +329,18 @@ proc identity(images: ResponsiveImages): string =
     images.vipsIdentity = vipsExecutable(images) & "\n" & runVips(images, ["--version"], work)
   images.vipsIdentity
 
+proc saveOptions(images: ResponsiveImages; format: ImageFormat): string =
+  ## libvips save options for a variant: quality, a fixed effort and no
+  ## metadata (https://www.libvips.org/API/current/method.Image.heifsave.html,
+  ## https://www.libvips.org/API/current/method.Image.webpsave.html). The
+  ## string is part of the variant's cache key, so a new quality re-encodes.
+  let quality = if format == ifAvif: images.config.avifQuality else: images.config.webpQuality
+  "[Q=" & $quality & ",effort=4,keep=none]"
+
 proc encodeVariant(images: ResponsiveImages; source: string; info: ImageInfo;
     width: int; format: ImageFormat): string =
   ## One variant's bytes, from the cache when an identical encode was kept.
-  let options = if format == ifAvif: avifSaveOptions else: webpSaveOptions
+  let options = saveOptions(images, format)
   let key = treeHashOf([("revision", imageVariantRevision), ("tool", images.identity),
     ("width", $width), ("format", $format & options), ("source", source)])
   let cached = if images.config.cacheDir.len == 0: ""
@@ -375,26 +402,71 @@ proc imageSet*(images: ResponsiveImages; name, content: string): ImageSet =
           height: made.height, url: images.urlFor(path))
   images.sets[name] = result
 
+proc remoteImageProblem(images: ResponsiveImages; src: string): string =
+  ## Why an image source that names no file of the site may not be shown,
+  ## or "" when it may: a `data:` URL, or an absolute `http`/`https` URL on
+  ## an allowed origin. Everything else would either be blocked by a policy
+  ## that names only those origins or depend on the page's own scheme.
+  let value = src.strip
+  if value.toLowerAscii.startsWith("data:"): return ""
+  if value.startsWith("//"):
+    return "is protocol-relative; write it with its scheme (https:)"
+  let origin = webOrigin(value)
+  if origin.len == 0:
+    return "is not a file of the site, a data: URL or an http(s) URL"
+  if origin notin images.config.remoteOrigins:
+    return "is on " & origin & ", which is not an allowed remote image origin"
+
 proc rewritePageImages*(images: ResponsiveImages; html, page: string;
     resolve: proc(src: string): ImageReference {.closure.}; sizes = ""): string =
   ## `html` (one built page, named `page` in errors) with every `<img>`
-  ## served responsively (`responsiveImageHtml`): the first image loads
-  ## eagerly, every later one lazily. An image without alt text, or whose
-  ## source is larger than `maxSourceBytes`, is an `ImageError`, as is a
-  ## site path that names no file. An external image keeps its markup
-  ## (with `loading`), and a warning says it has no dimensions.
+  ## served responsively (`responsiveImageHtml`).
+  ##
+  ## The page's content images, those inside its `<main>` element (every
+  ## image when the page has none, see `mainContentRange`), get
+  ## `decoding="async"`, and every one but the first `loading="lazy"`: the
+  ## first is the likely Largest Contentful Paint element, which must not
+  ## wait for layout (https://web.dev/articles/lcp-lazy-loading). Images
+  ## outside the main content (a header logo) get neither, so they load as
+  ## the author wrote them; an attribute the author set is always kept.
+  ##
+  ## Errors (`ImageError`): an image without an `alt` attribute (`alt=""`
+  ## marks a decorative image and is accepted;
+  ## https://html.spec.whatwg.org/multipage/images.html#alt), or with one
+  ## of only whitespace; a source larger than `maxSourceBytes`; a site path
+  ## that names no file; and an external image other than a `data:` URL or
+  ## an `http`/`https` URL on one of `remoteOrigins`. An allowed external
+  ## image keeps its markup, and a warning says it has no dimensions unless
+  ## the author set both `width` and `height`.
+  let content = mainContentRange(html)
+  var contentIndex = 0
   rewriteImgTags(html, proc(tag: ImgTag; index: int): string =
     let src = tag.attr("src")
-    if tag.attr("alt").strip().len == 0:
-      raise newException(ImageError, page & ": the image " & src & " has no alt text")
+    if not tag.hasAttr("alt"):
+      raise newException(ImageError, page & ": the image " & src &
+        " has no alt attribute (alt=\"\" marks a decorative image)")
+    if tag.attr("alt").len > 0 and tag.attr("alt").strip().len == 0:
+      raise newException(ImageError, page & ": the image " & src &
+        " has alt text of only whitespace (alt=\"\" marks a decorative image)")
+    let inContent = tag.first >= content.first and tag.first < content.last
+    let lazy = inContent and contentIndex > 0
+    if inContent: inc contentIndex
     let reference = resolve(src)
     case reference.kind
     of irMissing:
       raise newException(ImageError, page & ": the image " & src & " is not a file of the site")
     of irExternal:
-      images.warnings.add page & ": the image " & src &
-        " is not a file of the site, so it has no width, height or variants"
-      responsiveImageHtml(tag, ImageInfo(), [], lazy = index > 0)
+      let problem = images.remoteImageProblem(src)
+      if problem.len > 0:
+        raise newException(ImageError, page & ": the image " & src & " " & problem)
+      # The warning is about layout shift: the browser reserves no space for
+      # an image of unknown size
+      # (https://web.dev/articles/optimize-cls#images-without-dimensions).
+      # When the author set both dimensions there is nothing to warn about.
+      if not (tag.hasAttr("width") and tag.hasAttr("height")):
+        images.warnings.add page & ": the image " & src &
+          " is not a file of the site, so it has no width, height or variants"
+      responsiveImageHtml(tag, ImageInfo(), [], lazy = lazy, asyncDecoding = inContent)
     of irFile:
       let limit = images.config.maxSourceBytes
       if limit > 0 and reference.content.len > limit:
@@ -404,4 +476,5 @@ proc rewritePageImages*(images: ResponsiveImages; html, page: string;
         try: images.imageSet(reference.name, reference.content)
         except ImageError as cause:
           raise newException(ImageError, page & ": the image " & src & ": " & cause.msg)
-      responsiveImageHtml(tag, found.info, found.variants, lazy = index > 0, sizes = sizes))
+      responsiveImageHtml(tag, found.info, found.variants, lazy = lazy, sizes = sizes,
+        asyncDecoding = inContent))

@@ -80,6 +80,13 @@ type
                       ## relative path (content link or asset), not an
                       ## absolute URL or same-page fragment -- the flag
                       ## later broken-link reporting filters on.
+    decorative*: bool ## `ikImage` only: written `![](src){decorative}`, an
+                      ## image that adds no information, rendered with
+                      ## `alt=""` (HTML: https://html.spec.whatwg.org/multipage/images.html#a-purely-decorative-image-that-doesn't-add-any-information).
+                      ## CommonMark cannot tell an empty alt text from a
+                      ## missing one, so the marker says it was meant.
+    line*: int ## `ikImage` only: the one-based source line of the image
+               ## (offset by the parse's `firstLine`), for diagnostics.
 
   ListKind* = enum
     lkUnordered
@@ -355,11 +362,13 @@ func `==`*(a, b: InlineSpan): bool =
   ## Explicit recursive equality keeps the public value API usable on Nim
   ## 2.2: its synthesized object/seq equality can infer a spurious side effect
   ## when an individual recursive span is compared before a seq of spans.
+  ## `line` is where a span came from, not what it is, so it is not compared.
   if a.generated != b.generated or a.kind != b.kind or a.text != b.text or a.href != b.href or
       a.title != b.title or a.isRelative != b.isRelative or
       a.linkOrigin != b.linkOrigin or a.labelSource != b.labelSource or
       a.footnoteNumber != b.footnoteNumber or a.referenceId != b.referenceId or
-      a.escaped != b.escaped or a.children.len != b.children.len:
+      a.escaped != b.escaped or a.decorative != b.decorative or
+      a.children.len != b.children.len:
     return false
   for i in 0 ..< a.children.len:
     if a.children[i] != b.children[i]: return false
@@ -666,6 +675,10 @@ proc bareAutolink(text: string; start: int): tuple[stop: int, href: string] =
     result = (stop, if value.startsWith("www."): "http://" & value else: value)
   elif emailAddress(value): result = (stop, "mailto:" & value)
 
+const decorativeMarker* = "{decorative}"
+  ## Written directly after an image, `![](src){decorative}`, it marks the
+  ## image decorative (`InlineSpan.decorative`).
+
 proc explicitLink(text: string; start: int):
     tuple[stop: int, label, href, title: string, image: bool] =
   ## One recognition path for both the parser and its delimiter scanner: only
@@ -829,13 +842,18 @@ proc parseInlineSpans*(text: string; sourceRelPath: string = "";
     if link.stop >= 0:
       flushPlain()
       let (href, relative) = normalizeRelativeLink(link.href, sourceRelPath, resolveContentPath)
+      # `{decorative}` directly after an image marks it as adding no
+      # information (see `InlineSpan.decorative`); anywhere else the text
+      # stays literal.
+      let decorative = link.image and text.continuesWith(decorativeMarker, link.stop)
       result.add InlineSpan(kind: (if link.image: ikImage else: ikLink),
         text: unescapePunctuation(link.label), href: href, title: link.title,
         isRelative: relative, linkOrigin: loExplicit, labelSource: link.label,
+        decorative: decorative, line: (if link.image: lineAt(text, i, firstLine) else: 0),
         children: (if not link.image and renderers.math != nil:
           parseInlineSpans(link.label, sourceRelPath, resolveContentPath, resolveSymbol,
             renderers, lineAt(text, i, firstLine), literalLabel = true) else: @[]))
-      i = link.stop
+      i = link.stop + (if decorative: decorativeMarker.len else: 0)
       continue
     if text.continuesWith("~~", i) and (i == 0 or text[i - 1] != '~') and
         i + 2 < text.len and text[i + 2] notin Whitespace + {'~'}:
@@ -1462,7 +1480,7 @@ proc parseBlocks(body: string; ctx: ParseContext; sourceRelPath: string = "";
           figureLineNumbers.add firstLine + i
         inc i
       if i < lines.len: inc i
-      let image = if figureLines.len > 0: parseInlineSpans(figureLines[0], sourceRelPath, resolveContentPath, resolveSymbol) else: @[]
+      let image = if figureLines.len > 0: parseInlineSpans(figureLines[0], sourceRelPath, resolveContentPath, resolveSymbol, firstLine = figureLineNumbers[0]) else: @[]
       if image.len == 1 and image[0].kind == ikImage:
         var caption = figureLines[1 .. ^1].join(" ")
         if ctx.renderers.math != nil and figureLines.len > 1:
@@ -1478,7 +1496,7 @@ proc parseBlocks(body: string; ctx: ParseContext; sourceRelPath: string = "";
       continue
 
     if stripped.startsWith("!["):
-      let image = parseInlineSpans(stripped, sourceRelPath, resolveContentPath, resolveSymbol)
+      let image = parseInlineSpans(stripped, sourceRelPath, resolveContentPath, resolveSymbol, firstLine = blockLine)
       var captionLine = i + 1
       if captionLine < lines.len and lines[captionLine].strip().len == 0: inc captionLine
       if image.len == 1 and image[0].kind == ikImage and captionLine < lines.len and italicCaption(lines[captionLine].strip()):

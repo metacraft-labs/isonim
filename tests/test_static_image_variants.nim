@@ -167,7 +167,9 @@ suite "pages":
     var files = initTable[string, string]()
     files["/assets/photo.png"] = source(work, 1000, 600)
     files["/assets/figure.svg"] = "<svg width=\"300\" height=\"200\"/>"
-    let images = newResponsiveImages(config(), site())
+    var allowed = config()
+    allowed.remoteOrigins = @["https://elsewhere.example"]
+    let images = newResponsiveImages(allowed, site())
     let html = "<header><img src=\"/assets/figure.svg\" alt=\"Logo\"></header>" &
       "<p><img src=\"/assets/photo.png\" alt=\"A photo\"></p>" &
       "<p><img src=\"https://elsewhere.example/x.png\" alt=\"Remote\"></p>"
@@ -178,21 +180,23 @@ suite "pages":
     check not tags[0].hasAttr("loading")
     check tags[1].attr("width") == "1000" and tags[1].attr("height") == "600"
     check tags[1].attr("loading") == "lazy" and tags[2].attr("loading") == "lazy"
+    # A page without <main> is all content: every image decodes asynchronously.
+    for tag in tags: check tag.attr("decoding") == "async"
     check not tags[2].hasAttr("width")
     check page.count("<picture>") == 1 and page.count("<source ") == 2
     check "<source type=\"image/avif\" srcset=\"/assets/photo-480." in page
     check images.warnings == @["posts/a.md: the image https://elsewhere.example/x.png is not a file " &
       "of the site, so it has no width, height or variants"]
 
-  test "a missing alt text, an oversized source and a missing file are errors":
+  test "a missing or blank alt attribute, an oversized source and a missing file are errors":
     let work = createTempDir("isonim-variants-", "")
     defer: removeDir(work)
     var files = initTable[string, string]()
     files["/assets/photo.png"] = source(work, 600, 400)
     let images = newResponsiveImages(config(), site())
     for (html, message) in [
-        ("<img src=\"/assets/photo.png\">", "posts/a.md: the image /assets/photo.png has no alt text"),
-        ("<img src=\"/assets/photo.png\" alt=\"  \">", "has no alt text"),
+        ("<img src=\"/assets/photo.png\">", "posts/a.md: the image /assets/photo.png has no alt attribute"),
+        ("<img src=\"/assets/photo.png\" alt=\"  \">", "has alt text of only whitespace"),
         ("<img src=\"/assets/gone.png\" alt=\"x\">", "the image /assets/gone.png is not a file of the site")]:
       try:
         discard images.rewritePageImages(html, "posts/a.md", resolver(files))
@@ -233,3 +237,111 @@ suite "pages":
     check newResponsiveImages(cfg, site()).imageSet("assets/a.png", png).variants.len == 0
     cfg.formats = @[ifPng]
     expect ImageError: discard newResponsiveImages(cfg, site())
+
+  test "alt=\"\" marks a decorative image and is accepted":
+    let work = createTempDir("isonim-variants-", "")
+    defer: removeDir(work)
+    var files = initTable[string, string]()
+    files["/assets/rule.png"] = source(work, 300, 20)
+    let page = newResponsiveImages(config(), site()).rewritePageImages(
+      "<img src=\"/assets/rule.png\" alt=\"\">", "posts/a.md", resolver(files))
+    check imgTags(page)[0].attr("alt") == "" and imgTags(page)[0].hasAttr("alt")
+    check imgTags(page)[0].attr("width") == "300"
+
+  test "only the main content's images are lazy and async; the first of them loads eagerly":
+    let work = createTempDir("isonim-variants-", "")
+    defer: removeDir(work)
+    var files = initTable[string, string]()
+    files["/assets/logo.png"] = source(work, 200, 100)
+    files["/assets/hero.png"] = source(work, 600, 300)
+    files["/assets/later.png"] = source(work, 500, 300)
+    let images = newResponsiveImages(config(), site())
+    let html = "<header><img src=\"/assets/logo.png\" alt=\"Logo\"></header>" &
+      "<main><h1>Post</h1><img src=\"/assets/hero.png\" alt=\"Hero\">" &
+      "<p><img src=\"/assets/later.png\" alt=\"Later\"></p>" &
+      "<p><img src=\"/assets/later.png\" alt=\"Own\" loading=\"eager\" decoding=\"sync\"></p></main>" &
+      "<footer><img src=\"/assets/logo.png\" alt=\"Logo again\"></footer>"
+    let tags = imgTags(images.rewritePageImages(html, "posts/a.md", resolver(files)))
+    check tags.len == 5
+    # Outside <main>: dimensions, but neither loading nor decoding.
+    for outside in [tags[0], tags[4]]:
+      check outside.attr("width") == "200"
+      check not outside.hasAttr("loading") and not outside.hasAttr("decoding")
+    # The first content image is the likely LCP element: eager, async.
+    check not tags[1].hasAttr("loading") and tags[1].attr("decoding") == "async"
+    check tags[2].attr("loading") == "lazy" and tags[2].attr("decoding") == "async"
+    # The author's own attributes win.
+    check tags[3].attr("loading") == "eager" and tags[3].attr("decoding") == "sync"
+
+  test "a remote image needs its origin allowed; data: URLs stay allowed":
+    let images = newResponsiveImages(block:
+        var cfg = config()
+        cfg.remoteOrigins = @["https://CDN.example.net/", "https://cdn.example.net"]
+        cfg, site())
+    let files = initTable[string, string]()
+    # Allowed: the origin matches after normalisation (case, default port).
+    let allowed = images.rewritePageImages(
+      "<img src=\"https://cdn.example.net:443/a.png\" alt=\"A\">" &
+      "<img src=\"data:image/gif;base64,R0lGODlhAQABAAAAACw=\" alt=\"Dot\">", "posts/a.md", resolver(files))
+    check imgTags(allowed).len == 2
+    check images.warnings.len == 2
+    # Both dimensions set by the author: nothing shifts, so no warning. With
+    # only one of them the warning stays (the control).
+    let sized = images.rewritePageImages(
+      "<img src=\"https://cdn.example.net/b.png\" alt=\"B\" width=\"40\" height=\"30\">" &
+      "<img src=\"https://cdn.example.net/c.png\" alt=\"C\" width=\"40\">", "posts/a.md", resolver(files))
+    check imgTags(sized)[0].attr("width") == "40" and imgTags(sized)[0].attr("height") == "30"
+    check images.warnings.len == 3
+    check images.warnings[^1] == "posts/a.md: the image https://cdn.example.net/c.png is not a file " &
+      "of the site, so it has no width, height or variants"
+    for (src, message) in [
+        ("https://elsewhere.example/a.png", "is on https://elsewhere.example, which is not an allowed remote image origin"),
+        ("http://cdn.example.net/a.png", "is on http://cdn.example.net, which is not an allowed remote image origin"),
+        ("//cdn.example.net/a.png", "is protocol-relative"),
+        ("ftp://cdn.example.net/a.png", "is not a file of the site, a data: URL or an http(s) URL")]:
+      try:
+        discard images.rewritePageImages("<img src=\"" & src & "\" alt=\"x\">", "posts/a.md",
+          proc(s: string): ImageReference = ImageReference(kind: irExternal))
+        check false
+      except ImageError as cause:
+        check ("posts/a.md: the image " & src & " " & message) in cause.msg
+    # Without an allow-list every remote image is an error.
+    expect ImageError:
+      discard newResponsiveImages(config(), site()).rewritePageImages(
+        "<img src=\"https://cdn.example.net/a.png\" alt=\"A\">", "posts/a.md", resolver(files))
+    # A malformed origin in the configuration is refused up front.
+    var bad = config()
+    bad.remoteOrigins = @["https://cdn.example.net/images"]
+    expect ImageError: discard newResponsiveImages(bad, site())
+
+  test "the encoder quality is configurable, validated and part of the cache key":
+    let work = createTempDir("isonim-variants-", "")
+    defer: removeDir(work)
+    let png = source(work, 500, 300)
+    proc encoded(avif, webp: int; cache = ""): seq[tuple[path, content: string]] =
+      var cfg = config(cache)
+      cfg.avifQuality = avif
+      cfg.webpQuality = webp
+      let images = newResponsiveImages(cfg, site())
+      discard images.imageSet("assets/a.png", png)
+      images.files
+    let defaults = encoded(0, 0)
+    # 0 means the defaults, which are AVIF 50 and WebP 75.
+    check encoded(defaultAvifQuality, defaultWebpQuality) == defaults
+    check defaultAvifQuality == 50 and defaultWebpQuality == 75
+    # A lower quality makes smaller files, measured on the bytes themselves.
+    let low = encoded(20, 30)
+    check low.len == defaults.len
+    for i in 0 ..< low.len:
+      check low[i].content.len < defaults[i].content.len
+    # A shared cache does not serve one quality's variants for another.
+    let cache = work / "cache"
+    discard encoded(0, 0, cache)
+    check encoded(20, 30, cache) == low
+    for quality in [-1, 101]:
+      var cfg = config()
+      cfg.avifQuality = quality
+      expect ImageError: discard newResponsiveImages(cfg, site())
+      cfg.avifQuality = 0
+      cfg.webpQuality = quality
+      expect ImageError: discard newResponsiveImages(cfg, site())

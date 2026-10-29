@@ -286,3 +286,44 @@ suite "long-form prose":
     check angle.text == "mailto:user@example.test"
     check angle.labelSource == ""
     check parseInlineSpans("https://example.test")[0].linkOrigin == loBareAutolink
+
+suite "image alt text and decorative images":
+  test "{decorative} after an image marks it and renders alt=\"\"; elsewhere it stays text":
+    let spans = parseInlineSpans("![](rule.png){decorative} and {decorative}")
+    check spans.len == 2
+    check spans[0].kind == ikImage and spans[0].decorative and spans[0].text == ""
+    check spans[1] == InlineSpan(kind: ikText, text: " and {decorative}")
+    check renderProseHtml(parseMarkdownDoc("![](rule.png){decorative}")) ==
+      "<p><img src=\"/rule.png\" alt=\"\"></p>"
+    # Negative control: without the marker the image is not decorative.
+    let plain = parseInlineSpans("![](rule.png)")
+    check plain.len == 1 and not plain[0].decorative
+    # A link is never decorative; the marker after it is text.
+    let link = parseInlineSpans("[x](y){decorative}")
+    check link[0].kind == ikLink and not link[0].decorative
+    check link[1].text == "{decorative}"
+    # A decorative image renders alt="" whatever its brackets hold.
+    check renderProseHtml(parseMarkdownDoc("![words](a.png){decorative}")) ==
+      "<p><img src=\"/a.png\" alt=\"\"></p>"
+
+  test "a decorative image can be a figure, and keeps its marker in the tree renderer's alt":
+    let doc = parseMarkdownDoc("![](plot.png){decorative}\n*A caption*")
+    check doc.blocks[0].kind == bkFigure
+    check doc.blocks[0].figureImage.decorative
+    check renderProseHtml(doc) ==
+      "<figure><img src=\"/plot.png\" alt=\"\"><figcaption>A caption</figcaption></figure>"
+
+  test "image spans carry their source line, offset by firstLine":
+    let body = "Intro.\n\n![One](a.png)\n\n- item ![Two](b.png)\n\n> ![Three](c.png)\n\n" &
+      ":::figure\n![Four](d.png)\nCaption\n:::\n\n![Five](e.png)\n*Caption*\n\n" &
+      "Text ~~![Six](f.png)~~ end.\n\nNote[^n].\n\n[^n]: ![Seven](g.png)\n"
+    let doc = parseMarkdownDoc(body, firstLine = 10)
+    var found: seq[string]
+    for image in proseImages(doc.blocks): found.add image.text & "@" & $image.line
+    check found == @["One@12", "Two@14", "Three@16", "Four@19", "Five@23", "Six@26", "Seven@30"]
+
+  test "proseImages finds images in every prose block, in document order":
+    let doc = parseMarkdownDoc("# Title ![h](h.png)\n\n:::note\n![n](n.png)\n:::\n\nlast ![](z.png)")
+    var found: seq[string]
+    for image in proseImages(doc.blocks): found.add image.href
+    check found == @["/h.png", "/n.png", "/z.png"]
