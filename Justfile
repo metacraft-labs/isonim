@@ -223,6 +223,14 @@ test-c:
     nim c -r tests/test_router.nim
     nim c -r tests/test_ssr_routing.nim
     nim c -r tests/test_server_functions.nim
+    # A write or flush on a nil `ctx.bodyWriter` raises ValueError (a 500),
+    # not SIGSEGV; also under ngx-isonim's release flags, where the
+    # compiler's nil checks are off.
+    nim c -r --out:build/tests/test_response_body tests/test_response_body.nim
+    nim c -r -d:release -d:danger --out:build/tests/test_response_body_danger tests/test_response_body.nim
+    # `outputStream` exists only in ngx-isonim's module configuration.
+    nim c -r -d:useFaststreams -d:isServer -d:asyncBackend=nginx --out:build/tests/test_response_body_faststreams tests/test_response_body_faststreams.nim
+    nim c -r -d:useFaststreams -d:isServer -d:asyncBackend=nginx -d:release -d:danger --out:build/tests/test_response_body_faststreams_danger tests/test_response_body_faststreams.nim
     # IFP-M30: streaming pages on a host without a body writer (in-process).
     nim c -r -d:isonimRpcPrefix=/api/v1/rpc tests/routing/t_manifest_streaming_buffered.nim
     nim c -r tests/test_form_actions.nim

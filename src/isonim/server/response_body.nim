@@ -19,7 +19,14 @@
 ##   (`ngx-isonim`: `isonim_ssr_max_buffer_size`);
 ## * `ClientConnectionError` when the server could not send (the client
 ##   went away, or the request has ended);
-## * `ValueError` when the response is a redirect (redirects carry no body).
+## * `ValueError` when the response is a redirect (redirects carry no body),
+##   and when the writer is nil: a host that does not stream leaves
+##   `ctx.bodyWriter` nil (isonim-routing-server-functions.md, "Request
+##   Context"), and a write, flush or (under `-d:useFaststreams`)
+##   `outputStream` on it raises instead of
+##   dereferencing nil, which would kill the process (an nginx worker with
+##   every request in flight on it).  The check is explicit so that it holds
+##   under `-d:danger` too, where the compiler's nil checks are off.
 ##
 ## Callers should let these propagate: the server turns them into a `500`
 ## (nothing sent yet) or a terminated response (headers already sent).
@@ -55,20 +62,41 @@ proc newResponseBody*(writeImpl: proc(data: openArray[char]);
   ## Used by the transport (serve.nim).
   ResponseBody(writeImpl: writeImpl, flushImpl: flushImpl)
 
+proc requireWriter(b: ResponseBody; op: string) =
+  ## Raises `ValueError` for a nil writer.  `ValueError`, not an `IOError`:
+  ## nothing failed on the wire, the handler used a writer the host never
+  ## gave it, so the host must answer it as a handler error (`500`), not as
+  ## a client that went away (`ClientConnectionError`, dropped quietly).  It
+  ## is also what `ngx-isonim` raised for this misuse before IsoNim owned
+  ## the writer.
+  if b.isNil:
+    raise newException(ValueError, op & " on a nil response body writer: " &
+      "this host does not stream the response (`ctx.bodyWriter` is nil); " &
+      "write to `ctx.responseBody` instead")
+
 proc write*(b: ResponseBody; data: openArray[char]) =
+  ## Queues `data`.  Raises `ValueError` when `b` is nil.
+  b.requireWriter("write")
   b.writeImpl(data)
 
 proc write*(b: ResponseBody; data: string) =
+  ## Queues `data`.  Raises `ValueError` when `b` is nil.
+  b.requireWriter("write")
   b.writeImpl(data.toOpenArray(0, data.high))
 
 proc flush*(b: ResponseBody) =
+  ## Sends what is queued (on a streaming transport the first flush
+  ## commits).  Raises `ValueError` when `b` is nil.
+  b.requireWriter("flush")
   b.flushImpl()
 
 when defined(useFaststreams) and not defined(isNginxTest):
   proc outputStream*(b: ResponseBody): OutputStream =
     ## A faststreams view of this body.  Each faststreams flush is a
     ## `write` followed by a `flush`.  Errors keep their type in
-    ## `b.failure`; faststreams sees them as IOError.
+    ## `b.failure`; faststreams sees them as IOError.  Raises `ValueError`
+    ## when `b` is nil (checked before any field of `b` is read).
+    b.requireWriter("outputStream")
     if not b.fsCreated:
       let body = b
       proc flushCb(data: openArray[byte]) {.gcsafe, raises: [IOError].} =

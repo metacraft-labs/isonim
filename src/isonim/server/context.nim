@@ -208,7 +208,10 @@ else:
 
   proc bodyWriter*[C: RequestContext](ctx: C): ResponseBody =
     ## The server's response body writer for this request, nil when the
-    ## server does not stream.  Its first `flush` commits the response.
+    ## server does not stream (check `isNil` first, as `PageStream` does).
+    ## Its first `flush` commits the response.  A write or flush on the nil
+    ## writer raises `ValueError` (response_body.nim), which the host
+    ## answers as a handler error.
     ##
     ## Generic on purpose: a server that exports a `bodyWriter(ctx:
     ## RequestContext)` of its own outranks this one instead of making the
