@@ -59,7 +59,7 @@ for label, flags in [('default', []), ('recordable', ['-d:isonimRecordable']),
     result.check_returncode()
 
 for path, guard, reason in [
-    ('listen', '        refuseReadReplay(currentClock, "listen")\n', 'listener-delivery-before-dispatch'),
+    ('listen', '          refuseReadReplay(currentClock, "listen")\n', 'listener-delivery-before-dispatch'),
     ('delegate', '  refuseReadReplay(currentClock, "delegateEvents")\n', 'delegated-delivery-before-metadata'),
 ]:
     directory = out / (path + '-inverse')
@@ -74,8 +74,9 @@ for path, guard, reason in [
         assert text.count(anchor) == 1
         text = text.replace(anchor, anchor.replace(guard, ''), 1)
     else:
-        assert text.count(guard) == 1
-        text = text.replace(guard, '', 1)
+        anchor = '          # A retained native registration can outlive a backend selection.\n' + guard
+        assert text.count(anchor) == 1
+        text = text.replace(anchor, anchor.replace(guard, ''), 1)
     target.write_text(text)
     inverse_fixtures = directory / 'tests/fixtures'
     inverse_fixtures.mkdir(parents=True)
