@@ -2145,6 +2145,7 @@ test-replay-reads-owner: test-replay-ssr-guard
     python3 tools/test_record_media_owner.py
     python3 tools/test_record_measure_owner.py
     python3 tools/test_record_timers_owner.py
+    python3 tools/test_record_frames_owner.py
 
 # Artifact-free ordinary/recordable SSR byte fidelity and private-guard inverse.
 test-replay-ssr-guard:
@@ -2220,3 +2221,7 @@ test-record-measure-owner:
 # Fixed captured-native one-shot preparation and actual public owner Replay.
 test-record-timers-owner:
     python3 tools/test_record_timers_owner.py
+
+# Fixed captured-native frame timestamps and actual public owner Replay.
+test-record-frames-owner:
+    python3 tools/test_record_frames_owner.py
