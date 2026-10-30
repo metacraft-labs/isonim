@@ -15,7 +15,7 @@ import subprocess
 import tempfile
 
 ROOT = Path(__file__).resolve().parents[1]
-MODULE = Path('src/isonim/dsl/private/input_privacy.nim')
+MODULE = Path('src/isonim/dsl/private/input_privacy_policy.nim')
 
 # Each failure has an independently compiled legal sibling. Outcomes are from
 # the real policy, not inferred from an error code or a source-text search.
@@ -110,8 +110,9 @@ def prepare(directory: Path):
     }
     for name, (old, new) in mutations.items():
         assert original.count(old) == 1
-        path = directory / name / MODULE
-        path.parent.mkdir(parents=True)
+        mutant = directory / name
+        shutil.copytree(ROOT / 'src', mutant / 'src', symlinks=True)
+        path = mutant / MODULE
         path.write_text(original.replace(old, new))
     (directory / 'CASES.json').write_text(json.dumps(rows, indent=2) + '\n')
 

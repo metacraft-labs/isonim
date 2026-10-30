@@ -463,7 +463,7 @@ test-ssr:
     nim c -r tests/test_dsl_ssr.nim
     nim c -r tests/test_round_trip.nim
 
-# Private declaration policy preparation; ui enforcement is not activated.
+# Privileged policy qualification; full field-choice enforcement remains pending.
 # Optional runner arguments retain qualification evidence in a chosen directory.
 test-input-privacy-policy *args:
     python3 tools/test_input_privacy_policy.py {{args}}
@@ -2259,3 +2259,7 @@ test-record-storage-owner:
 # Captured native History and ordinary typed observation through actual owner.
 test-record-history-owner:
     python3 tools/test_record_history_owner.py
+
+# Explicit public UI metadata across native/web/SSR, including real Chromium.
+test-public-directive *args:
+    python3 tools/test_public_directive.py {{args}}

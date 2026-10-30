@@ -50,6 +50,7 @@ import ./scene_graph
 import ./style_provenance
 import ./style_binding
 import ./stable_ids
+import ./private/input_privacy_policy
 # Bound, not left for the caller to import: every element of a `ui:` block
 # asks for its hydration key, and a consumer that never hydrates should not
 # have to know the module exists.
@@ -125,6 +126,16 @@ proc attrNameStr(node: NimNode): string {.compileTime.} =
   else:
     error("DSL attribute name must be an ident, accent-quoted ident, or " &
           "(open|closed) sym choice; got " & $node.kind, node)
+
+proc explicitPublicPrivacy(node: NimNode; tag: string): InputPrivacy {.compileTime.} =
+  ## Only this authored branch is activated until sensitive sinks are ready.
+  ## Validate the entire element before any backend-specific emission occurs.
+  for i in 1 ..< node.len:
+    let arg = node[i]
+    if arg.kind == nnkExprEqExpr and arg[0].kind != nnkRefTy and
+        attrNameStr(arg[0]).toLowerAscii == "public":
+      return inputPrivacy(node, tag, attrNameStr)
+  ipNone
 
 proc isHydrationFlag(attrName: string): bool {.compileTime.} =
   ## `hydrate = true` / `needsId = true`: not an attribute, a request for a
@@ -312,7 +323,7 @@ proc emitNoteElement(stmts, elSym: NimNode; tag: string;
 
 proc emitEditableAssign(stmts, rendererSym, elSym, node: NimNode;
                         setter, id, property: string;
-                        literal: NimNode) {.compileTime.} =
+                        literal: NimNode; privacy = ipNone; htmlTag = "") {.compileTime.} =
   ## Emit an assignment whose value the editor can change at runtime.
   ##
   ## In the edit regime an authored literal becomes a cell, and the assignment
@@ -335,7 +346,12 @@ proc emitEditableAssign(stmts, rendererSym, elSym, node: NimNode;
         params = [newEmptyNode()],
         body = newStmtList(
           newCall(newDotExpr(rendererSym, ident(setter)), elSym,
-                  newStrLitNode(property), newCall(bindSym"val", cellSym))))))
+                  newStrLitNode(property),
+                  # An editor literal is a live cell, including on a rebuild
+                  # which reuses an earlier edit. Check the actual read bytes
+                  # before the renderer sees them; the literal remains its seed.
+                  checkedPrivacyValue(privacy, htmlTag, property,
+                    newCall(bindSym"val", cellSym)))))))
       return
   stmts.add(newCall(newDotExpr(rendererSym, ident(setter)),
                     elSym, newStrLitNode(property), literal))
@@ -701,6 +717,7 @@ proc processNode(rendererSym: NimNode; node: NimNode;
       error("ui: cannot tell what this call renders", node)
 
     let htmlTag = resolveTagName(tagIdent)
+    let privacy = explicitPublicPrivacy(node, htmlTag)
     let elSym = genName("el")
 
     # Per-element static vocabulary check. Collects the attribute names
@@ -716,7 +733,8 @@ proc processNode(rendererSym: NimNode; node: NimNode;
         let attrName = attrNameStr(arg[0])
         if attrName.toLowerAscii == "data-isonim-record":
           error("use the typed record = true/false directive", arg)
-        if attrName == "record" or isEventHandler(attrName) or isHydrationFlag(attrName) or
+        if (privacy == ipPublic and attrName.toLowerAscii in ["public", "sensitive"]) or
+            attrName == "record" or isEventHandler(attrName) or isHydrationFlag(attrName) or
             (stableIdsEnabled and attrName == "key"):
           continue
         if isStyleProperty(attrName):
@@ -725,6 +743,10 @@ proc processNode(rendererSym: NimNode; node: NimNode;
           vocabAttrs.add attrName
     stmts.add(newLetStmt(elSym,
       newCall(newDotExpr(rendererSym, ident"createElement"), newStrLitNode(htmlTag))))
+
+    if privacy == ipPublic:
+      stmts.add(newCall(newDotExpr(rendererSym, ident"setAttribute"),
+        elSym, newLit("data-isonim-public"), newLit("true")))
 
     # Static vocabulary: proc-as-element probe first (a hit reports here, before the tag
     # check, so the actionable error leads; the sibling unknown-tag error
@@ -791,11 +813,19 @@ proc processNode(rendererSym: NimNode; node: NimNode;
           let attrName = attrNameStr(arg[0])
           if attrName.toLowerAscii == "data-isonim-record":
             error("use the typed record = true/false directive", arg)
-          let attrVal = arg[1]
-          if attrName != "record":
-            collectAttrBindings(styleBindings, attrName, attrVal)
+          let authoredVal = arg[1]
+          # Only raw string literals were validated by inputPrivacy. Other
+          # forms, including dollar-prefix literals, need the exact value guard.
+          let attrVal = if authoredVal.kind notin {nnkStrLit, nnkRStrLit, nnkTripleStrLit}:
+              checkedPrivacyValue(privacy, htmlTag, attrName, authoredVal)
+            else: authoredVal
+          if attrName != "record" and not (privacy == ipPublic and
+              attrName.toLowerAscii in ["public", "sensitive"]):
+            collectAttrBindings(styleBindings, attrName, authoredVal)
 
-          if attrName == "record":
+          if privacy == ipPublic and attrName.toLowerAscii in ["public", "sensitive"]:
+            discard # Typed metadata, never an authored HTML attribute.
+          elif attrName == "record":
             stmts.add(newCall(newDotExpr(rendererSym, ident"setAttribute"),
               elSym, newLit("data-isonim-record"), newCall(bindSym"recordDirective", attrVal)))
           elif stableIdsEnabled and attrName == "key":
@@ -840,7 +870,7 @@ proc processNode(rendererSym: NimNode; node: NimNode;
           elif not isDynamic(attrVal):
             # Static attribute
             emitEditableAssign(stmts, rendererSym, elSym, node, "setAttribute",
-                               sceneId, attrName, attrVal)
+                               sceneId, attrName, attrVal, privacy, htmlTag)
           else:
             # Dynamic attribute - wrap in effect
             let effectBody = newProc(
@@ -1117,6 +1147,7 @@ proc ssrNodeExpr(node: NimNode; stmts: NimNode): NimNode {.compileTime.} =
 
     # Handle element nodes
     let htmlTag = resolveTagName(name)
+    let privacy = explicitPublicPrivacy(node, htmlTag)
     let isVoid = isVoidElement(htmlTag)
 
     # Build the opening tag as a string expression
@@ -1159,6 +1190,9 @@ proc ssrNodeExpr(node: NimNode; stmts: NimNode): NimNode {.compileTime.} =
         " data-isonim-src=\"" & ssrSceneId & "\"" &
         " data-isonim-tag=\"" & htmlTag & "\""))
 
+    if privacy == ipPublic:
+      tagParts.add(newLit(" data-isonim-public=\"true\""))
+
     # Collect attributes and children
     var childBody: NimNode = nil
     var hasHydrationKey = false
@@ -1174,11 +1208,19 @@ proc ssrNodeExpr(node: NimNode; stmts: NimNode): NimNode {.compileTime.} =
         let attrName = attrNameStr(arg[0])
         if attrName.toLowerAscii == "data-isonim-record":
           error("use the typed record = true/false directive", arg)
-        let attrVal = arg[1]
-        if attrName != "record":
-          collectAttrBindings(styleBindings, attrName, attrVal)
+        let authoredVal = arg[1]
+        # Only raw string literals were validated by inputPrivacy. Other
+        # forms, including dollar-prefix literals, need the exact value guard.
+        let attrVal = if authoredVal.kind notin {nnkStrLit, nnkRStrLit, nnkTripleStrLit}:
+            checkedPrivacyValue(privacy, htmlTag, attrName, authoredVal)
+          else: authoredVal
+        if attrName != "record" and not (privacy == ipPublic and
+            attrName.toLowerAscii in ["public", "sensitive"]):
+          collectAttrBindings(styleBindings, attrName, authoredVal)
 
-        if attrName == "record":
+        if privacy == ipPublic and attrName.toLowerAscii in ["public", "sensitive"]:
+          discard # Typed metadata, never an authored HTML attribute.
+        elif attrName == "record":
           tagParts.add(newStrLitNode(" data-isonim-record=\""))
           tagParts.add(newCall(bindSym"recordDirective", attrVal))
           tagParts.add(newStrLitNode("\""))
@@ -1498,6 +1540,7 @@ proc collectNode(node: NimNode; ops: var seq[StreamOp]) {.compileTime.} =
       return
 
     let htmlTag = resolveTagName(name)
+    let privacy = explicitPublicPrivacy(node, htmlTag)
     let isVoid = isVoidElement(htmlTag)
 
     # Build opening tag, concatenating static attributes at compile time
@@ -1519,6 +1562,9 @@ proc collectNode(node: NimNode; ops: var seq[StreamOp]) {.compileTime.} =
         expr: newCall(bindSym"ssrRuntimeIid", newLit(stableId))))
       pendingOps.add(StreamOp(kind: sokStatic, text: "\""))
 
+    if privacy == ipPublic:
+      openTag.add(" data-isonim-public=\"true\"")
+
     for i in 1 ..< node.len:
       let arg = node[i]
       case arg.kind
@@ -1528,9 +1574,16 @@ proc collectNode(node: NimNode; ops: var seq[StreamOp]) {.compileTime.} =
         let attrName = attrNameStr(arg[0])
         if attrName.toLowerAscii == "data-isonim-record":
           error("use the typed record = true/false directive", arg)
-        let attrVal = arg[1]
+        let authoredVal = arg[1]
+        # Only raw string literals were validated by inputPrivacy. Other
+        # forms, including dollar-prefix literals, need the exact value guard.
+        let attrVal = if authoredVal.kind notin {nnkStrLit, nnkRStrLit, nnkTripleStrLit}:
+            checkedPrivacyValue(privacy, htmlTag, attrName, authoredVal)
+          else: authoredVal
 
-        if attrName == "record":
+        if privacy == ipPublic and attrName.toLowerAscii in ["public", "sensitive"]:
+          discard # Typed metadata, never an authored HTML attribute.
+        elif attrName == "record":
           openTag.add(" data-isonim-record=\"")
           pendingOps.add(StreamOp(kind: sokStatic, text: openTag))
           openTag = "\""
