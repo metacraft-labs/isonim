@@ -463,6 +463,11 @@ test-ssr:
     nim c -r tests/test_dsl_ssr.nim
     nim c -r tests/test_round_trip.nim
 
+# Private declaration policy preparation; ui enforcement is not activated.
+# Optional runner arguments retain qualification evidence in a chosen directory.
+test-input-privacy-policy *args:
+    python3 tools/test_input_privacy_policy.py {{args}}
+
 # Focused escaping gate, including the actual optional native backend.
 test-escape-writers:
     nim c -r tests/test_escape_writers.nim
