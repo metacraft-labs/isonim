@@ -205,6 +205,7 @@ test-c:
     nim c -r --out:build/test_keyed_effect_lifetime tests/test_keyed_effect_lifetime.nim
     nim c -r tests/test_dsl.nim
     nim c -r tests/test_ssr.nim
+    nim c -r tests/test_escape_writers.nim
     nim c -r tests/test_streaming.nim
     nim c -r tests/test_dsl_ssr.nim
     nim c -r tests/test_dsl_helper_calls.nim
@@ -320,6 +321,7 @@ test-hcr-shim:
 # without the optional default native map. An absent-map fallback does not
 # qualify provisioned utility behavior.
 test-js: build-tailwind
+    nim js -r tests/test_escape_writers.nim
     nim js -d:nodejs --out:build/test_editor_workspace_refresh.js tests/test_editor_workspace_refresh.nim
     python3 tools/run_nim_js_test.py build/test_editor_workspace_refresh.js
     nim js -r --out:build/test_editor_control.js tests/test_editor_control.nim
@@ -455,10 +457,17 @@ test-data-loading:
 # Run SSR and round-trip tests
 test-ssr:
     nim c -r tests/test_ssr.nim
+    nim c -r tests/test_escape_writers.nim
     nim c -r --out:build/test_ssr_serializer_safety tests/test_ssr_serializer_safety.nim
     nim c -r tests/test_streaming.nim
     nim c -r tests/test_dsl_ssr.nim
     nim c -r tests/test_round_trip.nim
+
+# Focused escaping gate, including the actual optional native backend.
+test-escape-writers:
+    nim c -r tests/test_escape_writers.nim
+    nim js -r tests/test_escape_writers.nim
+    nim c -r -d:useFaststreams tests/test_escape_writers.nim
 
 # Run only web renderer tests (JS-only)
 test-web:
