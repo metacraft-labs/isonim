@@ -14,6 +14,8 @@ from pathlib import Path
 import re
 import subprocess
 
+from lint_privacy import privacy_bindings, PRIVACY_APIS
+
 
 @dataclass(frozen=True)
 class Finding:
@@ -91,7 +93,7 @@ def decode_nim_string(text: str) -> tuple[str, list[int]]:
     return decoded, offsets
 
 
-def nim_foreign(text: str):
+def foreign_fragments(text: str):
     """Yield importjs/importc/emit payloads, including emit fragment arrays.
 
     Tokenizing first prevents examples in comments or ordinary Nim strings from
@@ -167,11 +169,11 @@ def nim_foreign(text: str):
         if not tail or tail[0][1] != ':': continue
         tail = tail[1:]
         if tail and tail[0][0] == 'string':
-            yield tail[0][1], literal_lines[tail[0][2]]
+            yield tail[0][1], literal_lines[tail[0][2]], []
         elif value == 'emit' and tail and tail[0][1] == '[':
             # Non-string Nim expressions splice generated identifiers. A marker
             # retains expression structure while adjacent strings concatenate.
-            parts, locations, fragment = [], [], []
+            parts, locations, fragment, opaque = [], [], [], []
             nesting = []
 
             def append_fragment():
@@ -181,6 +183,8 @@ def nim_foreign(text: str):
                     parts.append(fragment[0][1])
                     locations.extend(literal_lines[fragment[0][2]])
                 elif fragment:
+                    start = sum(map(len, parts))
+                    opaque.append((start, start + len('__nim')))
                     parts.append('__nim')
                     locations.extend([source_lines[fragment[0][2]]] * len('__nim'))
                 fragment.clear()
@@ -196,10 +200,17 @@ def nim_foreign(text: str):
                     if val in '[({': nesting.append(val)
                     elif val in '])}' and nesting: nesting.pop()
                 fragment.append((tk, val, at))
-            yield ''.join(parts), locations
+            yield ''.join(parts), locations, opaque
 
 
-def executable_js(text: str) -> str:
+def nim_foreign(text: str):
+    # Preserve the established two-item library interface. Privacy analysis uses
+    # explicit splice spans from the same tokenizer, never marker spellings.
+    for payload, positions, _opaque in foreign_fragments(text):
+        yield payload, positions
+
+
+def js_lexical_parts(text: str):
     """Elide JS comments/string contents; retain template interpolation code.
 
     Bracket literal properties are canonicalized so Date['now'] is checked too.
@@ -207,6 +218,7 @@ def executable_js(text: str) -> str:
     stops short of resolving aliases, computed names or generated source.
     """
     out = list(text)
+    literals = []
 
     def elide(start: int, end: int):
         out[start:end] = blank(text[start:end])
@@ -218,10 +230,15 @@ def executable_js(text: str) -> str:
             if text[i] == '\\': i += 2
             elif text[i] == quote: i += 1; break
             else: i += 1
+        literals.append((start, i))
         elide(start, i)
         return i
 
     def template(i: int) -> int:
+        # Structural extent is separate from the elided prose. Privacy flow
+        # needs to distinguish a tagged-template continuation from an ASI gap;
+        # executable interpolation tokens remain in the mask as before.
+        template_start = i
         start = i
         i += 1
         while i < len(text):
@@ -229,6 +246,7 @@ def executable_js(text: str) -> str:
             elif text[i] == '`':
                 i += 1
                 elide(start, i)
+                literals.append((template_start, i))
                 return i
             elif text.startswith('${', i):
                 elide(start, i + 2)
@@ -279,7 +297,11 @@ def executable_js(text: str) -> str:
         return i
 
     code(0)
-    result = ''.join(out)
+    return ''.join(out), literals
+
+
+def executable_js(text: str) -> str:
+    result, _literals = js_lexical_parts(text)
     # Only literal member names; strings elsewhere remain invisible.
     for m in re.finditer(r'\[\s*([\'"])([A-Za-z_$][\w$]*)\1\s*\]', text):
         if result[m.start():m.start()+1] == '[':
@@ -308,18 +330,23 @@ PATTERNS = {
 WARNINGS = ['Worker', 'WebAssembly', 'BroadcastChannel', 'indexedDB']
 
 
-def scan_file(path: Path, label: str) -> list[Finding]:
+def scan_file(path: Path, label: str, *, platform: bool = True) -> list[Finding]:
     text = path.read_text()
     if path.suffix == '.js':
         positions, line = [], 1
-        for ch in text:
+        for index, ch in enumerate(text):
             positions.append(line)
-            if ch == '\n': line += 1
-        fragments = [(text, positions)]
+            if ch in '\r\u2028\u2029' or (ch == '\n' and (index == 0 or text[index-1] != '\r')):
+                line += 1
+        fragments = [(text, positions, [])]
     else:
-        fragments = nim_foreign(text)
+        fragments = foreign_fragments(text)
     findings = []
-    for payload, positions in fragments:
+    for payload, positions, opaque in fragments:
+        mask, literals = js_lexical_parts(payload)
+        findings.extend(Finding(label, positions[offset], api)
+                        for offset, api in privacy_bindings(payload, mask, literals, opaque))
+        if not platform: continue
         code = executable_js(payload)
         for api, pattern in PATTERNS.items():
             matches = list(re.finditer(pattern, code))
@@ -359,8 +386,8 @@ def scan(roots: list[Path]) -> list[Finding]:
             label = root.parent.name + '/' + root.name + '/' + relative
             # This exact framework backend owns foreign platform reads. A site's
             # similarly named module is still scanned.
-            if path.resolve() == Path(__file__).resolve().parents[1] / 'src/isonim/core/nondet.nim': continue
-            findings.extend(scan_file(path, label))
+            platform = path.resolve() != Path(__file__).resolve().parents[1] / 'src/isonim/core/nondet.nim'
+            findings.extend(scan_file(path, label, platform=platform))
     return findings
 
 
@@ -373,6 +400,8 @@ def apply_allowlist(findings: list[Finding], entries: list[dict]) -> list[Findin
             raise ValueError('allowlist entries require path, api, count, reason')
         if not all(isinstance(entry[name], str) and entry[name].strip() for name in ('path', 'api')):
             raise ValueError('allowance path and api must be nonempty strings')
+        if entry['api'] in PRIVACY_APIS:
+            raise ValueError('privacy findings cannot be allowed')
         key = (entry['path'], entry['api'])
         if key in allowed: raise ValueError(f'duplicate allowance: {key}')
         if not isinstance(entry['reason'], str) or not entry['reason'].strip():
