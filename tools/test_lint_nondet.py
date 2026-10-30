@@ -2207,5 +2207,1866 @@ process.stdout.write('class-field-timing-ok\n');
         self.assertIn('FAILED (failures=1)',result.stderr)
         self.assertNotIn('ERROR:',result.stderr)
 
+class NimPrivacyTests(unittest.TestCase):
+    # Real source input, CLI, Git and stock compiler; no mock DOM or scanner.
+    setUp = LintTests.setUp
+    write = LintTests.write
+    retain_inputs = LintTests.retain_inputs
+    cli = LintTests.cli
+
+    def check(self, source, expected, name='ordinary.nim'):
+        path = self.write(name, source)
+        result = self.cli()
+        self.assertEqual(json.loads(result.stdout), [dict(path='site/src/'+name,
+                         line=line, api=api, severity='error') for line, api in expected])
+        self.assertEqual(result.returncode, 1 if expected else 0, result.stderr)
+        path.unlink()
+
+    def compile(self, path):
+        command = ['nim', 'js', '--hints:off', '--path:'+str(PROJECT/'src'),
+                   '--path:'+str(PROJECT.parent/'nim-everywhere/src'),
+                   '--nimcache:'+str(Path(self.temp.name)/'cache'),
+                   '--out:'+str(Path(self.temp.name)/'component.js'), str(path)]
+        self.retain_inputs(command)
+        result = subprocess.run(command, capture_output=True, text=True)
+        self.assertEqual(result.returncode, 0, result.stdout+result.stderr)
+
+    def test_nim_compiled_raw_component_removal_and_public_dsl(self):
+        path = self.write('ordinary.nim', '''import isonim/web/dom_api
+proc rawComponent(initial: cstring): Element =
+  let field = dom_api.createElement(dom_api.document, "input")
+  dom_api.setJsPropCstring(field, "value", initial)
+  result = field
+discard rawComponent("seed")
+''')
+        self.compile(path)
+        result = self.cli()
+        self.assertEqual(json.loads(result.stdout), [dict(path='site/src/ordinary.nim',
+                         line=4, api='free-text binding', severity='error')])
+        self.assertEqual(result.returncode, 1, result.stderr)
+        path.unlink()
+        result = self.cli()
+        self.assertEqual(json.loads(result.stdout), [])
+        self.assertEqual(result.returncode, 0, result.stderr)
+        path.write_text('''import isonim/web/web_renderer
+import isonim/web/dom_api
+import isonim/rxcore
+import isonim/dsl/ui
+proc publicComponent(r: WebRenderer): Element =
+  ui(r):
+    input(`type` = "text", public = true, value = "seed")
+discard publicComponent(WebRenderer())
+''')
+        self.compile(path)
+        result = self.cli()
+        self.assertEqual(json.loads(result.stdout), [])
+        self.assertEqual(result.returncode, 0, result.stderr)
+
+    def test_nim_compiled_inherited_text_content(self):
+        source = '''import isonim/web/dom_api
+proc rawText(initial: cstring): Element =
+  let field = dom_api.createElement(dom_api.document, "textarea")
+  field.textContent = initial
+  result = field
+discard rawText("seed")
+'''
+        path = self.write('ordinary.nim', source)
+        self.compile(path)
+        result = self.cli()
+        self.assertEqual(json.loads(result.stdout), [dict(path='site/src/ordinary.nim',
+                         line=4, api='free-text binding', severity='error')])
+        self.assertEqual(result.returncode, 1, result.stderr)
+
+    def test_nim_field_policy_exact_table(self):
+        cases = [('input', '', 'free-text binding'),
+                 *[('input', 'dom_api.setAttribute(field, "type", "'+t+'")\n', 'free-text binding')
+                   for t in ['text','search','email','tel','url','password']],
+                 ('textarea', '', 'free-text binding'),
+                 ('input', 'dom_api.setAttribute(field, "type", dynamicType)\n', 'free-text binding'),
+                 ('div', 'dom_api.setAttribute(field, "contenteditable", "true")\n', 'free-text binding'),
+                 ('div', 'dom_api.setAttribute(field, "contenteditable", "plaintext-only")\n', 'free-text binding'),
+                 ('input', 'dom_api.setAttribute(field, "autocomplete", "section-login current-password")\n', 'free-text binding'),
+                 ('input', 'dom_api.setAttribute(field, "autocomplete", "cc-number")\n', 'free-text binding'),
+                 ('input', 'dom_api.setAttribute(field, "type", "checkbox")\n', None),
+                 ('input', 'dom_api.setAttribute(field, "type", "button")\n', None),
+                 ('div', 'dom_api.setAttribute(field, "contenteditable", "false")\n', None),
+                 ('label', '', None)]
+        for tag, metadata, api in cases:
+            with self.subTest(tag=tag, metadata=metadata):
+                source = ('import isonim/web/dom_api\nlet field = dom_api.createElement(dom_api.document, "'+tag+'")\n'+
+                          metadata+'dom_api.setJsPropCstring(field, "value", "seed")\n')
+                self.check(source, [(source.count('\n'), api)] if api else [])
+
+    def test_nim_alias_transition_order_and_recovery(self):
+        self.check('''import isonim/web/dom_api
+var field = dom_api.createElement(dom_api.document, "input")
+let alias = field
+dom_api.setAttribute(alias, "type", "checkbox")
+dom_api.setJsPropCstring(field, "value", "ok")
+dom_api.setAttribute(alias, "type", "text")
+dom_api.setJsPropCstring(field, "value", "seed")
+field = dom_api.createElement(dom_api.document, "button")
+dom_api.setJsPropCstring(field, "value", "ok")
+dom_api.setJsPropCstring(alias, "value", "seed")
+''', [(7,'free-text binding'),(10,'free-text binding')])
+
+    def test_nim_literal_contents_are_never_structure(self):
+        for value in ['(', ')', '[', ']', '{', '}', ':', '=', '.', ',', ';', 'if', 'proc', 'import', 'as']:
+            with self.subTest(value=value):
+                self.check('import isonim/web/dom_api\nlet field = dom_api.createElement(dom_api.document, "input")\n'+
+                           'dom_api.setAttribute(field, "id", '+json.dumps(value)+')\n'+
+                           'dom_api.setJsPropCstring(field, "value", '+json.dumps(value)+')\n', [(4,'free-text binding')])
+        self.check('''import isonim/web/dom_api
+#[ outer #[ dom_api.setJsPropCstring(field, "value", "seed") ]# ]#
+let prose = "dom_api.createElement(document, input)"
+let field = dom_api.createElement(dom_api.document, """input""")
+dom_api.setAttribute(field, "title", """
+if: ( ) = ;
+  import pretend/dom_api
+""")
+dom_api.setJsPropCstring(
+  field, "value", "seed")
+''', [(10,'free-text binding')])
+
+    def test_nim_literal_decoding_and_generalized_macro_bounds(self):
+        for tag in ['"in\\x70ut"', 'r"input"', '"""input"""']:
+            with self.subTest(tag=tag):
+                self.check('import isonim/web/dom_api\nlet field = dom_api.createElement(dom_api.document, '+tag+')\n'+
+                           'dom_api.setJsPropCstring(field, "val\\x75e", "seed")\n', [(3,'free-text binding')])
+        self.check('''import isonim/web/dom_api
+let field = dom_api.createElement(dom_api.document, custom"input")
+dom_api.setJsPropCstring(field, "value", "seed")
+''', [(3,'unresolved DOM privacy binding')])
+
+    def test_nim_import_alias_style_ufcs_and_upcast(self):
+        sources = [
+            ('import isonim/web/dom_api as browser', 'browser.create_Element(browser.document, "input")', 'browser.set_Js_Prop_Cstring(field, "value", "seed")'),
+            ('import isonim/web/[dom_api]', 'document.createElement("input")', 'field.setJsPropCstring("value", "seed")'),
+            ('import isonim/web/dom_api', 'createElement(document, "input")', 'setJsPropCstring(Node(field), "value", "seed")')]
+        for imp, allocation, access in sources:
+            with self.subTest(imp=imp): self.check(imp+'\nlet field = '+allocation+'\n'+access+'\n', [(3,'free-text binding')])
+
+    def test_nim_compiled_shadowed_module_and_model(self):
+        source = '''import isonim/web/dom_api as browser
+type Model = object
+  value: string
+  textContent: string
+  document: int
+proc createElement(model: Model, d: int, tag: string): Model = model
+proc setJsPropCstring(model: Model, field: Model, name, value: string) = discard
+proc modelComponent() =
+  var browser = Model(value: "seed", textContent: "label", document: 1)
+  let field = browser.createElement(browser.document, "input")
+  browser.setJsPropCstring(field, "value", "ordinary")
+  browser.value = "ordinary"
+  browser.textContent = "ordinary"
+modelComponent()
+'''
+        path = self.write('ordinary.nim',source);self.compile(path)
+        result = self.cli()
+        self.assertEqual(json.loads(result.stdout), [])
+        self.assertEqual(result.returncode,0,result.stderr)
+        path.unlink()
+        self.check('''import isonim/web/dom_api as browser
+block:
+  let browser = ordinaryModel
+  let field = browser.createElement(browser.document, "input")
+  browser.setJsPropCstring(field, "value", "ordinary")
+let field = browser.createElement(browser.document, "input")
+browser.setJsPropCstring(field, "value", "seed")
+''',[(7,'free-text binding')])
+
+    def test_nim_first_character_and_sequential_shadowing(self):
+        self.check('''import isonim/web/dom_api
+let before = dom_api.createElement(dom_api.document, "input")
+dom_api.setJsPropCstring(before, "value", "seed")
+let dom_api = ordinaryModel
+let field = dom_api.createElement(dom_api.document, "input")
+dom_api.setJsPropCstring(field, "value", "ordinary")
+''',[(3,'free-text binding')])
+        self.check('''import isonim/web/dom_api
+let field = Dom_api.createElement(Dom_api.document, "input")
+Dom_api.setJsPropCstring(field, "value", "ordinary")
+''',[])
+        self.check('''import other/dom_api
+let field = dom_api.createElement(dom_api.document, "input")
+dom_api.setJsPropCstring(field, "value", "ordinary")
+''',[])
+
+    def test_nim_parameter_procedure_and_type_shadowing(self):
+        for declaration in ['proc createElement(d: int, tag: string): int = 1',
+                            'template createElement(d, tag: untyped): untyped = 1',
+                            'type createElement = int']:
+            with self.subTest(declaration=declaration):
+                self.check('import isonim/web/dom_api\n'+declaration+'\n'+
+                           'let field = createElement(document, "input")\n'+
+                           'setJsPropCstring(field, "value", "ordinary")\n',[])
+        self.check('''import isonim/web/dom_api
+proc model(dom_api: Model) =
+  let field = dom_api.createElement(dom_api.document, "input")
+  dom_api.setJsPropCstring(field, "value", "ordinary")
+let field = dom_api.createElement(dom_api.document, "input")
+dom_api.setJsPropCstring(field, "value", "seed")
+''',[(6,'free-text binding')])
+
+    def test_nim_metadata_unknown_alias_and_harmless_mutations(self):
+        for mutation, api in [('dom_api.setAttribute(alias, "id", "x")',None),
+                              ('dom_api.setAttribute(alias, "title", "x")',None),
+                              ('dom_api.setAttribute(alias, dynamicName, "x")','unresolved DOM privacy binding'),
+                              ('unknown(alias)','unresolved DOM privacy binding'),
+                              ('dom_api.setJsPropCstring(alias, "type", dynamicType)','free-text binding')]:
+            with self.subTest(mutation=mutation):
+                self.check('import isonim/web/dom_api\nlet field = dom_api.createElement(dom_api.document, "input")\n'+
+                           'dom_api.setAttribute(field, "type", "checkbox")\nlet alias = field\n'+mutation+'\n'+
+                           'dom_api.setJsPropCstring(field, "value", "seed")\n',[(6,api)] if api else [])
+
+    def test_nim_branch_loop_case_and_exception_merges(self):
+        bodies = ['if condition:\n  dom_api.setAttribute(field, "type", "text")',
+                  'while condition:\n  dom_api.setAttribute(field, "type", "text")',
+                  'for i in 0..1:\n  dom_api.setAttribute(field, "type", "text")',
+                  'case kind\nof 1:\n  dom_api.setAttribute(field, "type", "text")\nelse:\n  discard',
+                  'try:\n  dom_api.setAttribute(field, "type", "text")\nexcept ValueError:\n  discard',
+                  'when defined(js):\n  dom_api.setAttribute(field, "type", "text")']
+        for control in bodies:
+            with self.subTest(control=control):
+                source = ('import isonim/web/dom_api\nvar field = dom_api.createElement(dom_api.document, "input")\n'+
+                          'dom_api.setAttribute(field, "type", "checkbox")\n'+control+'\n'+
+                          'dom_api.setJsPropCstring(field, "value", "seed")\n')
+                self.check(source,[(source.count('\n'),'unresolved DOM privacy binding')])
+
+    def test_nim_uninvoked_and_invoked_capture_views(self):
+        source = '''import isonim/web/dom_api
+let field = dom_api.createElement(dom_api.document, "input")
+dom_api.setAttribute(field, "type", "checkbox")
+proc changeType() =
+  dom_api.setAttribute(field, "type", "text")
+'''
+        path=self.write('ordinary.nim',source+'dom_api.setJsPropCstring(field, "value", "ok")\n')
+        self.compile(path)
+        result=self.cli();self.assertEqual(json.loads(result.stdout),[]);self.assertEqual(result.returncode,0,result.stderr)
+        path.write_text(source+'changeType()\ndom_api.setJsPropCstring(field, "value", "seed")\n')
+        self.compile(path)
+        result=self.cli()
+        self.assertEqual(json.loads(result.stdout),[dict(path='site/src/ordinary.nim',line=7,api='unresolved DOM privacy binding',severity='error')])
+        self.assertEqual(result.returncode,1,result.stderr)
+
+    def test_nim_branch_alias_mutation_and_replacement_recovery(self):
+        self.check('''import isonim/web/dom_api
+var field = dom_api.createElement(dom_api.document, "input")
+dom_api.setAttribute(field, "type", "checkbox")
+let prior = field
+if condition:
+  field = dom_api.createElement(dom_api.document, "button")
+dom_api.setAttribute(field, "type", "text")
+dom_api.setJsPropCstring(prior, "value", "seed")
+field = dom_api.createElement(dom_api.document, "button")
+dom_api.setJsPropCstring(field, "value", "ok")
+''',[(8,'unresolved DOM privacy binding')])
+
+    def test_nim_access_kinds_markers_and_multiple_on_one_line(self):
+        self.check('''import isonim/web/dom_api
+let field = dom_api.createElement(dom_api.document, "input")
+dom_api.setAttribute(field, "data-isonim-public", "true")
+discard dom_api.getAttribute(field, "value"); dom_api.setAttribute(field, "value", "seed")
+discard dom_api.getJsProp(field, "value")
+field.textContent = "seed"; discard field.textContent
+''',[(4,'free-text binding'),(4,'free-text binding'),(5,'free-text binding'),(6,'free-text binding'),(6,'free-text binding')])
+        self.check('''import isonim/web/dom_api
+let text = dom_api.createTextNode(dom_api.document, "label")
+text.textContent = "ordinary"
+let button = dom_api.createElement(dom_api.document, "button")
+button.textContent = "ordinary"
+''',[])
+
+    def test_nim_git_and_platform_allowances_do_not_authorize_privacy(self):
+        repo=self.root.parent;subprocess.run(['git','init','-q',str(repo)],check=True)
+        (repo/'.gitignore').write_text('src/generated/\n')
+        source='import isonim/web/dom_api\nlet field = dom_api.createElement(dom_api.document, "input")\ndom_api.setJsPropCstring(field, "value", "seed")\n'
+        self.write('tracked.nim',source)
+        subprocess.run(['git','-C',str(repo),'add','src/tracked.nim'],check=True)
+        self.write('untracked.nim',source);self.write('generated/ignored.nim',source)
+        result=self.cli()
+        self.assertEqual(json.loads(result.stdout),[dict(path='site/src/'+n,line=3,api='free-text binding',severity='error') for n in ['tracked.nim','untracked.nim']])
+        self.assertEqual(result.returncode,1,result.stderr)
+        allow=Path(self.temp.name)/'allow.json';allow.write_text(json.dumps([dict(path='site/src/tracked.nim',api='free-text binding',count=1,reason='not authority')]))
+        result=self.cli('--allowlist',allow)
+        self.assertEqual(result.returncode,2);self.assertIn('privacy findings cannot be allowed',result.stderr)
+        framework=Path(self.temp.name)/'framework';tools=framework/'tools';tools.mkdir(parents=True)
+        for name in ['lint_nondet.py','lint_privacy.py']:shutil.copyfile(SCRIPT.with_name(name),tools/name)
+        path=framework/'src/isonim/core/nondet.nim';path.parent.mkdir(parents=True);path.write_text(source)
+        result=subprocess.run([sys.executable,str(tools/'lint_nondet.py'),'--json',str(framework/'src')],capture_output=True,text=True)
+        self.assertEqual(json.loads(result.stdout),[dict(path='framework/src/isonim/core/nondet.nim',line=3,api='free-text binding',severity='error')])
+        self.assertEqual(result.returncode,1,result.stderr)
+
+    def test_nim_unknown_replacement_and_inline_recovery(self):
+        self.check('''import isonim/web/dom_api
+var field = dom_api.createElement(dom_api.document, "input")
+dom_api.setAttribute(field, "type", "checkbox")
+let prior = field
+field = opaque()
+dom_api.setJsPropCstring(field, "value", "seed")
+dom_api.setAttribute(field, "type", "text")
+dom_api.setJsPropCstring(prior, "value", "seed")
+field = dom_api.createElement(dom_api.document, "button")
+dom_api.setJsPropCstring(field, "value", "ok")
+''', [(6,'unresolved DOM privacy binding'), (8,'unresolved DOM privacy binding')])
+        self.check('''import isonim/web/dom_api
+let field = dom_api.createElement(dom_api.document, "input")
+dom_api.setAttribute(field, "type", "checkbox")
+if condition: dom_api.setAttribute(field, "type", "text")
+dom_api.setJsPropCstring(field, "value", "seed")
+''',[(5,'unresolved DOM privacy binding')])
+
+    def test_nim_harmless_branch_preserves_alias_certification(self):
+        self.check('''import isonim/web/dom_api
+var field = dom_api.createElement(dom_api.document, "input")
+dom_api.setAttribute(field, "type", "checkbox")
+let prior = field
+if condition:
+  dom_api.setAttribute(field, "id", "x")
+dom_api.setJsPropCstring(prior, "value", "ok")
+if condition:
+  field = dom_api.createElement(dom_api.document, "button")
+dom_api.setAttribute(field, "title", "x")
+dom_api.setJsPropCstring(prior, "value", "ok")
+''',[])
+
+    def test_nim_bracket_import_and_direct_allocation_access(self):
+        self.check('''import isonim/web/[dom_api, web_renderer]
+let field = dom_api.createElement(dom_api.document, "input")
+dom_api.setJsPropCstring(field, "value", "seed")
+dom_api.createElement(dom_api.document, "textarea").textContent = "seed"
+''',[(3,'free-text binding'),(4,'free-text binding')])
+
+    def test_nim_compiled_named_arguments_and_attribute_property_distinction(self):
+        source = '''import isonim/web/dom_api
+let field = dom_api.createElement(tag = "input", d = dom_api.document)
+dom_api.setAttribute(value = "ordinary attribute", name = "textContent", e = field)
+discard dom_api.getAttribute(name = "textContent", e = field)
+dom_api.setJsPropCstring(value = "seed", n = field, name = "value")
+discard dom_api.getJsProp(name = "value", n = field)
+let checkbox = dom_api.createElement(tag = "input", d = dom_api.document)
+dom_api.setAttribute(value = "checkbox", e = checkbox, name = "type")
+dom_api.setJsPropCstring(name = "value", value = "ok", n = checkbox)
+dom_api.removeAttribute(name = "type", e = checkbox)
+dom_api.setAttribute(value = "seed", e = checkbox, name = "value")
+'''
+        path = self.write('ordinary.nim', source)
+        self.compile(path)
+        result = self.cli()
+        self.assertEqual(json.loads(result.stdout), [dict(path='site/src/ordinary.nim',
+                         line=line, api='free-text binding', severity='error') for line in [5,6,11]])
+        self.assertEqual(result.returncode,1,result.stderr)
+
+    def test_nim_compiled_backtick_identifier_and_keyword_controls(self):
+        source = '''import isonim/web/dom_api as browser
+proc `if`() = discard
+`if`()
+let field = browser.`createElement`(browser.`document`, "textarea")
+field.`textContent` = "seed"
+'''
+        path = self.write('ordinary.nim', source)
+        self.compile(path)
+        result = self.cli()
+        self.assertEqual(json.loads(result.stdout), [dict(path='site/src/ordinary.nim',
+                         line=5,api='free-text binding',severity='error')])
+        self.assertEqual(result.returncode,1,result.stderr)
+
+    def test_nim_long_alias_history_keeps_iterative_views(self):
+        source = ('import isonim/web/dom_api\nvar field = dom_api.createElement(dom_api.document, "input")\n'+
+                  'dom_api.setAttribute(field, "type", "checkbox")\n'+
+                  'field = opaque()\n'*1100+
+                  'if condition:\n  dom_api.setAttribute(field, "id", "x")\n'+
+                  'dom_api.setJsPropCstring(field, "value", "seed")\n')
+        self.check(source,[(source.count('\n'),'unresolved DOM privacy binding')])
+
+    def test_nim_compiled_routine_local_shadow_keeps_outer_checkbox(self):
+        source = '''import isonim/web/dom_api
+let field = dom_api.createElement(dom_api.document, "input")
+dom_api.setAttribute(field, "type", "checkbox")
+proc localLabel() =
+  let field = dom_api.createElement(dom_api.document, "button")
+  field.textContent = "label"
+localLabel()
+dom_api.setJsPropCstring(field, "value", "ok")
+'''
+        path = self.write('ordinary.nim',source)
+        self.compile(path)
+        result = self.cli()
+        self.assertEqual(json.loads(result.stdout),[])
+        self.assertEqual(result.returncode,0,result.stderr)
+
+    def test_nim_unresolved_imports_remove_stale_authority(self):
+        for imported, create in [
+                ('from other import dom_api', 'dom_api.createElement(dom_api.document, "input")'),
+                ('from other import createElement, document', 'createElement(document, "input")'),
+                ('import other/dom_api', 'dom_api.createElement(dom_api.document, "input")'),
+                ('import other/model as dom_api', 'dom_api.createElement(dom_api.document, "input")'),
+                ('import isonim/web/dom_api except createElement', 'dom_api.createElement(dom_api.document, "input")'),
+                ('include model_bindings', 'dom_api.createElement(dom_api.document, "input")')]:
+            with self.subTest(imported=imported):
+                self.check('import isonim/web/dom_api\n'+imported+'\nlet field = '+create+'\n'+
+                           'field.textContent = "ordinary model"\n', [])
+        self.check('''import isonim/web/dom_api
+let field = dom_api.createElement(dom_api.document, "textarea")
+from other import dom_api
+field.textContent = "seed"
+''', [(4,'free-text binding')])
+        self.check('''import isonim/web/dom_api
+let field = dom_api.createElement(dom_api.document, "input")
+dom_api.setAttribute(field, "type", "checkbox")
+include unknown_bindings
+field.textContent = "seed"
+''', [(5,'unresolved DOM privacy binding')])
+
+    def test_nim_compiled_loop_module_shadow_has_lexical_extent(self):
+        source = '''import isonim/web/dom_api as browser
+type Model = object
+  document: int
+proc createElement(model: Model, d: int, tag: string): Model = model
+proc setJsPropCstring(model: Model, field: Model, name, value: string) = discard
+for browser in [Model(document: 1)]:
+  let field = browser.createElement(browser.document, "input")
+  browser.setJsPropCstring(field, "value", "ordinary")
+let field = browser.createElement(browser.document, "input")
+browser.setJsPropCstring(field, "value", "seed")
+'''
+        path = self.write('ordinary.nim',source)
+        self.compile(path)
+        result = self.cli()
+        self.assertEqual(json.loads(result.stdout),[dict(path='site/src/ordinary.nim',line=10,api='free-text binding',severity='error')])
+        self.assertEqual(result.returncode,1,result.stderr)
+        path.unlink()
+        self.check('''import isonim/web/dom_api
+proc generic[dom_api](model: dom_api) =
+  let field = dom_api.createElement(dom_api.document, "input")
+  dom_api.setJsPropCstring(field, "value", "ordinary")
+''',[])
+
+    def test_nim_compiled_comma_parameter_shadow_and_default_read(self):
+        source = '''import isonim/web/dom_api as browser
+type Model = object
+  document: int
+proc createElement(model: Model, d: int, tag: string): Model = model
+proc setJsPropCstring(model: Model, field: Model, name, value: string) = discard
+proc modelComponent(dummy: int, browser: Model) =
+  let field = browser.createElement(browser.document, "input")
+  browser.setJsPropCstring(field, "value", "ordinary")
+modelComponent(0, Model(document: 1))
+let field = browser.createElement(browser.document, "textarea")
+proc consume(value: cstring = field.textContent) = discard
+consume()
+'''
+        path = self.write('ordinary.nim',source)
+        self.compile(path)
+        result = self.cli()
+        self.assertEqual(json.loads(result.stdout),[dict(path='site/src/ordinary.nim',line=11,api='free-text binding',severity='error')])
+        self.assertEqual(result.returncode,1,result.stderr)
+
+    def test_nim_production_inverses_fail_named_exact_assertions(self):
+        scanner=SCRIPT.read_text();helper=SCRIPT.with_name('lint_privacy.py').read_text()
+        integration="nim_dom_privacy(text, label) if path.suffix == '.nim' else []"
+        identity="if env.get(nim_name(ts[0][1])) == module:"
+        state="metadata(target, prop, data, attribute=attribute)"
+        for anchor in [integration,identity,state]:self.assertEqual(scanner.count(anchor),1)
+        variants=[('drop-nim-integration',scanner.replace(integration,'[]'),helper,
+                   'test_nim_compiled_raw_component_removal_and_public_dsl','free-text binding'),
+                  ('remove-module-identity',scanner.replace(identity,'if True:'),helper,
+                   'test_nim_compiled_shadowed_module_and_model','free-text binding'),
+                  ('retain-stale-checkbox',scanner.replace(state,
+                   "if not (name == 'setAttribute' and prop == 'type' and data == 'text'):\n                                "+state),helper,
+                   'test_nim_alias_transition_order_and_recovery','free-text binding')]
+        for name,source,helper_source,failing,api in variants:
+            with self.subTest(name=name):
+                directory=Path(self.temp.name)/name;directory.mkdir()
+                (directory/'lint_nondet.py').write_text(source)
+                (directory/'lint_privacy.py').write_text(helper_source)
+                test_source = Path(__file__).read_text()
+                test_source = test_source.replace(
+                    'PROJECT = Path(__file__).resolve().parents[1]',
+                    'PROJECT = Path('+repr(str(PROJECT))+')', 1)
+                (directory/'test_lint_nondet.py').write_text(test_source)
+                # The compiled component imports the real shipped framework,
+                # not a fake module supplied by the isolated mutation copy.
+                (directory/'src').symlink_to(PROJECT/'src',target_is_directory=True)
+                command=[sys.executable,str(directory/'test_lint_nondet.py'),
+                         'NimPrivacyTests.'+failing,
+                         'LintTests.test_privacy_nonfield_only_control',
+                         'LintTests.test_exact_seed_counts_in_js_and_foreign_pragmas']
+                self.retain_inputs(command)
+                result=subprocess.run(command,capture_output=True,text=True)
+                (directory/'inverse.log').write_text(result.stdout+result.stderr);self.retain_inputs(command)
+                self.assertEqual(result.returncode,1,result.stdout+result.stderr)
+                self.assertIn('FAIL: '+failing,result.stderr)
+                self.assertIn('AssertionError: Lists differ',result.stderr)
+                self.assertIn('site/src/ordinary.nim',result.stderr)
+                self.assertIn(api,result.stderr)
+                self.assertIn('FAILED (failures=1)',result.stderr)
+                self.assertNotIn('ERROR:',result.stderr)
+
+    def compiled_control(self, source, expected):
+        path = self.write('ordinary.nim', source)
+        directory = Path(self.temp.name)/('compiled-'+str(len(list(Path(self.temp.name).glob('compiled-*')))))
+        directory.mkdir()
+        command = ['nim', 'js', '--hints:off', '--path:'+str(PROJECT/'src'),
+                   '--path:'+str(PROJECT.parent/'nim-everywhere/src'),
+                   '--nimcache:'+str(directory/'cache'), '--out:'+str(directory/'component.js'), str(path)]
+        self.retain_inputs(command)
+        compiled = subprocess.run(command, capture_output=True, text=True)
+        (directory/'compiler.stdout.log').write_text(compiled.stdout)
+        (directory/'compiler.stderr.log').write_text(compiled.stderr)
+        (directory/'compiler.json').write_text(json.dumps(dict(argv=command, exit=compiled.returncode)))
+        self.retain_inputs(command)
+        self.assertEqual(compiled.returncode, 0, compiled.stdout+compiled.stderr)
+        result = self.cli()
+        (directory/'cli.stdout.log').write_text(result.stdout)
+        (directory/'cli.stderr.log').write_text(result.stderr)
+        (directory/'cli.json').write_text(json.dumps(dict(exit=result.returncode)))
+        self.retain_inputs([sys.executable, SCRIPT, '--json', self.root])
+        self.assertEqual(json.loads(result.stdout), [dict(path='site/src/ordinary.nim',
+                         line=line, api=api, severity='error') for line, api in expected])
+        self.assertEqual(result.returncode, 1 if expected else 0, result.stderr)
+        path.unlink()
+
+    def test_nim_compiled_loop_backedge_exact_finding(self):
+        self.compiled_control('''import isonim/web/dom_api
+let field = dom_api.createElement(dom_api.document, "input")
+dom_api.setAttribute(field, "type", "checkbox")
+for i in 0..1:
+  dom_api.setJsPropCstring(field, "value", "seed")
+  dom_api.setAttribute(field, "type", "text")
+''', [(5, 'unresolved DOM privacy binding')])
+
+    def test_nim_compiled_inline_if_semicolon_ownership(self):
+        self.compiled_control('''import isonim/web/dom_api
+let field = dom_api.createElement(dom_api.document, "input")
+let flag = false
+if flag: dom_api.setAttribute(field, "id", "x"); dom_api.setAttribute(field, "type", "checkbox")
+dom_api.setJsPropCstring(field, "value", "seed")
+''', [(5, 'unresolved DOM privacy binding')])
+
+    def test_nim_compiled_inline_uninvoked_routine_ownership(self):
+        self.compiled_control('''import isonim/web/dom_api
+let field = dom_api.createElement(dom_api.document, "input")
+proc change() = dom_api.setAttribute(field, "id", "x"); dom_api.setAttribute(field, "type", "checkbox")
+dom_api.setJsPropCstring(field, "value", "seed")
+''', [(4, 'free-text binding')])
+
+    def test_nim_compiled_loop_readonly_harmless_and_reset_controls(self):
+        for contents in [
+                '  dom_api.setJsPropCstring(field, "value", "ok")',
+                '  dom_api.setAttribute(field, "id", "literal; : =")\n  dom_api.setJsPropCstring(field, "value", "ok")',
+                '  dom_api.setAttribute(field, "type", "checkbox")\n  dom_api.setJsPropCstring(field, "value", "ok")\n  dom_api.setAttribute(field, "type", "text")',
+                '  let field = dom_api.createElement(dom_api.document, "input")\n  dom_api.setAttribute(field, "type", "checkbox")\n  dom_api.setJsPropCstring(field, "value", "ok")']:
+            with self.subTest(contents=contents):
+                self.compiled_control('import isonim/web/dom_api\nlet field = dom_api.createElement(dom_api.document, "input")\n'+
+                                      'dom_api.setAttribute(field, "type", "checkbox")\nfor i in 0..1:\n'+contents+'\n', [])
+
+    def test_nim_compiled_inline_and_multiline_controls(self):
+        for statement in [
+                'if flag: dom_api.setAttribute(field, "id", "x"); dom_api.setAttribute(field, "type", "checkbox")',
+                'if flag:\n  dom_api.setAttribute(field, "id", "x")\n  dom_api.setAttribute(field, "type", "checkbox")']:
+            with self.subTest(statement=statement):
+                source='import isonim/web/dom_api\nlet field = dom_api.createElement(dom_api.document, "input")\nlet flag = false\n'+statement+'\ndom_api.setJsPropCstring(field, "value", "seed")\n'
+                self.compiled_control(source, [(source.count('\n'), 'unresolved DOM privacy binding')])
+        self.compiled_control('''import isonim/web/dom_api
+let field = dom_api.createElement(dom_api.document, "input"); dom_api.setAttribute(field, "type", "checkbox")
+if true: dom_api.setAttribute(field, "id", "semicolon; proc fake() = :"); dom_api.setAttribute(field, "title", "safe")
+dom_api.setJsPropCstring(field, "value", "ok")
+''', [])
+
+    def test_nim_compiled_inline_routine_capture_and_invocation_controls(self):
+        for declaration in [
+                'proc change() = dom_api.setAttribute(field, "id", "x"); dom_api.setAttribute(field, "type", "text")',
+                'proc change() =\n  dom_api.setAttribute(field, "id", "x")\n  dom_api.setAttribute(field, "type", "text")']:
+            for invoke in [False, True]:
+                with self.subTest(declaration=declaration, invoke=invoke):
+                    source='import isonim/web/dom_api\nlet field = dom_api.createElement(dom_api.document, "input")\ndom_api.setAttribute(field, "type", "checkbox")\n'+declaration+'\n'+('change()\n' if invoke else '')+'dom_api.setJsPropCstring(field, "value", "ok")\n'
+                    self.compiled_control(source, [(source.count('\n'), 'unresolved DOM privacy binding')] if invoke else [])
+
+    def test_nim_compiled_nested_backedge_aliases_and_fresh_controls(self):
+        self.compiled_control('''import isonim/web/dom_api
+let field = dom_api.createElement(dom_api.document, "input")
+dom_api.setAttribute(field, "type", "checkbox")
+let alias = field
+for i in 0..1:
+  for j in 0..1:
+    dom_api.setJsPropCstring(alias, "value", "seed")
+    dom_api.setAttribute(field, "type", "text")
+''', [(7, 'unresolved DOM privacy binding')])
+        self.compiled_control('''import isonim/web/dom_api
+for i in 0..1:
+  let field = dom_api.createElement(dom_api.document, "input")
+  dom_api.setAttribute(field, "type", "checkbox")
+  let alias = field
+  for j in 0..1:
+    dom_api.setAttribute(alias, "type", "checkbox")
+    dom_api.setJsPropCstring(field, "value", "ok")
+    dom_api.setAttribute(field, "type", "text")
+''', [])
+
+    def test_nim_compiled_while_condition_order_and_unknown_call(self):
+        source='''import isonim/web/dom_api
+let field = dom_api.createElement(dom_api.document, "input")
+dom_api.setAttribute(field, "type", "checkbox")
+var i = 0
+while (dom_api.setAttribute(field, "type", "text"); i < 2):
+  dom_api.setJsPropCstring(field, "value", "seed")
+  dom_api.setAttribute(field, "type", "checkbox")
+  inc i
+'''
+        self.compiled_control(source, [(6, 'free-text binding')])
+        self.compiled_control('''import isonim/web/dom_api
+proc opaque(field: Element) = discard
+let field = dom_api.createElement(dom_api.document, "input")
+dom_api.setAttribute(field, "type", "checkbox")
+for i in 0..1:
+  opaque(field)
+  dom_api.setAttribute(field, "type", "checkbox")
+  dom_api.setJsPropCstring(field, "value", "seed")
+''', [(8, 'unresolved DOM privacy binding')])
+
+    def test_nim_compiled_readonly_loop_alias_controls(self):
+        for header, tail in [('for i in 0..1:', ''),
+                             ('var i = 0\nwhile i < 2:', '  inc i\n')]:
+            with self.subTest(header=header):
+                self.compiled_control('import isonim/web/dom_api\n'+
+                    'let field = dom_api.createElement(dom_api.document, "input")\n'+
+                    'dom_api.setAttribute(field, "type", "checkbox")\nlet alias = field\n'+
+                    header+'\n  discard dom_api.getAttribute(alias, "type")\n'+
+                    '  discard dom_api.getJsProp(field, "value")\n'+tail+
+                    'dom_api.setJsPropCstring(field, "value", "still-checkbox")\n', [])
+
+    def test_nim_local_control_production_inverses(self):
+        scanner=SCRIPT.read_text();helper=SCRIPT.with_name('lint_privacy.py').read_text()
+        backedge='entry = loop_entry(ts, children, env, names)'
+        inline="inline([indent+1, ts[cut:], []])"
+        for anchor in [backedge, inline]: self.assertEqual(scanner.count(anchor), 1)
+        variants=[('drop-backedge',scanner.replace(backedge, 'entry = view(env)'),
+                   'test_nim_compiled_loop_backedge_exact_finding'),
+                  ('detach-inline-tail',scanner.replace(inline,
+                   "inline([indent+1, first_part[cut:], []])\n            for part in siblings[1:]:\n                if part: inline([indent, part, []])"),
+                   'test_nim_compiled_inline_if_semicolon_ownership')]
+        for name, source, failing in variants:
+            with self.subTest(name=name):
+                directory=Path(self.temp.name)/name;directory.mkdir()
+                (directory/'lint_nondet.py').write_text(source)
+                (directory/'lint_privacy.py').write_text(helper)
+                tests=Path(__file__).read_text().replace('PROJECT = Path(__file__).resolve().parents[1]',
+                     'PROJECT = Path('+repr(str(PROJECT))+')',1)
+                (directory/'test_lint_nondet.py').write_text(tests)
+                command=[sys.executable,str(directory/'test_lint_nondet.py'),
+                         'NimPrivacyTests.'+failing,
+                         'LintTests.test_privacy_nonfield_only_control',
+                         'LintTests.test_exact_seed_counts_in_js_and_foreign_pragmas']
+                self.retain_inputs(command)
+                result=subprocess.run(command,capture_output=True,text=True)
+                (directory/'inverse.log').write_text(result.stdout+result.stderr)
+                self.retain_inputs(command)
+                self.assertEqual(result.returncode,1,result.stdout+result.stderr)
+                self.assertIn('FAIL: '+failing,result.stderr)
+                self.assertIn('AssertionError: Lists differ',result.stderr)
+                self.assertIn('site/src/ordinary.nim',result.stderr)
+                self.assertIn('unresolved DOM privacy binding',result.stderr)
+                self.assertIn('FAILED (failures=1)',result.stderr)
+                self.assertNotIn('ERROR:',result.stderr)
+
+
+    def test_nim_compiled_exception_prefix_exact_finding(self):
+        self.compiled_control('import isonim/web/dom_api\nlet field = dom_api.createElement(dom_api.document, "input")\ndom_api.setAttribute(field, "type", "checkbox")\ntry:\n  dom_api.setAttribute(field,"type","text")\n  raise newException(ValueError,"privacy fixture")\nexcept ValueError:\n  dom_api.setJsPropCstring(field,"value","seed")\n', [(8, 'unresolved DOM privacy binding')])
+
+    def test_nim_compiled_continue_suffix_exact_finding(self):
+        self.compiled_control('import isonim/web/dom_api\nlet field = dom_api.createElement(dom_api.document, "input")\ndom_api.setAttribute(field, "type", "checkbox")\nfor i in 0..1:\n  dom_api.setAttribute(field, "type", "text")\n  continue\n  dom_api.setAttribute(field, "type", "checkbox")\ndom_api.setJsPropCstring(field, "value", "seed")\n', [(8, 'unresolved DOM privacy binding')])
+
+    def test_nim_compiled_exception_harmless_readonly_controls(self):
+        for operation in ['dom_api.setAttribute(field,"id","text")',
+                          'discard dom_api.getAttribute(field,"type")',
+                          'discard dom_api.getJsProp(field,"value")']:
+            with self.subTest(operation=operation):
+                self.compiled_control('import isonim/web/dom_api\n'+
+                    'let field = dom_api.createElement(dom_api.document, "input")\n'+
+                    'dom_api.setAttribute(field, "type", "checkbox")\ntry:\n  '+operation+'\n'+
+                    '  raise newException(ValueError,"privacy fixture")\nexcept ValueError:\n'+
+                    '  dom_api.setJsPropCstring(field,"value","ok")\n', [])
+
+    def test_nim_compiled_exception_earlier_prefix_before_normal_reset(self):
+        self.compiled_control('''import isonim/web/dom_api
+let field = dom_api.createElement(dom_api.document, "input")
+dom_api.setAttribute(field, "type", "checkbox")
+try:
+  dom_api.setAttribute(field, "type", "text")
+  discard dom_api.getAttribute(field, "id")
+  dom_api.setAttribute(field, "type", "checkbox")
+except ValueError:
+  dom_api.setJsPropCstring(field, "value", "seed")
+''', [(9, 'unresolved DOM privacy binding')])
+
+    def test_nim_compiled_exception_alias_rebinding_prefix(self):
+        self.compiled_control('''import isonim/web/dom_api
+let checkbox = dom_api.createElement(dom_api.document, "input")
+dom_api.setAttribute(checkbox, "type", "checkbox")
+let text = dom_api.createElement(dom_api.document, "textarea")
+var alias = checkbox
+try:
+  alias = text
+  discard dom_api.getAttribute(alias, "id")
+  alias = checkbox
+except ValueError:
+  dom_api.setJsPropCstring(alias, "value", "seed")
+''', [(11, 'unresolved DOM privacy binding')])
+
+    def test_nim_compiled_exception_handler_reset_and_fresh_controls(self):
+        for recovery in ['dom_api.setAttribute(field, "type", "checkbox")',
+                         'field = dom_api.createElement(dom_api.document, "input")\n  dom_api.setAttribute(field, "type", "checkbox")']:
+            with self.subTest(recovery=recovery):
+                self.compiled_control('import isonim/web/dom_api\n'+
+                    'var field = dom_api.createElement(dom_api.document, "input")\n'+
+                    'dom_api.setAttribute(field, "type", "checkbox")\ntry:\n'+
+                    '  dom_api.setAttribute(field,"type","text")\n'+
+                    '  raise newException(ValueError,"privacy fixture")\nexcept ValueError:\n  '+recovery+'\n'+
+                    '  dom_api.setJsPropCstring(field,"value","ok")\n', [])
+
+    def test_nim_compiled_abrupt_harmless_and_literal_reset_controls(self):
+        for abrupt in ['continue', 'break']:
+            for contents in ['  dom_api.setAttribute(field, "id", "x")',
+                             '  discard dom_api.getJsProp(field, "value")',
+                             '  dom_api.setAttribute(field, "type", "text")\n  dom_api.setAttribute(field, "type", "checkbox")']:
+                with self.subTest(abrupt=abrupt, contents=contents):
+                    self.compiled_control('import isonim/web/dom_api\n'+
+                        'let field = dom_api.createElement(dom_api.document, "input")\n'+
+                        'dom_api.setAttribute(field, "type", "checkbox")\nfor i in 0..1:\n'+contents+'\n  '+abrupt+'\n'+
+                        '  dom_api.setAttribute(field, "type", "checkbox")\n'+
+                        'dom_api.setJsPropCstring(field, "value", "ok")\n', [])
+
+    def test_nim_compiled_break_suffix_and_named_block_targets(self):
+        for header, transfer in [('for i in 0..1:', 'break'),
+                                 ('block outer:', 'break outer')]:
+            with self.subTest(header=header):
+                self.compiled_control('import isonim/web/dom_api\n'+
+                    'let field = dom_api.createElement(dom_api.document, "input")\n'+
+                    'dom_api.setAttribute(field, "type", "checkbox")\n'+header+'\n'+
+                    '  dom_api.setAttribute(field, "type", "text")\n  '+transfer+'\n'+
+                    '  dom_api.setAttribute(field, "type", "checkbox")\n'+
+                    'dom_api.setJsPropCstring(field, "value", "seed")\n',
+                    [(8, 'unresolved DOM privacy binding')] if transfer=='break' else [(8, 'free-text binding')])
+        self.compiled_control('''import isonim/web/dom_api
+let field = dom_api.createElement(dom_api.document, "input")
+dom_api.setAttribute(field, "type", "checkbox")
+block outer:
+  for i in 0..1:
+    dom_api.setAttribute(field, "type", "text")
+    break outer
+    dom_api.setAttribute(field, "type", "checkbox")
+  dom_api.setAttribute(field, "type", "checkbox")
+dom_api.setJsPropCstring(field, "value", "seed")
+''', [(10, 'unresolved DOM privacy binding')])
+
+    def test_nim_compiled_nested_break_continue_ownership_controls(self):
+        self.compiled_control('''import isonim/web/dom_api
+let field = dom_api.createElement(dom_api.document, "input")
+dom_api.setAttribute(field, "type", "checkbox")
+for i in 0..1:
+  for j in 0..1:
+    dom_api.setAttribute(field, "type", "text")
+    break
+    dom_api.setAttribute(field, "type", "checkbox")
+  dom_api.setAttribute(field, "type", "checkbox")
+  continue
+  dom_api.setAttribute(field, "type", "text")
+dom_api.setJsPropCstring(field, "value", "ok")
+''', [])
+        self.compiled_control('''import isonim/web/dom_api
+let field = dom_api.createElement(dom_api.document, "input")
+dom_api.setAttribute(field, "type", "checkbox")
+for i in 0..1:
+  block inner:
+    dom_api.setAttribute(field, "type", "text")
+    continue
+    dom_api.setAttribute(field, "type", "checkbox")
+  dom_api.setAttribute(field, "type", "checkbox")
+dom_api.setJsPropCstring(field, "value", "seed")
+''', [(10, 'unresolved DOM privacy binding')])
+
+    def test_nim_compiled_return_raise_suffix_and_deferred_controls(self):
+        for transfer in ['return', 'raise newException(ValueError,"privacy fixture")']:
+            for invoke in [False, True]:
+                with self.subTest(transfer=transfer, invoke=invoke):
+                    source=('import isonim/web/dom_api\n'+
+                        'let field = dom_api.createElement(dom_api.document, "input")\n'+
+                        'dom_api.setAttribute(field, "type", "checkbox")\nproc change() =\n'+
+                        '  dom_api.setAttribute(field, "type", "text")\n  '+transfer+'\n'+
+                        '  dom_api.setAttribute(field, "type", "checkbox")\n'+
+                        ('try:\n  change()\nexcept ValueError:\n  discard\n' if invoke else '')+                        'dom_api.setJsPropCstring(field, "value", "seed")\n')
+                    self.compiled_control(source, [(source.count('\n'),'unresolved DOM privacy binding')] if invoke else [])
+
+    def test_nim_compiled_branch_abrupt_excludes_completed_paths(self):
+        self.compiled_control('''import isonim/web/dom_api
+proc component(flag: bool) =
+  let field = dom_api.createElement(dom_api.document, "input")
+  dom_api.setAttribute(field, "type", "checkbox")
+  if flag:
+    dom_api.setAttribute(field, "type", "text")
+    return
+    dom_api.setAttribute(field, "type", "checkbox")
+  dom_api.setJsPropCstring(field, "value", "ok")
+component(false)
+''', [])
+
+    def test_nim_compiled_finally_cleanup_completion_and_handler_controls(self):
+        for reset, expected in [(False, [(12,'unresolved DOM privacy binding')]), (True, [])]:
+            with self.subTest(reset=reset):
+                self.compiled_control('import isonim/web/dom_api\n'+
+                    'let field = dom_api.createElement(dom_api.document, "input")\n'+
+                    'dom_api.setAttribute(field, "type", "checkbox")\nfor i in 0..1:\n  try:\n'+
+                    '    dom_api.setAttribute(field, "type", "text")\n    continue\n'+
+                    '    dom_api.setAttribute(field, "type", "checkbox")\n  finally:\n'+
+                    ('    dom_api.setAttribute(field, "type", "checkbox")\n' if reset else '    dom_api.setAttribute(field, "id", "x")\n')+
+                    '  dom_api.setAttribute(field, "type", "checkbox")\n'+
+                    'dom_api.setJsPropCstring(field, "value", "seed")\n', expected)
+        self.compiled_control('''import isonim/web/dom_api
+let field = dom_api.createElement(dom_api.document, "input")
+dom_api.setAttribute(field, "type", "checkbox")
+for i in 0..1:
+  try:
+    dom_api.setAttribute(field, "type", "text")
+    raise newException(ValueError,"privacy fixture")
+  except ValueError:
+    continue
+    dom_api.setAttribute(field, "type", "checkbox")
+  finally:
+    dom_api.setAttribute(field, "type", "checkbox")
+dom_api.setJsPropCstring(field, "value", "ok")
+''', [])
+
+    def test_nim_compiled_finally_override_and_nested_handler_prefix(self):
+        self.compiled_control('''import isonim/web/dom_api
+let field = dom_api.createElement(dom_api.document, "input")
+dom_api.setAttribute(field, "type", "checkbox")
+block outer:
+  try:
+    dom_api.setAttribute(field, "type", "text")
+    raise newException(ValueError,"privacy fixture")
+  finally:
+    dom_api.setAttribute(field, "type", "checkbox")
+    break outer
+    dom_api.setAttribute(field, "type", "text")
+dom_api.setJsPropCstring(field, "value", "ok")
+''', [])
+        self.compiled_control('''import isonim/web/dom_api
+let field = dom_api.createElement(dom_api.document, "input")
+dom_api.setAttribute(field, "type", "checkbox")
+try:
+  try:
+    dom_api.setAttribute(field, "type", "text")
+    raise newException(ValueError,"privacy fixture")
+  except ValueError:
+    raise newException(IOError,"privacy fixture")
+    dom_api.setAttribute(field, "type", "checkbox")
+except IOError:
+  dom_api.setJsPropCstring(field, "value", "seed")
+''', [(12, 'unresolved DOM privacy binding')])
+
+    def test_nim_exception_abrupt_production_inverses(self):
+        scanner=SCRIPT.read_text();helper=SCRIPT.with_name('lint_privacy.py').read_text()
+        handler='handler_entry = join(env, protected_prefixes)'
+        abrupt="elif first in {'break', 'continue', 'return', 'raise'}:"
+        for anchor in [handler, abrupt]: self.assertEqual(scanner.count(anchor), 1)
+        variants=[('drop-handler-prefixes',scanner.replace(handler, 'handler_entry = view(env)'),
+                   'test_nim_compiled_exception_prefix_exact_finding'),
+                  ('ignore-continue-completion',scanner.replace(abrupt,
+                   "elif first in {'break', 'return', 'raise'}:"),
+                   'test_nim_compiled_continue_suffix_exact_finding')]
+        for name, source, failing in variants:
+            with self.subTest(name=name):
+                directory=Path(self.temp.name)/name;directory.mkdir()
+                (directory/'lint_nondet.py').write_text(source)
+                (directory/'lint_privacy.py').write_text(helper)
+                tests=Path(__file__).read_text().replace('PROJECT = Path(__file__).resolve().parents[1]',
+                     'PROJECT = Path('+repr(str(PROJECT))+')',1)
+                (directory/'test_lint_nondet.py').write_text(tests)
+                command=[sys.executable,str(directory/'test_lint_nondet.py'),
+                         'NimPrivacyTests.'+failing,
+                         'LintTests.test_privacy_nonfield_only_control',
+                         'LintTests.test_exact_seed_counts_in_js_and_foreign_pragmas']
+                self.retain_inputs(command)
+                result=subprocess.run(command,capture_output=True,text=True)
+                (directory/'inverse.log').write_text(result.stdout+result.stderr)
+                self.retain_inputs(command)
+                self.assertEqual(result.returncode,1,result.stdout+result.stderr)
+                self.assertIn('FAIL: '+failing,result.stderr)
+                self.assertIn('AssertionError: Lists differ',result.stderr)
+                self.assertIn('site/src/ordinary.nim',result.stderr)
+                self.assertIn('unresolved DOM privacy binding',result.stderr)
+                self.assertIn('FAILED (failures=1)',result.stderr)
+                self.assertNotIn('ERROR:',result.stderr)
+
+
+
+    def test_nim_compiled_handler_shadowed_local_restores_outer_root(self):
+        self.compiled_control('''import isonim/web/dom_api
+let field = dom_api.createElement(dom_api.document, "input")
+dom_api.setAttribute(field, "type", "checkbox")
+try:
+  let field = dom_api.createElement(dom_api.document, "textarea")
+  discard dom_api.getAttribute(field, "id")
+  raise newException(ValueError,"privacy fixture")
+except ValueError:
+  dom_api.setJsPropCstring(field, "value", "ok")
+''', [])
+
+    def test_nim_compiled_handler_shadow_root_alias_prefix_kept(self):
+        self.compiled_control('''import isonim/web/dom_api
+let field = dom_api.createElement(dom_api.document, "input")
+dom_api.setAttribute(field, "type", "checkbox")
+let alias = field
+try:
+  dom_api.setAttribute(alias, "type", "text")
+  block:
+    let field = dom_api.createElement(dom_api.document, "textarea")
+    dom_api.setAttribute(alias, "type", "checkbox")
+    raise newException(ValueError,"privacy fixture")
+except ValueError:
+  dom_api.setJsPropCstring(field, "value", "seed")
+''', [(12, 'unresolved DOM privacy binding')])
+
+    def test_nim_compiled_finally_implicit_exception_prefix(self):
+        self.compiled_control('''import isonim/web/dom_api
+proc fail() = raise newException(ValueError,"privacy fixture")
+let field = dom_api.createElement(dom_api.document, "input")
+dom_api.setAttribute(field, "type", "checkbox")
+try:
+  dom_api.setAttribute(field, "type", "text")
+  fail()
+  dom_api.setAttribute(field, "type", "checkbox")
+finally:
+  dom_api.setJsPropCstring(field, "value", "seed")
+''', [(10, 'unresolved DOM privacy binding')])
+
+    def test_nim_compiled_expression_effect_prefix_before_reset(self):
+        self.compiled_control('''import isonim/web/dom_api
+proc fail() = raise newException(ValueError,"privacy fixture")
+let field = dom_api.createElement(dom_api.document, "input")
+dom_api.setAttribute(field, "type", "checkbox")
+try:
+  discard (dom_api.setAttribute(field, "type", "text"); fail(); dom_api.setAttribute(field, "type", "checkbox"); 0)
+except ValueError:
+  dom_api.setJsPropCstring(field, "value", "seed")
+''', [(8, 'unresolved DOM privacy binding')])
+
+    def test_nim_compiled_finally_implicit_harmless_reset_controls(self):
+        for operation, cleanup in [
+                ('dom_api.setAttribute(field,"id","x")', ''),
+                ('discard dom_api.getAttribute(field,"type")', ''),
+                ('dom_api.setAttribute(field,"type","text")',
+                 '  dom_api.setAttribute(field,"type","checkbox")\n'),
+                ('dom_api.setAttribute(field,"type","text")',
+                 '  let field = dom_api.createElement(dom_api.document, "input")\n  dom_api.setAttribute(field,"type","checkbox")\n')]:
+            with self.subTest(operation=operation, cleanup=cleanup):
+                self.compiled_control('import isonim/web/dom_api\n'+
+                    'proc fail() = raise newException(ValueError,"privacy fixture")\n'+
+                    'let field = dom_api.createElement(dom_api.document, "input")\n'+
+                    'dom_api.setAttribute(field,"type","checkbox")\ntry:\n  '+operation+'\n'+
+                    '  fail()\n  dom_api.setAttribute(field,"type","checkbox")\nfinally:\n'+cleanup+
+                    '  dom_api.setJsPropCstring(field,"value","ok")\n', [])
+
+
+
+
+    def test_nim_compiled_uninvoked_default_prefix_isolation(self):
+        self.compiled_control('import isonim/web/dom_api\nlet field = dom_api.createElement(dom_api.document, "input")\ndom_api.setAttribute(field, "type", "checkbox")\ntry:\n  proc uninvoked(x: int = (dom_api.setAttribute(field, "type", "text"); 0)) = discard\n  raise newException(ValueError, "privacy fixture")\nexcept ValueError:\n  dom_api.setJsPropCstring(field, "value", "ok")\n', [])
+
+    def test_nim_compiled_harmless_default_prefix_control(self):
+        self.compiled_control('import isonim/web/dom_api\nlet field = dom_api.createElement(dom_api.document, "input")\ndom_api.setAttribute(field, "type", "checkbox")\ntry:\n  proc uninvoked(x: int = (dom_api.setAttribute(field, "id", "text"); 0)) = discard\n  raise newException(ValueError, "privacy fixture")\nexcept ValueError:\n  dom_api.setJsPropCstring(field, "value", "ok")\n', [])
+
+    def test_nim_compiled_invoked_default_capture_prefix(self):
+        self.compiled_control('import isonim/web/dom_api\nlet field = dom_api.createElement(dom_api.document, "input")\ndom_api.setAttribute(field, "type", "checkbox")\ntry:\n  proc uninvoked(x: int = (dom_api.setAttribute(field, "type", "text"); 0)) = discard\n  uninvoked()\n  raise newException(ValueError, "privacy fixture")\nexcept ValueError:\n  dom_api.setJsPropCstring(field, "value", "ok")\n', [(9, 'unresolved DOM privacy binding')])
+
+    def test_nim_compiled_deferred_intermediate_capture_before_reset(self):
+        for default in [False, True]:
+            for invoke in [False, True]:
+                with self.subTest(default=default, invoke=invoke):
+                    source = 'import isonim/web/dom_api\nproc fail() = raise newException(ValueError,"privacy fixture")\nlet field = dom_api.createElement(dom_api.document, "input")\ndom_api.setAttribute(field,"type","checkbox")\n'
+                    if default:
+                        source += 'proc deferred(x: int = (dom_api.setAttribute(field,"type","text"); fail(); dom_api.setAttribute(field,"type","checkbox"); 0)) = discard\n'
+                    else:
+                        source += 'proc deferred() =\n  dom_api.setAttribute(field,"type","text")\n  fail()\n  dom_api.setAttribute(field,"type","checkbox")\n'
+                    source += 'try:\n'+('  deferred()\n' if invoke else '  discard\n')+'except ValueError:\n  discard\n'
+                    source += 'dom_api.setJsPropCstring(field,"value","seed")\n'
+                    self.compiled_control(source, [(source.count('\n'),'unresolved DOM privacy binding')] if invoke else [])
+
+    def test_nim_compiled_deferred_default_readonly_and_local_controls(self):
+        for effect in ['discard dom_api.getAttribute(field,"type")',
+                       'dom_api.setAttribute(field,"id","label")',
+                       'let field = dom_api.createElement(dom_api.document,"textarea"); dom_api.setAttribute(field,"type","text")']:
+            with self.subTest(effect=effect):
+                source = 'import isonim/web/dom_api\nlet field = dom_api.createElement(dom_api.document,"input")\ndom_api.setAttribute(field,"type","checkbox")\n'
+                source += 'proc deferred(x: int = ('+effect+'; 0)) = discard\ntry:\n  deferred()\nexcept ValueError:\n  discard\ndom_api.setJsPropCstring(field,"value","ok")\n'
+                self.compiled_control(source, [])
+
+    def test_nim_compiled_deferred_default_formal_shadow_control(self):
+        self.compiled_control('import isonim/web/dom_api\nlet field = dom_api.createElement(dom_api.document,"input")\ndom_api.setAttribute(field,"type","checkbox")\nproc deferred(field: int; x: int = field) = discard\ndeferred(0)\ndom_api.setJsPropCstring(field,"value","ok")\n', [])
+
+    def test_nim_compiled_deferred_body_intermediate_capture(self):
+        self.compiled_control('import isonim/web/dom_api\nproc fail() = raise newException(ValueError,"privacy fixture")\nlet field = dom_api.createElement(dom_api.document,"input")\ndom_api.setAttribute(field,"type","checkbox")\nproc deferred() =\n  dom_api.setAttribute(field,"type","text")\n  fail()\n  dom_api.setAttribute(field,"type","checkbox")\ntry:\n  deferred()\nexcept ValueError:\n  discard\ndom_api.setJsPropCstring(field,"value","seed")\n', [(13, "unresolved DOM privacy binding")])
+
+    def test_nim_deferred_default_production_inverses(self):
+        scanner=SCRIPT.read_text();helper=SCRIPT.with_name('lint_privacy.py').read_text()
+        isolation='if len(default) == 2: evaluate(default[1], local)'
+        prefix='[value for prefix in deferred_prefixes for value in prefix.values()]'
+        result_origin='return uncertain(result)'
+        for anchor in [isolation, prefix, result_origin]: self.assertEqual(scanner.count(anchor), 1)
+        variants=[('leak-deferred-default-prefix',scanner.replace(isolation, isolation+'; observe_prefixes(local, enclosing_prefixes)'),
+                   'test_nim_compiled_uninvoked_default_prefix_isolation'),
+                  ('drop-deferred-intermediate-captures',scanner.replace(prefix, '[]'),
+                   'test_nim_compiled_deferred_body_intermediate_capture'),
+                  ('drop-statement-list-result',scanner.replace(result_origin, 'return None'),
+                   'test_nim_compiled_statement_list_final_alias_preserved')]
+        for name, source, failing in variants:
+            with self.subTest(name=name):
+                directory=Path(self.temp.name)/name;directory.mkdir()
+                (directory/'lint_nondet.py').write_text(source)
+                (directory/'lint_privacy.py').write_text(helper)
+                tests=Path(__file__).read_text().replace('PROJECT = Path(__file__).resolve().parents[1]',
+                     'PROJECT = Path('+repr(str(PROJECT))+')',1)
+                (directory/'test_lint_nondet.py').write_text(tests)
+                command=[sys.executable,str(directory/'test_lint_nondet.py'),
+                         'NimPrivacyTests.'+failing,
+                         'LintTests.test_privacy_nonfield_only_control',
+                         'LintTests.test_exact_seed_counts_in_js_and_foreign_pragmas']
+                self.retain_inputs(command)
+                result=subprocess.run(command,capture_output=True,text=True)
+                (directory/'inverse.log').write_text(result.stdout+result.stderr)
+                self.retain_inputs(command)
+                self.assertEqual(result.returncode,1,result.stdout+result.stderr)
+                self.assertIn('FAIL: '+failing,result.stderr)
+                self.assertIn('AssertionError: Lists differ',result.stderr)
+                self.assertIn('site/src/ordinary.nim',result.stderr)
+                self.assertIn('unresolved DOM privacy binding',result.stderr)
+                self.assertIn('FAILED (failures=1)',result.stderr)
+                self.assertNotIn('ERROR:',result.stderr)
+
+    def test_nim_compiled_deferred_overload_capture_union(self):
+        for nested in [False, True]:
+            with self.subTest(nested=nested):
+                source = 'import isonim/web/dom_api\nlet field = dom_api.createElement(dom_api.document,"input")\ndom_api.setAttribute(field,"type","checkbox")\nproc change(x: int) = dom_api.setAttribute(field,"type","text")\n'
+                if nested:
+                    source += 'block:\n  proc change(x: string) = discard\n  change("label")\n'
+                else:
+                    source += 'proc change(x: string) = discard\nchange(0)\n'
+                source += 'dom_api.setJsPropCstring(field,"value","seed")\n'
+                self.compiled_control(source, [] if nested else [(source.count('\n'),'unresolved DOM privacy binding')])
+
+    def test_nim_compiled_statement_list_final_alias_preserved(self):
+        self.compiled_control('import isonim/web/dom_api\nlet field = dom_api.createElement(dom_api.document,"input")\ndom_api.setAttribute(field,"type","text")\nlet alias = (discard 0; field)\ndom_api.setJsPropCstring(alias,"value","seed")\n', [(5, "unresolved DOM privacy binding")])
+
+    def test_nim_compiled_statement_list_final_model_and_shadow_controls(self):
+        self.compiled_control('import isonim/web/dom_api\ntype Model = object\n  label: int\nproc setJsPropCstring(model: Model; name, value: string) = discard\nlet field = dom_api.createElement(dom_api.document,"input")\nlet alias = (discard field; Model(label: 1))\nsetJsPropCstring(alias,"value","ordinary")\n', [])
+        self.compiled_control('import isonim/web/dom_api\ntype Model = object\n  label: int\nproc setJsPropCstring(model: Model; name, value: string) = discard\nlet field = dom_api.createElement(dom_api.document,"input")\nproc ordinary() =\n  let field = Model(label: 1)\n  let alias = (discard 0; field)\n  setJsPropCstring(alias,"value","ordinary")\nordinary()\n', [])
+
+    def test_nim_compiled_statement_list_nonfield_alias_and_mutation_controls(self):
+        for constructor, prop in [('createElement(dom_api.document,"button")', 'value'),
+                                  ('createTextNode(dom_api.document,"label")', 'textContent')]:
+            with self.subTest(constructor=constructor):
+                self.compiled_control('import isonim/web/dom_api\nlet alias = (discard 0; dom_api.'+constructor+')\ndom_api.setJsPropCstring(alias,"'+prop+'","ordinary")\n', [])
+        self.compiled_control('import isonim/web/dom_api\nlet field = dom_api.createElement(dom_api.document,"input")\ndom_api.setAttribute(field,"type","checkbox")\nlet alias = (discard 0; field)\ndom_api.setAttribute(alias,"type","text")\ndom_api.setJsPropCstring(field,"value","seed")\n', [(6, 'free-text binding')])
+
+    def test_nim_compiled_capture_current_binding(self):
+        self.compiled_control('import isonim/web/dom_api\nvar field = dom_api.createElement(dom_api.document, "input")\ndom_api.setAttribute(field,"type","checkbox")\nproc mutate() =\n  dom_api.setAttribute(field,"type","text")\nfield = dom_api.createElement(dom_api.document, "input")\ndom_api.setAttribute(field,"type","checkbox")\nmutate()\ndom_api.setJsPropCstring(field,"value","seed")\n', [(9, 'unresolved DOM privacy binding')])
+
+    def test_nim_compiled_capture_uninvoked_binding(self):
+        self.compiled_control('import isonim/web/dom_api\nvar field = dom_api.createElement(dom_api.document, "input")\ndom_api.setAttribute(field,"type","checkbox")\nproc mutate() =\n  dom_api.setAttribute(field,"type","text")\nfield = dom_api.createElement(dom_api.document, "input")\ndom_api.setAttribute(field,"type","checkbox")\ndom_api.setJsPropCstring(field,"value","ok")\n', [])
+
+    def test_nim_compiled_capture_routine_local_shadow(self):
+        self.compiled_control('import isonim/web/dom_api\nvar field = dom_api.createElement(dom_api.document, "input")\ndom_api.setAttribute(field,"type","checkbox")\nproc mutate() =\n  let field = dom_api.createElement(dom_api.document,"input")\n  dom_api.setAttribute(field,"type","text")\nfield = dom_api.createElement(dom_api.document, "input")\ndom_api.setAttribute(field,"type","checkbox")\nmutate()\ndom_api.setJsPropCstring(field,"value","ok")\n', [])
+
+    def test_nim_compiled_capture_discarded_alias_stays_clean(self):
+        self.compiled_control('import isonim/web/dom_api\nvar field = dom_api.createElement(dom_api.document,"input")\ndom_api.setAttribute(field,"type","checkbox")\nlet oldalias = field\nproc mutate() = dom_api.setAttribute(field,"type","text")\nfield = dom_api.createElement(dom_api.document,"input")\ndom_api.setAttribute(field,"type","checkbox")\nmutate()\ndom_api.setJsPropCstring(oldalias,"value","seed")\ndom_api.setJsPropCstring(field,"value","seed")\n', [(10, 'unresolved DOM privacy binding')])
+
+    def test_nim_compiled_capture_immutable_alias_retains_object(self):
+        self.compiled_control('import isonim/web/dom_api\nvar field = dom_api.createElement(dom_api.document,"input")\ndom_api.setAttribute(field,"type","checkbox")\nlet oldalias = field\nproc mutate() = dom_api.setAttribute(oldalias,"type","text")\nfield = dom_api.createElement(dom_api.document,"input")\ndom_api.setAttribute(field,"type","checkbox")\nmutate()\ndom_api.setJsPropCstring(oldalias,"value","seed")\ndom_api.setJsPropCstring(field,"value","seed")\n', [(9, 'unresolved DOM privacy binding')])
+
+    def test_nim_compiled_capture_caller_shadow_resolves_outer(self):
+        self.compiled_control('import isonim/web/dom_api\nvar field = dom_api.createElement(dom_api.document,"input")\ndom_api.setAttribute(field,"type","checkbox")\nproc mutate() = dom_api.setAttribute(field,"type","text")\nfield = dom_api.createElement(dom_api.document,"input")\ndom_api.setAttribute(field,"type","checkbox")\nblock:\n  let field = dom_api.createElement(dom_api.document,"input")\n  dom_api.setAttribute(field,"type","checkbox")\n  mutate()\n  dom_api.setJsPropCstring(field,"value","seed")\ndom_api.setJsPropCstring(field,"value","seed")\n', [(12, 'unresolved DOM privacy binding')])
+
+    def test_nim_compiled_capture_call_before_replacement(self):
+        self.compiled_control('import isonim/web/dom_api\nvar field = dom_api.createElement(dom_api.document,"input")\ndom_api.setAttribute(field,"type","checkbox")\nproc mutate() = dom_api.setAttribute(field,"type","text")\nmutate()\ndom_api.setJsPropCstring(field,"value","seed")\nfield = dom_api.createElement(dom_api.document,"input")\ndom_api.setAttribute(field,"type","checkbox")\ndom_api.setJsPropCstring(field,"value","seed")\n', [(6, 'unresolved DOM privacy binding')])
+
+    def test_nim_compiled_capture_local_alias_dependency(self):
+        self.compiled_control('import isonim/web/dom_api\nvar field = dom_api.createElement(dom_api.document,"input")\ndom_api.setAttribute(field,"type","checkbox")\nproc mutate() =\n  let localalias = field\n  dom_api.setAttribute(localalias,"type","text")\nfield = dom_api.createElement(dom_api.document,"input")\ndom_api.setAttribute(field,"type","checkbox")\nmutate()\ndom_api.setJsPropCstring(field,"value","seed")\n', [(10, 'unresolved DOM privacy binding')])
+
+    def test_nim_compiled_capture_nested_invocation(self):
+        self.compiled_control('import isonim/web/dom_api\nvar field = dom_api.createElement(dom_api.document,"input")\ndom_api.setAttribute(field,"type","checkbox")\nproc mutate() =\n  proc inner() = dom_api.setAttribute(field,"type","text")\n  inner()\nfield = dom_api.createElement(dom_api.document,"input")\ndom_api.setAttribute(field,"type","checkbox")\nmutate()\ndom_api.setJsPropCstring(field,"value","seed")\n', [(10, 'unresolved DOM privacy binding')])
+
+    def test_nim_compiled_capture_replacement_readonly(self):
+        self.compiled_control('import isonim/web/dom_api\nvar field = dom_api.createElement(dom_api.document,"input")\ndom_api.setAttribute(field,"type","checkbox")\nproc mutate() = dom_api.setAttribute(field,"id","label")\nfield = dom_api.createElement(dom_api.document,"input")\ndom_api.setAttribute(field,"type","checkbox")\nmutate()\ndom_api.setJsPropCstring(field,"value","seed")\n', [])
+
+    def test_nim_compiled_capture_branch_binding_join(self):
+        self.compiled_control('import isonim/web/dom_api\nvar field = dom_api.createElement(dom_api.document,"input")\ndom_api.setAttribute(field,"type","checkbox")\nlet oldalias = field\nproc mutate() = dom_api.setAttribute(field,"type","text")\nif true:\n  field = dom_api.createElement(dom_api.document,"input")\n  dom_api.setAttribute(field,"type","checkbox")\nmutate()\ndom_api.setJsPropCstring(oldalias,"value","seed")\ndom_api.setJsPropCstring(field,"value","seed")\n', [(10, 'unresolved DOM privacy binding'), (11, 'unresolved DOM privacy binding')])
+
+    def test_nim_compiled_capture_loop_binding_join(self):
+        self.compiled_control('import isonim/web/dom_api\nvar field = dom_api.createElement(dom_api.document,"input")\ndom_api.setAttribute(field,"type","checkbox")\nproc mutate() = dom_api.setAttribute(field,"type","text")\nfor index in 0..1:\n  field = dom_api.createElement(dom_api.document,"input")\n  dom_api.setAttribute(field,"type","checkbox")\n  mutate()\ndom_api.setJsPropCstring(field,"value","seed")\n', [(9, 'unresolved DOM privacy binding')])
+
+    def test_nim_compiled_capture_deferred_rebinding(self):
+        self.compiled_control('import isonim/web/dom_api\nvar field = dom_api.createElement(dom_api.document,"input")\ndom_api.setAttribute(field,"type","checkbox")\nproc mutate() =\n  field = dom_api.createElement(dom_api.document,"textarea")\nfield = dom_api.createElement(dom_api.document,"input")\ndom_api.setAttribute(field,"type","checkbox")\nmutate()\ndom_api.setJsPropCstring(field,"value","seed")\n', [(9, 'unresolved DOM privacy binding')])
+
+    def test_nim_capture_binding_production_inverse(self):
+        scanner=SCRIPT.read_text();helper=SCRIPT.with_name('lint_privacy.py').read_text()
+        anchor='values += [env[root] for root in identity[1]\n                           if isinstance(env.get(root), Allocation)]'
+        self.assertEqual(scanner.count(anchor),1)
+        directory=Path(self.temp.name)/'drop-current-capture-binding';directory.mkdir()
+        (directory/'lint_nondet.py').write_text(scanner.replace(anchor,'values += []'))
+        (directory/'lint_privacy.py').write_text(helper)
+        tests=Path(__file__).read_text().replace('PROJECT = Path(__file__).resolve().parents[1]',
+              'PROJECT = Path('+repr(str(PROJECT))+')',1)
+        (directory/'test_lint_nondet.py').write_text(tests)
+        command=[sys.executable,str(directory/'test_lint_nondet.py'),
+                 'NimPrivacyTests.test_nim_compiled_capture_current_binding',
+                 'NimPrivacyTests.test_nim_compiled_capture_uninvoked_binding',
+                 'NimPrivacyTests.test_nim_compiled_capture_routine_local_shadow']
+        self.retain_inputs(command)
+        result=subprocess.run(command,capture_output=True,text=True)
+        (directory/'inverse.log').write_text(result.stdout+result.stderr)
+        self.retain_inputs(command)
+        self.assertEqual(result.returncode,1,result.stdout+result.stderr)
+        self.assertIn('FAIL: test_nim_compiled_capture_current_binding',result.stderr)
+        self.assertIn('AssertionError: Lists differ',result.stderr)
+        self.assertIn('site/src/ordinary.nim',result.stderr)
+        self.assertIn('unresolved DOM privacy binding',result.stderr)
+        self.assertIn('FAILED (failures=1)',result.stderr)
+        self.assertNotIn('ERROR:',result.stderr)
+
+    def test_nim_compiled_capture_idempotent_declaration_future_write(self):
+        self.compiled_control('import isonim/web/dom_api\nvar field = dom_api.createElement(dom_api.document,"input")\ndom_api.setAttribute(field,"type","text")\nproc mutate() = dom_api.setAttribute(field,"type","text")\nfield = dom_api.createElement(dom_api.document,"input")\ndom_api.setAttribute(field,"type","checkbox")\nmutate()\ndom_api.setJsPropCstring(field,"value","seed")\n', [(8, 'unresolved DOM privacy binding')])
+
+    def test_nim_compiled_capture_old_tag_does_not_hide_future_effect(self):
+        self.compiled_control('import isonim/web/dom_api\nvar field = dom_api.createElement(dom_api.document,"div")\ndom_api.setAttribute(field,"type","checkbox")\nproc mutate() = dom_api.setAttribute(field,"type","text")\nfield = dom_api.createElement(dom_api.document,"input")\ndom_api.setAttribute(field,"type","checkbox")\nmutate()\ndom_api.setJsPropCstring(field,"value","seed")\n', [(8, 'unresolved DOM privacy binding')])
+
+    def test_nim_compiled_capture_binding_write_keeps_old_object_clean(self):
+        self.compiled_control('import isonim/web/dom_api\nvar field = dom_api.createElement(dom_api.document,"input")\ndom_api.setAttribute(field,"type","checkbox")\nlet oldalias = field\nproc mutate() =\n  field = dom_api.createElement(dom_api.document,"textarea")\nmutate()\ndom_api.setJsPropCstring(oldalias,"value","seed")\ndom_api.setJsPropCstring(field,"value","seed")\n', [(9, 'unresolved DOM privacy binding')])
+
+    def test_nim_compiled_capture_rebind_then_metadata_keeps_old_clean(self):
+        self.compiled_control('import isonim/web/dom_api\nvar field = dom_api.createElement(dom_api.document,"input")\ndom_api.setAttribute(field,"type","checkbox")\nlet oldalias = field\nproc mutate() =\n  field = dom_api.createElement(dom_api.document,"input")\n  dom_api.setAttribute(field,"type","text")\nmutate()\ndom_api.setJsPropCstring(oldalias,"value","seed")\ndom_api.setJsPropCstring(field,"value","seed")\n', [(10, 'unresolved DOM privacy binding')])
+
+    def test_nim_compiled_capture_dependency_branch_union(self):
+        self.compiled_control('import isonim/web/dom_api\nvar field = dom_api.createElement(dom_api.document,"input")\ndom_api.setAttribute(field,"type","checkbox")\nproc mutate() =\n  let other = dom_api.createElement(dom_api.document,"input")\n  dom_api.setAttribute(other,"type","checkbox")\n  var localalias = other\n  if true: localalias = field\n  dom_api.setAttribute(localalias,"type","text")\nfield = dom_api.createElement(dom_api.document,"input")\ndom_api.setAttribute(field,"type","checkbox")\nmutate()\ndom_api.setJsPropCstring(field,"value","seed")\n', [(13, 'unresolved DOM privacy binding')])
+
+    def test_nim_compiled_capture_current_nonfield_metadata_control(self):
+        self.compiled_control('import isonim/web/dom_api\nvar field = dom_api.createElement(dom_api.document,"div")\ndom_api.setAttribute(field,"type","checkbox")\nproc mutate() = dom_api.setAttribute(field,"type","text")\nmutate()\ndom_api.setJsPropCstring(field,"value","seed")\n', [])
+
+    def test_nim_compiled_capture_optional_rebind_retains_old_possible_receiver(self):
+        self.compiled_control('import isonim/web/dom_api\nvar field = dom_api.createElement(dom_api.document,"input")\ndom_api.setAttribute(field,"type","checkbox")\nlet oldalias = field\nproc mutate() =\n  if true: field = dom_api.createElement(dom_api.document,"textarea")\n  dom_api.setAttribute(field,"type","text")\nmutate()\ndom_api.setJsPropCstring(oldalias,"value","seed")\ndom_api.setJsPropCstring(field,"value","seed")\n', [(9, 'unresolved DOM privacy binding'), (10, 'unresolved DOM privacy binding')])
+
+    def test_nim_capture_rebinding_alias_production_inverse(self):
+        scanner=SCRIPT.read_text();helper=SCRIPT.with_name('lint_privacy.py').read_text()
+        anchor='possible_aliases=(current,) if effect[1] else ())'
+        self.assertEqual(scanner.count(anchor),1)
+        directory=Path(self.temp.name)/'retain-discarded-capture-object';directory.mkdir()
+        (directory/'lint_nondet.py').write_text(scanner.replace(anchor,'possible_aliases=(current,))'))
+        (directory/'lint_privacy.py').write_text(helper)
+        tests=Path(__file__).read_text().replace('PROJECT = Path(__file__).resolve().parents[1]',
+              'PROJECT = Path('+repr(str(PROJECT))+')',1)
+        (directory/'test_lint_nondet.py').write_text(tests)
+        command=[sys.executable,str(directory/'test_lint_nondet.py'),
+                 'NimPrivacyTests.test_nim_compiled_capture_rebind_then_metadata_keeps_old_clean',
+                 'NimPrivacyTests.test_nim_compiled_capture_uninvoked_binding',
+                 'NimPrivacyTests.test_nim_compiled_capture_routine_local_shadow']
+        self.retain_inputs(command)
+        result=subprocess.run(command,capture_output=True,text=True)
+        (directory/'inverse.log').write_text(result.stdout+result.stderr)
+        self.retain_inputs(command)
+        self.assertEqual(result.returncode,1,result.stdout+result.stderr)
+        self.assertIn('FAIL: test_nim_compiled_capture_rebind_then_metadata_keeps_old_clean',result.stderr)
+        self.assertIn('AssertionError: Lists differ',result.stderr)
+        self.assertIn('site/src/ordinary.nim',result.stderr)
+        self.assertIn('unresolved DOM privacy binding',result.stderr)
+        self.assertIn('FAILED (failures=1)',result.stderr)
+        self.assertNotIn('ERROR:',result.stderr)
+
+    def test_nim_compiled_capture_immutable_binding_future_metadata(self):
+        self.compiled_control('import isonim/web/dom_api\nlet field=dom_api.createElement(dom_api.document,"input")\ndom_api.setAttribute(field,"type","text")\nproc mutate()=dom_api.setAttribute(field,"type","text")\ndom_api.setAttribute(field,"type","checkbox")\nmutate()\ndom_api.setJsPropCstring(field,"value","seed")\n', [(7, 'unresolved DOM privacy binding')])
+
+    def test_nim_compiled_capture_local_slot_rebinding_control(self):
+        self.compiled_control('import isonim/web/dom_api\nvar field=dom_api.createElement(dom_api.document,"input")\ndom_api.setAttribute(field,"type","checkbox")\nproc mutate()=\n  var scratch=field\n  scratch=dom_api.createElement(dom_api.document,"textarea")\nmutate()\ndom_api.setJsPropCstring(field,"value","seed")\n', [])
+
+    def test_nim_compiled_capture_immutable_uninvoked_control(self):
+        self.compiled_control('import isonim/web/dom_api\nlet field = dom_api.createElement(dom_api.document,"input")\ndom_api.setAttribute(field,"type","text")\nproc mutate() = dom_api.setAttribute(field,"type","text")\ndom_api.setAttribute(field,"type","checkbox")\ndom_api.setJsPropCstring(field,"value","seed")\n', [])
+
+    def test_nim_compiled_capture_local_reference_mutation_reaches_outer(self):
+        self.compiled_control('import isonim/web/dom_api\nvar field = dom_api.createElement(dom_api.document,"input")\ndom_api.setAttribute(field,"type","checkbox")\nproc mutate() =\n  var scratch = field\n  dom_api.setAttribute(scratch,"type","text")\nmutate()\ndom_api.setJsPropCstring(field,"value","seed")\n', [(8, 'unresolved DOM privacy binding')])
+
+    def test_nim_compiled_capture_nested_private_slot_dependency_reset(self):
+        self.compiled_control('import isonim/web/dom_api\nvar field = dom_api.createElement(dom_api.document,"input")\ndom_api.setAttribute(field,"type","checkbox")\nproc mutate() =\n  var scratch = field\n  proc replaceScratch() = scratch = dom_api.createElement(dom_api.document,"textarea")\n  replaceScratch()\n  dom_api.setAttribute(scratch,"type","text")\nmutate()\ndom_api.setJsPropCstring(field,"value","seed")\n', [])
+
+    def test_nim_compiled_capture_nested_caller_shadow_hidden_outer_root(self):
+        self.compiled_control('import isonim/web/dom_api\nvar field = dom_api.createElement(dom_api.document,"input")\ndom_api.setAttribute(field,"type","checkbox")\nproc mutate() = dom_api.setAttribute(field,"type","text")\nblock:\n  let field = dom_api.createElement(dom_api.document,"input")\n  dom_api.setAttribute(field,"type","checkbox")\n  proc wrapper() = mutate()\n  wrapper()\n  dom_api.setJsPropCstring(field,"value","seed")\ndom_api.setJsPropCstring(field,"value","seed")\n', [(11, 'unresolved DOM privacy binding')])
+
+    def test_nim_capture_local_slot_production_inverse(self):
+        scanner=SCRIPT.read_text();helper=SCRIPT.with_name('lint_privacy.py').read_text()
+        anchor="elif effect[0] != 'rebind':"
+        self.assertEqual(scanner.count(anchor),1)
+        directory=Path(self.temp.name)/'follow-reference-alias-for-slot-write';directory.mkdir()
+        (directory/'lint_nondet.py').write_text(scanner.replace(anchor,'else:'))
+        (directory/'lint_privacy.py').write_text(helper)
+        tests=Path(__file__).read_text().replace('PROJECT = Path(__file__).resolve().parents[1]',
+              'PROJECT = Path('+repr(str(PROJECT))+')',1)
+        (directory/'test_lint_nondet.py').write_text(tests)
+        command=[sys.executable,str(directory/'test_lint_nondet.py'),
+                 'NimPrivacyTests.test_nim_compiled_capture_local_slot_rebinding_control',
+                 'NimPrivacyTests.test_nim_compiled_capture_uninvoked_binding',
+                 'NimPrivacyTests.test_nim_compiled_capture_routine_local_shadow']
+        self.retain_inputs(command)
+        result=subprocess.run(command,capture_output=True,text=True)
+        (directory/'inverse.log').write_text(result.stdout+result.stderr)
+        self.retain_inputs(command)
+        self.assertEqual(result.returncode,1,result.stdout+result.stderr)
+        self.assertIn('FAIL: test_nim_compiled_capture_local_slot_rebinding_control',result.stderr)
+        self.assertIn('AssertionError: Lists differ',result.stderr)
+        self.assertIn('site/src/ordinary.nim',result.stderr)
+        self.assertIn('unresolved DOM privacy binding',result.stderr)
+        self.assertIn('FAILED (failures=1)',result.stderr)
+        self.assertNotIn('ERROR:',result.stderr)
+
+    def test_nim_compiled_capture_include_observation(self):
+        self.write('privacy_fragment.nim', 'discard 0\n')
+        for invoke in [False, True]:
+            with self.subTest(invoke=invoke):
+                source='import isonim/web/dom_api\nlet field=dom_api.createElement(dom_api.document,"input")\ndom_api.setAttribute(field,"type","checkbox")\nproc mutate()=\n  include privacy_fragment\n'+('mutate()\n' if invoke else '')+'dom_api.setJsPropCstring(field,"value","seed")\n'
+                self.compiled_control(source,[(source.count('\n'),'unresolved DOM privacy binding')] if invoke else [])
+
+    def test_nim_compiled_capture_known_rhs_reference(self):
+        self.compiled_control('import isonim/web/dom_api\nvar field=dom_api.createElement(dom_api.document,"input")\ndom_api.setAttribute(field,"type","checkbox")\nlet oldalias=field\nlet other=dom_api.createElement(dom_api.document,"input")\ndom_api.setAttribute(other,"type","checkbox")\nproc mutate()=\n  field=other\n  dom_api.setAttribute(field,"type","text")\nmutate()\ndom_api.setJsPropCstring(oldalias,"value","ok")\ndom_api.setJsPropCstring(other,"value","seed")\n', [(12, 'unresolved DOM privacy binding')])
+
+    def test_nim_compiled_capture_optional_rhs_composition(self):
+        self.compiled_control('import isonim/web/dom_api\nvar field=dom_api.createElement(dom_api.document,"input")\ndom_api.setAttribute(field,"type","checkbox")\nlet oldalias=field\nlet first=dom_api.createElement(dom_api.document,"input")\ndom_api.setAttribute(first,"type","checkbox")\nlet second=dom_api.createElement(dom_api.document,"input")\ndom_api.setAttribute(second,"type","checkbox")\nproc mutate()=\n  field=first\n  if true: field=second\n  dom_api.setAttribute(field,"type","text")\nmutate()\ndom_api.setJsPropCstring(oldalias,"value","ok")\ndom_api.setJsPropCstring(first,"value","seed")\ndom_api.setJsPropCstring(second,"value","seed")\n', [(15, 'unresolved DOM privacy binding'), (16, 'unresolved DOM privacy binding')])
+
+    def test_nim_compiled_capture_overload_alternative_graphs(self):
+        self.compiled_control('import isonim/web/dom_api\nvar field=dom_api.createElement(dom_api.document,"input")\ndom_api.setAttribute(field,"type","checkbox")\nlet oldalias=field\nlet other=dom_api.createElement(dom_api.document,"input")\ndom_api.setAttribute(other,"type","checkbox")\nproc mutate(x: string)=dom_api.setAttribute(field,"type","text")\nproc mutate(x: int)=field=other\nmutate("text")\ndom_api.setJsPropCstring(oldalias,"value","seed")\ndom_api.setJsPropCstring(other,"value","ok")\n', [(10, 'unresolved DOM privacy binding')])
+
+        self.compiled_control('import isonim/web/dom_api\nvar field=dom_api.createElement(dom_api.document,"input")\ndom_api.setAttribute(field,"type","checkbox")\nlet oldalias=field\nlet other=dom_api.createElement(dom_api.document,"input")\ndom_api.setAttribute(other,"type","checkbox")\nproc mutate(x: int)=field=other\nproc mutate(x: string)=dom_api.setAttribute(field,"type","text")\nmutate("text")\ndom_api.setJsPropCstring(oldalias,"value","seed")\ndom_api.setJsPropCstring(other,"value","ok")\n', [(10, 'unresolved DOM privacy binding')])
+
+    def test_nim_compiled_capture_rhs_assignment_without_mutation(self):
+        self.compiled_control('import isonim/web/dom_api\nvar field=dom_api.createElement(dom_api.document,"input")\ndom_api.setAttribute(field,"type","checkbox")\nlet oldalias=field\nlet other=dom_api.createElement(dom_api.document,"input")\ndom_api.setAttribute(other,"type","checkbox")\nproc mutate()=\n  field=other\nmutate()\ndom_api.setJsPropCstring(oldalias,"value","seed")\ndom_api.setJsPropCstring(other,"value","seed")\n', [])
+
+    def test_nim_compiled_capture_rhs_readonly_metadata(self):
+        self.compiled_control('import isonim/web/dom_api\nvar field=dom_api.createElement(dom_api.document,"input")\ndom_api.setAttribute(field,"type","checkbox")\nlet oldalias=field\nlet other=dom_api.createElement(dom_api.document,"input")\ndom_api.setAttribute(other,"type","checkbox")\nproc mutate()=\n  field=other\n  dom_api.setAttribute(field,"id","label")\nmutate()\ndom_api.setJsPropCstring(oldalias,"value","seed")\ndom_api.setJsPropCstring(other,"value","seed")\n', [])
+
+    def test_nim_compiled_capture_local_rhs_alias_transfer(self):
+        self.compiled_control('import isonim/web/dom_api\nvar field=dom_api.createElement(dom_api.document,"input")\ndom_api.setAttribute(field,"type","checkbox")\nlet oldalias=field\nlet other=dom_api.createElement(dom_api.document,"input")\ndom_api.setAttribute(other,"type","checkbox")\nproc mutate()=\n  let localalias=other\n  field=localalias\n  dom_api.setAttribute(field,"type","text")\nmutate()\ndom_api.setJsPropCstring(oldalias,"value","seed")\ndom_api.setJsPropCstring(other,"value","seed")\n', [(13, 'unresolved DOM privacy binding')])
+
+    def test_nim_compiled_capture_unconditional_rhs_composition(self):
+        self.compiled_control('import isonim/web/dom_api\nvar field=dom_api.createElement(dom_api.document,"input")\ndom_api.setAttribute(field,"type","checkbox")\nlet oldalias=field\nlet other=dom_api.createElement(dom_api.document,"input")\ndom_api.setAttribute(other,"type","checkbox")\nlet last=dom_api.createElement(dom_api.document,"input")\ndom_api.setAttribute(last,"type","checkbox")\nproc mutate()=\n  field=other\n  field=last\n  dom_api.setAttribute(field,"type","text")\nmutate()\ndom_api.setJsPropCstring(oldalias,"value","seed")\ndom_api.setJsPropCstring(other,"value","seed")\ndom_api.setJsPropCstring(last,"value","seed")\n', [(16, 'unresolved DOM privacy binding')])
+
+    def test_nim_compiled_capture_harmless_overload_alternatives(self):
+        self.compiled_control('import isonim/web/dom_api\nvar field=dom_api.createElement(dom_api.document,"input")\ndom_api.setAttribute(field,"type","checkbox")\nlet oldalias=field\nlet other=dom_api.createElement(dom_api.document,"input")\ndom_api.setAttribute(other,"type","checkbox")\nproc mutate(x: string)=dom_api.setAttribute(field,"id","label")\nproc mutate(x: int)=field=other\nmutate("label")\ndom_api.setJsPropCstring(oldalias,"value","seed")\ndom_api.setJsPropCstring(other,"value","seed")\n', [])
+
+    def test_nim_capture_rhs_edge_production_inverse(self):
+        scanner=SCRIPT.read_text();helper=SCRIPT.with_name('lint_privacy.py').read_text()
+        anchor='*rhs_aliases'
+        self.assertEqual(scanner.count(anchor),1)
+        directory=Path(self.temp.name)/'drop-known-rhs-reference';directory.mkdir()
+        (directory/'lint_nondet.py').write_text(scanner.replace(anchor,'*()'))
+        (directory/'lint_privacy.py').write_text(helper)
+        tests=Path(__file__).read_text().replace('PROJECT = Path(__file__).resolve().parents[1]',
+              'PROJECT = Path('+repr(str(PROJECT))+')',1)
+        (directory/'test_lint_nondet.py').write_text(tests)
+        command=[sys.executable,str(directory/'test_lint_nondet.py'),
+                 'NimPrivacyTests.test_nim_compiled_capture_known_rhs_reference',
+                 'NimPrivacyTests.test_nim_compiled_capture_uninvoked_binding',
+                 'NimPrivacyTests.test_nim_compiled_capture_routine_local_shadow']
+        self.retain_inputs(command)
+        result=subprocess.run(command,capture_output=True,text=True)
+        (directory/'inverse.log').write_text(result.stdout+result.stderr)
+        self.retain_inputs(command)
+        self.assertEqual(result.returncode,1,result.stdout+result.stderr)
+        self.assertIn('FAIL: test_nim_compiled_capture_known_rhs_reference',result.stderr)
+        self.assertIn('AssertionError: Lists differ',result.stderr)
+        self.assertIn('site/src/ordinary.nim',result.stderr)
+        self.assertIn('unresolved DOM privacy binding',result.stderr)
+        self.assertIn('FAILED (failures=1)',result.stderr)
+        self.assertNotIn('ERROR:',result.stderr)
+
+    def test_nim_capture_overload_graph_production_inverse(self):
+        scanner=SCRIPT.read_text();helper=SCRIPT.with_name('lint_privacy.py').read_text()
+        anchor='branch = view(env)'
+        self.assertEqual(scanner.count(anchor),1)
+        directory=Path(self.temp.name)/'reuse-one-overload-graph';directory.mkdir()
+        (directory/'lint_nondet.py').write_text(scanner.replace(anchor,'branch = env'))
+        (directory/'lint_privacy.py').write_text(helper)
+        tests=Path(__file__).read_text().replace('PROJECT = Path(__file__).resolve().parents[1]',
+              'PROJECT = Path('+repr(str(PROJECT))+')',1)
+        (directory/'test_lint_nondet.py').write_text(tests)
+        command=[sys.executable,str(directory/'test_lint_nondet.py'),
+                 'NimPrivacyTests.test_nim_compiled_capture_overload_alternative_graphs',
+                 'NimPrivacyTests.test_nim_compiled_capture_uninvoked_binding',
+                 'NimPrivacyTests.test_nim_compiled_capture_routine_local_shadow']
+        self.retain_inputs(command)
+        result=subprocess.run(command,capture_output=True,text=True)
+        (directory/'inverse.log').write_text(result.stdout+result.stderr)
+        self.retain_inputs(command)
+        self.assertEqual(result.returncode,1,result.stdout+result.stderr)
+        self.assertIn('FAIL: test_nim_compiled_capture_overload_alternative_graphs',result.stderr)
+        self.assertIn('AssertionError: Lists differ',result.stderr)
+        self.assertIn('site/src/ordinary.nim',result.stderr)
+        self.assertIn('unresolved DOM privacy binding',result.stderr)
+        self.assertIn('FAILED (failures=1)',result.stderr)
+        self.assertNotIn('ERROR:',result.stderr)
+
+    def test_nim_compiled_capture_composition_nested_overload_wrapper(self):
+        self.compiled_control('import isonim/web/dom_api\nvar field=dom_api.createElement(dom_api.document,"input")\ndom_api.setAttribute(field,"type","checkbox")\nlet oldalias=field\nlet other=dom_api.createElement(dom_api.document,"input")\ndom_api.setAttribute(other,"type","checkbox")\nproc mutate(x: string)=dom_api.setAttribute(field,"type","text")\nproc mutate(x: int)=field=other\nproc wrapper()=mutate("text")\nwrapper()\ndom_api.setJsPropCstring(oldalias,"value","seed")\ndom_api.setJsPropCstring(other,"value","seed")\n', [(11, 'unresolved DOM privacy binding')])
+
+    def test_nim_compiled_capture_composition_repeated_metadata_before_and_after_rebind(self):
+        self.compiled_control('import isonim/web/dom_api\nvar field=dom_api.createElement(dom_api.document,"input")\ndom_api.setAttribute(field,"type","checkbox")\nlet oldalias=field\nlet other=dom_api.createElement(dom_api.document,"input")\ndom_api.setAttribute(other,"type","checkbox")\nproc mutate()=\n  dom_api.setAttribute(field,"type","text")\n  field=other\n  dom_api.setAttribute(field,"type","text")\nmutate()\ndom_api.setJsPropCstring(oldalias,"value","seed")\ndom_api.setJsPropCstring(other,"value","seed")\n', [(12, 'unresolved DOM privacy binding'), (13, 'unresolved DOM privacy binding')])
+
+    def test_nim_compiled_capture_composition_loop_rebind_then_next_iteration_metadata(self):
+        self.compiled_control('import isonim/web/dom_api\nvar field=dom_api.createElement(dom_api.document,"input")\ndom_api.setAttribute(field,"type","checkbox")\nlet oldalias=field\nlet other=dom_api.createElement(dom_api.document,"input")\ndom_api.setAttribute(other,"type","checkbox")\nproc mutate()=\n  for index in 0..1:\n    dom_api.setAttribute(field,"type","text")\n    field=other\nmutate()\ndom_api.setJsPropCstring(oldalias,"value","seed")\ndom_api.setJsPropCstring(other,"value","seed")\n', [(12, 'unresolved DOM privacy binding'), (13, 'unresolved DOM privacy binding')])
+
+    def test_nim_compiled_capture_composition_local_reference_before_cell_rebind(self):
+        self.compiled_control('import isonim/web/dom_api\nvar field=dom_api.createElement(dom_api.document,"input")\ndom_api.setAttribute(field,"type","checkbox")\nlet oldalias=field\nlet other=dom_api.createElement(dom_api.document,"input")\ndom_api.setAttribute(other,"type","checkbox")\nproc mutate()=\n  let snapshot=field\n  field=other\n  dom_api.setAttribute(snapshot,"type","text")\nmutate()\ndom_api.setJsPropCstring(oldalias,"value","seed")\ndom_api.setJsPropCstring(other,"value","seed")\n', [(12, 'unresolved DOM privacy binding')])
+
+    def test_nim_capture_reference_snapshot_production_inverse(self):
+        scanner=SCRIPT.read_text();helper=SCRIPT.with_name('lint_privacy.py').read_text()
+        anchor="receiver = state.get(effect[1]) if effect[0] == 'at-reference' else state.get(root)"
+        self.assertEqual(scanner.count(anchor),1)
+        directory=Path(self.temp.name)/'follow-cell-instead-of-copied-reference';directory.mkdir()
+        (directory/'lint_nondet.py').write_text(scanner.replace(anchor,'receiver = state.get(root)'))
+        (directory/'lint_privacy.py').write_text(helper)
+        tests=Path(__file__).read_text().replace('PROJECT = Path(__file__).resolve().parents[1]',
+              'PROJECT = Path('+repr(str(PROJECT))+')',1)
+        (directory/'test_lint_nondet.py').write_text(tests)
+        command=[sys.executable,str(directory/'test_lint_nondet.py'),
+                 'NimPrivacyTests.test_nim_compiled_capture_composition_local_reference_before_cell_rebind',
+                 'NimPrivacyTests.test_nim_compiled_capture_uninvoked_binding',
+                 'NimPrivacyTests.test_nim_compiled_capture_routine_local_shadow']
+        self.retain_inputs(command)
+        result=subprocess.run(command,capture_output=True,text=True)
+        (directory/'inverse.log').write_text(result.stdout+result.stderr)
+        self.retain_inputs(command)
+        self.assertEqual(result.returncode,1,result.stdout+result.stderr)
+        self.assertIn('FAIL: test_nim_compiled_capture_composition_local_reference_before_cell_rebind',result.stderr)
+        self.assertIn('AssertionError: Lists differ',result.stderr)
+        self.assertIn('site/src/ordinary.nim',result.stderr)
+        self.assertIn('unresolved DOM privacy binding',result.stderr)
+        self.assertIn('FAILED (failures=1)',result.stderr)
+        self.assertNotIn('ERROR:',result.stderr)
+
+    def test_nim_capture_choice_observation_production_inverse(self):
+        scanner=SCRIPT.read_text();helper=SCRIPT.with_name('lint_privacy.py').read_text()
+        anchor='if not suppress_operation_observations:'
+        self.assertEqual(scanner.count(anchor),1)
+        directory=Path(self.temp.name)/'publish-provisional-choice-operations';directory.mkdir()
+        (directory/'lint_nondet.py').write_text(scanner.replace(anchor,'if True:'))
+        (directory/'lint_privacy.py').write_text(helper)
+        tests=Path(__file__).read_text().replace('PROJECT = Path(__file__).resolve().parents[1]',
+              'PROJECT = Path('+repr(str(PROJECT))+')',1)
+        (directory/'test_lint_nondet.py').write_text(tests)
+        command=[sys.executable,str(directory/'test_lint_nondet.py'),
+                 'NimPrivacyTests.test_nim_compiled_capture_composition_nested_overload_wrapper',
+                 'NimPrivacyTests.test_nim_compiled_capture_uninvoked_binding',
+                 'NimPrivacyTests.test_nim_compiled_capture_routine_local_shadow']
+        self.retain_inputs(command)
+        result=subprocess.run(command,capture_output=True,text=True)
+        (directory/'inverse.log').write_text(result.stdout+result.stderr)
+        self.retain_inputs(command)
+        self.assertEqual(result.returncode,1,result.stdout+result.stderr)
+        self.assertIn('FAIL: test_nim_compiled_capture_composition_nested_overload_wrapper',result.stderr)
+        self.assertIn('AssertionError: Lists differ',result.stderr)
+        self.assertIn('site/src/ordinary.nim',result.stderr)
+        self.assertIn('unresolved DOM privacy binding',result.stderr)
+        self.assertIn('FAILED (failures=1)',result.stderr)
+        self.assertNotIn('ERROR:',result.stderr)
+
+    def test_nim_capture_loop_written_join_production_inverse(self):
+        scanner=SCRIPT.read_text();helper=SCRIPT.with_name('lint_privacy.py').read_text()
+        anchor='result[key] = any(vals)'
+        self.assertEqual(scanner.count(anchor),1)
+        directory=Path(self.temp.name)/'drop-written-cell-join-coordinate';directory.mkdir()
+        (directory/'lint_nondet.py').write_text(scanner.replace(anchor,'result[key] = False'))
+        (directory/'lint_privacy.py').write_text(helper)
+        tests=Path(__file__).read_text().replace('PROJECT = Path(__file__).resolve().parents[1]',
+              'PROJECT = Path('+repr(str(PROJECT))+')',1)
+        (directory/'test_lint_nondet.py').write_text(tests)
+        command=[sys.executable,str(directory/'test_lint_nondet.py'),
+                 'NimPrivacyTests.test_nim_compiled_capture_composition_loop_rebind_then_next_iteration_metadata',
+                 'NimPrivacyTests.test_nim_compiled_capture_uninvoked_binding',
+                 'NimPrivacyTests.test_nim_compiled_capture_routine_local_shadow']
+        self.retain_inputs(command)
+        result=subprocess.run(command,capture_output=True,text=True)
+        (directory/'inverse.log').write_text(result.stdout+result.stderr)
+        self.retain_inputs(command)
+        self.assertEqual(result.returncode,1,result.stdout+result.stderr)
+        self.assertIn('FAIL: test_nim_compiled_capture_composition_loop_rebind_then_next_iteration_metadata',result.stderr)
+        self.assertIn('AssertionError: Lists differ',result.stderr)
+        self.assertIn('site/src/ordinary.nim',result.stderr)
+        self.assertIn('unresolved DOM privacy binding',result.stderr)
+        self.assertIn('FAILED (failures=1)',result.stderr)
+        self.assertNotIn('ERROR:',result.stderr)
+
+    def test_nim_compiled_invocation_repeated_helper_replacement(self):
+        self.compiled_control('import isonim/web/dom_api\nvar field=dom_api.createElement(dom_api.document,"input")\ndom_api.setAttribute(field,"type","checkbox")\nlet other=dom_api.createElement(dom_api.document,"input")\ndom_api.setAttribute(other,"type","checkbox")\nlet oldalias=field\nproc helper()=dom_api.setAttribute(field,"type","text")\nproc wrapper()=\n  helper()\n  field=other\n  helper()\nwrapper()\ndom_api.setJsPropCstring(other,"value","seed")\n', [(13, 'unresolved DOM privacy binding')])
+
+    def test_nim_compiled_invocation_repeated_helper_uninvoked(self):
+        self.compiled_control('import isonim/web/dom_api\nvar field=dom_api.createElement(dom_api.document,"input")\ndom_api.setAttribute(field,"type","checkbox")\nlet other=dom_api.createElement(dom_api.document,"input")\ndom_api.setAttribute(other,"type","checkbox")\nlet oldalias=field\nproc helper()=dom_api.setAttribute(field,"type","text")\nproc wrapper()=\n  helper()\n  field=other\n  helper()\ndom_api.setJsPropCstring(other,"value","seed")\n', [])
+
+    def test_nim_compiled_invocation_repeated_helper_single(self):
+        self.compiled_control('import isonim/web/dom_api\nvar field=dom_api.createElement(dom_api.document,"input")\ndom_api.setAttribute(field,"type","checkbox")\nlet other=dom_api.createElement(dom_api.document,"input")\ndom_api.setAttribute(other,"type","checkbox")\nlet oldalias=field\nproc helper()=dom_api.setAttribute(field,"type","text")\nproc wrapper()=\n  helper()\nwrapper()\ndom_api.setJsPropCstring(other,"value","seed")\n', [])
+
+    def test_nim_compiled_invocation_repeated_helper_readonly(self):
+        self.compiled_control('import isonim/web/dom_api\nvar field=dom_api.createElement(dom_api.document,"input")\ndom_api.setAttribute(field,"type","checkbox")\nlet other=dom_api.createElement(dom_api.document,"input")\ndom_api.setAttribute(other,"type","checkbox")\nlet oldalias=field\nproc helper()=discard field\nproc wrapper()=\n  helper()\n  field=other\n  helper()\nwrapper()\ndom_api.setJsPropCstring(other,"value","seed")\n', [])
+
+    def test_nim_compiled_invocation_nested_wrapper(self):
+        self.compiled_control('import isonim/web/dom_api\nvar field=dom_api.createElement(dom_api.document,"input")\ndom_api.setAttribute(field,"type","checkbox")\nlet other=dom_api.createElement(dom_api.document,"input")\ndom_api.setAttribute(other,"type","checkbox")\nlet oldalias=field\nproc helper()=dom_api.setAttribute(field,"type","text")\nproc wrapper()=\n  helper()\n  field=other\n  helper()\nproc outer()=wrapper()\nouter()\ndom_api.setJsPropCstring(other,"value","seed")\n', [(14, 'unresolved DOM privacy binding')])
+
+    def test_nim_compiled_invocation_irrelevant_id(self):
+        self.compiled_control('import isonim/web/dom_api\nvar field=dom_api.createElement(dom_api.document,"input")\ndom_api.setAttribute(field,"type","checkbox")\nlet other=dom_api.createElement(dom_api.document,"input")\ndom_api.setAttribute(other,"type","checkbox")\nlet oldalias=field\nproc helper()=dom_api.setAttribute(field,"id","safe")\nproc wrapper()=\n  helper()\n  field=other\n  helper()\nwrapper()\ndom_api.setJsPropCstring(other,"value","seed")\n', [])
+
+    def test_nim_compiled_invocation_caller_shadow(self):
+        self.compiled_control('import isonim/web/dom_api\nvar field=dom_api.createElement(dom_api.document,"input")\ndom_api.setAttribute(field,"type","checkbox")\nlet other=dom_api.createElement(dom_api.document,"input")\ndom_api.setAttribute(other,"type","checkbox")\nlet oldalias=field\nproc helper()=dom_api.setAttribute(field,"type","text")\nproc wrapper()=\n  helper()\n  field=other\n  helper()\nblock:\n  let field=dom_api.createElement(dom_api.document,"button")\n  wrapper()\ndom_api.setJsPropCstring(other,"value","seed")\n', [(15, 'unresolved DOM privacy binding')])
+
+    def test_nim_compiled_invocation_copied_reference(self):
+        self.compiled_control('import isonim/web/dom_api\nvar field=dom_api.createElement(dom_api.document,"input")\ndom_api.setAttribute(field,"type","checkbox")\nlet other=dom_api.createElement(dom_api.document,"input")\ndom_api.setAttribute(other,"type","checkbox")\nlet oldalias=field\nproc helper()=\n  let snapshot=field\n  dom_api.setAttribute(snapshot,"type","text")\nproc wrapper()=\n  helper()\n  field=other\n  helper()\nwrapper()\ndom_api.setJsPropCstring(other,"value","seed")\n', [(15, 'unresolved DOM privacy binding')])
+
+    def test_nim_compiled_invocation_loop_same_callsite(self):
+        self.compiled_control('import isonim/web/dom_api\nvar field=dom_api.createElement(dom_api.document,"input")\ndom_api.setAttribute(field,"type","checkbox")\nlet other=dom_api.createElement(dom_api.document,"input")\ndom_api.setAttribute(other,"type","checkbox")\nlet oldalias=field\nproc helper()=dom_api.setAttribute(field,"type","text")\nproc wrapper()=\n  for i in 0..1:\n    helper()\n    field=other\nwrapper()\ndom_api.setJsPropCstring(other,"value","seed")\n', [(13, 'unresolved DOM privacy binding')])
+
+    def test_nim_compiled_invocation_loop_same_callsite_copied_reference(self):
+        self.compiled_control('import isonim/web/dom_api\nvar field=dom_api.createElement(dom_api.document,"input")\ndom_api.setAttribute(field,"type","checkbox")\nlet other=dom_api.createElement(dom_api.document,"input")\ndom_api.setAttribute(other,"type","checkbox")\nlet oldalias=field\nproc helper()=\n  let snapshot=field\n  dom_api.setAttribute(snapshot,"type","text")\nproc wrapper()=\n  for i in 0..1:\n    helper()\n    field=other\nwrapper()\ndom_api.setJsPropCstring(other,"value","seed")\n', [(15, 'unresolved DOM privacy binding')])
+
+    def test_nim_invocation_context_production_inverse(self):
+        scanner=SCRIPT.read_text();helper=SCRIPT.with_name('lint_privacy.py').read_text()
+        anchor='execute_choices(env, invocation_program(identity[2], ts[0][2]))'
+        self.assertEqual(scanner.count(anchor),1)
+        directory=Path(self.temp.name)/'remove-authored-invocation-context';directory.mkdir()
+        (directory/'lint_nondet.py').write_text(scanner.replace(anchor,'execute_choices(env, identity[2])'))
+        (directory/'lint_privacy.py').write_text(helper)
+        tests=Path(__file__).read_text().replace('PROJECT = Path(__file__).resolve().parents[1]',
+              'PROJECT = Path('+repr(str(PROJECT))+')',1)
+        (directory/'test_lint_nondet.py').write_text(tests)
+        command=[sys.executable,str(directory/'test_lint_nondet.py'),
+                 'NimPrivacyTests.test_nim_compiled_invocation_repeated_helper_replacement',
+                 'NimPrivacyTests.test_nim_compiled_invocation_repeated_helper_uninvoked',
+                 'NimPrivacyTests.test_nim_compiled_invocation_repeated_helper_readonly']
+        self.retain_inputs(command)
+        result=subprocess.run(command,capture_output=True,text=True)
+        (directory/'inverse.log').write_text(result.stdout+result.stderr)
+        self.retain_inputs(command)
+        self.assertEqual(result.returncode,1,result.stdout+result.stderr)
+        self.assertIn('FAIL: test_nim_compiled_invocation_repeated_helper_replacement',result.stderr)
+        self.assertIn('AssertionError: Lists differ',result.stderr)
+        self.assertIn('site/src/ordinary.nim',result.stderr)
+        self.assertIn('unresolved DOM privacy binding',result.stderr)
+        self.assertIn('FAILED (failures=1)',result.stderr)
+        self.assertNotIn('ERROR:',result.stderr)
+
+    def test_nim_compiled_literal_reviewer_shadow_false(self):
+        self.compiled_control('import isonim/web/dom_api\nlet false = cstring"true"\nlet field = dom_api.createElement(dom_api.document, "div")\ndom_api.setAttribute(field, "contenteditable", false)\nfield.textContent = "seed"\n', [(5, 'unresolved DOM privacy binding')])
+
+    def test_nim_compiled_literal_reviewer_string_false(self):
+        self.compiled_control('import isonim/web/dom_api\nlet field = dom_api.createElement(dom_api.document, "div")\ndom_api.setAttribute(field, "contenteditable", "false")\nfield.textContent = "seed"\n', [])
+
+    def test_nim_compiled_literal_reviewer_string_true(self):
+        self.compiled_control('import isonim/web/dom_api\nlet field = dom_api.createElement(dom_api.document, "div")\ndom_api.setAttribute(field, "contenteditable", "true")\nfield.textContent = "seed"\n', [(4, 'free-text binding')])
+
+    def test_nim_compiled_literal_reviewer_model(self):
+        self.compiled_control('type Model = object\n  textContent: cstring\nlet false = cstring"true"\nvar field = Model()\nfield.textContent = false\n', [])
+
+    def test_nim_compiled_literal_let_shadow_false(self):
+        self.compiled_control('import isonim/web/dom_api\nlet false = cstring"true"\nlet field = dom_api.createElement(dom_api.document, "div")\ndom_api.setAttribute(field, "contenteditable", false)\nfield.textContent = "seed"\n', [(5, 'unresolved DOM privacy binding')])
+
+    def test_nim_compiled_literal_var_shadow_false(self):
+        self.compiled_control('import isonim/web/dom_api\nvar false = cstring"true"\nlet field = dom_api.createElement(dom_api.document, "div")\ndom_api.setAttribute(field, "contenteditable", false)\nfield.textContent = "seed"\n', [(5, 'unresolved DOM privacy binding')])
+
+    def test_nim_compiled_literal_const_shadow_false(self):
+        self.compiled_control('import isonim/web/dom_api\nconst false = cstring"true"\nlet field = dom_api.createElement(dom_api.document, "div")\ndom_api.setAttribute(field, "contenteditable", false)\nfield.textContent = "seed"\n', [(5, 'unresolved DOM privacy binding')])
+
+    def test_nim_compiled_literal_quoted_shadow_true(self):
+        self.compiled_control('import isonim/web/dom_api\nlet `true` = cstring"true"\nlet field = dom_api.createElement(dom_api.document, "div")\ndom_api.setAttribute(field, "contenteditable", `true`)\nfield.textContent = "seed"\n', [(5, 'unresolved DOM privacy binding')])
+
+    def test_nim_compiled_literal_style_shadow_false(self):
+        self.compiled_control('import isonim/web/dom_api\nlet fAl_se = cstring"true"\nlet field = dom_api.createElement(dom_api.document, "div")\ndom_api.setAttribute(field, "contenteditable", false)\nfield.textContent = "seed"\n', [(5, 'unresolved DOM privacy binding')])
+
+    def test_nim_compiled_literal_first_character_distinct(self):
+        self.compiled_control('import isonim/web/dom_api\nlet False = cstring"true"\nlet field = dom_api.createElement(dom_api.document, "div")\ndom_api.setJsPropBool(field, "contentEditable", false)\nfield.textContent = "seed"\n', [])
+
+    def test_nim_compiled_literal_builtin_boolean_values(self):
+        self.compiled_control('import isonim/web/dom_api\nlet field = dom_api.createElement(dom_api.document, "div")\ndom_api.setJsPropBool(field, "contentEditable", false)\nfield.textContent = "ordinary"\ndom_api.setJsPropBool(field, "contentEditable", `true`)\nfield.textContent = "seed"\n', [(6, 'free-text binding')])
+
+    def test_nim_compiled_literal_shadow_constructor_tag(self):
+        self.compiled_control('import isonim/web/dom_api\nlet false = cstring"input"\nlet field = dom_api.createElement(dom_api.document, false)\ndom_api.setJsPropCstring(field, "value", "seed")\n', [(4, 'unresolved DOM privacy binding')])
+
+    def test_nim_compiled_literal_shadow_metadata_name(self):
+        self.compiled_control('import isonim/web/dom_api\nlet false = cstring"type"\nlet field = dom_api.createElement(dom_api.document, "input")\ndom_api.setAttribute(field, "type", "checkbox")\ndom_api.setAttribute(field, false, "text")\ndom_api.setJsPropCstring(field, "value", "seed")\n', [(6, 'unresolved DOM privacy binding')])
+
+    def test_nim_compiled_literal_shadow_metadata_value(self):
+        self.compiled_control('import isonim/web/dom_api\nlet true = cstring"text"\nlet field = dom_api.createElement(dom_api.document, "input")\ndom_api.setAttribute(field, "type", "checkbox")\ndom_api.setAttribute(field, "type", true)\ndom_api.setJsPropCstring(field, "value", "seed")\n', [(6, 'free-text binding')])
+
+    def test_nim_compiled_literal_formal_shadow(self):
+        self.compiled_control('import isonim/web/dom_api\nproc component(false: cstring) =\n  let field = dom_api.createElement(dom_api.document, "div")\n  dom_api.setAttribute(field, "contenteditable", false)\n  field.textContent = "seed"\ncomponent("true")\n', [(5, 'unresolved DOM privacy binding')])
+
+    def test_nim_compiled_literal_routine_shadow(self):
+        self.compiled_control('import isonim/web/dom_api\ntemplate false: cstring = cstring"true"\nlet field = dom_api.createElement(dom_api.document, "div")\ndom_api.setAttribute(field, "contenteditable", false)\nfield.textContent = "seed"\n', [(5, 'unresolved DOM privacy binding')])
+
+    def test_nim_compiled_literal_sequential_shadow_and_restore(self):
+        self.compiled_control('import isonim/web/dom_api\nlet field = dom_api.createElement(dom_api.document, "div")\ndom_api.setJsPropBool(field, "contentEditable", false)\nfield.textContent = "ordinary"\nblock:\n  let false = cstring"true"\n  dom_api.setAttribute(field, "contenteditable", false)\n  field.textContent = "seed"\ndom_api.setJsPropBool(field, "contentEditable", false)\nfield.textContent = "ordinary"\n', [(8, 'unresolved DOM privacy binding')])
+
+    def test_nim_compiled_literal_noneditable_button_text_controls(self):
+        self.compiled_control('import isonim/web/dom_api\nlet false = cstring"true"\nlet button = dom_api.createElement(dom_api.document, "button")\nbutton.textContent = "label"\nlet text = dom_api.createTextNode(dom_api.document, "label")\ntext.textContent = "ordinary"\nlet field = dom_api.createElement(dom_api.document, "div")\ndom_api.setAttribute(field, "contenteditable", "false")\nfield.textContent = "ordinary"\n', [])
+
+    def test_nim_compiled_literal_imported_symbol_shadow(self):
+        helper = self.write('symbols.nim', 'let `false`* = cstring"true"\n')
+        self.compiled_control('import isonim/web/dom_api\nfrom symbols import `false`\nlet field = dom_api.createElement(dom_api.document, "div")\ndom_api.setAttribute(field, "contenteditable", `false`)\nfield.textContent = "seed"\n', [(5, 'unresolved DOM privacy binding')])
+        helper.unlink()
+
+    def test_nim_compiled_literal_unknown_import_context(self):
+        helper = self.write('symbols.nim', 'let `false`* = cstring"true"\n')
+        self.compiled_control('import isonim/web/dom_api\nimport symbols\nlet field = dom_api.createElement(dom_api.document, "div")\ndom_api.setAttribute(field, "contenteditable", `false`)\nfield.textContent = "seed"\n', [(5, 'unresolved DOM privacy binding')])
+        helper.unlink()
+
+    def test_nim_literal_provenance_production_inverse(self):
+        scanner=SCRIPT.read_text();helper=SCRIPT.with_name('lint_privacy.py').read_text()
+        anchor="name in {'true', 'false'} and name not in env"
+        self.assertEqual(scanner.count(anchor),1)
+        directory=Path(self.temp.name)/'remove-literal-provenance-guard';directory.mkdir()
+        (directory/'lint_nondet.py').write_text(scanner.replace(anchor,"name in {'true', 'false'}"))
+        (directory/'lint_privacy.py').write_text(helper)
+        tests=Path(__file__).read_text().replace('PROJECT = Path(__file__).resolve().parents[1]',
+              'PROJECT = Path('+repr(str(PROJECT))+')',1)
+        (directory/'test_lint_nondet.py').write_text(tests)
+        command=[sys.executable,str(directory/'test_lint_nondet.py'),
+                 'NimPrivacyTests.test_nim_compiled_literal_reviewer_shadow_false',
+                 'NimPrivacyTests.test_nim_compiled_literal_reviewer_string_false',
+                 'NimPrivacyTests.test_nim_compiled_literal_reviewer_model']
+        self.retain_inputs(command)
+        result=subprocess.run(command,capture_output=True,text=True)
+        (directory/'inverse.log').write_text(result.stdout+result.stderr)
+        self.retain_inputs(command)
+        self.assertEqual(result.returncode,1,result.stdout+result.stderr)
+        self.assertEqual(result.stderr.count('\nFAIL: '),1)
+        self.assertIn('FAIL: test_nim_compiled_literal_reviewer_shadow_false',result.stderr)
+        self.assertIn('AssertionError: Lists differ',result.stderr)
+        self.assertIn('site/src/ordinary.nim',result.stderr)
+        self.assertIn('unresolved DOM privacy binding',result.stderr)
+        self.assertIn('FAILED (failures=1)',result.stderr)
+        self.assertNotIn('ERROR:',result.stderr)
+
+
+    def test_nim_compiled_declaration_reviewer_model(self):
+        self.compiled_control('type Model = object\n  textContent: cstring\nlet false, other = cstring"true"\nvar field = Model()\nfield.textContent = false\n', [])
+
+    def test_nim_compiled_declaration_reviewer_grouped_shadow(self):
+        self.compiled_control('import isonim/web/dom_api\nlet false, other = cstring"true"\nlet field = dom_api.createElement(dom_api.document, "div")\ndom_api.setAttribute(field, "contenteditable", false)\nfield.textContent = "seed"\n', [(5, 'unresolved DOM privacy binding')])
+
+    def test_nim_compiled_declaration_reviewer_single_shadow(self):
+        self.compiled_control('import isonim/web/dom_api\nlet false = cstring"true"\nlet field = dom_api.createElement(dom_api.document, "div")\ndom_api.setAttribute(field, "contenteditable", false)\nfield.textContent = "seed"\n', [(5, 'unresolved DOM privacy binding')])
+
+    def test_nim_compiled_declaration_reviewer_string_false(self):
+        self.compiled_control('import isonim/web/dom_api\nlet false = cstring"true"\nlet field = dom_api.createElement(dom_api.document, "div")\ndom_api.setAttribute(field, "contenteditable", "false")\nfield.textContent = "seed"\n', [])
+
+    def test_nim_compiled_declaration_reviewer_string_true(self):
+        self.compiled_control('import isonim/web/dom_api\nlet false = cstring"true"\nlet field = dom_api.createElement(dom_api.document, "div")\ndom_api.setAttribute(field, "contenteditable", "true")\nfield.textContent = "seed"\n', [(5, 'free-text binding')])
+
+    def test_nim_compiled_declaration_group_last(self):
+        self.compiled_control('import isonim/web/dom_api\nlet other, false = cstring"true"\nlet field = dom_api.createElement(dom_api.document, "div")\ndom_api.setAttribute(field, "contenteditable", false)\nfield.textContent = "seed"\n', [(5, 'unresolved DOM privacy binding')])
+
+    def test_nim_compiled_declaration_var_typed(self):
+        self.compiled_control('import isonim/web/dom_api\nvar other, `fAl_se`: cstring = cstring"true"\nlet field = dom_api.createElement(dom_api.document, "div")\ndom_api.setAttribute(field, "contenteditable", false)\nfield.textContent = "seed"\n', [(5, 'unresolved DOM privacy binding')])
+
+    def test_nim_compiled_declaration_export_pragma(self):
+        self.compiled_control('import isonim/web/dom_api\nlet false* {.used.}, other {.used.}: cstring = cstring"true"\nlet field = dom_api.createElement(dom_api.document, "div")\ndom_api.setAttribute(field, "contenteditable", false)\nfield.textContent = "seed"\n', [(5, 'unresolved DOM privacy binding')])
+
+    def test_nim_compiled_declaration_single_pragma(self):
+        self.compiled_control('import isonim/web/dom_api\nlet false {.used.}: cstring = cstring"true"\nlet field = dom_api.createElement(dom_api.document, "div")\ndom_api.setAttribute(field, "contenteditable", false)\nfield.textContent = "seed"\n', [(5, 'unresolved DOM privacy binding')])
+
+    def test_nim_compiled_declaration_single_export(self):
+        self.compiled_control('import isonim/web/dom_api\nlet false* = cstring"true"\nlet field = dom_api.createElement(dom_api.document, "div")\ndom_api.setAttribute(field, "contenteditable", false)\nfield.textContent = "seed"\n', [(5, 'unresolved DOM privacy binding')])
+
+    def test_nim_compiled_declaration_const_pragma(self):
+        self.compiled_control('import isonim/web/dom_api\nconst false {.used.} = cstring"true"\nlet field = dom_api.createElement(dom_api.document, "div")\ndom_api.setAttribute(field, "contenteditable", false)\nfield.textContent = "seed"\n', [(5, 'unresolved DOM privacy binding')])
+
+    def test_nim_compiled_declaration_tuple(self):
+        self.compiled_control('import isonim/web/dom_api\nlet (false, other) = (cstring"true", 1)\nlet field = dom_api.createElement(dom_api.document, "div")\ndom_api.setAttribute(field, "contenteditable", false)\nfield.textContent = "seed"\n', [(5, 'unresolved DOM privacy binding')])
+
+    def test_nim_compiled_declaration_nested_tuple(self):
+        self.compiled_control('import isonim/web/dom_api\nlet (other, (false, last)) = (1, (cstring"true", 2))\nlet field = dom_api.createElement(dom_api.document, "div")\ndom_api.setAttribute(field, "contenteditable", false)\nfield.textContent = "seed"\n', [(5, 'unresolved DOM privacy binding')])
+
+    def test_nim_compiled_declaration_const_tuple(self):
+        self.compiled_control('import isonim/web/dom_api\nconst (false, other) = (cstring"true", 1)\nlet field = dom_api.createElement(dom_api.document, "div")\ndom_api.setAttribute(field, "contenteditable", false)\nfield.textContent = "seed"\n', [(5, 'unresolved DOM privacy binding')])
+
+    def test_nim_compiled_declaration_var_tuple_typed(self):
+        self.compiled_control('import isonim/web/dom_api\nvar (false, other): (cstring, int) = (cstring"true", 1)\nlet field = dom_api.createElement(dom_api.document, "div")\ndom_api.setAttribute(field, "contenteditable", false)\nfield.textContent = "seed"\n', [(5, 'unresolved DOM privacy binding')])
+
+    def test_nim_compiled_declaration_uninitialized_pragma(self):
+        self.compiled_control('import isonim/web/dom_api\nvar false {.used.}: cstring\nlet field = dom_api.createElement(dom_api.document, "div")\ndom_api.setAttribute(field, "contenteditable", false)\nfield.textContent = "seed"\n', [(5, 'unresolved DOM privacy binding')])
+
+    def test_nim_compiled_declaration_section_group(self):
+        self.compiled_control('import isonim/web/dom_api\nlet\n  other, false = cstring"true"\nlet field = dom_api.createElement(dom_api.document, "div")\ndom_api.setAttribute(field, "contenteditable", false)\nfield.textContent = "seed"\n', [(6, 'unresolved DOM privacy binding')])
+
+    def test_nim_compiled_declaration_restore(self):
+        self.compiled_control('import isonim/web/dom_api\nlet field = dom_api.createElement(dom_api.document, "div")\ndom_api.setJsPropBool(field,"contentEditable",false)\nfield.textContent="ordinary"\nblock:\n  let other, false = cstring"true"\n  dom_api.setAttribute(field,"contenteditable",false)\n  field.textContent="seed"\ndom_api.setJsPropBool(field,"contentEditable",false)\nfield.textContent="ordinary"\n', [(8, 'unresolved DOM privacy binding')])
+
+    def test_nim_compiled_declaration_initializer_before_shadow(self):
+        self.compiled_control('import isonim/web/dom_api\nlet field = dom_api.createElement(dom_api.document, "div")\nblock:\n  let false, other = (dom_api.setJsPropBool(field,"contentEditable",false); false)\n  field.textContent="seed"\n', [(5, 'unresolved DOM privacy binding')])
+
+    def test_nim_compiled_declaration_tuple_initializer_before_shadow(self):
+        self.compiled_control('import isonim/web/dom_api\nlet field = dom_api.createElement(dom_api.document, "div")\nblock:\n  let (false, other) = (cstring"true", (dom_api.setJsPropBool(field,"contentEditable",false); 1))\n  field.textContent="ordinary"\n', [])
+
+    def test_nim_compiled_declaration_genuine_boolean_group(self):
+        self.compiled_control('import isonim/web/dom_api\nlet False, other = cstring"true"\nlet field = dom_api.createElement(dom_api.document, "div")\ndom_api.setJsPropBool(field,"contentEditable",false)\nfield.textContent="ordinary"\ndom_api.setJsPropBool(field,"contentEditable",true)\nfield.textContent="seed"\n', [(7, 'free-text binding')])
+
+    def test_nim_compiled_declaration_fresh_group(self):
+        self.compiled_control('import isonim/web/dom_api\nlet a, b = dom_api.createElement(dom_api.document,"input")\ndom_api.setAttribute(a,"type","checkbox")\nif false: discard\ndom_api.setJsPropCstring(a,"value","ordinary")\ndom_api.setJsPropCstring(b,"value","seed")\n', [(6, 'free-text binding')])
+
+    def test_nim_compiled_declaration_alias_group(self):
+        self.compiled_control('import isonim/web/dom_api\nlet field = dom_api.createElement(dom_api.document,"input")\nlet a, b = field\ndom_api.setAttribute(a,"type","checkbox")\ndom_api.setJsPropCstring(b,"value","ordinary")\ndom_api.setAttribute(b,"type","text")\ndom_api.setJsPropCstring(field,"value","seed")\n', [(7, 'free-text binding')])
+
+    def test_nim_compiled_declaration_tuple_direct_alias(self):
+        self.compiled_control('import isonim/web/dom_api\nlet field = dom_api.createElement(dom_api.document,"input")\nlet (a, (b, n)) = (field,(field,1))\ndom_api.setAttribute(a,"type","checkbox")\ndom_api.setJsPropCstring(b,"value","ordinary")\ndom_api.setAttribute(b,"type","text")\ndom_api.setJsPropCstring(field,"value","seed")\n', [(7, 'free-text binding')])
+
+    def test_nim_compiled_declaration_tuple_fresh_and_model(self):
+        self.compiled_control('import isonim/web/dom_api\ntype Model = object\n  textContent: cstring\nvar (field, model) = (dom_api.createElement(dom_api.document,"input"), Model())\nmodel.textContent="ordinary"\ndom_api.setJsPropCstring(field,"value","seed")\n', [(6, 'free-text binding')])
+
+    def test_nim_compiled_declaration_group_captured_rebind(self):
+        self.compiled_control('import isonim/web/dom_api\nvar field = dom_api.createElement(dom_api.document,"input")\ndom_api.setAttribute(field,"type","checkbox")\nproc replace(): int =\n  field = dom_api.createElement(dom_api.document,"input")\n  result = 1\nlet a, b = replace()\ndom_api.setJsPropCstring(field,"value","seed")\n', [(8, 'unresolved DOM privacy binding')])
+
+    def test_nim_compiled_declaration_group_capture_alias(self):
+        self.compiled_control('import isonim/web/dom_api\nvar field = dom_api.createElement(dom_api.document,"input")\ndom_api.setAttribute(field,"type","checkbox")\nproc replace(): int =\n  let a, b = field\n  field = dom_api.createElement(dom_api.document,"input")\n  dom_api.setAttribute(b,"type","text")\n  result = 1\nlet old = field\ndiscard replace()\ndom_api.setJsPropCstring(old,"value","seed")\n', [(11, 'unresolved DOM privacy binding')])
+
+    def test_nim_compiled_declaration_typed_rhs_not_binders(self):
+        self.compiled_control('import isonim/web/dom_api\ntype false = cstring\nlet other, last: false = "ordinary"\nlet field = dom_api.createElement(dom_api.document, "div")\ndom_api.setJsPropBool(field,"contentEditable",true)\nfield.textContent="seed"\n', [(6, 'free-text binding')])
+
+    def test_nim_declaration_binding_production_inverse(self):
+        scanner = SCRIPT.read_text(); helper = SCRIPT.with_name('lint_privacy.py').read_text()
+        start = scanner.index('        # DECLARATION-BINDING-START:')
+        end = scanner.index('        # DECLARATION-BINDING-END', start)
+        directory = Path(self.temp.name)/'remove-declaration-binding'; directory.mkdir()
+        (directory/'lint_nondet.py').write_text(scanner[:start]+scanner[end:])
+        (directory/'lint_privacy.py').write_text(helper)
+        tests = Path(__file__).read_text().replace('PROJECT = Path(__file__).resolve().parents[1]',
+                'PROJECT = Path('+repr(str(PROJECT))+')', 1)
+        (directory/'test_lint_nondet.py').write_text(tests)
+        command = [sys.executable, str(directory/'test_lint_nondet.py'),
+                   'NimPrivacyTests.test_nim_compiled_declaration_reviewer_grouped_shadow',
+                   'NimPrivacyTests.test_nim_compiled_declaration_reviewer_string_false',
+                   'NimPrivacyTests.test_nim_compiled_declaration_reviewer_string_true',
+                   'NimPrivacyTests.test_nim_compiled_declaration_reviewer_model']
+        self.retain_inputs(command)
+        result = subprocess.run(command, capture_output=True, text=True)
+        (directory/'inverse.log').write_text(result.stdout+result.stderr)
+        self.retain_inputs(command)
+        self.assertEqual(result.returncode, 1, result.stdout+result.stderr)
+        self.assertEqual(result.stderr.count('\nFAIL: '), 1)
+        self.assertIn('FAIL: test_nim_compiled_declaration_reviewer_grouped_shadow', result.stderr)
+        self.assertIn('AssertionError: Lists differ', result.stderr)
+        self.assertIn('site/src/ordinary.nim', result.stderr)
+        self.assertIn('unresolved DOM privacy binding', result.stderr)
+        self.assertIn('FAILED (failures=1)', result.stderr)
+        self.assertNotIn('ERROR:', result.stderr)
+
+    def test_nim_compiled_declaration_tuple_capture_order(self):
+        self.compiled_control('import isonim/web/dom_api\nlet old = dom_api.createElement(dom_api.document,"input")\ndom_api.setAttribute(old,"type","checkbox")\nvar field = old\nlet other = dom_api.createElement(dom_api.document,"input")\ndom_api.setAttribute(other,"type","checkbox")\nproc change() =\n  let (saved, ignored) = (field, (field = other; 0))\n  dom_api.setAttribute(saved,"type","text")\nchange()\ndom_api.setJsPropCstring(old,"value","seed")\ndom_api.setJsPropCstring(other,"value","ordinary")\n', [(11, 'unresolved DOM privacy binding')])
+
+    def test_nim_compiled_declaration_tuple_capture_order_readonly(self):
+        self.compiled_control('import isonim/web/dom_api\nlet old = dom_api.createElement(dom_api.document,"input")\ndom_api.setAttribute(old,"type","checkbox")\nvar field = old\nlet other = dom_api.createElement(dom_api.document,"input")\ndom_api.setAttribute(other,"type","checkbox")\nproc change() =\n  let (saved, ignored) = (field, (field = other; 0))\n  dom_api.setAttribute(saved,"id","label")\nchange()\ndom_api.setJsPropCstring(old,"value","seed")\ndom_api.setJsPropCstring(other,"value","ordinary")\n', [])
+
+    def test_nim_declaration_order_production_inverses(self):
+        scanner = SCRIPT.read_text(); helper = SCRIPT.with_name('lint_privacy.py').read_text()
+        variants = [
+            ('tuple-existing-obligation', 'return retain(shape)', 'return None',
+             'test_nim_compiled_declaration_tuple_tracked_rhs',
+             'test_nim_compiled_declaration_tuple_untracked_model'),
+            ('tuple-reference-order',
+             'if tuple_member: deps = declaration_reference(value, deps, shape, rhs[0][2], env)',
+             'if False: deps = declaration_reference(value, deps, shape, rhs[0][2], env)',
+             'test_nim_compiled_declaration_tuple_capture_order',
+             'test_nim_compiled_declaration_tuple_capture_order_readonly'),
+            ('group-fresh-identity',
+             "if declaration_origins and origin[0] in {'site', 'call-binding'}",
+             'if False',
+             'test_nim_compiled_declaration_fresh_group',
+             'test_nim_compiled_declaration_alias_group'),
+        ]
+        for label, anchor, replacement, failing, control in variants:
+            with self.subTest(removed=label):
+                self.assertEqual(scanner.count(anchor), 1)
+                mutated = scanner.replace(anchor, replacement)
+                directory = Path(self.temp.name)/label; directory.mkdir()
+                (directory/'lint_nondet.py').write_text(mutated)
+                (directory/'lint_privacy.py').write_text(helper)
+                tests = Path(__file__).read_text().replace('PROJECT = Path(__file__).resolve().parents[1]',
+                        'PROJECT = Path('+repr(str(PROJECT))+')', 1)
+                (directory/'test_lint_nondet.py').write_text(tests)
+                command = [sys.executable, str(directory/'test_lint_nondet.py'),
+                           'NimPrivacyTests.'+failing, 'NimPrivacyTests.'+control]
+                self.retain_inputs(command)
+                result = subprocess.run(command, capture_output=True, text=True)
+                (directory/'inverse.log').write_text(result.stdout+result.stderr)
+                self.retain_inputs(command)
+                self.assertEqual(result.returncode, 1, result.stdout+result.stderr)
+                self.assertEqual(result.stderr.count('\nFAIL: '), 1)
+                self.assertIn('FAIL: '+failing, result.stderr)
+                self.assertIn('AssertionError: Lists differ', result.stderr)
+                self.assertIn('site/src/ordinary.nim', result.stderr)
+                self.assertIn('FAILED (failures=1)', result.stderr)
+                self.assertNotIn('ERROR:', result.stderr)
+
+    def test_nim_compiled_declaration_tuple_tracked_rhs(self):
+        self.compiled_control('import isonim/web/dom_api\nlet field = dom_api.createElement(dom_api.document,"input")\ndom_api.setAttribute(field,"type","checkbox")\nlet pair = (field, 1)\nlet (saved, n) = pair\ndom_api.setAttribute(saved,"type","text")\ndom_api.setJsPropCstring(field,"value","seed")\n', [(7, 'unresolved DOM privacy binding')])
+
+    def test_nim_compiled_declaration_tuple_untracked_model(self):
+        self.compiled_control('type Model = object\n  textContent: cstring\nvar pair = (Model(), 1)\nvar (field, n) = pair\nfield.textContent="ordinary"\n', [])
+
+    def test_nim_compiled_declaration_group_unknown_loop(self):
+        self.compiled_control('import isonim/web/dom_api\nlet field = dom_api.createElement(dom_api.document,"input")\ndom_api.setAttribute(field,"type","checkbox")\nfor i in 0..1:\n  let a, b = (field, 1)\n  discard a\n  discard b\ndom_api.setJsPropCstring(field,"value","ordinary")\n', [])
+
+
+    def test_nim_compiled_authored_grouped_read(self):
+        self.compiled_control('import isonim/web/dom_api\nlet field = dom_api.createElement(dom_api.document,"input")\nlet a, b = field.textContent\n', [(3, 'free-text binding')])
+
+    def test_nim_compiled_authored_single_read(self):
+        self.compiled_control('import isonim/web/dom_api\nlet field = dom_api.createElement(dom_api.document,"input")\nlet a = field.textContent\n', [(3, 'free-text binding')])
+
+    def test_nim_compiled_authored_grouped_model(self):
+        self.compiled_control('type Model = object\n  textContent: cstring\nvar field = Model()\nlet a, b = field.textContent\n', [])
+
+    def test_nim_compiled_authored_separate_same_line(self):
+        self.compiled_control('import isonim/web/dom_api\nlet field = dom_api.createElement(dom_api.document,"input")\nlet a = field.textContent; let b = field.textContent\n', [(3, 'free-text binding'), (3, 'free-text binding')])
+
+    def test_nim_compiled_authored_separate_physical_lines(self):
+        self.compiled_control('import isonim/web/dom_api\nlet field = dom_api.createElement(dom_api.document,"input")\nlet a = field.textContent\nlet b = field.textContent\n', [(3, 'free-text binding'), (4, 'free-text binding')])
+
+    def test_nim_compiled_authored_grouped_getter(self):
+        self.compiled_control('import isonim/web/dom_api\nlet field = dom_api.createElement(dom_api.document,"input")\nlet a, b = dom_api.getJsProp(field,"value")\n', [(3, 'free-text binding')])
+
+    def test_nim_compiled_authored_grouped_setter(self):
+        self.compiled_control('import isonim/web/dom_api\nlet field = dom_api.createElement(dom_api.document,"input")\nlet a, b = (dom_api.setJsPropCstring(field,"value","seed"); 1)\n', [(3, 'free-text binding')])
+
+    def test_nim_compiled_authored_grouped_nested(self):
+        self.compiled_control('import isonim/web/dom_api\nlet field = dom_api.createElement(dom_api.document,"input")\nlet a, b = (discard (field.textContent); 1)\n', [(3, 'free-text binding')])
+
+    def test_nim_compiled_authored_grouped_loop(self):
+        self.compiled_control('import isonim/web/dom_api\nlet field = dom_api.createElement(dom_api.document,"input")\nfor i in 0..1:\n  let a, b = field.textContent\n', [(4, 'free-text binding')])
+
+    def test_nim_compiled_authored_grouped_loop_backedge(self):
+        self.compiled_control('import isonim/web/dom_api\nlet field = dom_api.createElement(dom_api.document,"input")\ndom_api.setAttribute(field,"type","checkbox")\nfor i in 0..1:\n  let a, b = field.textContent\n  dom_api.setAttribute(field,"type","text")\n', [(5, 'unresolved DOM privacy binding')])
+
+    def test_nim_compiled_authored_grouped_later_finding(self):
+        self.compiled_control('import isonim/web/dom_api\nvar field = dom_api.createElement(dom_api.document,"input")\ndom_api.setAttribute(field,"type","checkbox")\nvar saved = field\nlet a, b = (saved = field; field = dom_api.createElement(dom_api.document,"textarea"); saved.textContent)\n', [(5, 'free-text binding')])
+
+    def test_nim_compiled_authored_grouped_later_unknown(self):
+        self.compiled_control('import isonim/web/dom_api\nvar field = dom_api.createElement(dom_api.document,"input")\nlet a, b = (discard field.textContent; field = (field,1)[0]; 1)\n', [(3, 'unresolved DOM privacy binding')])
+
+    def test_nim_compiled_authored_grouped_first_unknown(self):
+        self.compiled_control('import isonim/web/dom_api\nvar field = dom_api.createElement(dom_api.document,"input")\nfield = (field,1)[0]\nlet a, b = (discard field.textContent; field = dom_api.createElement(dom_api.document,"textarea"); 1)\n', [(4, 'unresolved DOM privacy binding')])
+
+    def test_nim_authored_span_production_inverse(self):
+        scanner = SCRIPT.read_text(); helper = SCRIPT.with_name('lint_privacy.py').read_text()
+        before = '    return list(authored.values())'
+        self.assertEqual(scanner.count(before), 1)
+        directory = Path(self.temp.name)/'remove-authored-aggregation'; directory.mkdir()
+        (directory/'lint_nondet.py').write_text(scanner.replace(before,
+                '    return [finding for _span, finding in findings]', 1))
+        (directory/'lint_privacy.py').write_text(helper)
+        tests = Path(__file__).read_text().replace('PROJECT = Path(__file__).resolve().parents[1]',
+                'PROJECT = Path('+repr(str(PROJECT))+')', 1)
+        (directory/'test_lint_nondet.py').write_text(tests)
+        command = [sys.executable, str(directory/'test_lint_nondet.py'),
+                   'NimPrivacyTests.test_nim_compiled_authored_grouped_read',
+                   'NimPrivacyTests.test_nim_compiled_authored_single_read',
+                   'NimPrivacyTests.test_nim_compiled_authored_grouped_model',
+                   'NimPrivacyTests.test_nim_compiled_authored_separate_same_line']
+        self.retain_inputs(command)
+        result = subprocess.run(command, capture_output=True, text=True)
+        (directory/'inverse.log').write_text(result.stdout+result.stderr)
+        self.retain_inputs(command)
+        self.assertEqual(result.returncode, 1, result.stdout+result.stderr)
+        self.assertEqual(result.stderr.count('\nFAIL: '), 1)
+        self.assertIn('FAIL: test_nim_compiled_authored_grouped_read', result.stderr)
+        self.assertIn('AssertionError: Lists differ', result.stderr)
+        self.assertIn('site/src/ordinary.nim', result.stderr)
+        self.assertIn('free-text binding', result.stderr)
+        self.assertIn('Ran 4 tests', result.stderr)
+        self.assertIn('FAILED (failures=1)', result.stderr)
+        self.assertNotIn('ERROR:', result.stderr)
+
+
+    def test_nim_compiled_expression_scope_plain(self):
+        self.compiled_control('import isonim/web/dom_api\nlet field = dom_api.createElement(dom_api.document,"div")\nlet ignored=(let false=cstring"true"; 0)\ndom_api.setAttribute(field,"contenteditable",false)\nfield.textContent="seed"\n', [(5, 'unresolved DOM privacy binding')])
+
+    def test_nim_compiled_expression_scope_block(self):
+        self.compiled_control('import isonim/web/dom_api\nlet field = dom_api.createElement(dom_api.document,"div")\nblock:\n  let ignored=(let false=cstring"true"; 0)\n  discard false\ndom_api.setJsPropBool(field,"contentEditable",false)\nfield.textContent="ordinary"\n', [])
+
+    def test_nim_compiled_expression_scope_literal(self):
+        self.compiled_control('import isonim/web/dom_api\nlet field = dom_api.createElement(dom_api.document,"div")\nlet ignored=(discard cstring"true"; 0)\ndom_api.setAttribute(field,"contenteditable","false")\nfield.textContent="ordinary"\n', [])
+
+    def test_nim_compiled_expression_scope_model(self):
+        self.compiled_control('type Model = object\n  textContent: cstring\nvar field = Model()\nlet ignored=(let false=cstring"true"; 0)\nfield.textContent="ordinary"\n', [])
+
+    def test_nim_compiled_expression_scope_direct_dom(self):
+        self.compiled_control('import isonim/web/dom_api\nlet ignored=(let field=dom_api.createElement(dom_api.document,"input");0)\nfield.textContent="seed"\n', [(3, 'free-text binding')])
+
+    def test_nim_compiled_expression_scope_captured_dom(self):
+        self.compiled_control('import isonim/web/dom_api\nlet ignored=(var field=dom_api.createElement(dom_api.document,"input");0)\ndom_api.setAttribute(field,"type","checkbox")\nproc change() =\n  dom_api.setAttribute(field,"type","text")\nchange()\nfield.textContent="seed"\n', [(7, 'unresolved DOM privacy binding')])
+
+    def test_nim_compiled_expression_scope_scoped_dom(self):
+        self.compiled_control('import isonim/web/dom_api\nlet field=dom_api.createElement(dom_api.document,"input")\ndom_api.setAttribute(field,"type","checkbox")\nblock:\n  let ignored=(let field=dom_api.createElement(dom_api.document,"textarea");0)\n  field.textContent="seed"\nfield.textContent="ordinary"\n', [(6, 'free-text binding')])
+
+    def test_nim_expression_scope_production_inverse(self):
+        scanner = SCRIPT.read_text(); helper = SCRIPT.with_name('lint_privacy.py').read_text()
+        before = 'enclosing=True, prefixes=active_prefixes'
+        self.assertEqual(scanner.count(before), 1)
+        directory = Path(self.temp.name)/'restore-wrong-expression-scope'; directory.mkdir()
+        (directory/'lint_nondet.py').write_text(scanner.replace(before,
+                'scoped=True, prefixes=active_prefixes', 1))
+        (directory/'lint_privacy.py').write_text(helper)
+        tests = Path(__file__).read_text().replace('PROJECT = Path(__file__).resolve().parents[1]',
+                'PROJECT = Path('+repr(str(PROJECT))+')', 1)
+        (directory/'test_lint_nondet.py').write_text(tests)
+        command = [sys.executable, str(directory/'test_lint_nondet.py'),
+                   'NimPrivacyTests.test_nim_compiled_expression_scope_plain',
+                   'NimPrivacyTests.test_nim_compiled_expression_scope_block',
+                   'NimPrivacyTests.test_nim_compiled_expression_scope_literal',
+                   'NimPrivacyTests.test_nim_compiled_expression_scope_model']
+        self.retain_inputs(command)
+        result = subprocess.run(command, capture_output=True, text=True)
+        (directory/'inverse.log').write_text(result.stdout+result.stderr)
+        self.retain_inputs(command)
+        self.assertEqual(result.returncode, 1, result.stdout+result.stderr)
+        self.assertEqual(result.stderr.count('\nFAIL: '), 1)
+        self.assertIn('FAIL: test_nim_compiled_expression_scope_plain', result.stderr)
+        self.assertIn('AssertionError: Lists differ', result.stderr)
+        self.assertIn('site/src/ordinary.nim', result.stderr)
+        self.assertIn('unresolved DOM privacy binding', result.stderr)
+        self.assertIn('Ran 4 tests', result.stderr)
+        self.assertIn('FAILED (failures=1)', result.stderr)
+        self.assertNotIn('ERROR:', result.stderr)
+
+
+    def test_nim_deferred_default_owner_production_inverse(self):
+        scanner = SCRIPT.read_text(); helper = SCRIPT.with_name('lint_privacy.py').read_text()
+        before = '                                body([], local, scoped=True, prefixes=active_prefixes,\n                                     expression_action=evaluate_default)'
+        self.assertEqual(scanner.count(before), 1)
+        directory = Path(self.temp.name)/'remove-deferred-default-owner'; directory.mkdir()
+        (directory/'lint_nondet.py').write_text(scanner.replace(before,
+                '                                evaluate_default()', 1))
+        (directory/'lint_privacy.py').write_text(helper)
+        tests = Path(__file__).read_text().replace('PROJECT = Path(__file__).resolve().parents[1]',
+                'PROJECT = Path('+repr(str(PROJECT))+')', 1)
+        (directory/'test_lint_nondet.py').write_text(tests)
+        command = [sys.executable, str(directory/'test_lint_nondet.py'),
+                   'NimPrivacyTests.test_nim_compiled_deferred_default_readonly_and_local_controls',
+                   'NimPrivacyTests.test_nim_compiled_deferred_default_formal_shadow_control']
+        self.retain_inputs(command)
+        result = subprocess.run(command, capture_output=True, text=True)
+        (directory/'inverse.log').write_text(result.stdout+result.stderr)
+        self.retain_inputs(command)
+        self.assertEqual(result.returncode, 1, result.stdout+result.stderr)
+        self.assertEqual(result.stderr.count('\nFAIL: '), 1)
+        self.assertIn('FAIL: test_nim_compiled_deferred_default_readonly_and_local_controls', result.stderr)
+        self.assertIn('AssertionError: Lists differ', result.stderr)
+        self.assertIn('site/src/ordinary.nim', result.stderr)
+        self.assertIn('unresolved DOM privacy binding', result.stderr)
+        self.assertIn('Ran 2 tests', result.stderr)
+        self.assertIn('FAILED (failures=1)', result.stderr)
+        self.assertNotIn('ERROR:', result.stderr)
+
 if __name__ == '__main__':
     unittest.main()

@@ -70,9 +70,78 @@ cannot certify a replacement of an outer binding from only the visited arm.
 The post-boundary binding stays unresolved; fresh branch-local declarations and
 later unconditional known replacements retain their separate identity.
 
-Ordinary Nim AST calls (including importcpp DOM wrappers), arbitrary helper
-returns, cross-module flow, generated source and inherited editable state are
-outside this check. A zero result on those forms is no privacy guarantee. Use
+Ordinary Nim has a separate bounded local frontend for direct calls to the
+shipped `isonim/web/dom_api` module. Exact imports (including aliases and bracket
+imports), qualified calls, and unambiguous imported UFCS calls establish identity.
+It recognizes `document` allocations, aliases, resolved Node/Element upcasts,
+metadata setters/removal (including named/reordered owning formal arguments),
+dynamic-property getters/setters, attribute value
+bindings and inherited `.textContent` access. It shares the JavaScript field
+classifier. Known text nodes and button labels remain controls. Local declarations
+and parameters shadow imports sequentially; Nim symbol matching preserves the
+first character and ignores later ASCII case/underscores. Literal metadata retains its token kind; the boolean enum names true/false count only with no visible lexical binding or unresolved competing import. A local cstring named false, including a backtick/style-equivalent name, is unknown metadata rather than a false literal. Constructor tags, member names and values use this same provenance check; strings keep their existing literal decoding. No local constant folding is performed. Backtick-quoted ordinary
+identifiers retain identity without becoming control keywords. Other imports disable
+unqualified API inference because they may supply competing overloads; qualified
+owning-module calls remain analyzable. `from`/`except` forms are unanalysed.
+
+Local `let`/`var`/`const` declaration identities come only from structural
+binder positions. Comma groups, optional type annotations, export markers and
+binder pragmas retain the same Nim name; type names, initializer identifiers and
+pragma payloads do not introduce bindings. Each comma initializer runs before its
+own binding becomes visible, in source order. Repeated constructor initializers
+have distinct finite binder sites; actual aliases retain the same receiver.
+Diagnostics identify authored receiver spans: repeated evaluation of one grouped
+initializer reports its access once, while separate accesses on the same physical
+line remain separate. All initializer effects still run in source order. If one
+site has both known free-text and unresolved observations, its single diagnostic
+retains the unresolved obligation. Speculative loop observations are discarded
+before authored-site aggregation.
+
+Tuple declaration binders become visible after the initializer. Direct authored
+tuple positions preserve receiver references and their evaluation order, including
+a saved reference read before a later component rebinds its source cell. Other
+tuple expressions do not gain positional or type inference: already tracked DOM
+obligations remain uncertain possible receivers. Unknown local values still
+shadow builtin booleans, with the existing lexical restoration and capture rules.
+Plain parenthesized statement lists retain their declarations in the enclosing
+lexical scope, including captured mutable cells. An explicit `block:` retains its
+normal scope restoration.
+This adds declaration ownership, not general destructuring assignment analysis.
+
+Nim branches, loops and exception paths retain possible allocation identities;
+relevant mutations through an uncertain alias invalidate its possible objects.
+Harmless id/title writes preserve known checkbox classification. Loops join the
+zero-iteration path and reachable back edges to a finite allocation-site fixed
+point before checking body bindings. Different metadata coordinates widen
+individually, so an unconditional literal type assignment before a binding can
+recover that type within the same iteration; unknown-call/receiver obligations
+remain unresolved. Fresh loop-local allocations retain their own initialization.
+While-condition effects occur before the body on each reachable iteration.
+Normal and abrupt completions are separate: break/continue/return/raise stop
+unreachable suffixes, and lexical loop/block targets own their exit/backedge
+states. Handler entry conservatively joins protected reachable prefixes, not
+just the state before the try or its normal final state; a later normal reset
+cannot erase an earlier potentially exceptional mutation or alias replacement.
+Snapshots preserve outer roots and aliases across inner same-named declarations;
+expression-internal effect boundaries are included. Implicit exceptional prefixes
+also reach finally cleanup, which keeps incoming completion ownership unless it
+completes abruptly.
+These are bounded source-flow checks, not thrown-type or call-graph inference.
+Semicolon sequences following an inline control/routine header stay inside its
+body, including later statements on the same physical line. Literal semicolon
+contents and delimiter-enclosed parameter lists do not create sibling statements.
+Routine bodies
+have separate allocation views; actual calls to a locally analyzed routine
+invalidate captured metadata that its body may change. Unknown calls invalidate
+passed tracked receivers. Unknown reassignment retains an unresolved obligation
+on an already tracked receiver; later unconditional known allocation can recover
+that binding. Whole literals alone establish metadata: arbitrary generalized
+string macros (including unproved `cstring"..."`) are unknown, not constants.
+Physical receiver lines and distinct same-line accesses remain visible.
+
+This does not resolve arbitrary typed Nim/importcpp, generic renderer identities,
+macro expansion, helper-return/cross-module flow, generated source or inherited
+editable state. A zero result on those forms is no privacy guarantee. Use
 the DSL's explicit field policy rather than treating a raw marker or a missing
 lint finding as an authorization. Invalid literal metadata and uncertain tracked
 DOM bindings remain unsupported. Existing platform-API allowances and the exact
@@ -277,3 +346,45 @@ unrelated property/attribute writes (including grouped/bracket members and
 compound/update operators) retain each original checkbox's classification.
 Unknown/computed names and potentially relevant metadata on an unknown-tag
 receiver remain conservative; this does not certify arbitrary method effects.
+
+Local Nim routine defaults and bodies are analyzed for authored raw bindings
+without executing their effects in the enclosing scope. A possible actual call
+conservatively invalidates possibly affected captured DOM objects, including intermediate
+metadata before a later normal reset. Formal parameters and parenthesized
+statement-list locals retain lexical shadowing. Same-scope overload summaries
+are combined conservatively; nested declarations start their own lexical owner.
+This does not infer argument types, helper returns or a cross-module call graph.
+A statement list preserves its already-evaluated final tracked value in its
+enclosing lexical frame. Deferred defaults own a separate scope; their declarations
+remain isolated from the caller. Free or unknown DOM tails retain conservative
+possible provenance; proven non-free tails keep their shared allocation identity
+so a later alias metadata write still reaches the original field. Ordinary
+model tails stay ordinary. This does not evaluate an expression twice.
+
+Captured local Nim variables have lexical binding identity distinct from their
+DOM objects. Actual calls resolve the current binding after replacement and
+respect both routine-local and caller-local shadowing. Metadata summaries retain
+the authored member and test its relevance on the current receiver, including a
+mutable receiver whose former tag made that member irrelevant. Binding writes
+replace the abstract receiver without mutating discarded objects still held by
+immutable aliases; optional replacements retain possible old receivers. Local
+alias dependencies travel with the same copied/joined allocation graph. This
+remains a finite local direct-call check, without general escaping-closure,
+helper-return, arbitrary typed-wrapper or cross-module inference.
+
+Copied local references snapshot the invocation's object graph before later cell
+replacement; they keep object identity independently of their source variable.
+Authored operation sites keep ordered metadata writes distinct across replacement.
+Same-scope overloads execute in separate abstract graph views, with nested choices
+retained in deferred observations. Loop widening preserves known possible RHS
+reference edges without a guessed iteration bound. These remain local lexical
+operations and do not certify arbitrary typed or cross-module code.
+
+Local deferred routine operations retain their authored invocation context: two
+caller statements around a captured-cell replacement remain distinct, including
+nested wrappers and copied-reference witnesses. Repeated analysis of one authored
+call inside a loop reuses that finite context. Retained witness alternatives are
+kept separately from the current snapshot, so earlier copied objects cannot move
+with a later cell replacement. A snapshot of the actual current loop-widened cell
+retains that cell's possible known RHS receivers. These local flow summaries add
+no runtime counters, general call graph, escaping-closure or type inference.
