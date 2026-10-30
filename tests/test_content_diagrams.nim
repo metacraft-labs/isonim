@@ -1,6 +1,6 @@
 ## Real D2 and Graphviz integration against the filesystem cache. No doubles
 ## replace renderer positives and missing configuration is a failing condition.
-import std/[unittest, os, strutils, tempfiles, xmltree, sha1]
+import std/[unittest, os, strutils, tempfiles, xmltree, sha1, tables]
 import isonim/content/[markdown, directives, prose]
 import isonim/content/ext/[diagrams, math, tool_runner]
 import isonim/static/[head, scripts, exporter]
@@ -13,6 +13,44 @@ let work = createTempDir("isonim-diagrams-", "")
 let config = DiagramConfig(d2Path: d2, dotPath: dot, cacheDir: work / "cache")
 proc html(body: string): string =
   renderProseHtml(parseMarkdownDocWithHooks(@[diagramHooks(config)], body, "diagrams.md"))
+
+proc generatedRules(svg: XmlNode): OrderedTable[string, string] =
+  ## The rules of the stylesheet the normaliser appends to the root, by
+  ## selector. It holds the declarations the renderers wrote as attributes.
+  let last = svg[svg.len - 1]
+  doAssert last.kind == xnElement and last.tag == "style", "no generated stylesheet"
+  for rule in last.innerText.split('}'):
+    if rule.len == 0: continue
+    let open = rule.find('{')
+    doAssert open > 0, "malformed generated rule: " & rule
+    result[rule[0 ..< open]] = rule[open + 1 .. ^1]
+
+proc rootDeclarations(svg: XmlNode): string =
+  generatedRules(svg).getOrDefault("#" & svg.attr("id"))
+
+proc declarations(svg, node: XmlNode): string =
+  ## The generated declarations of `node`: those of the one rule naming its
+  ## generated class; "" when it has none.
+  for name in node.attr("class").splitWhitespace():
+    if name.startsWith("isonim-diagram-s"):
+      for selector, body in generatedRules(svg):
+        if selector.startsWith("#" & svg.attr("id") & " ." & name) and
+            selector.replace("." & name, "") == "#" & svg.attr("id") & " ":
+          return body
+      doAssert false, "no generated rule for " & name
+
+proc specificity(selector: string): tuple[ids, classes, types: int] =
+  ## https://www.w3.org/TR/selectors-4/#specificity-rules for the subset the
+  ## validator accepts: type, class and ID compounds and descendants.
+  for compound in selector.splitWhitespace():
+    var i = 0
+    while i < compound.len:
+      let kind = compound[i]
+      if kind in {'.', '#'}: inc i
+      while i < compound.len and compound[i] notin {'.', '#'}: inc i
+      if kind == '#': inc result.ids
+      elif kind == '.': inc result.classes
+      else: inc result.types
 
 suite "build time diagrams":
   test "real D2 and dot fences produce themeable inline SVG":
@@ -97,9 +135,10 @@ suite "build time diagrams":
   test "D2 structural masks stay fixed while palette colors remain inherited":
     let output = fragmentHtml(renderDiagram("d2", "a -> b: hello", config, SourceLocation(path: "masks.md", line: 1)))
     let svg = strictXml(output)
-    check svg.attr("style") == "--diagram-mask-visible:white;--diagram-mask-hidden:black"
-    check "--diagram-fill:" notin svg.attr("style")
-    check "--diagram-foreground:" notin svg.attr("style")
+    check svg.attr("style") == ""
+    check rootDeclarations(svg) == "--diagram-mask-visible:white;--diagram-mask-hidden:black"
+    check "--diagram-fill:" notin rootDeclarations(svg)
+    check "--diagram-foreground:" notin rootDeclarations(svg)
     var masks = 0
     proc visit(n: XmlNode) =
       if n.kind != xnElement: return
@@ -238,11 +277,11 @@ suite "build time diagrams":
         if inside and n.tag == "polygon":
           if n.attr("fill") in ["none", "var(--diagram-background, Canvas)"]:
             inc hollow
-            check "fill:" & n.attr("fill") in n.attr("style")
+            check "fill:" & n.attr("fill") in declarations(svg, n)
           else:
             inc solid
             check n.attr("fill") == "var(--diagram-stroke, currentColor)"
-            check "fill:var(--diagram-stroke, currentColor)" in n.attr("style")
+            check "fill:var(--diagram-stroke, currentColor)" in declarations(svg, n)
         if inside and n.tag == "text":
           inc labels
           check n.attr("fill") == "var(--diagram-foreground, currentColor)"
@@ -252,5 +291,91 @@ suite "build time diagrams":
       if language == "dot":
         check hollow == 2
         check labels > 0
+
+  test "normalized SVG carries no style attribute, only one generated stylesheet":
+    for language in ["d2", "dot"]:
+      let source = if language == "d2": "a -> b: hello" else: "digraph { a -> b [label=\"hello\"]; }"
+      let output = fragmentHtml(renderDiagram(language, source, config, SourceLocation(path: "csp.md", line: 1)))
+      check "style=" notin output
+      let svg = strictXml(output)
+      let rules = generatedRules(svg)
+      check rules.len > 1
+      var styled, texts = 0
+      proc visit(n: XmlNode) =
+        if n.kind != xnElement: return
+        check n.attr("style") == ""
+        if n.tag == "text":
+          inc texts
+          check "fill:var(--diagram-foreground, currentColor)" in declarations(svg, n)
+        if declarations(svg, n).len > 0: inc styled
+        for child in n: visit(child)
+      visit(svg)
+      check texts > 0
+      check styled > 0
+      # Identical declarations share one rule, and no rule goes unused: one
+      # rule for the root, one per generated class in use.
+      var used: seq[string]
+      for name in output.split('"'):
+        for token in name.splitWhitespace():
+          if token.startsWith("isonim-diagram-s") and token notin used: used.add token
+      check rules.len == 1 + used.len
+      var bodies: seq[string]
+      for selector, body in rules:
+        check body notin bodies
+        bodies.add body
+  test "generated rules outrank every renderer stylesheet rule":
+    # Fault injection: the pinned D2 writes its palette stylesheet as CDATA,
+    # which the normaliser does not currently keep, so a plain-text palette
+    # rule stands in for the renderer class rules the attributes must beat.
+    let payload = "<svg><style>.d2-x .fill-N1{fill:#0A0F25}.shape{stroke-linejoin:round}</style>" &
+      "<g class=\"d2-x\"><rect class=\"shape fill-N1\" fill=\"white\" width=\"4\" height=\"4\"/></g></svg>"
+    let executable = instrumentTool(work, "palette-dot", dot,
+      "for argument in \"$@\"; do output=\"$argument\"; done\nprintf '%s' " & quoteShell(payload) & " > \"$output\"")
+    let isolated = DiagramConfig(dotPath: executable, cacheDir: work / "palette")
+    let svg = strictXml(fragmentHtml(renderDiagram("dot", "digraph { a }", isolated, SourceLocation(path: "palette.md", line: 1))))
+    var renderer, generated: seq[string]
+    for element in svg:
+      if element.kind == xnElement and element.tag == "style" and element != svg[svg.len - 1]:
+        for rule in element.innerText.split('}'):
+          if '{' in rule: renderer.add rule[0 ..< rule.find('{')]
+    for selector in generatedRules(svg).keys:
+      if " ." in selector: generated.add selector
+    require renderer.len == 2
+    require generated.len == 1
+    for mine in generated:
+      for theirs in renderer:
+        check specificity(mine) > specificity(theirs)
+    var rect: XmlNode
+    proc find(n: XmlNode) =
+      if n.kind != xnElement: return
+      if n.tag == "rect": rect = n
+      for child in n: find(child)
+    find(svg)
+    check declarations(svg, rect) == "fill:var(--diagram-background, Canvas)"
+  test "renderer output that would defeat the generated stylesheet is refused":
+    # Scoped under the root ID, a single renderer ID is already the second.
+    for (payload, reason) in [
+        ("<svg><style>#a{fill:none}</style><g id=\"a\"/></svg>", "selector outranks normalized paint"),
+        ("<svg><style>#a #b{fill:none}</style><g id=\"a\"><g id=\"b\"/></g></svg>", "selector outranks normalized paint"),
+        ("<svg><rect class=\"isonim-diagram-s0\" width=\"1\" height=\"1\"/></svg>", "reserved SVG class")]:
+      checkpoint payload
+      let executable = instrumentTool(work, "outrank-dot", dot,
+        "for argument in \"$@\"; do output=\"$argument\"; done\nprintf '%s' " & quoteShell(payload) & " > \"$output\"")
+      let isolated = DiagramConfig(dotPath: executable, cacheDir: work / "outrank")
+      var message = ""
+      try: discard renderDiagram("dot", "digraph { a }", isolated, SourceLocation(path: "outrank.md", line: 1))
+      except ValueError as error: message = error.msg
+      check reason in message
+      check not dirExists(isolated.cacheDir)
+  test "an empty renderer style attribute is dropped, not refused":
+    for payload in ["<svg><rect style=\"\" width=\"1\" height=\"1\"/></svg>",
+        "<svg><rect style=\" \" width=\"1\" height=\"1\"/></svg>"]:
+      checkpoint payload
+      let executable = instrumentTool(work, "empty-style-dot", dot,
+        "for argument in \"$@\"; do output=\"$argument\"; done\nprintf '%s' " & quoteShell(payload) & " > \"$output\"")
+      let isolated = DiagramConfig(dotPath: executable, cacheDir: work / "empty-style")
+      let output = fragmentHtml(renderDiagram("dot", "digraph { a }", isolated, SourceLocation(path: "empty.md", line: 1)))
+      check "style=" notin output
+      check "isonim-diagram-s" notin output
 
 removeDir(work)

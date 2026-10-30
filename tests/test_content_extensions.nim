@@ -72,16 +72,26 @@ suite "content extension scanner":
   test "passive SVG grammar refuses remote CSS forms and unsupported selectors":
     for css in ["background-image:image-set('https://example.test/x' 1x)",
         "behavior:none", "fill:red", "--diagram-mask-visible:black"]:
-      expect ValueError: discard diagramFragment("<svg style=\"" & css & "\"></svg>")
+      expect ValueError: discard diagramFragment("<svg><style>svg{" & css & "}</style></svg>")
     for selector in ["path:has(a)", "path > rect", "[href]", "@media screen"]:
       expect ValueError: discard diagramFragment("<svg><style>" & selector & "{fill:none}</style></svg>")
   test "quoted local URLs and accessible labels retain validation":
-    let fragment = diagramFragment("<svg aria-labelledby=\"label\"><title id=\"label\">a</title><defs><path id=\"shape\"></path></defs><use href=\"#shape\" style=\"fill:url('#shape')\"></use></svg>")
+    let fragment = diagramFragment("<svg aria-labelledby=\"label\"><title id=\"label\">a</title><defs><path id=\"shape\"></path></defs><use href=\"#shape\" fill=\"url('#shape')\"></use><style>use{fill:url('#shape')}</style></svg>")
     check "aria-labelledby=\"label\"" in fragmentHtml(fragment)
     expect ValueError: discard diagramFragment("<svg aria-labelledby=\"missing\"></svg>")
   test "a local paint URL must occupy the complete paint value":
     expect ValueError:
-      discard diagramFragment("<svg><defs><path id=\"shape\"/></defs><use href=\"#shape\" style=\"fill:url(#shape) garbage()\"/></svg>")
+      discard diagramFragment("<svg><defs><path id=\"shape\"/></defs><use href=\"#shape\"/><style>use{fill:url(#shape) garbage()}</style></svg>")
+    expect ValueError:
+      discard diagramFragment("<svg><defs><path id=\"shape\"/></defs><use href=\"#shape\" fill=\"url(#shape) garbage()\"/></svg>")
+  test "a style attribute is refused, even one with valid declarations":
+    # A Content-Security-Policy without 'unsafe-inline' ignores style
+    # attributes, so passive SVG carries its declarations in a stylesheet.
+    check fragmentHtml(diagramFragment("<svg><style>svg{fill:none}</style></svg>")) ==
+      "<svg><style>svg{fill:none}</style></svg>"
+    for payload in ["<svg style=\"fill:none\"></svg>", "<svg><g style=\"stroke-width:2\"></g></svg>",
+        "<svg><text style=\"fill:var(--diagram-foreground, currentColor)\">a</text></svg>"]:
+      expect ValueError: discard diagramFragment(payload)
   test "math in link labels preserves literal syntax without nested anchors":
     let doc = parse("[outer [inner](target.md) [[sym:Missing]] ~~text~~ `$literal$` $x$](outer.md)")
     check seen == @[("x", false, 1)]

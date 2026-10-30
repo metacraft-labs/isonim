@@ -9,7 +9,7 @@ type DiagramConfig* = object
   d2Path*, dotPath*: string
   cacheDir*: string ## Required when a diagram is authored.
 
-const FormatVersion = "isonim-passive-svg-2"
+const FormatVersion = "isonim-passive-svg-3"
 const MaskStyle = "--diagram-mask-visible:white;--diagram-mask-hidden:black"
 
 proc paint(value, property: string; mask = false): string =
@@ -73,6 +73,70 @@ proc normalizeCss(css: string; classes: seq[string]): string =
         text = ".text" in selector or ".color-" in selector or ".fill-N1" in selector or ".fill-N2" in selector) & "}"
     i = close + 1
 
+const InlineClassPrefix = "isonim-diagram-s"
+
+proc moveInlineStyles(root: XmlNode) =
+  ## A page served with a Content-Security-Policy whose `style-src` has no
+  ## 'unsafe-inline' applies no `style` attribute (allowing one by its hash
+  ## needs 'unsafe-hashes'; https://www.w3.org/TR/CSP3/#directive-style-src),
+  ## while a `<style>` element can be allowed by the hash of its text. So the
+  ## normalized declarations leave the attributes for one generated stylesheet,
+  ## appended to the root: the root's own under its ID, every other distinct
+  ## declaration list under a class added to the elements that carried it.
+  ##
+  ## An attribute outranks every stylesheet rule, which is what lets a
+  ## semantic paint win over the renderer's palette classes. The generated
+  ## rules keep that precedence through specificity
+  ## (https://www.w3.org/TR/selectors-4/#specificity-rules): every renderer
+  ## rule is scoped under the root ID, so a generated rule repeating its class
+  ## once more than the most class-heavy renderer selector is more specific
+  ## than all of them. A renderer selector with a second ID could not be
+  ## outranked and is refused.
+  var mostClasses = 0
+  proc rules(node: XmlNode) =
+    if node.kind != xnElement: return
+    if node.tag == "style":
+      let css = node.innerText
+      var i = 0
+      while i < css.len:
+        let open = css.find('{', i)
+        if open < 0: break
+        let close = css.find('}', open + 1)
+        if close < 0: raise newException(ValueError, "unclosed SVG stylesheet rule")
+        let selector = css[i ..< open].strip()
+        if selector != "@font-face":
+          for part in selector.split(','):
+            if part.count('#') > 1:
+              raise newException(ValueError, "SVG stylesheet selector outranks normalized paint: " & part.strip())
+            mostClasses = max(mostClasses, part.count('.'))
+        i = close + 1
+    for child in node: rules(child)
+  rules(root)
+  var lists: seq[string]
+  proc collect(node: XmlNode) =
+    if node.kind != xnElement: return
+    if node.attrs != nil and node.attrs.hasKey("style"):
+      # An empty or blank attribute declares nothing: it is dropped and gets
+      # no class, as the validator refuses every style attribute.
+      let declarations = node.attr("style")
+      if declarations.strip().len > 0:
+        var index = lists.find(declarations)
+        if index < 0:
+          index = lists.len
+          lists.add declarations
+        node.attrs["class"] = (node.attr("class") & " " & InlineClassPrefix & $index).strip()
+      node.attrs.del("style")
+    for child in node: collect(child)
+  for child in root: collect(child)
+  var css = "#isonim-diagram-root{" & root.attr("style") & "}"
+  root.attrs.del("style")
+  for index, declarations in lists:
+    css.add "#isonim-diagram-root " & repeat("." & InlineClassPrefix & $index, mostClasses + 1) &
+      "{" & declarations & "}"
+  let element = newElement("style")
+  element.add newText(css)
+  root.add element
+
 proc normalizeSvg(output: string): string =
   let root = strictXml(output)
   if root.tag != "svg": raise newException(ValueError, "expected an SVG root")
@@ -81,6 +145,7 @@ proc normalizeSvg(output: string): string =
     if node.kind != xnElement: return
     if node.attr("id") == "isonim-diagram-root": raise newException(ValueError, "reserved SVG id")
     for name in node.attr("class").splitWhitespace():
+      if name.startsWith(InlineClassPrefix): raise newException(ValueError, "reserved SVG class: " & name)
       if name notin classes: classes.add name
     for child in node: collect(child)
   collect(root)
@@ -119,6 +184,7 @@ proc normalizeSvg(output: string): string =
   root.attrs["fill"] = "var(--diagram-fill, Canvas)"
   root.attrs["xmlns"] = "http://www.w3.org/2000/svg"
   root.attrs["style"] = (if root.attr("style").len > 0: root.attr("style") & ";" else: "") & MaskStyle
+  moveInlineStyles(root)
   fragmentHtml(diagramFragment(compactXml(root)))
 
 proc instanceSvg(svg, prefix: string): ContentFragment =

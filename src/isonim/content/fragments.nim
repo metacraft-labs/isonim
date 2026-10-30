@@ -228,12 +228,16 @@ proc diagramFragment*(source: string): ContentFragment =
       raise newException(ValueError, "unsupported SVG element: " & node.tag)
     if node.attrs != nil:
       for key, value in node.attrs:
+        if key == "style":
+          # A Content-Security-Policy without 'unsafe-inline' ignores style
+          # attributes; normalized declarations live in a <style> element.
+          raise newException(ValueError, "SVG style attributes are not supported; use the stylesheet")
         if key notin ["xmlns", "xmlns:xlink", "id", "class", "viewBox", "width", "height",
             "x", "y", "x1", "x2", "y1", "y2", "cx", "cy", "rx", "ry", "r",
             "dx", "dy", "d", "points", "transform", "preserveAspectRatio",
             "fill", "stroke", "stroke-width", "stroke-linecap", "stroke-linejoin",
             "stroke-dasharray", "stroke-dashoffset", "stroke-miterlimit", "fill-rule",
-            "clip-rule", "fill-opacity", "stroke-opacity", "opacity", "style",
+            "clip-rule", "fill-opacity", "stroke-opacity", "opacity",
             "font-family", "font-size", "font-weight", "font-style", "text-anchor",
             "dominant-baseline", "textLength", "lengthAdjust", "rotate", "type",
             "marker-start", "marker-mid", "marker-end", "markerWidth", "markerHeight",
@@ -257,7 +261,6 @@ proc diagramFragment*(source: string): ContentFragment =
         if key in ["href", "xlink:href"]:
           if not value.startsWith("#"): raise newException(ValueError, "external SVG href is not supported")
           references.add value[1 .. ^1]
-        if key == "style": validateSvgCss(value, false)
         for url in cssUrls(value):
           if url.startsWith("#"): references.add url[1 .. ^1]
     if node.tag == "style":

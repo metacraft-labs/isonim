@@ -107,6 +107,21 @@ variables itself: they preserve luminance clipping and must not be themed.
 Author colors map to these semantic roles; shape geometry, labels, gradients,
 markers, masks and local references remain SVG.
 
+Generated SVG has no `style` attributes, so it renders under a
+Content-Security-Policy whose `style-src` omits `'unsafe-inline'` (a browser
+applies a `style` attribute only with `'unsafe-inline'` or, by hash, with
+`'unsafe-hashes'`; see [CSP Level 3](https://www.w3.org/TR/CSP3/#directive-style-src)).
+The declarations the renderers write inline, and the semantic paints that must
+beat the renderer's own palette classes, move into one `<style>` element
+appended to the SVG root: the root's reserved variables under its ID, and each
+distinct declaration list under a generated `isonim-diagram-s<n>` class. Those
+rules repeat their class once more than the most class-heavy renderer
+selector, so, like the attributes they replace, they win over every renderer
+rule. Such a page allows the element by the hash of its text
+(`'sha256-…'` in `style-src`). The validator refuses a `style` attribute, a
+renderer class named `isonim-diagram-s<n>`, and a renderer selector with a
+second ID, which no generated rule could outrank.
+
 The adapters qualify the pinned D2 with its fixed Dagre/theme options, and Graphviz's [`svg_inline` output](https://graphviz.org/docs/outputs/svg/).
 The supported output is passive, self-contained SVG: no scripts, events,
 foreign HTML, images, external links/resources, CSS escapes or advanced

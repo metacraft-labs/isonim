@@ -29,6 +29,14 @@ MUTANTS = [
     ("mask-role", "ext/diagrams.nim", 'return "var(--diagram-mask-visible)"',
       'return "var(--diagram-mask-hidden)"',
       [("diagrams", "D2 structural masks stay fixed while palette colors remain inherited")]),
+    ("inline-style", "ext/diagrams.nim", '      node.attrs.del("style")', '      discard',
+      [("diagrams", "normalized SVG carries no style attribute, only one generated stylesheet")]),
+    ("specificity", "ext/diagrams.nim", "mostClasses + 1", "mostClasses",
+      [("diagrams", "generated rules outrank every renderer stylesheet rule")]),
+    ("second-id", "ext/diagrams.nim", "part.count('#') > 1", "part.count('#') > 2",
+      [("diagrams", "renderer output that would defeat the generated stylesheet is refused")]),
+    ("empty-style", "ext/diagrams.nim", 'node.attrs.hasKey("style")', 'node.attr("style").len > 0',
+      [("diagrams", "an empty renderer style attribute is dropped, not refused")]),
 ]
 reports = ROOT / "build/content-mutation-reports"
 reports.mkdir(parents=True, exist_ok=True)
