@@ -90,6 +90,12 @@ else:
     if rpcRegistry.hasKey(ep.name):
       raise newException(ValueError,
         "two server functions are named " & ep.name)
+    # Defense in depth behind the pragma's compile-time check: a
+    # signature-bound CSRF exemption without `aSignature` (however the
+    # build produced it) is a startup error (isonim-auth.md §2.5).
+    if csrfBindingRefused(ep.auth, ep.csrf):
+      raise newException(ValueError, "the server function " & ep.name & " declares csrfExempt(\"" &
+        ep.csrf.exemption & "\") without auth = aSignature (isonim-auth.md §2.5)")
     rpcRegistry[ep.name] = ep
 
   proc lookupRpc*(name: string): RpcEndpoint =
@@ -230,6 +236,13 @@ else:
     ## its session resolver, signature verifier or incarnation resolver, is
     ## answered with its status here (a refusal); any other propagates.
     let before = ctx.response.snapshot()
+    # Defense in depth (isonim-auth.md §2.5): a signature-bound exemption
+    # on a route without signature authentication is never served, even if
+    # a build slipped it past the compile-time and startup checks.
+    if csrfBindingRefused(auth, csrf):
+      ctx.respondError(500, "policy_binding",
+        route & ": csrfExempt(\"" & csrf.exemption & "\") without auth = aSignature")
+      return false
     try:
       let authStatus = await ctx.checkAuth(auth, route)
       if authStatus != 0:

@@ -234,6 +234,23 @@ proc overridesSeq(e: EntryDef): NimNode =
     return newCall(nnkBracketExpr.newTree(ident"newSeq", ident"CachePolicy"))
   nnkPrefix.newTree(ident"@", lit)
 
+proc csrfBindingCheck(e: EntryDef): NimNode =
+  ## A compile-time error when the entry's CSRF exemption is one bound to
+  ## signature authentication (`signatureBoundExemptions`, isonim-auth.md
+  ## §2.5) and its `auth` is not `aSignature`. The check runs on the
+  ## EVALUATED values (a `when` over the entry's own expressions), so a
+  ## named constant or a constructed `CsrfPolicy` is refused like a literal.
+  result = newStmtList()
+  if e.kind == rkRpc or e.csrf.isNil: return
+  let auth = e.auth
+  let csrf = e.csrf
+  let msg = newLit($e.name & ": a CSRF exemption bound to signature authentication (" &
+    $signatureBoundExemptions & ") is valid only with auth = aSignature (isonim-auth.md §2.5: the " &
+    "request's signature stands in for the CSRF token)")
+  result.add quote do:
+    when csrfBindingRefused(`auth`, `csrf`):
+      {.error: `msg`.}
+
 proc overrideChecks(e: EntryDef): NimNode =
   ## A compile-time error for each override weaker than the entry's cache
   ## policy (`isAtLeastAsStrict`, policy.nim).
@@ -322,6 +339,7 @@ macro routeManifest*(enumName: untyped; body: untyped): untyped =
   result = newStmtList()
   for e in entries:
     result.add overrideChecks(e)
+    result.add csrfBindingCheck(e)
 
   # The enum.
   var enumTy = nnkEnumTy.newTree(newEmptyNode())

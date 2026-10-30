@@ -699,6 +699,13 @@ proc runAny*(ctx: RequestContext; spec: RouteSpec;
 # --------------------------------------------------------------------------
 
 proc compileRoute*(spec: RouteSpec; run: RouteRunner): CompiledRoute =
+  ## One manifest entry, ready to dispatch. A signature-bound CSRF exemption
+  ## without `auth = aSignature` is refused here, at startup, behind the
+  ## manifest's compile-time check (defense in depth, isonim-auth.md §2.5;
+  ## a `when nimvm` spelling can give the runtime value another policy).
+  if csrfBindingRefused(spec.auth, spec.csrf):
+    raise newException(ValueError, "the route " & spec.name & " declares csrfExempt(\"" &
+      spec.csrf.exemption & "\") without auth = aSignature (isonim-auth.md §2.5)")
   CompiledRoute(spec: spec, pattern: parsePattern(spec.path), run: run)
 
 proc matchRoute(r: CompiledRoute; path: string): MatchResult =

@@ -58,10 +58,20 @@ type
 
 const
   csrfExemptions* = ["billing-webhook", "csp-report", "rfc8058",
-                     "saml-acs", "oidc-backchannel"]
+                     "saml-acs", "oidc-backchannel", "email-webhook"]
     ## The exemptions isonim-auth.md §2.5 lists: inbound billing webhooks,
     ## CSP violation reports, RFC 8058 one-click unsubscribe, the SAML
-    ## assertion consumer service and OIDC back-channel logout.
+    ## assertion consumer service, OIDC back-channel logout, and an email
+    ## provider's webhooks (delivery events and received mail), each a
+    ## cross-site or server-to-server request verified by its own signature
+    ## or token instead.
+
+  signatureBoundExemptions* = ["billing-webhook", "rfc8058", "saml-acs", "oidc-backchannel",
+                               "email-webhook"]
+    ## The exemptions isonim-auth.md §2.5 binds to signature authentication
+    ## (every one but `csp-report`): the route manifest refuses them, at
+    ## compile time, on an entry whose `auth` is not `aSignature`
+    ## (`csrfBindingRefused`).
 
   csrfNone* = CsrfPolicy(kind: ckNone)
   csrfSession* = CsrfPolicy(kind: ckSession)
@@ -94,6 +104,12 @@ const
     ## only lets it wait for, or route a read to, a commit position. Every
     ## authorization decision is the session's, the CSRF token's and the
     ## route's, whatever the hints say.
+
+proc csrfBindingRefused*(auth: AuthPolicy; csrf: CsrfPolicy): bool =
+  ## Whether an entry's `auth` and `csrf` break the binding of
+  ## `signatureBoundExemptions` (isonim-auth.md §2.5). Evaluated at compile
+  ## time by the route manifest, on the entry's evaluated values.
+  csrf.kind == ckExempt and csrf.exemption in signatureBoundExemptions and auth != aSignature
 
 template csrfExempt*(reason: static string): CsrfPolicy =
   ## A CSRF exemption.  `reason` must name one of `csrfExemptions`; any

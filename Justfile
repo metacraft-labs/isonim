@@ -236,6 +236,10 @@ test-c:
     nim c -r -d:isonimRpcPrefix=/api/v1/rpc tests/routing/t_manifest_streaming_buffered.nim
     # Exceptions the application maps to a status (in-process).
     nim c -r -d:isonimRpcPrefix=/api/v1/rpc tests/routing/t_manifest_mapped_exceptions.nim
+    # A signature-bound CSRF exemption on an entry without signature
+    # authentication does not compile (isonim-auth.md §2.5).
+    nim c -r tests/routing/t_manifest_csrf_binding.nim
+    nim c -r tests/routing/t_csrf_binding_runtime.nim
     nim c -r tests/test_form_actions.nim
     nim c -r tests/test_rpc_dispatch.nim
     nim c -r tests/test_static_dist_dev_server.nim

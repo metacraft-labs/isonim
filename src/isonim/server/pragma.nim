@@ -47,6 +47,7 @@
 ## Both generate a `<procName>Url` constant holding the endpoint URL.
 
 import std/[macros, strutils]
+import policy
 
 proc moduleNameOf(n: NimNode): string =
   ## The declaring module: the file name of `n` without directory and
@@ -97,6 +98,7 @@ proc genServerFn(prc: NimNode; options: seq[NimNode]; isAction: bool): NimNode =
   prc.expectKind({nnkProcDef, nnkFuncDef})
   var opts = ServerOptions(isAction: isAction)
   parseOptions(options, opts)
+  var bindingCheck = newStmtList()
 
   # Pragmas other than server/action stay on the proc.  `{.server, action.}`
   # arrives here as `server` with `action` still in the list.
@@ -123,6 +125,19 @@ proc genServerFn(prc: NimNode; options: seq[NimNode]; isAction: bool): NimNode =
   if opts.csrf.isNil: opts.csrf = ident"csrfSession"
   if opts.contextScope.isNil: opts.contextScope = ident"csAccount"
   if opts.target.isNil: opts.target = newLit("")
+  # A signature-bound CSRF exemption (isonim-auth.md §2.5) only with
+  # `auth = aSignature`, checked on the EVALUATED options, as the route
+  # manifest checks its entries (`csrfBindingRefused`, policy.nim).
+  block:
+    let refused = bindSym"csrfBindingRefused"
+    let authE = opts.auth
+    let csrfE = opts.csrf
+    let bindMsg = newLit($baseName(prc[0]) & ": a CSRF exemption bound to signature authentication (" &
+      $signatureBoundExemptions & ") is valid only with auth = aSignature (isonim-auth.md §2.5: the " &
+      "request's signature stands in for the CSRF token)")
+    bindingCheck = quote do:
+      when `refused`(`authE`, `csrfE`):
+        {.error: `bindMsg`.}
 
   let nameNode = prc[0]
   let procName = $baseName(nameNode)
@@ -161,6 +176,7 @@ proc genServerFn(prc: NimNode; options: seq[NimNode]; isAction: bool): NimNode =
   let exported = nameNode.kind == nnkPostfix
 
   result = newStmtList()
+  result.add bindingCheck
   # <procName>Url, on both targets.
   result.add newNimNode(nnkConstSection).add(newNimNode(nnkConstDef).add(
     (if exported: postfix(urlConst, "*") else: urlConst),
