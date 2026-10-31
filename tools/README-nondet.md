@@ -444,3 +444,16 @@ companions pass. A raw-network bypass is checked by actual identified server I/O
 and its untouched pending request before any DONE wait. This is nonselectable
 library preparation; private clock namespace integration, activation, privacy and
 complete framework conformance remain separate work.
+
+`just test-record-refusals-owner` qualifies explicit private application-tripwire
+preparation against the installed owner package (`CT_ARTIFACT`), real Chromium
+and local worker/service-worker/Wasm resources. Run it in the dev shell with
+Playwright installed. It exercises all eight feature categories, exact native
+forwarding, refusal ordering/dedup, terminal/fault behavior, unchanged public
+clock/NE hook and pending owner cursor state. Five compiler modes, effect ceilings,
+unused-import byte identity, native omission and three compiled source mutation
+pairs are required. Missing tools, platform APIs/descriptors or artifacts fail.
+The private module requires `isonimInternalRecordRefusals`; importing it alone
+patches nothing. The trusted caller owns capture, policy and setup ordering.
+This standalone library gate does not establish automatic activation, privacy,
+framework weak-membership, uploaded conformance or full replay acceptance.

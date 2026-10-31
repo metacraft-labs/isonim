@@ -2281,3 +2281,7 @@ test-record-http-owner:
 # Fixed private Replay HTTP/RPC preparation; installed owner artifact required.
 test-replay-http-owner:
     python3 tools/test_replay_http_owner.py
+
+# Installed-owner private application tripwires; no generic installer/startup.
+test-record-refusals-owner:
+    python3 tools/test_record_refusals_owner.py
