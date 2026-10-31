@@ -114,6 +114,14 @@ const server = createServer(async (q, s) => {
     envelope: parsed.envelope,
     records: parsed.records,
   });
+  if (r.holdInitial && r.batches.length === 1) {
+    r.initialHeld = true;
+    await new Promise((resolve) => {
+      r.releaseInitial = resolve;
+      r.signalInitialHeld();
+    });
+    r.initialHeld = false;
+  }
   if (mode === "delayed" && parsed.envelope.final) {
     r.held = true;
     await new Promise((resolve) => {
@@ -128,9 +136,16 @@ await new Promise((resolve) => server.listen(0, "127.0.0.1", resolve));
 const url = "http://127.0.0.1:" + server.address().port,
   all = [];
 let browser;
-async function run(mode, code = bundled.outputFiles[0].text) {
+async function run(
+  mode,
+  code = bundled.outputFiles[0].text,
+  holdInitial = false,
+) {
   const id = String(all.length + 1),
-    receipt = { id, mode, requests: [], batches: [] };
+    receipt = { id, mode, holdInitial, requests: [], batches: [] };
+  const initialHeld = new Promise((resolve) => {
+    receipt.signalInitialHeld = resolve;
+  });
   receipts.set(id, receipt);
   const ctx = await browser.newContext();
   const page = await ctx.newPage();
@@ -138,8 +153,8 @@ async function run(mode, code = bundled.outputFiles[0].text) {
   await page.addScriptTag({ content: contextSource });
   assert(await page.evaluate(() => !!xrReadBootContext));
   await page.addScriptTag({ content: code });
-  const result = await page.evaluate(
-    async ({ mode, base }) => {
+  const pendingResult = page.evaluate(
+    async ({ mode, base, holdInitial }) => {
       const a = uploadApi,
         native = a.captureOriginals(window),
         observed = [],
@@ -170,6 +185,7 @@ async function run(mode, code = bundled.outputFiles[0].text) {
       // All-present captured originals retain actual realm functions. Optional absent
       // properties deliberately follow owner fallback and do not promise absence.
       const supplied = { fetch: 0, set: 0, clear: 0, add: 0, receivers: [] };
+      const nativeTimerHandles = { armed: [], cleared: [] };
       const originals = {
         ...native,
         fetch: function (...args) {
@@ -180,11 +196,14 @@ async function run(mode, code = bundled.outputFiles[0].text) {
         setTimeout: function (...args) {
           supplied.set++;
           supplied.receivers.push(this === window);
-          return native.setTimeout.apply(this, args);
+          const handle = native.setTimeout.apply(this, args);
+          nativeTimerHandles.armed.push(handle);
+          return handle;
         },
         clearTimeout: function (...args) {
           supplied.clear++;
           supplied.receivers.push(this === window);
+          nativeTimerHandles.cleared.push(args[0]);
           return native.clearTimeout.apply(this, args);
         },
         addEventListener: function (...args) {
@@ -381,6 +400,14 @@ async function run(mode, code = bundled.outputFiles[0].text) {
         prev_session: "",
         capabilities: "[]",
       };
+      // The held-initial control obtains a real Header/Env timer before the
+      // target barrier, so cumulative timer positives survive its falsifier.
+      if (holdInitial) {
+        await waitFor(
+          () => ruStatus(index).state === "open",
+          "config before start",
+        );
+      }
       rec.start(header, a.readEnvironment(window, native));
       if (
         [
@@ -483,7 +510,48 @@ async function run(mode, code = bundled.outputFiles[0].text) {
       );
       if (ruStatus(index).state === "off")
         return { traps, supplied, status: ruStatus(index) };
+      let timerWitness;
+      let timerPhase = "unprepared";
+      globalThis.uploadTimerProbe = () => ({
+        phase: timerPhase,
+        status: ruStatus(index),
+        active: rec.recording,
+        set: supplied.set,
+        clear: supplied.clear,
+      });
+      if (mode === "basic") {
+        // Acknowledgement is causal: open alone may still have Header/Env in
+        // flight, during which the owner deliberately arms no flush timeout.
+        ruFlush(index);
+        timerPhase = "waiting-initial-ack";
+        await waitFor(() => {
+          const status = ruStatus(index);
+          return (
+            status.state === "open" &&
+            status.batchesSent === 1 &&
+            status.batchesAccepted === 1 &&
+            status.bufferedFrames === 0 &&
+            status.bufferedBytes === 0 &&
+            rec.recording
+          );
+        }, "initial Header/Env acknowledged and empty");
+        timerWitness = {
+          initial: ruStatus(index),
+          beforeSet: supplied.set,
+          beforeClear: supplied.clear,
+          beforeArmed: nativeTimerHandles.armed.length,
+          beforeCleared: nativeTimerHandles.cleared.length,
+        };
+      }
       const clock = ruClock(window, rec, native);
+      if (timerWitness) {
+        timerWitness.afterClock = ruStatus(index);
+        timerWitness.freshArmed = nativeTimerHandles.armed.slice(
+          timerWitness.beforeArmed,
+        );
+        timerWitness.setDelta = supplied.set - timerWitness.beforeSet;
+        timerPhase = "clock-recorded";
+      }
       if (typeof clock !== "number") throw Error("actual fixed clock");
       if (mode === "fault") {
         rec.injectEncoderFault();
@@ -519,6 +587,16 @@ async function run(mode, code = bundled.outputFiles[0].text) {
         };
       }
       rec.end(2, mode === "unloading");
+      if (timerWitness) {
+        // No await separates the compiled Clock from End: even a zero-delay
+        // native timeout cannot run before this actual cancellation.
+        timerWitness.freshCleared = nativeTimerHandles.cleared.slice(
+          timerWitness.beforeCleared,
+        );
+        timerWitness.clearDelta = supplied.clear - timerWitness.beforeClear;
+        timerWitness.afterEnd = ruStatus(index);
+        timerPhase = "ended";
+      }
       const complete = ruComplete(index);
       let settled = false;
       complete.then(() => (settled = true));
@@ -559,6 +637,7 @@ async function run(mode, code = bundled.outputFiles[0].text) {
         callbacks,
         early,
         heldObserved,
+        timerWitness,
         same,
         actual,
         active: rec.recording,
@@ -566,8 +645,27 @@ async function run(mode, code = bundled.outputFiles[0].text) {
         haltCalls,
       };
     },
-    { mode, base: url + "/" + id + "/" + mode },
+    { mode, base: url + "/" + id + "/" + mode, holdInitial },
   );
+  if (holdInitial) {
+    await Promise.race([
+      initialHeld,
+      pendingResult.then(() => {
+        throw Error(
+          "held-initial control completed without an actual held response",
+        );
+      }),
+    ]);
+    // The inverse may already have queued Clock+End; the corrected source is
+    // awaiting this actual server acknowledgement. Observe both without forcing
+    // a timer/cursor/private state, then let each upload finish normally.
+    receipt.initialResponseHeld = receipt.initialHeld;
+    receipt.initialHoldObservation = await page.evaluate(() =>
+      uploadTimerProbe(),
+    );
+    receipt.releaseInitial();
+  }
+  const result = await pendingResult;
   receipt.result = result;
   all.push(receipt);
   await ctx.close();
@@ -674,6 +772,35 @@ async function run(mode, code = bundled.outputFiles[0].text) {
       .every((x) => x.seqIdentity),
     "exact native sequence identity",
   );
+  if (mode === "basic") {
+    const witness = result.timerWitness;
+    semantic(
+      witness.setDelta === 1 &&
+        witness.freshArmed.length === 1 &&
+        witness.afterClock.batchesSent === witness.initial.batchesSent &&
+        witness.afterClock.bufferedFrames === 1,
+      "causal fresh native timer arm",
+    );
+    semantic(
+      witness.clearDelta === 1 &&
+        witness.freshCleared.length === 1 &&
+        witness.freshCleared[0] === witness.freshArmed[0] &&
+        witness.afterEnd.batchesSent === witness.initial.batchesSent + 1,
+      "causal native timer cancellation identity",
+    );
+    if (holdInitial) {
+      const held = receipt.initialHoldObservation;
+      semantic(
+        receipt.initialResponseHeld &&
+          held.phase === "waiting-initial-ack" &&
+          held.active &&
+          held.status.state === "open" &&
+          held.status.batchesSent === 1 &&
+          held.status.batchesAccepted === 0,
+        "actual initial response held before causal barrier release",
+      );
+    }
+  }
   semantic(
     result.observed
       .filter((x) => x.kind === "Clock" || x.kind === "Checkpoint")
@@ -772,7 +899,11 @@ try {
     args: ["--no-sandbox"],
   });
   const modes = process.env.UPLOAD_MODE
-    ? [process.env.UPLOAD_MODE]
+    ? [
+        process.env.UPLOAD_MODE === "timer-causal"
+          ? "basic"
+          : process.env.UPLOAD_MODE,
+      ]
     : [
         "basic",
         "delayed",
@@ -818,8 +949,16 @@ try {
     console.log("upload inverse actual baseline companion PASS");
   }
   for (const mode of modes) {
-    await run(mode);
+    await run(
+      mode,
+      bundled.outputFiles[0].text,
+      process.env.UPLOAD_MODE === "timer-causal",
+    );
     console.log("upload real owner " + mode + " PASS");
+  }
+  if (!process.env.UPLOAD_MODE) {
+    await run("basic", bundled.outputFiles[0].text, true);
+    console.log("upload actual held-initial causal timer witness PASS");
   }
   console.log("upload real owner integration PASS");
 } finally {
@@ -828,6 +967,7 @@ try {
     JSON.stringify(all, (_, v) => (typeof v === "bigint" ? String(v) : v), 2) +
       "\n",
   );
+  for (const receipt of receipts.values()) receipt.releaseInitial?.();
   await browser?.close();
   await new Promise((resolve) => server.close(resolve));
 }
