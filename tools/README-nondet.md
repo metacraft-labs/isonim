@@ -457,3 +457,27 @@ The private module requires `isonimInternalRecordRefusals`; importing it alone
 patches nothing. The trusted caller owns capture, policy and setup ordering.
 This standalone library gate does not establish automatic activation, privacy,
 framework weak-membership, uploaded conformance or full replay acceptance.
+
+### Private client creation metadata
+
+`just test-client-creation-ordinals` compiles the explicit private renderer
+operation under eight browser configurations. It uses real Chromium DOM,
+server-rendered HTML and production hydration, with a loopback HTTP origin.
+The tests retain generated code, source mutations and compiler/browser logs
+under `build/client-creation-ordinals/`; missing tools fail the command.
+
+With `isonimInternalClientOrdinals`, a caller can explicitly allocate an opaque
+creation context and call `createInternalClientElement`. Successful new native
+elements receive exact decimal creation metadata before return. Hydration
+adoption does not assign or consume a new ordinal. Querying an unknown element
+returns JavaScript null; removing an already numbered element does not erase its
+metadata. Contexts use a weak forward map and BigInt counter, with no inverse
+target resolver, reset or automatic session selection. Ordinary `createElement`
+retains its existing hydration/native behavior. Raw HTML, templates, direct DOM
+calls and hot reload are outside this explicit operation's coverage.
+
+The standalone verifies five compiled production changes against unchanged
+positive companions in every configuration, plus compiler effect ceilings,
+actual annotation-loss controls, unused-feature byte identity and native
+omission. No garbage collection timing, recording activation, privacy/type
+acceptance or performance qualification is inferred from these checks.

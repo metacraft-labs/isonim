@@ -2285,3 +2285,7 @@ test-replay-http-owner:
 # Installed-owner private application tripwires; no generic installer/startup.
 test-record-refusals-owner:
     python3 tools/test_record_refusals_owner.py
+
+# Explicit private renderer metadata, with real native and SSR browser controls.
+test-client-creation-ordinals:
+    python3 tools/test_client_creation_ordinals.py

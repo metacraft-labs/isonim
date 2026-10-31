@@ -35,18 +35,54 @@ type
 # Element creation
 # ---------------------------------------------------------------------------
 
-proc createElement*(r: WebRenderer; tag: string): Element =
-  ## Create a real DOM element via `document.createElement`.
-  ##
-  ## While `hydrate` runs, returns the server-rendered element whose
-  ## `data-hk` key is this element's count instead (`claimElement`), so a
-  ## `ui(r):` tree adopts the page it was rendered into.
+template createElementBody(tag, projectNative: untyped): untyped =
+  # One hydration/native algorithm; each caller fixes its result projection at
+  # compile time. The ordinary projection retains the original tail expression.
   noteOp(boCreateElement, 1, tag)
   if isHydrating():
     let adopted = claimElement(cstring(tag))
     if not adopted.isNodeNil:
       return Element(adopted)
-  dom_api.document.createElement(cstring(tag))
+  projectNative(dom_api.document.createElement(cstring(tag)))
+
+template ordinaryElement(native: untyped): untyped = native
+
+proc createElement*(r: WebRenderer; tag: string): Element =
+  ## Create a real DOM element, or adopt its server-rendered hydration match.
+  createElementBody(tag, ordinaryElement)
+
+when defined(js) and defined(isonimInternalClientOrdinals):
+  import nim_everywhere/raw_nondet
+  type InternalClientCreationOrdinals* = distinct JsObject
+    ## Private forward metadata for one caller-owned creation namespace.
+    ## Construct and use in the same realm at session start. Reachability is
+    ## the only lifetime; there is no reset, inverse lookup or session admission.
+
+  proc newInternalClientCreationOrdinals*(): InternalClientCreationOrdinals
+      {.importjs: "({ordinals: new WeakMap(), next: 1n})", tags: [RawNondet].}
+    ## Allocate one weak forward map and an exact integer counter, explicitly.
+
+  proc assignInternalClientCreationOrdinal(context: InternalClientCreationOrdinals;
+      element: Element): Element {.importjs: """(function(c,e){
+var n=c.next; var successor=n+1n; c.ordinals.set(e,n); c.next=successor; return e;
+})(#,#)""", tags: [RawNondet].}
+
+  proc internalClientCreationOrdinal*(context: InternalClientCreationOrdinals;
+      element: Element): cstring {.importjs: """(function(c,e){
+var n=c.ordinals.get(e); return n===undefined ? null : n.toString(10);
+})(#,#)""", tags: [RawNondet].}
+    ## Exact positive decimal metadata, or JS null for a node this context
+    ## never created. Detachment/removal/adoption do not erase existing metadata.
+
+  proc createInternalClientElement*(context: InternalClientCreationOrdinals;
+      r: WebRenderer; tag: string): Element =
+    ## Number only a successful new native element, before returning it. Real
+    ## hydration adoption returns without assigning or consuming a new number.
+    ## Native failures precede all metadata work; later allocation failures
+    ## propagate with no rollback or automatic retry promise.
+    template numberedElement(native: untyped): untyped =
+      assignInternalClientCreationOrdinal(context, native)
+    createElementBody(tag, numberedElement)
 
 proc createTextNode*(r: WebRenderer; text: string): Node =
   ## Create a real DOM text node via `document.createTextNode`.
