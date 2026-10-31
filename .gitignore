@@ -59,6 +59,7 @@ tests/test_content_directives
 tests/test_theming_dtcg
 tests/test_static_export
 tests/test_static_script_policy
+tests/test_escape_writers
 benchmarks/runner/
 benchmarks/results/
 # Matches the directory AND the dev shell's symlink into the Nix store:
