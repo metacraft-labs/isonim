@@ -52,6 +52,19 @@ axe-core's `scrollable-region-focusable`), and not every browser makes one
 focusable by itself. Without script the renderer cannot tell which blocks
 will overflow, so every one is focusable.
 
+A display formula (`$$…$$` or a `math` fence) cannot wrap either: MathML
+Core lays it out on one line. `renderProseHtml` therefore puts each one in
+`<span class="math-scroll" role="group" tabindex="0" aria-label="Formula">`
+(`formulaScrollClass`, `formulaLabel`; `isDisplayMath(fragment)` tells a
+display formula from an inline one), for a stylesheet to give
+`overflow-x: auto`. It is a named group rather than a region, because a
+region is a landmark (WAI-ARIA 1.2: content users "will likely want to be
+able to navigate to"), and a post of many formulas would fill the landmark
+list; group names need not be unique. It is a `span` because a display
+formula may stand inside a paragraph. Inline formulas and diagrams are not
+wrapped, nor is a display formula in a link's text: HTML allows no element
+with a `tabindex` inside an `<a>`, and the link is the tab stop already.
+
 A region must have a name, and repeated regions on one page need different
 names ([WAI-ARIA Authoring Practices, landmark regions](https://www.w3.org/WAI/ARIA/apg/practices/landmark-regions/);
 axe-core's `landmark-unique`, which compares names case-insensitively).

@@ -18,6 +18,12 @@ const
     ## The generated `id` of a `<caption>` is this base and an ordinal.
     ## Heading anchors are `[a-z0-9-]` slugs and endnote IDs are `fn-…`, so
     ## the underscore keeps the two namespaces apart.
+  formulaScrollClass* = "math-scroll"
+    ## Class of the element wrapping every display formula. A stylesheet
+    ## gives it `overflow-x: auto`, so a formula wider than the column
+    ## scrolls inside it instead of widening the page.
+  formulaLabel* = "Formula"
+    ## The accessible name of that wrapper.
 
 # Wide content scrolls inside its own box rather than widening the page, so
 # every box that can scroll must be reachable from the keyboard: WCAG 2.2
@@ -41,8 +47,23 @@ const
 # region does not begin with that heading (the APG reserves
 # `aria-labelledby` for that case). A name already used in the same
 # `ProsePageScope` gets an ordinal, `(2)`, `(3)`, ….
+#
+# MathML Core lays a display formula out on one line and does not break or
+# shrink it (https://www.w3.org/TR/mathml-core/), so one wider than the column
+# scrolls in a focusable wrapper, as a wide table does, and for the same
+# reason (WCAG 2.2 SC 2.1.1). The wrapper is a named `group`, not a
+# `region`: a region is a landmark, for content "sufficiently important
+# that users will likely want to be able to navigate to the section easily
+# and to have it listed in a summary of the page", while a group is "not
+# intended to be included in a page summary or table of contents"
+# (WAI-ARIA 1.2, https://www.w3.org/TR/wai-aria-1.2/#region and #group).
+# A post of many formulas would otherwise fill the landmark list, and the
+# names of groups need not differ. It is a `span`, because a display
+# formula may stand inside a paragraph (`$$x$$` in running text).
 const
   codeBlockOpen = "<pre tabindex=\"0\">"
+  formulaScrollOpen = "<span class=\"" & formulaScrollClass &
+    "\" role=\"group\" tabindex=\"0\" aria-label=\"" & formulaLabel & "\">"
   tableScrollOpen = "<div class=\"" & tableScrollClass &
     "\" role=\"region\" tabindex=\"0\""
 
@@ -210,31 +231,43 @@ proc footnoteBackLabel*(note: Footnote; occurrence: int): string =
   "Back to reference " & $note.number &
     (if occurrence == 0: "" else: " (" & $(occurrence + 1) & ")")
 
+proc generatedHtml(fragment: ContentFragment; inLink: bool): string =
+  ## A build-time fragment as the page shows it: a display formula in its
+  ## focusable scroll wrapper, anything else (inline maths, a diagram) as is.
+  ## Inside a link the formula stays unwrapped: HTML allows no descendant
+  ## with a `tabindex` in an `<a>`
+  ## (https://html.spec.whatwg.org/multipage/text-level-semantics.html#the-a-element),
+  ## and the link is already the tab stop.
+  if fragment.isDisplayMath and not inLink:
+    formulaScrollOpen & fragmentHtml(fragment) & "</span>"
+  else: fragmentHtml(fragment)
+
 proc anchorHref(href, anchorPrefix: string): string =
   ## A link to an ID the parser assigned, as `spansHtml` writes it.
   if anchorPrefix.len > 0 and href.startsWith("#"): "#" & anchorPrefix & href[1 .. ^1]
   else: href
 
-proc spansHtml(spans: seq[InlineSpan]; anchorPrefix: string): string =
+proc spansHtml(spans: seq[InlineSpan]; anchorPrefix: string; inLink = false): string =
   ## Escape every source-derived value, including destinations and titles.
   ## `anchorPrefix` goes before every endnote reference's ID and the link to
   ## its note (see `renderProseHtml`); authored links are written as given.
+  ## `inLink`: the spans are a link's text.
   for span in spans:
     if not span.generated.isEmpty:
-      result.add fragmentHtml(span.generated)
+      result.add generatedHtml(span.generated, inLink)
       continue
     case span.kind
     of ikText: result.add escapeHtml(span.text)
     of ikCode: result.add "<code>" & escapeHtml(span.text) & "</code>"
     of ikLink:
-      result.add "<a href=\"" & escapeAttr(span.href) & "\"" & titleAttribute(span.title) & ">" & (if span.children.len > 0: spansHtml(span.children, anchorPrefix) else: escapeHtml(span.text)) & "</a>"
+      result.add "<a href=\"" & escapeAttr(span.href) & "\"" & titleAttribute(span.title) & ">" & (if span.children.len > 0: spansHtml(span.children, anchorPrefix, inLink = true) else: escapeHtml(span.text)) & "</a>"
     of ikImage:
       result.add "<img src=\"" & escapeAttr(span.href) & "\" alt=\"" & escapeAttr(imageAlt(span)) & "\"" & titleAttribute(span.title) & ">"
     of ikSymRef:
       if span.href.len > 0: result.add "<a href=\"" & escapeAttr(span.href) & "\">"
       result.add "<code>" & escapeHtml(span.text) & "</code>"
       if span.href.len > 0: result.add "</a>"
-    of ikStrike: result.add "<del>" & spansHtml(span.children, anchorPrefix) & "</del>"
+    of ikStrike: result.add "<del>" & spansHtml(span.children, anchorPrefix, inLink) & "</del>"
     of ikFootnoteRef:
       if span.footnoteNumber == 0:
         result.add escapeHtml("[^" & span.text & "]")
@@ -328,7 +361,7 @@ proc renderBlocks(blocks: seq[Block]; scope: ProsePageScope): string =
       result.add "</" & tag & ">"
     of bkCodeFence:
       if not blk.generated.isEmpty:
-        result.add fragmentHtml(blk.generated)
+        result.add generatedHtml(blk.generated, inLink = false)
         continue
       let language = if blk.lang.len > 0: " class=\"language-" & escapeAttr(blk.lang) & "\"" else: ""
       result.add codeBlockOpen & "<code" & language & ">" & escapeHtml(blk.code) & "</code></pre>"

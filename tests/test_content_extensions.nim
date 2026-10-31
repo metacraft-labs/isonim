@@ -82,6 +82,37 @@ suite "content extension scanner":
     check off.blocks[0].rows[1] == @["<https://example.test/b>", "`$a", "b$`"]
     check renderProseHtml(on) == renderProseHtml(off)
     check "<td><code>|</code> and `x</td><td>y`</td>" in renderProseHtml(off)
+  test "a display formula scrolls in a focusable, named group; inline maths and diagrams do not":
+    # MathML does not break a wide formula, so the page would scroll
+    # sideways at a narrow width; a scrolling box must be focusable
+    # (axe-core's scrollable-region-focusable, WCAG 2.2 SC 2.1.1).
+    const ns = "xmlns=\"http://www.w3.org/1998/Math/MathML\""
+    let shaped = ContentRenderers(math:
+      proc(tex: string; display: bool; location: SourceLocation): ContentFragment =
+        mathFragment("<math " & (if display: "display=\"block\" " else: "") & ns &
+          "><mi>" & tex & "</mi></math>"))
+    let html = renderProseHtml(parseMarkdownDocWithHooks(@[ParseHooks(renderers: shaped)],
+      "Inline $a$ and $$b$$ in text.\n\n$$\nc\n$$\n\n```math\nd\n```\n\n> $$e$$"))
+    const open = "<span class=\"math-scroll\" role=\"group\" tabindex=\"0\" aria-label=\"Formula\">"
+    check formulaScrollClass == "math-scroll"
+    check formulaLabel == "Formula"
+    check html == "<p>Inline <math " & ns & "><mi>a</mi></math> and " & open &
+      "<math display=\"block\" " & ns & "><mi>b</mi></math></span> in text.</p>" &
+      open & "<math display=\"block\" " & ns & "><mi>c</mi></math></span>" &
+      open & "<math display=\"block\" " & ns & "><mi>d</mi></math></span>" &
+      "<blockquote>" & open & "<math display=\"block\" " & ns & "><mi>e</mi></math></span></blockquote>"
+    check isDisplayMath(mathFragment("<math display=\"block\" " & ns & "><mi>x</mi></math>"))
+    # `dir` is written before `display`; the root is still a display formula.
+    check isDisplayMath(mathFragment("<math dir=\"ltr\" display=\"block\" " & ns & "><mi>x</mi></math>"))
+    check not isDisplayMath(mathFragment("<math " & ns & "><mi>x</mi></math>"))
+    # HTML allows no descendant with a tabindex in a link, which is the tab
+    # stop already: a display formula in a link's text is not wrapped.
+    check renderProseHtml(parseMarkdownDocWithHooks(@[ParseHooks(renderers: shaped)],
+      "See [the $$f$$ formula](https://example.test/) or ~~$$g$$~~.")) ==
+      "<p>See <a href=\"https://example.test/\">the <math display=\"block\" " & ns &
+      "><mi>f</mi></math> formula</a> or <del>" & open & "<math display=\"block\" " & ns &
+      "><mi>g</mi></math></span></del>.</p>"
+    check not isDisplayMath(diagramFragment("<svg><g></g></svg>"))
   test "passive SVG grammar refuses remote CSS forms and unsupported selectors":
     for css in ["background-image:image-set('https://example.test/x' 1x)",
         "behavior:none", "fill:red", "--diagram-mask-visible:black"]:

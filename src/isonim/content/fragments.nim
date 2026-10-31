@@ -7,9 +7,14 @@ import ../ssr/escape
 
 type ContentFragment* = object
   markup: string
+  displayMath: bool ## Set by `mathFragment` for a `display="block"` root.
 
 proc fragmentHtml*(fragment: ContentFragment): string = fragment.markup
 proc isEmpty*(fragment: ContentFragment): bool = fragment.markup.len == 0
+proc isDisplayMath*(fragment: ContentFragment): bool =
+  ## A display formula: a `<math display="block">` root, whatever other
+  ## attributes the root carries (`dir`, for one, is written before it).
+  fragment.displayMath
 proc `==`*(a, b: ContentFragment): bool = a.markup == b.markup
 
 proc strictXml*(source: string): XmlNode =
@@ -83,6 +88,7 @@ proc mathFragment*(source: string): ContentFragment =
     for child in node: visit(child)
   visit(root)
   result.markup = compactXml(root)
+  result.displayMath = root.attr("display") == "block"
 
 proc svgIdentifier*(value: string): bool =
   ## The CLI output subset uses unescaped ASCII CSS/XML identifiers.

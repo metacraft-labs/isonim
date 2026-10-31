@@ -16,6 +16,11 @@ suite "build time math":
     let result = html("Inline $x^2 + \\frac{a}{b}$\n\n$$\\sum_{i=1}^n i$$\n\n```math\n\\sqrt{x}\n```")
     check result.count("<math ") == 3
     check result.count("display=\"block\"") == 2
+    # The pinned KaTeX writes `display="block"` first: each display formula
+    # is wrapped in the focusable scroll box, the inline one is not.
+    check result.count("<span class=\"math-scroll\" role=\"group\" tabindex=\"0\" " &
+      "aria-label=\"Formula\"><math display=\"block\"") == 2
+    check result.count("</math></span>") == 2
     check "<mfrac>" in result
     check "<msqrt>" in result
     check "<munderover>" in result
