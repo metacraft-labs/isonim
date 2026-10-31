@@ -2176,6 +2176,7 @@ test-replay-reads-owner: test-replay-ssr-guard
     python3 tools/test_record_frames_owner.py
     python3 tools/test_record_storage_owner.py
     python3 tools/test_record_history_owner.py
+    python3 tools/test_record_upload_owner.py
 
 # Artifact-free ordinary/recordable SSR byte fidelity and private-guard inverse.
 test-replay-ssr-guard:
@@ -2267,3 +2268,7 @@ test-record-history-owner:
 # Explicit public UI metadata across native/web/SSR, including real Chromium.
 test-public-directive *args:
     python3 tools/test_public_directive.py {{args}}
+
+# Private actual-owner upload bridge; requires the supported owner artifact.
+test-record-upload-owner:
+    python3 tools/test_record_upload_owner.py
