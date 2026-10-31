@@ -143,6 +143,179 @@ suite "long-form prose":
     check html.count("<table>") == 1
     check html.count("</table></div>") == 1
 
+  test "table captions use Pandoc's syntax, above or below, only when enabled":
+    let table = "| A |\n| - |\n| 1 |"
+    proc caption(source: string): string =
+      let blocks = parseMarkdownBlocks(source, tableCaptions = true)
+      for blk in blocks:
+        if blk.kind == bkTable: return headingLabel(blk.tableCaption)
+      "<no table>"
+    check caption("Table: Above\n\n" & table) == "Above"
+    check caption("table: Lower-case marker\n\n" & table) == "Lower-case marker"
+    check caption(": Bare marker, directly on top\n" & table) == "Bare marker, directly on top"
+    check caption(table & "\n\n: Below, over\ntwo lines") == "Below, over two lines"
+    check caption(table & "\nTable: Directly below") == "Directly below"
+    # Not captions: an empty caption, an emoji shortcode, a directive.
+    check caption("Table:\n\n" & table) == ""
+    check caption(":smile: happy\n\n" & table) == ""
+    check caption(table & "\n\n:::note\nAn aside.\n:::") == ""
+    # The caption paragraph is consumed, never also rendered as text.
+    let both = parseMarkdownBlocks("Table: Above\n\n" & table & "\n\n: Not this one", tableCaptions = true)
+    check both.len == 2
+    check headingLabel(both[0].tableCaption) == "Above"
+    check both[1].kind == bkParagraph
+    check headingLabel(both[1].spans) == ": Not this one"
+    # A caption paragraph between two tables belongs to the first (as in
+    # Pandoc, a table looks for its trailing caption before the next table
+    # can claim a leading one).
+    let between = parseMarkdownBlocks(table & "\n\n: Middle\n\n" & table, tableCaptions = true)
+    check between.len == 2
+    check headingLabel(between[0].tableCaption) == "Middle"
+    check between[1].tableCaption.len == 0
+    # A caption-like paragraph that is not next to a table stays a paragraph.
+    let alone = parseMarkdownBlocks("Table: no table here\n\nText.", tableCaptions = true)
+    check alone.len == 2
+    check alone[0].kind == bkParagraph
+    # Prose that merely starts with ": " keeps its text when no table is
+    # next to it, including when a table follows after other blocks.
+    let colon = parseMarkdownBlocks(": just prose\n\n## Heading\n\n" & table, tableCaptions = true)
+    check colon.len == 3
+    check colon[0].kind == bkParagraph
+    check headingLabel(colon[0].spans) == ": just prose"
+    check colon[2].tableCaption.len == 0
+    # Off by default: the paragraph keeps its meaning for every consumer
+    # that does not render captions.
+    let plain = parseMarkdownBlocks("Table: Above\n\n" & table)
+    check plain.len == 2
+    check plain[0].kind == bkParagraph
+    check plain[1].tableCaption.len == 0
+    # The caption is inline prose: markup and footnote references resolve.
+    let doc = parseMarkdownDoc("Table: Totals in `x`[^n]\n\n" & table & "\n\n[^n]: A note.",
+      tableCaptions = true)
+    check doc.blocks[0].tableCaption[1].kind == ikCode
+    check doc.blocks[0].tableCaption[2].footnoteNumber == 1
+    check doc.blocks[^1].kind == bkFootnotes
+
+  test "a captioned table names its region from the caption":
+    let doc = parseMarkdownDoc("| A |\n| - |\n| 1 & 2 |\n\n: Totals & <sums> in `x`",
+      tableCaptions = true)
+    check renderProseHtml(doc) ==
+      "<div class=\"table-scroll\" role=\"region\" tabindex=\"0\" aria-labelledby=\"table_caption-1\">" &
+      "<table><caption id=\"table_caption-1\">Totals &amp; &lt;sums&gt; in <code>x</code></caption>" &
+      "<thead><tr><th>A</th></tr></thead><tbody><tr><td>1 &amp; 2</td></tr></tbody></table></div>"
+
+  test "tables without a caption are named after the heading before them, uniquely":
+    let table = "| A |\n| - |\n| 1 |"
+    let html = renderProseHtml(parseMarkdownDoc(
+      table & "\n\n" & table & "\n\n## Lists & `code`\n\n" & table & "\n\n" & table &
+      "\n\n## Results\n\n" & table & "\n\nTable: Results\n\n" & table & "\n\n: RESULTS\n\n" & table &
+      "\n\n> " & table.replace("\n", "\n> ") & "\n\nNote[^n].\n\n[^n]: In a note:\n\n    " &
+      table.replace("\n", "\n    "), tableCaptions = true))
+    var names: seq[string]
+    const marker = "role=\"region\" tabindex=\"0\" "
+    var at = html.find(marker)
+    while at >= 0:
+      let start = at + marker.len
+      names.add html[start ..< html.find('>', start)]
+      at = html.find(marker, start)
+    check names == @["aria-label=\"Table\"", "aria-label=\"Table (2)\"",
+      "aria-label=\"Table: Lists &amp; code\"", "aria-label=\"Table: Lists &amp; code (2)\"",
+      # The first table under "Results" takes the caption paragraph after it
+      # (Pandoc's order), and a caption names its region through the
+      # caption itself...
+      "aria-labelledby=\"table_caption-1\"",
+      # ...unless its text already names a region on the page: then the
+      # region gets a numbered name and the caption keeps its text. Names
+      # compare case-insensitively, as axe-core's landmark-unique rule does.
+      "aria-label=\"RESULTS (2)\"",
+      "aria-label=\"Table: Results\"",
+      # Quotes and endnotes are rendered in document order, under the last
+      # heading before them.
+      "aria-label=\"Table: Results (2)\"", "aria-label=\"Table: Results (3)\""]
+    check html.count("<caption id=\"table_caption-1\">Results</caption>") == 1
+    check html.count("<caption>RESULTS</caption>") == 1
+    # Case folding covers every letter, as JavaScript's toLowerCase does
+    # in axe-core, not only ASCII.
+    let folded = renderProseHtml(parseMarkdownDoc(
+      "Table: Ärger\n\n" & table & "\n\nTable: ärger\n\n" & table, tableCaptions = true))
+    check "aria-labelledby=\"table_caption-1\"" in folded
+    check "aria-label=\"ärger (2)\"" in folded
+
+  test "generated caption IDs never repeat an ID the parser assigned":
+    var blocks = parseMarkdownBlocks("## Heading\n\nText[^n].\n\nTable: First\n\n| A |\n| - |\n| 1 |" &
+      "\n\n[^n]: Note.", tableCaptions = true)
+    # A heading whose ID was set to the generated form (as a directive may).
+    blocks[0].headingId = tableCaptionIdBase & "1"
+    let html = renderProseHtml(blocks)
+    check html.count("id=\"table_caption-1\"") == 1
+    check "aria-labelledby=\"table_caption-2\"" in html
+    check "<caption id=\"table_caption-2\">First</caption>" in html
+
+  test "one scope keeps names and IDs unique across documents joined on one page":
+    # A listing page joins several excerpts; each is parsed alone, so each
+    # has its own parser IDs, but they share the page.
+    let first = parseMarkdownDoc("## Results\n\n| A |\n| - |\n| 1 |\n\nTable: Totals\n\n| B |\n| - |\n| 2 |",
+      tableCaptions = true)
+    let second = parseMarkdownDoc("| C |\n| - |\n| 3 |\n\n## Results\n\n| D |\n| - |\n| 4 |\n\n: Totals\n\n| E |\n| - |\n| 5 |",
+      tableCaptions = true)
+    let alone = renderProseHtml(first) & renderProseHtml(second)
+    # Without a shared scope the joined page repeats names and caption IDs:
+    # the defect the scope exists to prevent.
+    check alone.count("aria-label=\"Table: Results\"") == 2
+    check alone.count("id=\"table_caption-1\"") == 2
+    let scope = newProsePageScope()
+    let page = renderProseHtml(first, scope) & renderProseHtml(second, scope)
+    check page.count("aria-label=\"Table: Results\"") == 1
+    check page.count("aria-label=\"Table: Results (2)\"") == 1
+    # The second document's first table has no heading of its own before
+    # it: names never carry over from the previous document.
+    check page.count("aria-label=\"Table\"") == 1
+    check page.count("aria-labelledby=\"table_caption-1\"") == 1
+    check page.count("id=\"table_caption-1\"") == 1
+    # The second "Totals" caption repeats a name, so it is numbered.
+    check page.count("aria-label=\"Totals (2)\"") == 1
+    # Every aria-labelledby target exists exactly once.
+    var at = 0
+    while true:
+      at = page.find("aria-labelledby=\"", at)
+      if at < 0: break
+      let id = page[at + 17 ..< page.find("\"", at + 17)]
+      check page.count("id=\"" & id & "\"") == 1
+      inc at
+    # Scopes whose output may meet on one page keep apart by prefix.
+    let excerpts = newProsePageScope("excerpt_")
+    check "<caption id=\"excerpt_table_caption-1\">Totals</caption>" in renderProseHtml(first, excerpts)
+
+  test "a document can avoid a second scope's names without adding to it":
+    # A post's excerpt shares a listing with the other excerpts (its own
+    # scope) and may share the post's page with its content (avoided).
+    let doc = parseMarkdownDoc("## Results\n\n| A |\n| - |\n| 1 |\n\nTable: Totals\n\n| B |\n| - |\n| 2 |",
+      tableCaptions = true)
+    let content = newProsePageScope()
+    let page = renderProseHtml(doc, content)
+    check "aria-label=\"Table: Results\"" in page
+    check "aria-labelledby=\"table_caption-1\"" in page
+    let excerpts = newProsePageScope("excerpt_")
+    let excerpt = renderProseHtml(doc, excerpts, content)
+    check "aria-label=\"Table: Results (2)\"" in excerpt
+    check "aria-label=\"Totals (2)\"" in excerpt
+    check "id=\"table_caption-1\"" notin excerpt
+    # What the excerpt used went to its own scope only.
+    check "aria-label=\"Table: Results (2)\"" in renderProseHtml(doc, content)
+    # ...and the avoided names were not copied into it.
+    check "aria-label=\"Table: Results\"" in renderProseHtml(doc, excerpts)
+
+  test "a table before the document's first heading can take the page's heading":
+    # A listing shows each excerpt under its post's title.
+    let doc = parseMarkdownDoc("| A |\n| - |\n| 1 |\n\n## Later\n\n| B |\n| - |\n| 2 |")
+    let scope = newProsePageScope()
+    let html = renderProseHtml(doc, scope, heading = "A post\n  title")
+    check "aria-label=\"Table: A post title\"" in html
+    check "aria-label=\"Table: Later\"" in html
+    # The next document starts from its own page heading, or from none.
+    check "aria-label=\"Table (2)\"" notin renderProseHtml(doc, scope)
+    check "aria-label=\"Table\"" in renderProseHtml(doc, newProsePageScope(), newProsePageScope())
+
   test "long fences protect shorter fences and marker-like code":
     let doc = parseMarkdownDoc("````text\n```\n<!--more-->\n[^a]: code\n> quote\n````\n\nreal")
     check doc.blocks.len == 2

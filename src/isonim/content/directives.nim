@@ -99,7 +99,7 @@ proc parseMarkdownDocWithHooks*(hooks: seq[ParseHooks]; body: string;
     resolveContentPath: proc(contentRelPath: string): string {.closure.} = nil;
     resolveSymbol: proc(sym: string): string {.closure.} = nil;
     isComponentKnown: proc(name: string): bool {.closure.} = nil;
-    firstLine: int = 1): MarkdownDoc =
+    firstLine: int = 1; tableCaptions: bool = false): MarkdownDoc =
   ## `preParse`, then `parseMarkdownDoc` with the registered directives
   ## wired in, then `postParse`. The other arguments are
   ## `parseMarkdownDoc`'s. With no hooks this is exactly
@@ -115,5 +115,5 @@ proc parseMarkdownDocWithHooks*(hooks: seq[ParseHooks]; body: string;
   result = parseMarkdownDoc(transformed, sourceRelPath, resolveContentPath,
     resolveSymbol, isComponentKnown,
     knownDirective = known, renderDirective = render,
-    renderers = renderers, firstLine = firstLine)
+    renderers = renderers, firstLine = firstLine, tableCaptions = tableCaptions)
   hooks.applyPostParse(result)

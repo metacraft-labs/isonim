@@ -1,6 +1,8 @@
 ## Semantic HTML for the shared Markdown prose dialect. No theme, filesystem,
 ## scripts or inline styles. Consumers keep their existing block presentation
 ## by supplying callbacks to the extension renderer (quotes/figures/endnotes).
+import std/[sets, strutils]
+from std/unicode import nil
 import ./markdown
 import ../ssr/escape
 
@@ -9,8 +11,13 @@ const
     ## Class of the element wrapping every rendered table. A stylesheet gives
     ## it `overflow-x: auto` so a wide table scrolls inside its own box.
   tableRegionLabel* = "Table"
-    ## Accessible name of that wrapper. GFM tables have no caption to point
-    ## `aria-labelledby` at, so the region is named by `aria-label`.
+    ## The word every generated table-region name starts with: the name of
+    ## an uncaptioned table with no heading before it, and the prefix of
+    ## the heading-derived name (`Table: <heading>`).
+  tableCaptionIdBase* = "table_caption-"
+    ## The generated `id` of a `<caption>` is this base and an ordinal.
+    ## Heading anchors are `[a-z0-9-]` slugs and endnote IDs are `fn-…`, so
+    ## the underscore keeps the two namespaces apart.
 
 # Wide content scrolls inside its own box rather than widening the page, so
 # every box that can scroll must be reachable from the keyboard: WCAG 2.2
@@ -23,10 +30,112 @@ const
 # code. The table wrapper is a named region, so a screen reader announces
 # what received focus (the pattern in
 # https://adrianroselli.com/2020/11/under-engineered-responsive-tables.html).
+#
+# A region landmark needs a name, and a page that repeats a landmark role
+# needs a different name for each one (WAI-ARIA Authoring Practices,
+# https://www.w3.org/WAI/ARIA/apg/practices/landmark-regions/; axe-core's
+# `landmark-unique` rule, which compares names case-insensitively). A
+# captioned table names its region from the visible caption with
+# `aria-labelledby`, as in the pattern above. A table without a caption is
+# named with `aria-label` after the nearest heading before it, since its
+# region does not begin with that heading (the APG reserves
+# `aria-labelledby` for that case). A name already used in the same
+# `ProsePageScope` gets an ordinal, `(2)`, `(3)`, ….
 const
   codeBlockOpen = "<pre tabindex=\"0\">"
   tableScrollOpen = "<div class=\"" & tableScrollClass &
-    "\" role=\"region\" tabindex=\"0\" aria-label=\"" & tableRegionLabel & "\">"
+    "\" role=\"region\" tabindex=\"0\""
+
+type
+  ProsePageScope* = ref object
+    ## The IDs and table-region names already used on one output page.
+    ## Every rendering that ends up on the same page must share one scope:
+    ## a listing that joins several excerpts renders them all through it,
+    ## and then no two regions share a name and no generated `id` repeats
+    ## one that is already on the page. Pass a fresh scope (the
+    ## single-argument `renderProseHtml`) for a document that is a page of
+    ## its own.
+    idPrefix: string
+    ids: HashSet[string]
+    names: HashSet[string]       ## Case-folded (`nameKey`), as axe compares them.
+    nextCaption: int
+    heading: string              ## Visible text of the last heading rendered.
+    avoid: ProsePageScope        ## Also counted as used, during one call.
+
+proc newProsePageScope*(idPrefix = ""): ProsePageScope =
+  ## A scope with nothing used yet. `idPrefix` is put in front of every ID
+  ## the renderer generates through it, so two scopes whose output may meet
+  ## on one page (each post's content, and a scope shared by all excerpts)
+  ## cannot generate the same ID.
+  ProsePageScope(idPrefix: idPrefix, ids: initHashSet[string](),
+    names: initHashSet[string]())
+
+proc reserveIds(scope: ProsePageScope; blocks: seq[Block]) =
+  ## Record the IDs the parser assigned (headings, endnotes, references) so
+  ## a generated ID never repeats one, in this document or an earlier one.
+  proc spans(list: seq[InlineSpan]) =
+    for span in list:
+      if span.referenceId.len > 0: scope.ids.incl span.referenceId
+      spans(span.children)
+  for blk in blocks:
+    case blk.kind
+    of bkHeading:
+      scope.ids.incl blk.headingId
+      spans(blk.headingSpans)
+    of bkParagraph: spans(blk.spans)
+    of bkList:
+      for item in blk.items: spans(item)
+    of bkTable:
+      for header in blk.headerSpans: spans(header)
+      for row in blk.cellSpans:
+        for cell in row: spans(cell)
+      spans(blk.tableCaption)
+    of bkAdmonition:
+      for paragraph in blk.bodyParagraphs: spans(paragraph)
+    of bkBlockquote: scope.reserveIds(blk.quoteBlocks)
+    of bkTabs:
+      for tab in blk.tabs: scope.reserveIds(tab.blocks)
+    of bkFigure: spans(blk.caption)
+    of bkFootnotes:
+      for note in blk.footnotes:
+        scope.ids.incl note.id
+        for reference in note.referenceIds: scope.ids.incl reference
+        scope.reserveIds(note.blocks)
+    else: discard
+
+proc nameKey(name: string): string =
+  ## The form in which two names are compared. axe-core's `landmark-unique`
+  ## lowers the accessible name with JavaScript's `toLowerCase`, which folds
+  ## every letter, not only ASCII: "Ärger" and "ärger" are one name to it.
+  unicode.toLower(name)
+
+proc nameUsed(scope: ProsePageScope; name: string): bool =
+  let key = nameKey(name)
+  key in scope.names or (scope.avoid != nil and key in scope.avoid.names)
+
+proc idUsed(scope: ProsePageScope; id: string): bool =
+  id in scope.ids or (scope.avoid != nil and id in scope.avoid.ids)
+
+proc uniqueName(scope: ProsePageScope; base: string): string =
+  ## `base`, or `base (n)` with the smallest n >= 2 not used yet.
+  result = base
+  var n = 1
+  while scope.nameUsed(result):
+    inc n
+    result = base & " (" & $n & ")"
+  scope.names.incl nameKey(result)
+
+proc captionId(scope: ProsePageScope): string =
+  while true:
+    inc scope.nextCaption
+    result = scope.idPrefix & tableCaptionIdBase & $scope.nextCaption
+    if not scope.idUsed(result): break
+  scope.ids.incl result
+
+proc plainText(spans: seq[InlineSpan]): string =
+  ## Visible text with runs of whitespace collapsed: the accessible name a
+  ## browser computes from the same content, near enough to compare.
+  headingLabel(spans).splitWhitespace().join(" ")
 
 proc titleAttribute*(title: string): string =
   if title.len > 0: " title=\"" & escapeAttr(title) & "\"" else: ""
@@ -56,6 +165,7 @@ proc proseImages*(blocks: seq[Block]): seq[InlineSpan] =
       for header in blk.headerSpans: spans(header, result)
       for row in blk.cellSpans:
         for cell in row: spans(cell, result)
+      spans(blk.tableCaption, result)
     of bkAdmonition:
       for paragraph in blk.bodyParagraphs: spans(paragraph, result)
     of bkBlockquote: result.add proseImages(blk.quoteBlocks)
@@ -120,9 +230,27 @@ proc renderProseExtensionHtml*(blk: Block;
   of bkExcerptBreak: result = ""
   else: raise newException(ValueError, "Not a prose extension: " & $blk.kind)
 
-proc renderProseHtml*(blocks: seq[Block]): string =
-  ## Render the semantic prose subset. Docs-specific components require the
-  ## owning consumer renderer; unsupported kinds fail visibly, never vanish.
+proc tableOpen(blk: Block; scope: ProsePageScope): tuple[open, caption: string] =
+  ## The region's start tag, named uniquely within `scope`, and the
+  ## table's `<caption>` element ("" when it has none).
+  let captionText = plainText(blk.tableCaption)
+  if captionText.len > 0:
+    let name = scope.uniqueName(captionText)
+    if name == captionText:
+      let id = scope.captionId()
+      return (tableScrollOpen & " aria-labelledby=\"" & escapeAttr(id) & "\">",
+        "<caption id=\"" & escapeAttr(id) & "\">" & proseSpansHtml(blk.tableCaption) & "</caption>")
+    # The caption's text already names a region on this page: the caption
+    # stays as written, and the region gets the numbered name.
+    return (tableScrollOpen & " aria-label=\"" & escapeAttr(name) & "\">",
+      "<caption>" & proseSpansHtml(blk.tableCaption) & "</caption>")
+  let base = if scope.heading.len > 0: tableRegionLabel & ": " & scope.heading
+             else: tableRegionLabel
+  result.open = tableScrollOpen & " aria-label=\"" & escapeAttr(scope.uniqueName(base)) & "\">"
+  if blk.tableCaption.len > 0:
+    result.caption = "<caption>" & proseSpansHtml(blk.tableCaption) & "</caption>"
+
+proc renderBlocks(blocks: seq[Block]; scope: ProsePageScope): string =
   for blk in blocks:
     case blk.kind
     of bkHeading:
@@ -130,6 +258,9 @@ proc renderProseHtml*(blocks: seq[Block]): string =
       result.add "<" & tag & " id=\"" & escapeAttr(blk.headingId) & "\">" &
         (if blk.headingSpans.len > 0: proseSpansHtml(blk.headingSpans)
          else: escapeHtml(blk.headingText)) & "</" & tag & ">"
+      scope.heading =
+        if blk.headingSpans.len > 0: plainText(blk.headingSpans)
+        else: headingLabel(blk.headingText).splitWhitespace().join(" ")
     of bkParagraph: result.add "<p>" & proseSpansHtml(blk.spans) & "</p>"
     of bkList:
       let tag = if blk.listKind == lkOrdered: "ol" else: "ul"
@@ -155,7 +286,8 @@ proc renderProseHtml*(blocks: seq[Block]): string =
       let language = if blk.lang.len > 0: " class=\"language-" & escapeAttr(blk.lang) & "\"" else: ""
       result.add codeBlockOpen & "<code" & language & ">" & escapeHtml(blk.code) & "</code></pre>"
     of bkTable:
-      result.add tableScrollOpen & "<table><thead><tr>"
+      let (open, caption) = tableOpen(blk, scope)
+      result.add open & "<table>" & caption & "<thead><tr>"
       for n, header in blk.headers:
         result.add "<th>" & (if n < blk.headerSpans.len: proseSpansHtml(blk.headerSpans[n]) else: escapeHtml(header)) & "</th>"
       result.add "</tr></thead><tbody>"
@@ -170,8 +302,48 @@ proc renderProseHtml*(blocks: seq[Block]): string =
       for para in blk.bodyParagraphs: result.add "<p>" & proseSpansHtml(para) & "</p>"
       result.add "</aside>"
     of bkBlockquote, bkFigure, bkFootnotes, bkExcerptBreak:
-      result.add renderProseExtensionHtml(blk, renderProseHtml, proseSpansHtml)
+      let nested = proc(children: seq[Block]): string = renderBlocks(children, scope)
+      result.add renderProseExtensionHtml(blk, nested, proseSpansHtml)
     else: raise newException(ValueError, "A consumer renderer is required for " & $blk.kind)
+
+proc renderProseHtml*(blocks: seq[Block]; scope: ProsePageScope;
+    heading = ""): string =
+  ## Render the semantic prose subset as one document of a page whose IDs
+  ## and table-region names `scope` tracks (see `ProsePageScope`).
+  ## `heading` is the visible text of the page's heading just before the
+  ## document, if the layout puts one there (a listing's post title above
+  ## an excerpt): a table before the document's own first heading is named
+  ## after it. Docs-specific components require the owning consumer
+  ## renderer; unsupported kinds fail visibly, never vanish.
+  scope.reserveIds(blocks)
+  # A table is named after a heading of its own document, or of the page
+  # just before it, never after one of an earlier document.
+  scope.heading = heading.splitWhitespace().join(" ")
+  renderBlocks(blocks, scope)
+
+proc renderProseHtml*(blocks: seq[Block]; scope, avoid: ProsePageScope;
+    heading = ""): string =
+  ## Like `renderProseHtml(blocks, scope, heading)`, but the names and IDs
+  ## used in `avoid` count as used too, while what this call uses is
+  ## recorded in `scope` only. For a document that may share a page with
+  ## each of two groups: a post's excerpt sits beside the other excerpts on
+  ## a listing (`scope`) and may also sit beside its own post's content
+  ## (`avoid`).
+  scope.avoid = avoid
+  try: result = renderProseHtml(blocks, scope, heading)
+  finally: scope.avoid = nil
+
+proc renderProseHtml*(blocks: seq[Block]): string =
+  ## Render a document that is a page of its own (a fresh scope).
+  renderProseHtml(blocks, newProsePageScope())
+
+proc renderProseHtml*(doc: MarkdownDoc; scope: ProsePageScope;
+    heading = ""): string =
+  renderProseHtml(doc.blocks, scope, heading)
+
+proc renderProseHtml*(doc: MarkdownDoc; scope, avoid: ProsePageScope;
+    heading = ""): string =
+  renderProseHtml(doc.blocks, scope, avoid, heading)
 
 proc renderProseHtml*(doc: MarkdownDoc): string = renderProseHtml(doc.blocks)
 

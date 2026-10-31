@@ -258,6 +258,11 @@ type
       rows*: seq[seq[string]]
       headerSpans*: seq[seq[InlineSpan]] ## Populated only for opt-in math.
       cellSpans*: seq[seq[seq[InlineSpan]]]
+      tableCaption*: seq[InlineSpan]
+        ## The table's caption, written as a paragraph that starts with
+        ## `Table:` or `:` next to the table (Pandoc's `table_captions`
+        ## extension). Empty when the table has none, and always empty
+        ## unless the parse enabled `tableCaptions`.
     of bkTabs:
       tabs*: seq[TabPanel]
     of bkComponent:
@@ -356,6 +361,7 @@ type
     anchors: AnchorIdRegistry
     definitions: seq[Footnote]
     footnotes: bool
+    tableCaptions: bool
     renderers: ContentRenderers
 
 func `==`*(a, b: InlineSpan): bool =
@@ -1352,6 +1358,19 @@ proc headingLabel*(spans: seq[InlineSpan]): string =
 
 proc headingLabel*(text: string): string = headingLabel(parseInlineSpans(text))
 
+proc tableCaptionText(line: string): string =
+  ## The caption text of a line that opens a table caption, else "". The
+  ## syntax is Pandoc's `table_captions` extension
+  ## (https://pandoc.org/MANUAL.html#extension-table_captions), which Quarto
+  ## also uses: a paragraph beginning with `Table:`, `table:` or `:`, the
+  ## marker stripped. A bare `:` must be followed by a space or tab, so an
+  ## emoji shortcode (`:smile:`) or a `:::` directive never opens one, and
+  ## a marker with nothing after it is not a caption.
+  if line.startsWith("Table:") or line.startsWith("table:"):
+    result = line[6 .. ^1].strip()
+  elif line.len >= 2 and line[0] == ':' and line[1] in {' ', '\t'}:
+    result = line[2 .. ^1].strip()
+
 proc startsAnotherBlock(line: string): bool =
   ## Whether `line` (already stripped) begins a *different* block kind,
   ## so paragraph accumulation knows where to stop even without a
@@ -1361,6 +1380,19 @@ proc startsAnotherBlock(line: string): bool =
     isUnorderedListItem(line) or isOrderedListItem(line) or
     isTableRow(line) or headingMarkerLevel(line) > 0 or
     isComponentTagLine(line)
+
+proc captionParagraph(lines: seq[string]; start: int): tuple[text: string, next: int] =
+  ## The caption paragraph opening at `lines[start]`, marker removed, and
+  ## the index of the line after it. It ends where any paragraph ends: at a
+  ## blank line or at a line that starts another block (a table row
+  ## included, so a caption may sit directly on top of its table).
+  result.text = tableCaptionText(lines[start].strip())
+  result.next = start + 1
+  while result.next < lines.len:
+    let stripped = lines[result.next].strip()
+    if stripped.len == 0 or startsAnotherBlock(stripped): break
+    result.text.add "\n" & stripped
+    inc result.next
 
 proc parseBlocks(body: string; ctx: ParseContext; sourceRelPath: string = "";
                            resolveContentPath: proc(contentRelPath: string): string {.closure.} = nil;
@@ -1383,6 +1415,8 @@ proc parseBlocks(body: string; ctx: ParseContext; sourceRelPath: string = "";
   ## stays a built-in.
   let lines = body.splitLines()
   var i = 0
+  # A caption written above its table, waiting for the table it names.
+  var pendingCaption: seq[InlineSpan]
   while i < lines.len:
     let blockLine = firstLine + i
     let stripped = lines[i].strip()
@@ -1735,6 +1769,18 @@ proc parseBlocks(body: string; ctx: ParseContext; sourceRelPath: string = "";
       while i < lines.len and isTableRow(lines[i].strip()):
         rows.add splitTableRow(lines[i], ctx.renderers.math != nil)
         inc i
+      # A caption above the table wins; otherwise the paragraph after it is
+      # the caption, as in Pandoc, whose table parser tries a leading caption
+      # first and then a trailing one.
+      var caption = pendingCaption
+      pendingCaption = @[]
+      if ctx.tableCaptions and caption.len == 0:
+        var next = i
+        while next < lines.len and lines[next].strip().len == 0: inc next
+        if next < lines.len and tableCaptionText(lines[next].strip()).len > 0:
+          let (text, after) = captionParagraph(lines, next)
+          caption = parseInlineSpans(text, sourceRelPath, resolveContentPath, resolveSymbol, ctx.renderers, firstLine + next)
+          i = after
       var headerSpans: seq[seq[InlineSpan]]
       var cellSpans: seq[seq[seq[InlineSpan]]]
       if ctx.renderers.math != nil:
@@ -1746,7 +1792,7 @@ proc parseBlocks(body: string; ctx: ParseContext; sourceRelPath: string = "";
             cells.add parseInlineSpans(cell, sourceRelPath, resolveContentPath, resolveSymbol, ctx.renderers, blockLine + 2 + n)
           cellSpans.add cells
       result.add Block(kind: bkTable, headers: headers, rows: rows,
-        headerSpans: headerSpans, cellSpans: cellSpans)
+        headerSpans: headerSpans, cellSpans: cellSpans, tableCaption: caption)
       continue
 
     if isUnorderedListItem(stripped) or isOrderedListItem(stripped):
@@ -1770,6 +1816,18 @@ proc parseBlocks(body: string; ctx: ParseContext; sourceRelPath: string = "";
         inc i
       result.add Block(kind: bkList, listKind: (if ordered: lkOrdered else: lkUnordered), items: items, tasks: (if hasTasks: tasks else: @[]))
       continue
+
+    if ctx.tableCaptions and tableCaptionText(stripped).len > 0:
+      # A caption paragraph followed (after any blank lines) by a table
+      # names that table; one followed by anything else is an ordinary
+      # paragraph, unless the table before it already claimed it.
+      let (text, after) = captionParagraph(lines, i)
+      var next = after
+      while next < lines.len and lines[next].strip().len == 0: inc next
+      if next + 1 < lines.len and isTableRow(lines[next].strip()) and isTableSeparatorRow(lines[next + 1]):
+        pendingCaption = parseInlineSpans(text, sourceRelPath, resolveContentPath, resolveSymbol, ctx.renderers, blockLine)
+        i = next
+        continue
 
     var paraLines: seq[string] = @[lines[i].strip(leading = true, trailing = false)]
     inc i
@@ -1811,6 +1869,7 @@ proc visitInlineSpans*(blocks: seq[Block]; visitor: proc(span: InlineSpan) {.clo
       for header in blk.headerSpans: spans(header)
       for row in blk.cellSpans:
         for cell in row: spans(cell)
+      spans(blk.tableCaption)
     of bkAdmonition:
       for para in blk.bodyParagraphs: spans(para)
     of bkTabs:
@@ -1885,6 +1944,7 @@ proc resolveFootnotes(blocks: var seq[Block]; ctx: ParseContext) =
         for header in blk.headerSpans.mitems: resolveSpans(header, assignIds)
         for row in blk.cellSpans.mitems:
           for cell in row.mitems: resolveSpans(cell, assignIds)
+        resolveSpans(blk.tableCaption, assignIds)
       of bkAdmonition:
         for para in blk.bodyParagraphs.mitems: resolveSpans(para, assignIds)
       of bkTabs:
@@ -1932,12 +1992,18 @@ proc parseMarkdownBlocks*(body: string; sourceRelPath: string = "";
                            renderDirective: proc(name, args, body: string): seq[Block] {.closure.} = nil;
                            footnotes: bool = true;
                            renderers: ContentRenderers = ContentRenderers();
-                           firstLine: int = 1): seq[Block] =
+                           firstLine: int = 1;
+                           tableCaptions: bool = false): seq[Block] =
   ## A fresh context per document keeps heading and footnote IDs unique across
   ## nested containers, without leaking state between parses or backends.
   ## `footnotes = false` keeps definitions in the text stream for targets
   ## whose published contract treats notes literally (for example email).
-  let ctx = ParseContext(anchors: newAnchorIdRegistry(), footnotes: footnotes, renderers: renderers)
+  ## `tableCaptions = true` enables Pandoc's `table_captions` syntax (see
+  ## `Block.tableCaption`). It is off by default because it gives a
+  ## paragraph next to a table a new meaning: a consumer whose renderer
+  ## does not show captions would lose that text.
+  let ctx = ParseContext(anchors: newAnchorIdRegistry(), footnotes: footnotes,
+    tableCaptions: tableCaptions, renderers: renderers)
   result = parseBlocks(body, ctx, sourceRelPath, resolveContentPath, resolveSymbol,
     isComponentKnown, knownDirective, renderDirective, firstLine)
   resolveFootnotes(result, ctx)
@@ -2016,14 +2082,15 @@ proc parseMarkdownDoc*(body: string; sourceRelPath: string = "";
                         knownDirective: proc(name: string): bool {.closure.} = nil;
                         renderDirective: proc(name, args, body: string): seq[Block] {.closure.} = nil;
                         renderers: ContentRenderers = ContentRenderers();
-                        firstLine: int = 1): MarkdownDoc =
+                        firstLine: int = 1;
+                        tableCaptions: bool = false): MarkdownDoc =
   ## The one entry point later callers (the markdown page ViewModel
   ## builder, `test_markdown_vm.nim`, M3's `references.nim`) use: parses
   ## the body into blocks, then derives the heading tree from the
   ## headings found among them. `resolveContentPath`/`resolveSymbol` are
   ## passed straight through to `parseMarkdownBlocks` (see M8 deliverable 2
   ## for the `[[sym:...]]` cross-reference `resolveSymbol` resolves).
-  let blocks = parseMarkdownBlocks(body, sourceRelPath, resolveContentPath, resolveSymbol, isComponentKnown, knownDirective, renderDirective, renderers = renderers, firstLine = firstLine)
+  let blocks = parseMarkdownBlocks(body, sourceRelPath, resolveContentPath, resolveSymbol, isComponentKnown, knownDirective, renderDirective, renderers = renderers, firstLine = firstLine, tableCaptions = tableCaptions)
   var flat: seq[HeadingNode] = @[]
   proc headings(items: seq[Block]) =
     for blk in items:

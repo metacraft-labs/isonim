@@ -43,14 +43,58 @@ transform owns the coordinates of the text it returns. An unconfigured tool
 fails when its syntax is used; a document without that syntax needs no tool.
 
 `renderProseHtml` emits every fenced code block as `<pre tabindex="0">` and
-wraps every table in
-`<div class="table-scroll" role="region" tabindex="0" aria-label="Table">`
-(`tableScrollClass`, `tableRegionLabel`). A stylesheet can then let long
-lines and wide tables scroll inside their own box (`overflow-x: auto`)
-without leaving them out of reach of the keyboard: a scrolling box must be
-focusable (WCAG 2.2 SC 2.1.1; axe-core's `scrollable-region-focusable`), and
-not every browser makes one focusable by itself. Without script the
-renderer cannot tell which blocks will overflow, so every one is focusable.
+wraps every table in a focusable, named region,
+`<div class="table-scroll" role="region" tabindex="0" …>`
+(`tableScrollClass`). A stylesheet can then let long lines and wide tables
+scroll inside their own box (`overflow-x: auto`) without leaving them out of
+reach of the keyboard: a scrolling box must be focusable (WCAG 2.2 SC 2.1.1;
+axe-core's `scrollable-region-focusable`), and not every browser makes one
+focusable by itself. Without script the renderer cannot tell which blocks
+will overflow, so every one is focusable.
+
+A region must have a name, and repeated regions on one page need different
+names ([WAI-ARIA Authoring Practices, landmark regions](https://www.w3.org/WAI/ARIA/apg/practices/landmark-regions/);
+axe-core's `landmark-unique`, which compares names case-insensitively).
+The region is named as follows:
+
+| The table                                    | Region attribute                       | Caption                                 |
+| -------------------------------------------- | -------------------------------------- | --------------------------------------- |
+| has a caption whose text is not yet a name   | `aria-labelledby="table_caption-<n>"`  | `<caption id="table_caption-<n>">…`     |
+| has a caption whose text is already a name   | `aria-label="<caption text> (2)"`      | `<caption>…</caption>`                  |
+| has no caption, follows a heading            | `aria-label="Table: <heading text>"`   | none                                    |
+| has no caption, no heading before it         | `aria-label="Table"`                   | none                                    |
+
+A name already used gets the next free ordinal, `(2)`, `(3)`, …. The
+heading is the last one rendered before the table in the same document,
+inside quotes and endnotes too (`tableRegionLabel` is the word `Table`).
+Naming the captioned region through its visible `<caption>` is the
+[pattern by Adrian Roselli](https://adrianroselli.com/2020/11/under-engineered-responsive-tables.html);
+an uncaptioned region does not begin with its heading, so it is named with
+`aria-label` rather than by pointing at the heading.
+
+Captions are Pandoc's
+[`table_captions`](https://pandoc.org/MANUAL.html#extension-table_captions)
+syntax, also used by Quarto: a paragraph beginning `Table:`, `table:` or
+`: ` directly above or below the table (blank lines between are allowed),
+the marker removed. A caption above wins; otherwise a table takes the
+caption paragraph after it, before a following table can claim it as its
+own leading caption. The syntax is off unless the parse passes
+`tableCaptions = true` (`parseMarkdownBlocks`, `parseMarkdownDoc`,
+`parseMarkdownDocWithHooks`), because it gives such a paragraph a new
+meaning: a consumer that renders tables itself and ignores
+`Block.tableCaption` would drop that text.
+
+Names and generated IDs are unique within a `ProsePageScope`. The
+one-argument `renderProseHtml(doc)` uses a fresh scope, which is right for
+a document that is a page of its own. When several renderings end up on one
+page, such as the excerpts a listing page joins, render them all with one
+scope, `renderProseHtml(doc, scope)`: names then never repeat and no
+generated ID repeats another or an ID the parser assigned to a heading or
+an endnote in any of them (`tableCaptionIdBase` uses an underscore, which
+heading slugs never contain). `newProsePageScope(idPrefix)` prefixes every
+generated ID, so two scopes whose output may meet on one page cannot
+generate the same one. The heading a table is named after never carries
+over from one document into the next.
 
 An image written `![](src){decorative}` is decorative: the span's
 `decorative` flag is set, the marker is consumed, and `renderProseHtml`
