@@ -122,6 +122,67 @@ async function slot(id) {
   assert.fail("actual local request missing " + id);
 }
 try {
+  // Independent native reference: the existing compiled direct RPC composition
+  // consumes a real held network body in a fresh realm before owner preparation.
+  // Wait for the actual native text consumer, so this is a pending-body abort,
+  // rather than the distinct pre-header signal rejection.
+  const nativePage = await page();
+  await nativePage.evaluate(() => {
+    const text = Response.prototype.text;
+    globalThis.nativeBodyAbort = { reads: 0, state: "pending" };
+    globalThis.nativeController = new AbortController();
+    Response.prototype.text = function (...args) {
+      nativeBodyAbort.reads++;
+      return text.apply(this, args);
+    };
+    rhReplayRpc(window.fetch, "/body?id=native-body-abort", "payload",
+      nativeController.signal, null).then(value => {
+        nativeBodyAbort.value = value;
+        nativeBodyAbort.state = "fulfilled";
+      }, error => {
+        nativeBodyAbort.error = String(error);
+        nativeBodyAbort.state = "rejected";
+      });
+  });
+  await slot("native-body-abort");
+  await nativePage.waitForFunction(() => nativeBodyAbort.reads === 1);
+  assert.equal(await nativePage.evaluate(() => nativeBodyAbort.state), "pending",
+    "native RPC body consumer is pending before abort");
+  await nativePage.evaluate(() => nativeController.abort());
+  await nativePage.waitForFunction(() => nativeBodyAbort.state !== "pending");
+  const nativeBodyAbort = await nativePage.evaluate(() => nativeBodyAbort);
+  assert.deepEqual(nativeBodyAbort, {
+    reads: 1,
+    state: "fulfilled",
+    value: { status: -1, text: "AbortError: The user aborted a request.",
+      retryAfter: "", commit: "" },
+  }, "native pending-body abort retains exact RPC projection");
+  results.push({ kind: "native-body-abort", observation: nativeBodyAbort });
+  await nativePage.close();
+  // Projection-fault sentinel on a real delivered response, not a fake body.
+  const nativeFaultPage = await page();
+  const nativeProjectionFault = await nativeFaultPage.evaluate(async () => {
+    const controller = new AbortController();
+    let faults = 0;
+    Object.defineProperty(Response.prototype, "text", {
+      configurable: true,
+      get() {
+        faults++;
+        controller.abort();
+        throw new TypeError("controlled RPC text projection fault");
+      },
+    });
+    const value = await rhReplayRpc(window.fetch, "/ready?id=native-projection-fault",
+      "payload", controller.signal, null);
+    return { faults, value };
+  });
+  assert.deepEqual(nativeProjectionFault, { faults: 1,
+    value: { status: -1, text: "TypeError: controlled RPC text projection fault",
+      retryAfter: "", commit: "" } }, "native RPC projection fault uses aborted-signal fallback");
+  assert.equal(requests.filter(r => r.id === "native-projection-fault").length, 1,
+    "projection fault follows genuine native HTTP");
+  results.push({ kind: "native-projection-fault", observation: nativeProjectionFault });
+  await nativeFaultPage.close();
   for (const kind of replayMode && process.env.REPLAY_HTTP_CASE === "constructed-null" ? ["http"] : ["http", "rpc"])
     for (const scenario of replayMode && process.env.REPLAY_HTTP_CASE === "constructed-null" ? ["constructed-null", "ready"] : kind === "http"
       ? [
@@ -141,6 +202,7 @@ try {
           "body-complete",
           "head-abort",
           "body-abort",
+          "projection-abort",
           "head-fail",
           "body-fail",
         ]) {
@@ -242,6 +304,15 @@ try {
               }
             };
           }
+          if (scenario === "projection-abort")
+            Object.defineProperty(Response.prototype, "text", {
+              configurable: true,
+              get() {
+                counts.projectionFaults = (counts.projectionFaults || 0) + 1;
+                controller.abort();
+                throw new TypeError("controlled RPC text projection fault");
+              },
+            });
           const pending =
             kind === "http"
               ? rhHttp(url, "payload")
@@ -368,12 +439,26 @@ try {
       else if (kind === "http") expectedText = "Failed to fetch";
       else if (scenario === "head-abort")
         expectedText = "AbortError: signal is aborted without reason";
+      else if (scenario === "body-abort")
+        expectedText = "AbortError: The user aborted a request.";
+      else if (scenario === "projection-abort")
+        expectedText = "TypeError: controlled RPC text projection fault";
       else expectedText = "TypeError: Failed to fetch";
       assert.equal(
         value.text,
         expectedText,
         "semantic: exact owning body/error projection",
       );
+      if (scenario === "projection-abort") {
+        assert.equal(record.counts.projectionFaults, 1, "one actual Record projection property fault");
+        assert(record.records.some(r => r.record === "NetResponse" && r.outcome === 5),
+          "projection fault follows actual owner response head");
+        assert.deepEqual(value, nativeProjectionFault.value,
+          "Record projection fault equals independent native RPC helper");
+      }
+      if (kind === "rpc" && scenario === "body-abort")
+        assert.deepEqual(value, nativeBodyAbort.value,
+          "owner pending-body abort equals independent native RPC projection");
       if (kind === "rpc") {
         assert.equal(
           value.retryAfter,
@@ -489,7 +574,7 @@ try {
       );
       assert.equal(
         record.counts.text,
-        scenario.startsWith("head-") && !scenario.endsWith("complete") ? 0 : 1,
+        (scenario.startsWith("head-") && !scenario.endsWith("complete")) || scenario === "projection-abort" ? 0 : 1,
         "exactly one actual native body consumer when a head arrived",
       );
       assert(
@@ -562,7 +647,7 @@ try {
       await p.close();
       const replay = await page();
       const replayed = await replay.evaluate(
-        async ({ log, kind, url, abort }) => {
+        async ({ log, kind, url, abort, projectionFault }) => {
           const a = rhOwner;
           const runner = a.installReplayRuntime(window, { log });
           const ctx = a.newReplayContext(window, runner);
@@ -583,6 +668,15 @@ try {
                 super((resolve,reject)=>executor(function(...args){cell.resolve++;return resolve.apply(this,args);},function(...args){cell.reject++;return reject.apply(this,args);}));}
             };
           }
+          if (projectionFault)
+            Object.defineProperty(Response.prototype, "text", {
+              configurable: true,
+              get() {
+                globalThis.rhProjectionFaults = (globalThis.rhProjectionFaults || 0) + 1;
+                controller.abort();
+                throw new TypeError("controlled RPC text projection fault");
+              },
+            });
           try {
           const pending =
             kind === "http"
@@ -597,7 +691,7 @@ try {
           }
           // Signal abort is page work, matching the same abort decision as record;
           // no cursor/task is forced and all completion delivery is owner-controlled.
-          if (abort && kind === "rpc") controller.abort();
+          if (abort && kind === "rpc" && !projectionFault) controller.abort();
             const value = await pending;
             return kind === "http" ? rhView(value) : value;
           } catch(e) {
@@ -605,7 +699,7 @@ try {
             return {__privateReplayError: {name:e.name, message:e.message, divergence:e.divergence}, status:runner.status(), pending:runner.peek()};
           } finally {if(globalThis.rhUseReplayProduction){window.Promise=NativePromise;rhReplayObservations.dispatchAfter=rhDispatch();}}
         },
-        { log: record.log, kind, url, abort: scenario.endsWith("abort") },
+        { log: record.log, kind, url, abort: scenario.endsWith("abort"), projectionFault: scenario === "projection-abort" },
       );
       if (replayMode) {
         const snapshot=await replay.evaluate(() => ({status:__ctReplay.status(), pending:__ctReplay.peek(), counts:rhReplayCounts, observations:rhReplayObservations}));
@@ -643,7 +737,7 @@ try {
       let replayObservations;
       if(replayMode) {
         replayObservations=await replay.evaluate(()=>rhReplayObservations);
-        assert.equal(replayObservations.text,scenario.startsWith("head-")&&!scenario.endsWith("complete")?0:1,"semantic: private Replay consumes exactly one delivered body");
+        assert.equal(replayObservations.text,(scenario.startsWith("head-")&&!scenario.endsWith("complete"))||scenario==="projection-abort"?0:1,"semantic: private Replay consumes exactly one delivered body");
         assert(replayObservations.receivers.every(Boolean),"actual private Replay body receiver and argument identity");
         assert(replayObservations.nativePromise,"private Replay returns actual native Promise");
         assert.equal(replayObservations.completion,1,"semantic: private Replay completes exactly once");
@@ -663,6 +757,9 @@ try {
         beforeCount,
         "owner Replay performs no raw HTTP",
       );
+      if (scenario === "projection-abort")
+        assert.equal(await replay.evaluate(() => rhProjectionFaults), 1,
+          "one actual Replay projection property fault");
       results.push({ kind, scenario, record, replayed, ...(replayMode ? {replayObservations} : {}) });
       await replay.close();
       console.log("PASS actual owner roundtrip " + id);
