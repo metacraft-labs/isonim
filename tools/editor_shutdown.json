@@ -1,0 +1,6 @@
+{
+  "http_request_seconds": 30,
+  "harbor_teardown_seconds": 10,
+  "supervisor_margin_seconds": 5,
+  "enumeration_seconds": 1
+}

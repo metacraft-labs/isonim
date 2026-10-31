@@ -114,7 +114,8 @@ proc renderTaskFooter*[R, N](renderer: R; parent: N; store: TaskStore) =
 
       let filters = renderer.createElement("div")
       renderer.setAttribute(filters, "class", "filters")
-      for f in [fAll, fActive, fCompleted]:
+      proc appendFilter(f: Filter) =
+        # A proc call gives this item its own callback/effect environment.
         let filterVal = f
         let btn = renderer.createElement("button")
         renderer.setTextContent(btn, $filterVal)
@@ -127,6 +128,10 @@ proc renderTaskFooter*[R, N](renderer: R; parent: N; store: TaskStore) =
           store.setFilter(filterVal)
         )
         renderer.appendChild(filters, btn)
+
+      for f in [fAll, fActive, fCompleted]:
+        appendFilter(f)
+
       renderer.appendChild(footer, filters)
 
       # Clear completed button

@@ -174,7 +174,11 @@ async function ensureBrowser() {
     const m = await import("playwright");
     chromium = m.chromium;
   }
-  if (!browser) browser = await chromium.launch({ headless: true });
+  if (!browser)
+    browser = await chromium.launch({
+      headless: true,
+      executablePath: process.env.PLAYWRIGHT_CHROMIUM_EXECUTABLE,
+    });
   return browser;
 }
 

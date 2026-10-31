@@ -1,3 +1,4 @@
+import isonim/editor/views/view_lifecycle
 ## IsoNim Editor — Component Detail View.
 ##
 ## Storybook-style: each variant gets its own section with title,
@@ -8,10 +9,13 @@ import std/strutils
 import isonim/core/[computation, signals]
 import isonim/dsl/ui
 import isonim/editor/viewmodels
+import isonim/editor/preview_identity
 import isonim/editor/types
 import isonim/editor/streaming_preview
 import isonim/editor/views/canvas_mount
+import isonim/editor/views/component_edit
 import isonim/editor/views/choice_row
+import isonim/editor/views/preview_mount
 
 const
   bgBase = "#0D0E14"
@@ -27,6 +31,28 @@ const
   accent = "#7C7AED"
   green = "#22C55E"
   red = "#EF4444"
+
+proc detailPreviewDocument*(documentHtml: string;
+    metadata: StoryRenderMetadata; mode: EditMode): string =
+  ## What the detail view puts in its project frame's ``srcdoc``.
+  ##
+  ## Split out of the render effect so the rule is testable without a
+  ## browser. The rule has two halves and BOTH are load-bearing:
+  ##
+  ## * outside View mode the document carries the selection bridge, so the
+  ##   preview can be clicked. Without it the detail view was a dead canvas
+  ##   under a live Layers panel and a live inspector -- the editor looked
+  ##   wired and was not, which is worse than looking broken;
+  ## * in View mode the document is handed over UNTOUCHED. View's whole
+  ##   contract is that it renders exactly what ships, so a bridge injected
+  ##   there would make the one mode that must not lie about the output lie
+  ##   about the output.
+  ##
+  ## This is component_edit.nim's rule, reused rather than restated: a
+  ## second copy of "when may we inject" is how the two views drifted apart
+  ## in the first place.
+  if mode == emView: documentHtml
+  else: editablePreviewDocument(documentHtml, metadata, mode)
 
 proc renderGenericComponentPreview[R, E](r: R; title, description: string): E =
   ## Generic dark-themed placeholder card. The real demo lives in the
@@ -232,7 +258,7 @@ proc attachComponentPropertyLivePreview[R, E](r: R; inputNode, frame: E;
   ## `input` event, apply the matching preview mutations directly to the iframe
   ## DOM. This lets the user see live changes while typing without triggering
   ## a reactive rebuild that would steal focus from the input.
-  when defined(js):
+  when isDomViewHost(E):
     {.emit: ["""
       (function () {
         const input = """, inputNode, """;
@@ -483,8 +509,6 @@ proc populateComponentPropertyPanel[R, E](r: R; vm: EditorVM; panel, frame: E;
   vm.variants.stateDiagnostics.val = coverage
   r.setStyle(panel, "display", "flex")
 
-  var saveButton: E
-  var revertButton: E
   let header = ui(r):
     tdiv(display = "flex", justify_content = "space-between",
           align_items = "baseline", gap = "12px",
@@ -504,28 +528,9 @@ proc populateComponentPropertyPanel[R, E](r: R; vm: EditorVM; panel, frame: E;
           text ($coverage.len & " diagnostics")
         span(font_size = "10px", color = textDim):
           text ($pendingCount & " component plan(s) staged")
-        tdiv(ref = revertButton, role = "button", tabindex = "0",
-              padding = "4px 7px", border_radius = "4px",
-              background_color = bgCard, color = textMuted,
-              font_size = "10px", cursor = "pointer"):
-          text "Revert"
-        tdiv(ref = saveButton, role = "button", tabindex = "0",
-              padding = "4px 7px", border_radius = "4px",
-              background_color = accent, color = textPrimary,
-              font_size = "10px", font_weight = "600", cursor = "pointer"):
-          text "Save"
+        # No Save or Revert control: a property choice is written
+        # automatically (editor spec "Saving"); Mod+Z takes it back.
   r.appendChild(panel, header)
-  r.setAttribute(saveButton, "aria-label", "Save component property source edits")
-  r.setAttribute(revertButton, "aria-label",
-    "Revert component property source edits")
-  r.addEventListener(saveButton, "click", proc() =
-    discard vm.runEditorCommand(eckSave))
-  r.addEventListener(saveButton, "keydown", proc() =
-    discard vm.runEditorCommand(eckSave))
-  r.addEventListener(revertButton, "click", proc() =
-    discard vm.runEditorCommand(eckRevert))
-  r.addEventListener(revertButton, "keydown", proc() =
-    discard vm.runEditorCommand(eckRevert))
 
   # Property cards: show the first 3 by default; gate the rest behind a
   # native <details> disclosure so the panel stays compact.
@@ -774,6 +779,20 @@ proc renderComponentDetail*[R, E](r: R; vm: EditorVM): E =
           scrolling = "no",
           `data-component-project-frame` = "true",
           background_color = "#FFFFFF")
+  # The detail view's project frame is an EDITING surface, not only a
+  # preview, so it needs the same selection bridge the edit view installs.
+  #
+  # It did not have one, and the asymmetry was invisible from the outside:
+  # the Layers panel and the inspector are both live over this frame (the
+  # scene-graph reader picks the VISIBLE frame, which in `view=detail` is
+  # this one, and a Layers click populates the inspector normally), so the
+  # editor looked fully wired while clicking the preview itself did nothing
+  # at all. Measured on the grip pilot: 61 Layers rows and 34 property rows
+  # over a canvas where no click ever selected anything.
+  #
+  # `view=detail` is also where selecting a story in the sidebar LANDS, so
+  # this was the first thing a user touched.
+  r.installPreviewSelectionBridge(projectFrame, vm)
   # Mount the shared canvas+overlay subtree into the preview row.
   r.appendChild(previewRow, canvasWrapper)
   r.appendChild(projectPreviewSection, previewRowNode)
@@ -829,8 +848,23 @@ proc renderComponentDetail*[R, E](r: R; vm: EditorVM): E =
   r.appendChild(content, genericContent)
 
   var lastProjectSrcdoc = ""
-  when defined(js):
+  var lastRestoredDetailSelection = ""
+  let mountState = newPreviewMountState()
+  # The selected element is read in its own effect below rather than in the
+  # srcdoc effect, for the reason spelled out in component_edit.nim: this
+  # effect builds the project's whole preview document, and on the JS backend
+  # a Nim `string` is an array of char codes, so re-running it for a click
+  # copied and compared a ~700_000-element array. Same bug, same shape, same
+  # fix -- the two views share the document rule via `detailPreviewDocument`,
+  # and now they share the dependency rule too.
+  let detailSelectedElementId = createMemo(proc(): string =
+    vm.inspector.selectedElement.val.id)
+  # Bumped when the frame is actually reloaded, so a restore still happens
+  # even though the selected id did not change.
+  let detailSrcdocGeneration = createSignal(0)
+  when isDomViewHost(E):
     let bridgeBinding = newBridgeBinding()
+  ownViewResources(projectFrame)
   createRenderEffect proc() =
     let story = vm.selectedStory.val
     let preview = vm.preview.current.val
@@ -857,12 +891,16 @@ proc renderComponentDetail*[R, E](r: R; vm: EditorVM): E =
 
     r.setTextContent(projectName,
       if story.kind in {skComponent, skPattern, skGuideline}: story.name else: "")
-    r.setTextContent(projectDescription,
+    let projectDescriptionText =
       if story.kind in {skComponent, skPattern, skGuideline} and
           preview.bodyText.len > 0:
         preview.bodyText
       else:
-        "Project-owned component state")
+        "Project-owned component state"
+    r.setTextContent(projectDescription, projectDescriptionText)
+    # The duplicate painted card header is retired. Keep the real story
+    # description attached to the preview's accessible identity instead.
+    r.setAttribute(projectFrame, "aria-description", projectDescriptionText)
     r.setAttribute(projectFrame, "title", "Component preview " & title)
     r.setAttribute(projectFrame, "height", "1")
     let reloadGeneration = vm.livePreviewReloadGeneration.val
@@ -877,16 +915,56 @@ proc renderComponentDetail*[R, E](r: R; vm: EditorVM): E =
     # isn't active the section stays hidden via ``showProject``.
     let nextProjectSrcdoc =
       if showProject and vm.platform.val == pbWeb:
-        preview.documentHtml & "\n<!-- isonim-reload:" & $reloadGeneration &
-          " -->"
+        identifiedPreviewDocument(detailPreviewDocument(preview.documentHtml,
+          preview.metadata, vm.editMode.val), story, reloadGeneration)
       else:
         ""
-    if nextProjectSrcdoc != lastProjectSrcdoc:
-      r.setAttribute(projectFrame, "srcdoc", nextProjectSrcdoc)
+    # Length first: `!=` on a Nim string walks two char arrays element by
+    # element, and two documents of different length cannot be equal.
+    let projectSrcdocChanged =
+      nextProjectSrcdoc.len != lastProjectSrcdoc.len or
+      nextProjectSrcdoc != lastProjectSrcdoc
+    if projectSrcdocChanged:
+      r.setAttribute(projectFrame, "srcdoc",
+        requestedPreviewMountDocument(projectFrame, mountState, nextProjectSrcdoc))
       lastProjectSrcdoc = nextProjectSrcdoc
+      detailSrcdocGeneration.val = detailSrcdocGeneration.val + 1
+
+    # Mount the project's UI, exactly as the edit view does.
+    #
+    # This view is where the editor LANDS, so a project that supplies a mount
+    # hook and an empty shell -- which is what adopting mounting means --
+    # showed a blank white rectangle here until this existed. The edit view had
+    # it and this one did not, which is the same way these two views drifted
+    # apart before; `views/preview_mount` is now the single copy of the rule.
+    # Only the ACTIVE view mounts and restores.
+    #
+    # Both preview views are mounted at once and display-toggled, so without
+    # this the hidden one also mounts the story and also calls
+    # `restorePreviewSelection` on its own frame. That frame's bridge answers
+    # by dispatching a selection back into the same VM, the other view sees a
+    # new selection and restores in turn, and the selection oscillates between
+    # elements -- observed cycling between `h1.tagline` and two of its spans,
+    # and eventually wedging the tab.
+    #
+    # Reading `activeView` also makes this effect re-run on a view switch,
+    # which is what mounts the story into the view the user just moved to.
+    if showProject and vm.platform.val == pbWeb and
+        vm.activeView.val == evComponentDetail:
+      mountPreviewInto(projectFrame, story, vm.previewMount, mountState,
+                       projectSrcdocChanged, proc(): bool =
+                         vm.platform.val == pbWeb and vm.activeView.val == evComponentDetail and
+                         vm.selectedStory.val == story)
+    else:
+      mountState.cancelPendingPreviewMount()
     r.setStyle(projectFrame, "width", "100%")
     r.setStyle(projectFrame, "min-height", "1px")
     r.setStyle(projectFrame, "overflow", "hidden")
+    # Re-seed the in-iframe selection after a srcdoc swap. Replacing the
+    # srcdoc builds a fresh document, so whatever the bridge had marked is
+    # gone; without this the Layers panel keeps showing a selection that the
+    # preview no longer draws. Guarded on a CHANGE in either the document or
+    # the id so an unrelated re-render does not re-enter the bridge.
     # RS-M11: iframe stays for Web, canvas takes over for non-Web.
     r.setStyle(projectFrame, "display",
                if useCanvas: "none" else: "block")
@@ -943,7 +1021,7 @@ proc renderComponentDetail*[R, E](r: R; vm: EditorVM): E =
     # callback that walks the sidebar for the matching skVectorSymbol
     # story and mirrors the resulting activeView under the
     # `__isonimTestMode === true` gate.
-    when defined(js):
+    when isDomViewHost(E):
       let editor = vm
       let onVectorDbl = proc(componentPath: string) =
         var story: StoryRef
@@ -951,7 +1029,7 @@ proc renderComponentDetail*[R, E](r: R; vm: EditorVM): E =
             componentPath, story):
           return
         discard editor.openVectorEditor(story)
-        when defined(js):
+        when isDomViewHost(E):
           let activeView = $editor.activeView.val
           let targetPath =
             if editor.vectorEditorTarget.val.isSome:
@@ -980,7 +1058,7 @@ proc renderComponentDetail*[R, E](r: R; vm: EditorVM): E =
                       previewViewportWidth(vp),
                       previewViewportHeight(vp))
 
-    when defined(js):
+    when isDomViewHost(E):
       let frame = projectFrame
       let variantScript = vm.componentPreviewVariantScript(preview)
       {.emit: ["""
@@ -1009,7 +1087,7 @@ proc renderComponentDetail*[R, E](r: R; vm: EditorVM): E =
               }
             });
           }
-          requestAnimationFrame(apply);
+          globalThis.__isonimFrameView(frame, apply);
         })(""", frame, ", ", variantScript, """);
       """].}
       {.emit: ["""
@@ -1039,9 +1117,9 @@ proc renderComponentDetail*[R, E](r: R; vm: EditorVM): E =
             }
           };
           frame.addEventListener('load', resizeFrame);
-          requestAnimationFrame(resizeFrame);
+          globalThis.__isonimFrameView(frame, resizeFrame);
         } else if (frame) {
-          requestAnimationFrame(() => {
+          globalThis.__isonimFrameView(frame, () => {
             try {
               const doc = frame.contentDocument;
               const body = doc?.body;
@@ -1065,6 +1143,24 @@ proc renderComponentDetail*[R, E](r: R; vm: EditorVM): E =
   # implementation lives in the shared `canvas_mount` helper so
   # page_preview.nim / foundations_page.nim get the same overlay
   # behaviour without copy-pasting.
+  # Selection restore, split out of the srcdoc effect above: reads a string
+  # memo and an int, so a click no longer rebuilds the preview document.
+  createRenderEffect proc() =
+    let detailSelectedId = detailSelectedElementId.val
+    let generation = detailSrcdocGeneration.val
+    let stamp = detailSelectedId & "@" & $generation
+    # Active view only; see the note on the mount above.
+    if vm.activeView.val == evComponentDetail and
+        detailSelectedId.len > 0 and stamp != lastRestoredDetailSelection:
+      lastRestoredDetailSelection = stamp
+      r.restorePreviewSelection(projectFrame, detailSelectedId, proc(): bool =
+        vm.activeView.val == evComponentDetail and
+          detailSelectedElementId.val == detailSelectedId and
+          detailSrcdocGeneration.val == generation)
+    elif vm.activeView.val != evComponentDetail or detailSelectedId.len == 0:
+      lastRestoredDetailSelection = ""
+      r.restorePreviewSelection(projectFrame, "", proc(): bool = false)
+
   bindCanvasOverlayEffect(r, vm, canvasMnt)
 
   # === Props / API Table ===

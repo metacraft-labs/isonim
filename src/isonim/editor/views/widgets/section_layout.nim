@@ -14,9 +14,12 @@ import std/[options, strutils]
 
 import isonim/core/signals
 import isonim/core/computation
+import isonim/core/owner
 import isonim/dsl/ui
 import isonim/editor/types
 import isonim/editor/viewmodels
+import isonim/editor/views/choice_row
+import isonim/editor/views/widgets/property_commit
 import isonim/editor/views/widgets/property_row
 import isonim/editor/views/widgets/section_position
 
@@ -29,6 +32,26 @@ const
 const
   pxUnit = PropertyUnitOption(label: "px", code: "px")
 
+func layoutModeFor*(display, direction: string): string =
+  if display in ["grid", "inline-grid"]: "grid"
+  elif display in ["flex", "inline-flex"]:
+    if direction in ["column", "column-reverse"]: "vertical" else: "horizontal"
+  else: "none"
+
+func layoutModeChanges*(display, direction, wanted: string): seq[tuple[property, value: string]] =
+  let current = layoutModeFor(display, direction)
+  if current == wanted: return
+  let inline = display.startsWith("inline")
+  let wantedDisplay =
+    if wanted == "none": "block"
+    elif wanted == "grid": (if inline: "inline-grid" else: "grid")
+    else: (if inline: "inline-flex" else: "flex")
+  let wantedDirection = (if wanted == "vertical": "column" else: "row") &
+    (if direction.endsWith("-reverse"): "-reverse" else: "")
+  if display != wantedDisplay: result.add ("display", wantedDisplay)
+  if wanted in ["vertical", "horizontal"] and direction != wantedDirection:
+    result.add ("flex-direction", wantedDirection)
+
 proc mountSectionLayout*[R, E](r: R; parent: E; vm: EditorVM) =
   ## Mount the Layout section body. The widget owns its own local
   ## signals so a selection change rebinds the seeds via a render
@@ -40,25 +63,35 @@ proc mountSectionLayout*[R, E](r: R; parent: E; vm: EditorVM) =
   let heightUnit = createSignal(pxUnit)
   let gap = createSignal(0.0)
   let gapUnit = createSignal(pxUnit)
+  let padding = createSignal("0")
   let padTop = createSignal(0.0)
   let padRight = createSignal(0.0)
   let padBottom = createSignal(0.0)
   let padLeft = createSignal(0.0)
-  let padUnit = createSignal(pxUnit)
+  let padTopUnit = createSignal(pxUnit)
+  let padRightUnit = createSignal(pxUnit)
+  let padBottomUnit = createSignal(pxUnit)
+  let padLeftUnit = createSignal(pxUnit)
   let overflow = createSignal("visible")
+  let flexWrap = createSignal("nowrap")
+  let aspectRatio = createSignal("auto")
+  let modeMessage = createSignal("")
+  var modeAlive = true
+  var modePending = false
+  onCleanup(proc() = modeAlive = false)
+
 
   createRenderEffect proc() =
+    discard vm.selectedStory.val
     let props = vm.inspector.properties.val
+    modeMessage.val = ""
     let display = findPropertyValue(props, "display", "block")
     let flexDir = findPropertyValue(props, "flex-direction", "row")
-    layoutMode.val =
-      if display == "grid": "grid"
-      elif display == "flex" and flexDir == "column": "vertical"
-      elif display == "flex": "horizontal"
-      else: "none"
+    layoutMode.val = layoutModeFor(display, flexDir)
     width.val = parseLeadingFloat(findPropertyValue(props, "width", "0"), 0.0)
     height.val = parseLeadingFloat(findPropertyValue(props, "height", "0"), 0.0)
     gap.val = parseLeadingFloat(findPropertyValue(props, "gap", "0"), 0.0)
+    padding.val = findPropertyValue(props, "padding", "0")
     padTop.val = parseLeadingFloat(findPropertyValue(props, "padding-top",
       findPropertyValue(props, "padding", "0")), 0.0)
     padRight.val = parseLeadingFloat(findPropertyValue(props, "padding-right",
@@ -68,6 +101,8 @@ proc mountSectionLayout*[R, E](r: R; parent: E; vm: EditorVM) =
     padLeft.val = parseLeadingFloat(findPropertyValue(props, "padding-left",
       findPropertyValue(props, "padding", "0")), 0.0)
     overflow.val = findPropertyValue(props, "overflow", "visible")
+    flexWrap.val = findPropertyValue(props, "flex-wrap", "nowrap")
+    aspectRatio.val = findPropertyValue(props, "aspect-ratio", "auto")
 
   # ----- Layout mode button row ------------------------------------ #
   # Four icon buttons. The active one carries ``data-layout-mode-
@@ -83,16 +118,19 @@ proc mountSectionLayout*[R, E](r: R; parent: E; vm: EditorVM) =
   # and the Figma reference.
   let modeRow = ui(r):
     tdiv(`data-layout-mode-row` = "true",
+         `data-inspector-search-label` = "Layout direction",
+         `data-inspector-search-property` = "display flex-direction",
          display = "flex", flex_direction = "row",
          background_color = "#1A1B22",
          border_radius = "4px",
          padding = "1px",
          margin = "2px 0"):
       for i, slug in modes:
-        tdiv(ref = modeButtons[i],
+        button(ref = modeButtons[i], `type` = "button", border = "none",
               role = "button", tabindex = "0",
               `data-layout-mode` = slug,
               `aria-label` = "Set layout to " & slug,
+              title = "Set layout to " & slug,
               display = "flex", align_items = "center",
               justify_content = "center",
               flex = "1", height = "24px",
@@ -100,14 +138,150 @@ proc mountSectionLayout*[R, E](r: R; parent: E; vm: EditorVM) =
               color = textMuted, font_size = "12px", cursor = "pointer"):
           text modeGlyphs[i]
   r.appendChild(parent, modeRow)
+  var modeDiagnostic: E
+  let diagnostic = ui(r):
+    tdiv(ref = modeDiagnostic, `data-layout-mode-message` = "true", role = "status",
+         `aria-live` = "polite", color = textMuted, font_size = "11px"):
+      text modeMessage.val
+  r.appendChild(parent, diagnostic)
+
+  proc hasSourceWriter(): bool =
+    vm.hasAsyncSourceProject or vm.workspaceEditAdapter != nil or
+      vm.inspectorSourceCommit != nil
+
+  # Choices and commits share the same identity-owned wiring. Replacing the
+  # selected element/story disposes its choices and resets explicit scope picks.
+  let scopeHost = r.createElement("div")
+  r.setAttribute(scopeHost, "data-layout-source-scopes", "true")
+  r.appendChild(parent, scopeHost)
+  let scopeGeneration = createSignal(0)
+  var generation = 0
+  var displayWiring, directionWiring: InspectorRowWiring
+  var disposeScopes: proc()
+  var scopeStory: StoryRef
+  var scopeElement = ""
+  var scopesMounted = false
+  let mountOwner = getOwner()
+  onCleanup(proc() =
+    if disposeScopes != nil: disposeScopes())
+  proc mountScopeDetails(property: string; wiring: InspectorRowWiring) =
+    proc details(): string =
+      let selected = wiring.selectedSourceScope()
+      if selected.isNone: return property & ": no mapped source scope."
+      let choice = selected.get
+      result = property & " · " & choice.label & " · Owner: " & choice.ownerLabel
+      if choice.sourceFile.len > 0:
+        result.add "\nSource: " & choice.sourceFile
+        if choice.sourceLine > 0: result.add ":" & $choice.sourceLine
+      elif choice.schemaKey.len > 0: result.add "\nSchema: " & choice.schemaKey
+      else: result.add "\nSource: not mapped"
+      result.add " · Known uses: " & (if choice.usageCount > 0: $choice.usageCount else: "unknown")
+      if choice.kind == sskStoryFixture and
+          (choice.sourceFile.len > 0 or choice.schemaKey.len > 0):
+        result.add "\nChanges this story fixture."
+        if choice.impact.summary.len > 0: result.add " " & choice.impact.summary
+      elif choice.kind in {sskComponentSchemaApi, sskSharedClass, sskComponentToken,
+          sskSemanticToken, sskGlobalPrimitiveToken} and
+          (choice.sourceFile.len > 0 or choice.schemaKey.len > 0):
+        result.add "\nChanges the shared source definition; other mapped uses may change."
+        if choice.impact.summary.len > 0: result.add " " & choice.impact.summary
+    let info = ui(r):
+      tdiv(`data-layout-source-impact-property` = property, role = "note",
+           white_space = "pre-line", font_size = "10px", color = textMuted,
+           margin = "2px 0 6px", overflow_wrap = "anywhere"):
+        text details()
+    r.appendChild(scopeHost, info)
+
+  createRenderEffect proc() =
+    let story = vm.selectedStory.val
+    let element = vm.inspector.selectedElement.val.id
+    if scopesMounted and story == scopeStory and element == scopeElement: return
+    scopesMounted = true
+    scopeStory = story
+    scopeElement = element
+    if disposeScopes != nil: disposeScopes()
+    r.clearChildren(scopeHost)
+    runWithOwner(mountOwner, proc() =
+      createRoot(proc(dispose: proc()) =
+        disposeScopes = dispose
+        displayWiring = vm.inspectorRowWiring("display")
+        directionWiring = vm.inspectorRowWiring("flex-direction")
+        for (property, wiring) in [("display", displayWiring), ("flex-direction", directionWiring)]:
+          let strip = renderCompactChoiceRow[R, E](r, property,
+            "Choose layout source scope for " & property, wiring.scopeOptions,
+            visibleLimit = 2)
+          r.setAttribute(strip.root, "data-layout-source-scope-property", property)
+          r.appendChild(scopeHost, strip.root)
+          mountScopeDetails(property, wiring)))
+    inc generation
+    scopeGeneration.val = generation
+
+  proc layoutWiring(property: string): InspectorRowWiring =
+    if property == "display": displayWiring else: directionWiring
+
   proc bindModeClick(btn: E; slug: string) =
-    ## Isolating helper — closure-captures ``slug`` in a dedicated
-    ## scope so each click handler binds to the right mode string. A
-    ## bare ``let`` inside the ``for`` body shares its binding across
-    ## the loop iterations in Nim (the closure captures the variable
-    ## by reference, not by value).
-    r.addEventListener(btn, "click", proc() = layoutMode.val = slug)
-    r.addEventListener(btn, "keydown", proc() = layoutMode.val = slug)
+    let activate = proc() =
+      if not modeAlive or modePending: return
+      if not vm.workspacePermissions.val.writeSource:
+        modeMessage.val = "This workspace is read-only for source changes."
+        return
+      if not hasSourceWriter():
+        layoutMode.val = slug # Explicit preview/library composition.
+        return
+      if not vm.sourceAdapterReady.val:
+        modeMessage.val = "Loading editable properties."
+        return
+      let props = vm.inspector.properties.val
+      let display = findPropertyValue(props, "display", "block")
+      let direction = findPropertyValue(props, "flex-direction", "row")
+      let changes = layoutModeChanges(display, direction, slug)
+      if changes.len == 0:
+        modeMessage.val = ""
+        return
+      if changes.len != 1:
+        modeMessage.val = "The editor cannot safely change both layout declarations together yet."
+        return
+      let change = changes[0]
+      let wiring = layoutWiring(change.property)
+      let reason = wiring.readOnlyReason()
+      if reason.len > 0:
+        modeMessage.val = reason
+        return
+      # One existing guarded source operation. Compound changes never issue two
+      # independent writes or optimistically change the active layout pill.
+      let story = vm.selectedStory.val
+      let selected = vm.inspector.selectedElement.val.id
+      modePending = true
+      wiring.commitAsync(change.value, proc(ok: bool) =
+        modePending = false
+        if not modeAlive or vm.selectedStory.val != story or
+            vm.inspector.selectedElement.val.id != selected: return
+        if ok:
+          layoutMode.val = slug
+          modeMessage.val = ""
+        else:
+          modeMessage.val = wiring.commitMessage.val)
+    createRenderEffect proc() =
+      discard scopeGeneration.val
+      let props = vm.inspector.properties.val
+      let changes = layoutModeChanges(findPropertyValue(props, "display", "block"),
+        findPropertyValue(props, "flex-direction", "row"), slug)
+      var reason = ""
+      if not vm.workspacePermissions.val.writeSource: reason = "This workspace is read-only for source changes."
+      elif hasSourceWriter():
+        if not vm.sourceAdapterReady.val: reason = "Loading editable properties."
+        elif changes.len > 1: reason = "The editor cannot safely change both layout declarations together yet."
+        elif changes.len == 1: reason = layoutWiring(changes[0].property).readOnlyReason()
+      r.setAttribute(btn, "aria-disabled", if reason.len > 0: "true" else: "false")
+      r.setAttribute(btn, "title", if reason.len > 0: reason else: "Set layout to " & slug)
+    r.addEventListener(btn, "click", activate)
+    when defined(js):
+      # Actual button semantics produce one click for Enter/Space. Stop editor
+      # shortcuts while preserving native activation and Tab/Escape navigation.
+      var removeKeys: proc() {.closure.}
+      {.emit: ["if(typeof ",btn,".addEventListener==='function'){const button=",btn,";function key(e){if(e.key==='Enter'||e.key===' '||e.key==='Escape')e.stopPropagation();}button.addEventListener('keydown',key);",removeKeys,"=()=>button.removeEventListener('keydown',key);}"].}
+      onCleanup(proc() =
+        if removeKeys != nil: removeKeys())
   for i, slug in modes:
     bindModeClick(modeButtons[i], slug)
   # Phase H: the active mode pill now reads as a quiet raised inset
@@ -134,16 +308,20 @@ proc mountSectionLayout*[R, E](r: R; parent: E; vm: EditorVM) =
   # Two numeric rows + a placeholder constraint glyph. The glyph is a
   # data marker for the per-section test; Phase G+1 wires a real
   # constraint editor.
-  discard r.mountPropertyRow(parent, propertyRowNumeric(
+  # A width without its height is half a question.
+  discard r.mountPropertyRowPair(parent,
+    propertyRowNumeric(
     name = "W", value = width, unit = widthUnit, units = @[pxUnit],
     bindingReactive = vm.inspectorBindingThunk("width"),
     onBindRequest = vm.inspectorBindRequestHandler("width"),
-    onDetachRequest = vm.inspectorDetachRequestHandler("width")))
-  discard r.mountPropertyRow(parent, propertyRowNumeric(
+    onDetachRequest = vm.inspectorDetachRequestHandler("width"),
+    wiring = vm.inspectorRowWiring("width")),
+    propertyRowNumeric(
     name = "H", value = height, unit = heightUnit, units = @[pxUnit],
     bindingReactive = vm.inspectorBindingThunk("height"),
     onBindRequest = vm.inspectorBindRequestHandler("height"),
-    onDetachRequest = vm.inspectorDetachRequestHandler("height")))
+    onDetachRequest = vm.inspectorDetachRequestHandler("height"),
+    wiring = vm.inspectorRowWiring("height")))
   # Phase H (2026-05-28): the constraint indicator reads as a quiet
   # icon-and-hint row. The Figma reference puts the constraint
   # affordance as a small bracket glyph on the right edge next to W/H;
@@ -173,7 +351,8 @@ proc mountSectionLayout*[R, E](r: R; parent: E; vm: EditorVM) =
     name = "Gap", value = gap, unit = gapUnit, units = @[pxUnit],
     bindingReactive = vm.inspectorBindingThunk("gap"),
     onBindRequest = vm.inspectorBindRequestHandler("gap"),
-    onDetachRequest = vm.inspectorDetachRequestHandler("gap")))
+    onDetachRequest = vm.inspectorDetachRequestHandler("gap"),
+    wiring = vm.inspectorRowWiring("gap")))
   createRenderEffect proc() =
     let m = layoutMode.val
     let visible = m in ["vertical", "horizontal", "grid"]
@@ -186,31 +365,36 @@ proc mountSectionLayout*[R, E](r: R; parent: E; vm: EditorVM) =
          `data-layout-padding-host` = "true",
          display = "flex", flex_direction = "column")
   r.appendChild(parent, padHost)
+  discard r.mountPropertyRow(padHostEl, propertyRowText(
+    name = "Padding", value = padding,
+    bindingReactive = vm.inspectorBindingThunk("padding"),
+    onBindRequest = vm.inspectorBindRequestHandler("padding"),
+    onDetachRequest = vm.inspectorDetachRequestHandler("padding"),
+    wiring = vm.inspectorRowWiring("padding")))
   discard r.mountPropertyRow(padHostEl, propertyRowNumeric(
-    name = "Pad top", value = padTop, unit = padUnit, units = @[pxUnit],
+    name = "Pad top", value = padTop, unit = padTopUnit, units = @[pxUnit],
     bindingReactive = vm.inspectorBindingThunk("padding-top"),
     onBindRequest = vm.inspectorBindRequestHandler("padding-top"),
-    onDetachRequest = vm.inspectorDetachRequestHandler("padding-top")))
+    onDetachRequest = vm.inspectorDetachRequestHandler("padding-top"),
+    wiring = vm.inspectorRowWiring("padding-top")))
   discard r.mountPropertyRow(padHostEl, propertyRowNumeric(
-    name = "Pad right", value = padRight, unit = padUnit, units = @[pxUnit],
+    name = "Pad right", value = padRight, unit = padRightUnit, units = @[pxUnit],
     bindingReactive = vm.inspectorBindingThunk("padding-right"),
     onBindRequest = vm.inspectorBindRequestHandler("padding-right"),
-    onDetachRequest = vm.inspectorDetachRequestHandler("padding-right")))
+    onDetachRequest = vm.inspectorDetachRequestHandler("padding-right"),
+    wiring = vm.inspectorRowWiring("padding-right")))
   discard r.mountPropertyRow(padHostEl, propertyRowNumeric(
-    name = "Pad bottom", value = padBottom, unit = padUnit, units = @[pxUnit],
+    name = "Pad bottom", value = padBottom, unit = padBottomUnit, units = @[pxUnit],
     bindingReactive = vm.inspectorBindingThunk("padding-bottom"),
     onBindRequest = vm.inspectorBindRequestHandler("padding-bottom"),
-    onDetachRequest = vm.inspectorDetachRequestHandler("padding-bottom")))
+    onDetachRequest = vm.inspectorDetachRequestHandler("padding-bottom"),
+    wiring = vm.inspectorRowWiring("padding-bottom")))
   discard r.mountPropertyRow(padHostEl, propertyRowNumeric(
-    name = "Pad left", value = padLeft, unit = padUnit, units = @[pxUnit],
+    name = "Pad left", value = padLeft, unit = padLeftUnit, units = @[pxUnit],
     bindingReactive = vm.inspectorBindingThunk("padding-left"),
     onBindRequest = vm.inspectorBindRequestHandler("padding-left"),
-    onDetachRequest = vm.inspectorDetachRequestHandler("padding-left")))
-  createRenderEffect proc() =
-    let m = layoutMode.val
-    let visible = m in ["vertical", "horizontal", "grid"]
-    r.setStyle(padHostEl, "display", if visible: "flex" else: "none")
-
+    onDetachRequest = vm.inspectorDetachRequestHandler("padding-left"),
+    wiring = vm.inspectorRowWiring("padding-left")))
   # ----- Overflow choice ------------------------------------------- #
   discard r.mountPropertyRow(parent, propertyRowChoice(
     name = "Overflow", value = overflow,
@@ -221,4 +405,14 @@ proc mountSectionLayout*[R, E](r: R; parent: E; vm: EditorVM) =
       (label: "Auto", value: "auto")],
     bindingReactive = vm.inspectorBindingThunk("overflow"),
     onBindRequest = vm.inspectorBindRequestHandler("overflow"),
-    onDetachRequest = vm.inspectorDetachRequestHandler("overflow")))
+    onDetachRequest = vm.inspectorDetachRequestHandler("overflow"),
+    wiring = vm.inspectorRowWiring("overflow")))
+
+  discard r.mountPropertyRow(parent, propertyRowChoice(
+    name = "Wrap", value = flexWrap,
+    options = @[(label: "No wrap", value: "nowrap"),
+      (label: "Wrap", value: "wrap"), (label: "Reverse", value: "wrap-reverse")],
+    wiring = vm.inspectorRowWiring("flex-wrap")))
+  discard r.mountPropertyRow(parent, propertyRowText(
+    name = "Aspect ratio", value = aspectRatio,
+    wiring = vm.inspectorRowWiring("aspect-ratio")))

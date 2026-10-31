@@ -20,25 +20,26 @@ when defined(useFaststreams):
     ## The HTML is written and flushed immediately -- no intermediate string
     ## copy beyond what the component tree produces. Works with any
     ## OutputStream backend (nginx, chronos, memory, etc.).
-    resetHydrationCounter()
     var html = ""
-    createRoot proc(dispose: proc()) =
-      html = fn()
-      dispose()
+    withHydrationKeys(""):
+      createRoot proc(dispose: proc()) =
+        html = fn()
+        dispose()
     # Write directly to the stream
     fsOutputs.write(output, html)
     if hydration:
       fsOutputs.write(output, generateHydrationScript(nonce = nonce))
     fsOutputs.flush(output)
 
-proc renderToString*(fn: proc(): string): string =
+proc renderToString*(fn: proc(): string; renderId = ""): string =
   ## Synchronous SSR. Creates a reactive root, runs the component,
-  ## collects the HTML string output.
-  resetHydrationCounter()
+  ## collects the HTML string output. A hydratable render: every element
+  ## carries its `data-hk` key, prefixed with `renderId` (markers.nim).
   var html = ""
-  createRoot proc(dispose: proc()) =
-    html = fn()
-    dispose()
+  withHydrationKeys(renderId):
+    createRoot proc(dispose: proc()) =
+      html = fn()
+      dispose()
   result = html
 
 const voidElements = [
@@ -51,8 +52,10 @@ proc ssrElement*(tag: string; attrs: openArray[(string, string)] = [];
     children: string = ""; needsId: bool = false): string =
   ## Renders an HTML element as a string.
   result = "<" & tag
+  # Only on request: `children` is evaluated before this call, so an
+  # automatic key would be taken after the children's, out of document order.
   if needsId:
-    result.add ssrHydrationKey()
+    result.add ssrHydrationKey(force = true)
   for (key, val) in attrs:
     result.add " " & escapeHtml(key) & "=\"" & escapeAttr(val) & "\""
   if tag in voidElements:

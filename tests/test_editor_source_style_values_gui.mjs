@@ -1,0 +1,664 @@
+/** Real opt-in GRIP workspace/catalog, production editor/source bridge and native
+ * compiler transactions in a disposable source copy. Nothing in the renderer,
+ * source provider, adapter, compiler or source HTTP transport is mocked. The
+ * controlled startup peer is used only to start the daemon; no agent prompt runs.
+ */
+import { spawn, spawnSync } from "node:child_process";
+import {
+  mkdtempSync,
+  cpSync,
+  readFileSync,
+  writeFileSync,
+  mkdirSync,
+  openSync,
+  copyFileSync,
+} from "node:fs";
+import { chromium } from "../node_modules/playwright/index.mjs";
+import assert from "node:assert/strict";
+import path from "node:path";
+import { tmpdir } from "node:os";
+import { fileURLToPath } from "node:url";
+import { createHash } from "node:crypto";
+const repo = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
+const root = mkdtempSync(
+  path.join(
+    process.env.ISONIM_POPUP_ARTIFACTS || tmpdir(),
+    "source-style-values-gui-",
+  ),
+);
+const prototype =
+  process.env.ISONIM_SOURCE_PROVIDER_PROJECT ||
+  repo + "/../web-site-prototypes/grip/isonim";
+const project = root + "/project",
+  pub = root + "/public";
+const original = readFileSync(prototype + "/src/components/styles.nim", "utf8");
+cpSync(prototype, project, {
+  recursive: true,
+  filter: (source) =>
+    !source
+      .split(path.sep)
+      .some((part) =>
+        [
+          ".git",
+          ".repro",
+          "build",
+          "node_modules",
+          "catalog-producer",
+        ].includes(part),
+      ),
+});
+const registration = spawnSync(
+  "python3",
+  [repo + "/tests/helpers/grip_source_project.py", project],
+  { cwd: repo, env: process.env, encoding: "utf8", timeout: 5000 },
+);
+assert.equal(registration.status, 0, registration.stdout + registration.stderr);
+mkdirSync(pub);
+writeFileSync(
+  project + "/config.nims",
+  'switch("nimcache", ' + JSON.stringify(project + "/native-cache") + ")\n",
+);
+const manifest = JSON.parse(
+  readFileSync(project + "/.isonim/source-project.json", "utf8"),
+);
+manifest.editableStyleSources = [
+  {
+    file: "src/components/styles.nim",
+    const: "structureCss",
+    properties: [
+      "padding",
+      "border-radius",
+      "font-size",
+      "font-weight",
+      "gap",
+      "height",
+      "color",
+      "background",
+    ],
+  },
+  {
+    file: "src/components/styles.nim",
+    const: "designTokens",
+    properties: ["--panel"],
+  },
+];
+writeFileSync(
+  project + "/.isonim/source-project.json",
+  JSON.stringify(manifest),
+);
+const env = { ...process.env, ISONIM_SOURCE_FRAMEWORK: repo };
+function checkedBuild(command, args, label, timeout = 90000) {
+  const result = spawnSync(command, args, {
+    cwd: repo,
+    env,
+    encoding: "utf8",
+    timeout,
+  });
+  writeFileSync(root + "/" + label + ".log", result.stdout + result.stderr);
+  assert.equal(result.status, 0, result.stdout + result.stderr);
+  return result.stdout;
+}
+checkedBuild(
+  "python3",
+  [repo + "/tools/build_source_catalog.py", project],
+  "catalog-build",
+);
+const described = JSON.parse(
+  checkedBuild(
+    repo + "/build/bin/isonim-review",
+    ["source-project", project, "--describe"],
+    "describe",
+    5000,
+  ),
+);
+const target = described.editableStyles.find(
+  (row) => row.selector === ".panel" && row.values["border-radius"] === "4px",
+);
+assert(target);
+assert(target.sharedCount >= 2);
+checkedBuild(
+  "nim",
+  [
+    "js",
+    "--path:src",
+    "--path:.",
+    "--path:../nim-everywhere/src",
+    "--path:../isonim-render-serve/src",
+    "--path:../nim-acp/src",
+    "--path:../nim-agent-harbor/src",
+    "--path:../nim-agents/src",
+    "--path:" + project + "/src",
+    "--path:" + project + "/src/editor",
+    "-o:" + pub + "/editor.js",
+    "tests/helpers/editor_source_style_workspace.nim",
+  ],
+  "browser-build",
+);
+for (const [from, to] of [
+  ["src/isonim/editor/index.html", "index.html"],
+  ["node_modules/fabric/dist/index.min.js", "fabric.min.js"],
+  ["node_modules/paper/dist/paper-core.min.js", "paper-core.min.js"],
+  ["node_modules/svgo/dist/svgo.browser.js", "svgo.browser.js"],
+])
+  copyFileSync(repo + "/" + from, pub + "/" + to);
+const proof = {
+  project,
+  head:
+    process.env.ISONIM_TEST_HEAD ||
+    spawnSync("git", ["rev-parse", "HEAD"], {
+      cwd: repo,
+      encoding: "utf8",
+    }).stdout.trim(),
+  sourceState:
+    process.env.ISONIM_TEST_SOURCE_STATE || "C4a authored working copy",
+  nativeSha256: createHash("sha256")
+    .update(readFileSync(repo + "/build/bin/isonim-review"))
+    .digest("hex"),
+  target,
+  bundleSha256: createHash("sha256")
+    .update(readFileSync(pub + "/editor.js"))
+    .digest("hex"),
+  cases: [],
+  errors: [],
+  sourceRequests: [],
+  inspectorRequests: [],
+  agentRequests: [],
+};
+const record = (name) => {
+  proof.cases.push(name);
+  writeFileSync(root + "/proof-partial.json", JSON.stringify(proof, null, 2));
+};
+const config = root + "/agent.toml";
+writeFileSync(
+  config,
+  '[agent]\nbackend="custom"\ncommand="python3"\nargs=' +
+    JSON.stringify([repo + "/tests/helpers/editor_control_peer.py"]) +
+    "\nprimer_enabled=false\n",
+);
+const server = spawn(
+  "python3",
+  [
+    repo + "/tools/editor_server.py",
+    "--directory",
+    pub,
+    "--project-root",
+    project,
+    "--port",
+    "0",
+    "--bind",
+    "127.0.0.1",
+    "--config",
+    config,
+    "--daemon-binary",
+    repo + "/build/bin/isonim-review",
+  ],
+  { env, stdio: ["ignore", "pipe", openSync(root + "/server.log", "w")] },
+);
+let browser, browserServer;
+try {
+  const origin = await new Promise((resolve, reject) => {
+    let text = "";
+    server.stdout.on("data", (data) => {
+      text += data;
+      const match = text.match(/Editor listening on (http:\/\/[^\s]+)\//);
+      if (match) resolve(match[1]);
+    });
+    server.once("exit", (code) => reject(Error("Server exited " + code)));
+    setTimeout(() => reject(Error("Startup timeout")), 70000).unref();
+  });
+  const chromeEnv = { ...process.env };
+  delete chromeEnv.LD_LIBRARY_PATH;
+  browserServer = await chromium.launchServer({
+    headless: true,
+    env: chromeEnv,
+    executablePath: process.env.PLAYWRIGHT_CHROMIUM_EXECUTABLE,
+  });
+  browser = await chromium.connect(browserServer.wsEndpoint());
+  const page = await browser.newPage({
+    viewport: { width: 1440, height: 900 },
+  });
+  page.setDefaultTimeout(30000);
+  page.on("pageerror", (error) => proof.errors.push(error.message));
+  page.on("request", (request) => {
+    const url = new URL(request.url());
+    if (url.pathname.startsWith("/api/agent/"))
+      proof.agentRequests.push(url.pathname);
+    if (url.pathname === "/api/editor/source/operation")
+      proof.sourceRequests.push(request.postDataJSON());
+    if (url.pathname === "/api/editor/rpc") {
+      const body = request.postDataJSON();
+      if (body?.method === "editor.inspector-source")
+        proof.inspectorRequests.push(body);
+    }
+  });
+  const snapshot = () =>
+    page.evaluate(() => JSON.parse(window.__sourceStyleAcceptance.snapshot()));
+  async function openTarget() {
+    const divider = target.storyId.indexOf(" / ");
+    assert(
+      await page.evaluate(
+        ([group, name]) =>
+          window.__sourceStyleAcceptance.openStory(group, name),
+        [target.storyId.slice(0, divider), target.storyId.slice(divider + 3)],
+      ),
+    );
+    await page
+      .locator('[data-toolbar-cluster="mode"] [aria-label="Edit"]')
+      .click();
+    await page.locator('[data-layer-search="true"]').fill("panel");
+    await page
+      .locator('[data-scene-graph-row="' + target.elementId + '"]')
+      .click();
+  }
+  await page.goto(origin);
+  await page.waitForFunction(
+    () =>
+      window.__sourceStyleAcceptance &&
+      JSON.parse(window.__sourceStyleAcceptance.snapshot()).ready,
+  );
+  await openTarget();
+
+  const source = () =>
+    readFileSync(project + "/src/components/styles.nim", "utf8");
+  const waitApplied = (count) =>
+    page.waitForFunction(
+      (count) => {
+        const state = JSON.parse(window.__sourceStyleAcceptance.snapshot());
+        return state.stage === "wesClean" && state.undoCount === count;
+      },
+      count,
+      { timeout: 70000 },
+    );
+  let count = 0,
+    expectedSource = original;
+  async function selectTarget(binding, filter) {
+    await page.locator('[data-layer-search="true"]').fill(filter);
+    await page
+      .locator('[data-scene-graph-row="' + binding.elementId + '"]')
+      .click();
+    await page.waitForFunction(
+      ([id, property, value]) => {
+        const state = JSON.parse(window.__sourceStyleAcceptance.snapshot());
+        return (
+          state.selected === id &&
+          state.properties.some(
+            (prop) => prop.name === property && prop.authoredValue === value,
+          )
+        );
+      },
+      [
+        binding.elementId,
+        Object.keys(binding.values)[0],
+        Object.values(binding.values)[0],
+      ],
+    );
+  }
+  async function expectStyle(binding, property, value) {
+    await page.waitForFunction(
+      ([id, property, value]) => {
+        const frame = [...document.querySelectorAll("iframe")].find(
+          (frame) =>
+            frame.getClientRects().length &&
+            frame.contentDocument?.querySelector(
+              '[data-isonim-element-id="' + id + '"]',
+            ),
+        );
+        return (
+          frame &&
+          frame.contentWindow
+            .getComputedStyle(
+              frame.contentDocument.querySelector(
+                '[data-isonim-element-id="' + id + '"]',
+              ),
+            )
+            .getPropertyValue(property) === value
+        );
+      },
+      [binding.elementId, property, value],
+    );
+  }
+  async function commitTyped(row, value) {
+    const field = row.locator("[data-property-row-input]");
+    assert.equal(await field.count(), 1);
+    await field.waitFor({ state: "visible" });
+    assert(await field.isVisible());
+    const before = proof.sourceRequests.length;
+    await field.fill(value);
+    await field.press("Enter");
+    await field.press("Tab");
+    await page.evaluate(
+      () =>
+        new Promise((resolve) =>
+          requestAnimationFrame(() => requestAnimationFrame(resolve)),
+        ),
+    );
+    const state = await snapshot();
+    const rowState = await row.evaluate((node) => ({
+      property: node.getAttribute("data-property-row-css-property"),
+      value: node.querySelector("input")?.value,
+      readOnly: node.querySelector("input")?.readOnly,
+      reason: node.getAttribute("data-property-row-readonly-reason"),
+      message: node.querySelector("[data-property-row-message]")?.textContent,
+      scopes: [
+        ...node.querySelectorAll(
+          '[data-source-scope-kind][aria-pressed="true"]',
+        ),
+      ].map((el) => ({
+        kind: el.getAttribute("data-source-scope-kind"),
+        enabled: el.getAttribute("data-source-scope-editable"),
+        title: el.title,
+      })),
+    }));
+    proof.lastTypedPreparation = {
+      state,
+      row: rowState,
+      sourceRequestCount: proof.sourceRequests.length,
+    };
+    writeFileSync(
+      root + "/typed-preparation.json",
+      JSON.stringify(proof.lastTypedPreparation, null, 2),
+    );
+    assert(
+      proof.sourceRequests.length > before || state.stage === "wesCompiling",
+      "Typed edit neither admitted a source request nor started native work: " +
+        JSON.stringify(proof.lastTypedPreparation),
+    );
+    await waitApplied(++count);
+  }
+  async function scrub(row, dx) {
+    const handle = row.locator("[data-property-row-field-label]");
+    const box = await handle.boundingBox();
+    assert(box);
+    await page.mouse.move(box.x + box.width / 2, box.y + box.height / 2);
+    await page.mouse.down();
+    await page.mouse.move(box.x + box.width / 2 + dx, box.y + box.height / 2);
+    assert(
+      await handle.evaluate(
+        (node) => node.isConnected && node.hasPointerCapture(1),
+      ),
+    );
+    await page.mouse.up();
+    await waitApplied(++count);
+  }
+  const token = described.editableStyles.find(
+    (binding) =>
+      binding.elementId === target.elementId && binding.tokenName === "--panel",
+  );
+  assert(token);
+  assert.equal(token.scope, "semantic-token");
+  assert.equal(token.values["background-color"], "#fbfbfc");
+  await page.waitForFunction(() =>
+    document.querySelector(
+      '[data-fill-source-scope="true"] [data-source-scope-token="--panel"][aria-pressed="true"]',
+    ),
+  );
+  const tokenChip = page.locator(
+    '[data-fill-source-scope="true"] [data-source-scope-token="--panel"][aria-pressed="true"]:visible',
+  );
+  assert.equal(await tokenChip.count(), 1);
+  assert(await tokenChip.isVisible());
+  assert(
+    (await tokenChip.textContent()).includes(
+      "--panel·" + token.sharedCount + "+",
+    ),
+  );
+  assert((await tokenChip.getAttribute("title")).includes("high"));
+  assert(
+    (await tokenChip.getAttribute("title")).includes(
+      "unsupported references may also change",
+    ),
+  );
+  assert.equal(
+    await page
+      .locator('[data-fill-row-hex="0"]')
+      .evaluate((node) => node.readOnly),
+    false,
+  );
+  const impact = page.locator('[data-fill-source-impact="true"]');
+  assert(await impact.isVisible());
+  assert(
+    (await impact.textContent()).includes(
+      "unsupported references may also change",
+    ),
+  );
+  record(
+    "mounted root-token UI exposes identity, known count, additional-impact warning and high shared scope",
+  );
+  const swatch = page.locator('[data-fill-row-swatch="0"]');
+  await swatch.click();
+  const picker = page.locator('[data-color-popover-open="true"]');
+  await picker.locator("[data-color-popover-input]").fill("#123456");
+  await picker.locator("[data-color-popover-input]").press("Tab");
+  const beforeToken = proof.sourceRequests.length;
+  await picker.locator("[data-color-popover-apply]").click();
+  await waitApplied(++count);
+  expectedSource = expectedSource.replace(
+    "--panel:#fbfbfc;",
+    "--panel:#123456;",
+  );
+  assert.equal(source(), expectedSource);
+  assert.equal(proof.sourceRequests.length, beforeToken + 1);
+  assert(source().includes("background:var(--panel)"));
+  await expectStyle(target, "background-color", "rgb(18, 52, 86)");
+  record(
+    "typed token color edits only declared root literal and preserves var use-site/source/compiler/preview",
+  );
+  await swatch.click();
+  await picker.waitFor();
+  const plane = picker.locator("[data-color-plane]"),
+    box = await plane.boundingBox();
+  assert(box);
+  await page.mouse.move(box.x + box.width * 0.6, box.y + box.height * 0.2);
+  await page.mouse.down();
+  await page.mouse.move(box.x + box.width * 0.7, box.y + box.height * 0.3);
+  await page.mouse.up();
+  const draft = await picker.locator("[data-color-popover-input]").inputValue();
+  assert.notEqual(draft, "#123456");
+  assert.equal(proof.sourceRequests.length, beforeToken + 1);
+  await picker.locator("[data-color-popover-apply]").click();
+  await waitApplied(++count);
+  expectedSource = expectedSource.replace(
+    "--panel:#123456;",
+    "--panel:" + draft.toLowerCase() + ";",
+  );
+  assert.equal(source(), expectedSource);
+  assert.equal(proof.sourceRequests.length, beforeToken + 2);
+  record(
+    "captured token color plane applies one native root edit and retains binding",
+  );
+  await page.evaluate(() => window.__sourceStyleAcceptance.history(false));
+  await waitApplied(--count);
+  expectedSource = expectedSource.replace(
+    "--panel:" + draft.toLowerCase() + ";",
+    "--panel:#123456;",
+  );
+  assert.equal(source(), expectedSource);
+  await expectStyle(target, "background-color", "rgb(18, 52, 86)");
+  record("native token undo restores exact root literal and visible preview");
+  await page.reload();
+  await page.waitForFunction(
+    () =>
+      window.__sourceStyleAcceptance &&
+      JSON.parse(window.__sourceStyleAcceptance.snapshot()).ready,
+  );
+  await openTarget();
+  assert.equal(
+    await page.locator('[data-fill-row-hex="0"]').inputValue(),
+    "#123456",
+  );
+  count = 0;
+  await expectStyle(target, "background-color", "rgb(18, 52, 86)");
+  record(
+    "token reload preserves root value, binding and compiler target identity",
+  );
+  const hero = described.editableStyles.find(
+    (binding) =>
+      binding.selector === ".hero" &&
+      binding.storyId === "Pages / Home" &&
+      binding.values["padding-top"] === "48px",
+  );
+  assert(hero);
+  await selectTarget(hero, "hero");
+  const top = page.locator(
+      '[data-property-row-css-property="padding-top"][data-property-row="pad-top"]',
+    ),
+    right = page.locator(
+      '[data-property-row-css-property="padding-right"][data-property-row="pad-right"]',
+    );
+  await commitTyped(top, "64px");
+  expectedSource = expectedSource.replace(
+    "gap:56px; padding:48px 0 56px;",
+    "gap:56px; padding:64px 0 56px;",
+  );
+  assert.equal(source(), expectedSource);
+  await expectStyle(hero, "padding-top", "64px");
+  await expectStyle(hero, "padding-bottom", "56px");
+  record(
+    "typed derived padding side edits owned shorthand preserving other sides and token changes",
+  );
+  await scrub(right, 2);
+  expectedSource = expectedSource.replace(
+    "padding:64px 0 56px;",
+    "padding:64px 4px 56px 0;",
+  );
+  assert.equal(source(), expectedSource);
+  await expectStyle(hero, "padding-right", "4px");
+  await expectStyle(hero, "padding-top", "64px");
+  record(
+    "zero-derived padding pointer gesture updates one component with independent prior side preserved",
+  );
+  await page.evaluate(() => window.__sourceStyleAcceptance.history(false));
+  await waitApplied(--count);
+  expectedSource = expectedSource.replace(
+    "padding:64px 4px 56px 0;",
+    "padding:64px 0 56px;",
+  );
+  assert.equal(source(), expectedSource);
+  await expectStyle(hero, "padding-right", "0px");
+  await expectStyle(hero, "padding-top", "64px");
+  await page.evaluate(() => window.__sourceStyleAcceptance.history(false));
+  await waitApplied(--count);
+  expectedSource = expectedSource.replace(
+    "padding:64px 0 56px;",
+    "padding:48px 0 56px;",
+  );
+  assert.equal(source(), expectedSource);
+  await expectStyle(hero, "padding-top", "48px");
+  record(
+    "derived side native undo restores exact prior shorthand forms and preserves unrelated token edit",
+  );
+  await selectTarget(target, "panel");
+  const appearance = page.locator(
+    '[data-inspector-section-header="appearance"]',
+  );
+  if ((await appearance.getAttribute("aria-expanded")) === "false")
+    await appearance.click();
+  await page.getByRole("checkbox", { name: "Toggle Per-corner" }).click();
+  const tl = page.locator(
+      '[data-property-row-css-property="border-top-left-radius"][data-property-row="tl"]',
+    ),
+    tr = page.locator(
+      '[data-property-row-css-property="border-top-right-radius"][data-property-row="tr"]',
+    );
+  await commitTyped(tl, "8px");
+  expectedSource = expectedSource.replace(
+    "border-radius:4px;",
+    "border-radius:8px 4px 4px;",
+  );
+  assert.equal(source(), expectedSource);
+  await expectStyle(target, "border-top-left-radius", "8px");
+  await expectStyle(target, "border-top-right-radius", "4px");
+  record("typed derived corner preserves other declared corner components");
+  await scrub(tr, 3);
+  expectedSource = expectedSource.replace(
+    "border-radius:8px 4px 4px;",
+    "border-radius:8px 10px 4px 4px;",
+  );
+  assert.equal(source(), expectedSource);
+  await expectStyle(target, "border-top-right-radius", "10px");
+  await expectStyle(target, "border-top-left-radius", "8px");
+  record(
+    "captured derived corner uses real native source with independent sibling preserved",
+  );
+  await page.evaluate(() => window.__sourceStyleAcceptance.history(false));
+  await waitApplied(--count);
+  expectedSource = expectedSource.replace(
+    "border-radius:8px 10px 4px 4px;",
+    "border-radius:8px 4px 4px;",
+  );
+  assert.equal(source(), expectedSource);
+  await page.evaluate(() => window.__sourceStyleAcceptance.history(false));
+  await waitApplied(--count);
+  expectedSource = expectedSource.replace(
+    "border-radius:8px 4px 4px;",
+    "border-radius:4px;",
+  );
+  assert.equal(source(), expectedSource);
+  record(
+    "derived corner native undo restores exact scalar original while preserving token change",
+  );
+  assert.equal(
+    readFileSync(prototype + "/src/components/styles.nim", "utf8"),
+    original,
+  );
+  assert.deepEqual(proof.errors, []);
+  assert.deepEqual(proof.agentRequests, []);
+  writeFileSync(root + "/proof.json", JSON.stringify(proof, null, 2));
+  console.log("Source style value GUI passed:", root, proof.cases.length);
+} catch (error) {
+  if (browser) {
+    const pages = browser.contexts().flatMap((context) => context.pages());
+    if (pages[0])
+      writeFileSync(
+        root + "/failure-state.json",
+        JSON.stringify(
+          await pages[0].evaluate(() => ({
+            state:
+              window.__sourceStyleAcceptance &&
+              JSON.parse(window.__sourceStyleAcceptance.snapshot()),
+            frames: [...document.querySelectorAll("iframe")].map((frame) => ({
+              title: frame.title,
+              visible: !!frame.getClientRects().length,
+              html: frame
+                .getAttribute("srcdoc")
+                ?.match(/\.panel \{[^}]*\}/)?.[0],
+              panels: [
+                ...(frame.contentDocument?.querySelectorAll(".panel") || []),
+              ]
+                .slice(0, 2)
+                .map((node) => ({
+                  id: node.getAttribute("data-isonim-element-id"),
+                  style: node.getAttribute("style"),
+                  radius:
+                    frame.contentWindow.getComputedStyle(node).borderRadius,
+                })),
+            })),
+            rows: [
+              ...document.querySelectorAll(
+                '[data-property-row-css-property="border-radius"]',
+              ),
+            ].map((row) => ({
+              value: row.querySelector("input")?.value,
+              unit: row.querySelector("[data-property-row-unit]")?.textContent,
+            })),
+          })),
+          null,
+          2,
+        ),
+      );
+  }
+  throw error;
+} finally {
+  if (browser) await browser.close();
+  if (browserServer) await browserServer.close();
+  server.kill("SIGTERM");
+  await new Promise((resolve) => {
+    if (server.exitCode !== null) return resolve();
+    server.once("exit", resolve);
+    setTimeout(() => {
+      server.kill("SIGKILL");
+      resolve();
+    }, 15000).unref();
+  });
+  writeFileSync(root + "/proof-final.json", JSON.stringify(proof, null, 2));
+}

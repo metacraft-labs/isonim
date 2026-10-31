@@ -34,7 +34,7 @@
 ## VM tests inject a ``FakeBrowserAgentClient`` (in ``viewmodels``)
 ## that bypasses the network entirely.
 
-import std/[strutils]
+import std/[strutils, json]
 
 type
   BrowserAgentClientCallback* = proc(payload: cstring) {.closure.}
@@ -43,7 +43,16 @@ type
 
   BrowserAgentClient* = ref object
     baseUrl*: string
+    editorScopeJson*: string
+    editorControlToken*: string
+    onControlClosed*: proc(conversation: string) {.closure.}
+    bindEditor*: proc(done: proc(ok: bool) {.closure.}) {.closure.}
     activeSessionId*: string
+    canCancelTurn*: bool
+    canCloseSession*: bool
+    closed*: bool
+    backend*: string
+    onAdmitted*: proc() {.closure.}
     onUpdate*: BrowserAgentClientCallback
       ## Called once per ``event: session/update`` frame with the JSON
       ## payload as a cstring.  The caller is responsible for parsing
@@ -51,6 +60,9 @@ type
     onEnd*: BrowserAgentClientEndCallback
       ## Called once on ``event: end``.  ``stopReason`` is the value
       ## from the JSON payload.
+    onInterrupted*: BrowserAgentClientErrorCallback
+      ## Stream delivery ended without a trustworthy terminal event. The backend
+      ## may still be running; callers must close/reconcile before another prompt.
     onError*: BrowserAgentClientErrorCallback
       ## Called on transport errors (``daemon unreachable``, non-2xx
       ## responses, malformed SSE frames).  Distinct from
@@ -75,7 +87,7 @@ type
     ## ``sessionId`` is an empty cstring when the POST failed (the
     ## ``onError`` callback will have been invoked separately).
 
-proc createSession*(c: BrowserAgentClient; cb: CreateSessionCallback) =
+proc createBoundSession(c: BrowserAgentClient; cb: CreateSessionCallback) =
   ## ``POST /api/agent/sessions`` — mint a fresh ACP session id and
   ## cache it on the client.  ``cb`` is invoked exactly once.
   when defined(js):
@@ -83,12 +95,15 @@ proc createSession*(c: BrowserAgentClient; cb: CreateSessionCallback) =
     let url = urlStr.cstring
     let onErr = c.onError
     let captured = c
+    let setBackend = proc(value: cstring) = captured.backend = $value
+    let binding = c.editorScopeJson.cstring
+    let controlToken = c.editorControlToken.cstring
     {.emit: ["""
       try {
         fetch(""", url, """, {
           method: 'POST', credentials: 'omit',
-          headers: { 'Content-Type': 'application/json' },
-          body: '{}'
+          headers: { 'Content-Type': 'application/json', 'X-IsoNim-Control': """, controlToken, """ },
+          body: """, binding, """ ? JSON.stringify({editor: JSON.parse(""", binding, """)}) : '{}'
         })
           .then(function(resp) {
             return resp.text().then(function(body) {
@@ -106,6 +121,10 @@ proc createSession*(c: BrowserAgentClient; cb: CreateSessionCallback) =
             }
             try {
               var parsed = JSON.parse(out.body);
+              """, setBackend, """(parsed.backend || 'unknown');
+              var caps = parsed.sessionCapabilities || {};
+              """, captured, """.canCancelTurn = caps.cancelTurn === true;
+              """, captured, """.canCloseSession = caps.closeSession === true;
               var sid = parsed && parsed.sessionId ? parsed.sessionId : '';
               """, captured, """.activeSessionId = sid;
               """, cb, """(sid);
@@ -134,11 +153,22 @@ proc createSession*(c: BrowserAgentClient; cb: CreateSessionCallback) =
     # Native shim — tests inject a fake client at the VM layer.
     cb("".cstring)
 
+proc createSession*(c: BrowserAgentClient; cb: CreateSessionCallback) =
+  ## A mounted editor binds its registered browser scope before session creation.
+  ## Legacy CLI/transport callers without a binding preserve their existing API.
+  if c.bindEditor != nil:
+    c.bindEditor(proc(ok: bool) =
+      if ok: c.createBoundSession(cb)
+      else:
+        if c.onError != nil: c.onError("Editor control registration is unavailable.".cstring)
+        cb("".cstring))
+  else: c.createBoundSession(cb)
+
 # ---------------------------------------------------------------------------
 # Prompt submission with SSE streaming via ``fetch`` ReadableStream.
 # ---------------------------------------------------------------------------
 
-proc submitPrompt*(c: BrowserAgentClient; sessionId, prompt: string) =
+proc submitPrompt*(c: BrowserAgentClient; sessionId, prompt: string; contextJson = "{}") =
   ## ``POST /api/agent/prompts`` — open the SSE stream and drive the
   ## three callbacks (``onUpdate`` / ``onEnd`` / ``onError``) as
   ## events arrive.  Returns immediately; the actual streaming runs
@@ -156,91 +186,84 @@ proc submitPrompt*(c: BrowserAgentClient; sessionId, prompt: string) =
     let url = urlStr.cstring
     let sid: cstring = sessionId
     let p: cstring = prompt
+    let context: cstring = contextJson
+    let onAdmitted = c.onAdmitted
     let onUpd = c.onUpdate
     let onEnd = c.onEnd
     let onErr = c.onError
+    let onInterrupted = c.onInterrupted
     {.emit: ["""
-      try {
-        var body = JSON.stringify({
-          sessionId: """, sid, """,
-          messages: [{
-            role: 'user',
-            content: [{ type: 'text', text: """, p, """ }]
-          }]
-        });
-        fetch(""", url, """, {
-          method: 'POST', credentials: 'omit',
-          headers: {
-            'Content-Type': 'application/json',
-            'Accept': 'text/event-stream'
-          },
-          body: body
-        }).then(function(resp) {
-          if (resp.status < 200 || resp.status >= 300) {
-            return resp.text().then(function(t) {
-              if (""", onErr, """) {
-                """, onErr, """('daemon returned HTTP ' + resp.status +
-                  ' on POST /api/agent/prompts: ' + t);
-              }
-              if (""", onEnd, """) {
-                """, onEnd, """('error');
-              }
-            });
-          }
-          if (!resp.body || !resp.body.getReader) {
-            // Fallback for browsers without ReadableStream.
-            return resp.text().then(function(buf) {
-              window.__isonimAgentDispatchEvents(buf, """, onUpd, """,
-                """, onEnd, """, """, onErr, """);
-            });
-          }
-          var reader = resp.body.getReader();
-          var decoder = new TextDecoder('utf-8');
-          var buf = '';
-          function pump() {
-            return reader.read().then(function(chunk) {
-              if (chunk.done) {
-                if (buf.length > 0) {
-                  window.__isonimAgentDispatchEvents(buf, """, onUpd, """,
-                    """, onEnd, """, """, onErr, """);
-                }
-                return;
-              }
-              buf += decoder.decode(chunk.value, { stream: true });
-              var idx;
-              while ((idx = buf.indexOf('\n\n')) !== -1) {
-                var raw = buf.substring(0, idx);
-                buf = buf.substring(idx + 2);
-                window.__isonimAgentDispatchEvents(raw + '\n\n', """, onUpd, """,
-                  """, onEnd, """, """, onErr, """);
-              }
-              return pump();
-            }).catch(function(err) {
-              if (""", onErr, """) {
-                """, onErr, """('SSE stream broke: ' + String(err));
-              }
-              if (""", onEnd, """) {
-                """, onEnd, """('error');
-              }
-            });
-          }
-          return pump();
-        }).catch(function(err) {
-          if (""", onErr, """) {
-            """, onErr, """('daemon unreachable: ' + String(err));
-          }
-          if (""", onEnd, """) {
-            """, onEnd, """('error');
-          }
-        });
-      } catch (e) {
-        if (""", onErr, """) {
-          """, onErr, """('daemon unreachable: ' + String(e));
-        }
-        if (""", onEnd, """) {
-          """, onEnd, """('error');
-        }
+      var terminal = false, failed = false, admitted = false;
+      function report(message) {
+        if (""", onInterrupted, """) """, onInterrupted, """(message);
+        else if (""", onErr, """) """, onErr, """(message);
       }
+      function fail(message) {
+        if (terminal || failed) return;
+        failed = true;
+        report('Agent stream interrupted: ' + message +
+          '. The agent may still be running. Close this chat and start a new one before retrying.');
+      }
+      function dispatch(raw) {
+        window.__isonimAgentDispatchEvents(raw,
+          function(payload) { if (!terminal && !failed && """, onUpd, """) """, onUpd, """(payload); },
+          function(reason) {
+            if (terminal || failed) return;
+            terminal = true;
+            if (""", onEnd, """) """, onEnd, """(reason);
+          },
+          function(message) { if (!terminal && !failed) report(message); },
+          function() {
+            if (!terminal && !failed && !admitted) {
+              admitted = true;
+              if (""", onAdmitted, """) """, onAdmitted, """();
+            }
+          });
+      }
+      Promise.resolve().then(function() {
+        return fetch(""", url, """, {
+          method: 'POST', credentials: 'omit',
+          headers: {'Content-Type':'application/json', 'Accept':'text/event-stream'},
+          body: JSON.stringify({sessionId: """, sid, """, context: JSON.parse(""", context, """), messages:[{
+            role:'user', content:[{type:'text', text: """, p, """}]}]})
+        });
+      }).then(async function(resp) {
+        if (resp.status < 200 || resp.status >= 300) {
+          failed = true;
+          if (""", onErr, """) """, onErr, """('HTTP ' + resp.status + ': ' + await resp.text());
+          return;
+        }
+        var buf = '';
+        function consume(text) {
+          buf += text;
+          var idx;
+          while (!terminal && !failed && (idx = buf.indexOf('\n\n')) !== -1) {
+            var raw = buf.substring(0, idx + 2);
+            buf = buf.substring(idx + 2);
+            dispatch(raw);
+          }
+        }
+        if (!resp.body || !resp.body.getReader) {
+          consume(await resp.text());
+          if (!terminal) fail('response ended without a complete terminal event');
+          return;
+        }
+        var reader = resp.body.getReader();
+        var decoder = new TextDecoder('utf-8');
+        try {
+          while (!terminal && !failed) {
+            var chunk = await reader.read();
+            if (chunk.done) {
+              consume(decoder.decode());
+              if (!terminal) fail('response ended without a complete terminal event');
+              break;
+            }
+            consume(decoder.decode(chunk.value, {stream:true}));
+          }
+        } finally {
+          await reader.cancel();
+        }
+      }).catch(function(err) { fail(String(err)); });
     """].}
   else:
     discard
@@ -249,26 +272,46 @@ proc submitPrompt*(c: BrowserAgentClient; sessionId, prompt: string) =
 # Cancel: ``POST /api/agent/cancel``.
 # ---------------------------------------------------------------------------
 
-proc cancel*(c: BrowserAgentClient; sessionId: string) =
-  ## ``POST /api/agent/cancel`` — fire-and-forget.  The daemon's SSE
-  ## stream will close shortly afterwards and ``onEnd`` will fire with
-  ## ``stopReason == "cancelled"``.
+type AgentOperationCallback* = proc(ok: bool; message: cstring) {.closure.}
+
+proc sessionOperation(c: BrowserAgentClient; sessionId, operation: string;
+    cb: AgentOperationCallback) =
   when defined(js):
-    let urlStr = c.baseUrl & "/api/agent/cancel"
-    let url = urlStr.cstring
-    let sid: cstring = sessionId
+    let url = (c.baseUrl & "/api/agent/" & operation).cstring
+    let sid = sessionId.cstring
     {.emit: ["""
-      try {
-        var body = JSON.stringify({ sessionId: """, sid, """ });
-        fetch(""", url, """, {
+      Promise.resolve().then(function() {
+        return fetch(""", url, """, {
           method: 'POST', credentials: 'omit',
           headers: { 'Content-Type': 'application/json' },
-          body: body
-        }).catch(function() { /* swallow — fire and forget */ });
-      } catch (e) { /* swallow */ }
+          body: JSON.stringify({sessionId: """, sid, """})
+        });
+      }).then(function(resp) {
+        return resp.text().then(function(body) {
+          """, cb, """(resp.status >= 200 && resp.status < 300,
+            resp.status >= 200 && resp.status < 300 ? '' :
+              'Agent operation failed (HTTP ' + resp.status + '): ' + body);
+        });
+      }).catch(function(err) { """, cb, """(false, String(err)); });
     """].}
   else:
-    discard
+    cb(false, "Browser transport requires JavaScript")
+
+proc cancel*(c: BrowserAgentClient; sessionId: string;
+    cb: AgentOperationCallback) =
+  if not c.canCancelTurn:
+    cb(false, "This agent does not support cancelling a turn; the session remains active.")
+    return
+  c.sessionOperation(sessionId, "cancel", cb)
+
+proc closeSession*(c: BrowserAgentClient; sessionId: string;
+    cb: AgentOperationCallback) =
+  c.sessionOperation(sessionId, "close", proc(ok: bool; message: cstring) =
+    if ok:
+      c.closed = true
+      if c.onControlClosed != nil: c.onControlClosed(sessionId)
+      c.activeSessionId = ""
+    cb(ok, message))
 
 # ---------------------------------------------------------------------------
 # JS-side SSE frame dispatcher.  Installed on ``window`` so the emitted
@@ -283,7 +326,7 @@ when defined(js):
     ## inside ``submitPrompt`` has a global parser to call.
     {.emit: ["""
       if (!window.__isonimAgentDispatchEvents) {
-        window.__isonimAgentDispatchEvents = function(raw, onUpd, onEnd, onErr) {
+        window.__isonimAgentDispatchEvents = function(raw, onUpd, onEnd, onErr, onAdmitted) {
           var frames = raw.split('\n\n');
           for (var i = 0; i < frames.length; i++) {
             var frame = frames[i];
@@ -300,17 +343,22 @@ when defined(js):
                 data += line.substring(5).replace(/^ /, '');
               }
             }
-            if (data.length === 0) continue;
-            if (eventType === 'end') {
-              var stop = 'end_turn';
-              try {
-                var parsed = JSON.parse(data);
-                if (parsed && parsed.stopReason) stop = parsed.stopReason;
-              } catch (e) { /* ignore */ }
-              if (onEnd) onEnd(stop);
+            if (eventType === 'admitted') {
+              var admission = JSON.parse(data);
+              if (admission.accepted !== true) throw new Error('Invalid admission event');
+              if (onAdmitted) onAdmitted();
+            } else if (eventType === 'end') {
+              var parsed;
+              try { parsed = JSON.parse(data); }
+              catch (e) { throw new Error('Malformed terminal event JSON'); }
+              if (!parsed || typeof parsed.stopReason !== 'string' ||
+                  ['end_turn','cancelled','max_tokens','error'].indexOf(parsed.stopReason) < 0) {
+                throw new Error('Missing or invalid terminal stopReason');
+              }
+              if (onEnd) onEnd(parsed.stopReason);
             } else if (eventType === 'error') {
               if (onErr) onErr(data);
-            } else {
+            } else if (data.length > 0) {
               if (onUpd) onUpd(data);
             }
           }

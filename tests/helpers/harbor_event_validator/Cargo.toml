@@ -1,0 +1,10 @@
+[package]
+name = "isonim-harbor-event-validator"
+version = "0.1.0"
+edition = "2024"
+publish = false
+[workspace]
+[dependencies]
+ah-rest-api-contract = { path = "../../../../agent-harbor/crates/ah-rest-api-contract" }
+serde_json = "1"
+utoipa = "5"

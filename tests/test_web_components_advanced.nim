@@ -656,3 +656,28 @@ suite "Web Components Advanced - Light DOM":
       check el.textContent == cstring"world"
 
       dispose()
+
+# Exercise the shipped demo through its custom-element API. The DOM shim above
+# supplies transport only; task state, rendering and event closures are real.
+# Include after installing the shim: registration runs at module initialization.
+include "../demos/web-components/src/components"
+
+proc addDemoTask(el: Element; label: cstring) {.importjs: "#.addTask(#)".}
+proc demoTasks(el: Element): cstring {.importjs: "JSON.stringify(#.getTasks())".}
+proc fireTaskControl(el: Element; index: int; tag, event: cstring)
+  {.importjs: "((el,i,tag,event) => { const rows=[]; function visit(n) { if(n.tagName === 'LI') rows.push(n); (n.childNodes || []).forEach(visit); } visit(el._shadowRoot); const control=rows[i].childNodes.find(n => n.tagName === tag); control.dispatchEvent({type:event}); })(#,#,#,#)".}
+
+suite "Web component task loop callbacks":
+  test "checkbox and remove retain each task after render returns":
+    createRoot do (dispose: proc()):
+      let el = createCustomInstance("isonim-todo-list")
+      for label in [cstring"first", cstring"second", cstring"third"]:
+        addDemoTask(el, label)
+      fireTaskControl(el, 0, "INPUT", "change")
+      check demoTasks(el) == cstring"""[{"id":0,"text":"first","done":true},{"id":1,"text":"second","done":false},{"id":2,"text":"third","done":false}]"""
+      fireTaskControl(el, 1, "BUTTON", "click")
+      check demoTasks(el) == cstring"""[{"id":0,"text":"first","done":true},{"id":2,"text":"third","done":false}]"""
+      fireTaskControl(el, 1, "INPUT", "change")
+      fireTaskControl(el, 0, "BUTTON", "click")
+      check demoTasks(el) == cstring"""[{"id":2,"text":"third","done":true}]"""
+      dispose()

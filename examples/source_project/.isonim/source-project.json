@@ -1,0 +1,26 @@
+{
+  "workspace": "source-project",
+  "title": "Source project",
+  "catalog": ".isonim/catalog.json",
+  "build": ["python3", "build_catalog.py"],
+  "fixtures": [
+    {
+      "component": "Card",
+      "variant": "default",
+      "state": "busy",
+      "file": "stories.nim",
+      "schemaKey": "card.default.busy",
+      "marker": "# ISONIM_STORY_FIXTURES",
+      "declaration": "stories.add(%* {\"group\": \"Card\", \"name\": \"default busy\", \"kind\": \"component\", \"documentHtml\": card(\"Busy card\")})"
+    },
+    {
+      "component": "Card",
+      "variant": "default",
+      "state": "error",
+      "file": "stories.nim",
+      "schemaKey": "card.default.error",
+      "marker": "# ISONIM_STORY_FIXTURES",
+      "declaration": "stories.add(%* {\"group\": \"Card\", \"name\": \"default error\", \"kind\": \"component\", \"documentHtml\": card(\"Error card\")})"
+    }
+  ]
+}

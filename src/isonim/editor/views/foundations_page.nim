@@ -1,9 +1,11 @@
+import isonim/editor/views/view_lifecycle
 ## Dedicated foundations-page editor.
 
 import std/[sequtils, strutils]
 
 import isonim/core/[computation, signals]
 import isonim/dsl/ui
+import isonim/editor/preview_identity
 import isonim/editor/types
 import isonim/editor/viewmodels
 import isonim/editor/streaming_preview
@@ -20,7 +22,6 @@ const
   textDim = "#475569"
   accent = "#3B82F6"
   danger = "#F87171"
-  success = "#22C55E"
 
 proc categoryButtonHandler[R, E](r: R; node: E; vm: EditorVM;
     kind: FoundationTokenKind): proc() =
@@ -31,7 +32,7 @@ proc categoryButtonHandler[R, E](r: R; node: E; vm: EditorVM;
     r.setAttribute(capturedNode, "aria-pressed", "true")
     r.setStyle(capturedNode, "background-color", accent)
     r.setStyle(capturedNode, "color", textPrimary)
-    when defined(js):
+    when isDomViewHost(E):
       let current = capturedNode
       {.emit: ["""
         const active = """, current, """;
@@ -54,14 +55,22 @@ proc editTokenHandler[R, E](r: R; vm: EditorVM; input: E): proc() =
     if token.key.len > 0:
       discard vm.editFoundationToken(token.key, r.inputValue(capturedInput))
 
-proc revertHandler(vm: EditorVM): proc() =
-  result = proc() = discard vm.runEditorCommand(eckRevert)
-
-proc saveHandler(vm: EditorVM): proc() =
-  result = proc() = discard vm.runEditorCommand(eckSave)
+proc foundationUndoIsNext(vm: EditorVM): bool =
+  ## Whether the next undo on the one timeline is a foundation token edit.
+  vm.nextHistoryKind(redo = false) == ehkFoundation
 
 proc undoHandler(vm: EditorVM): proc() =
-  result = proc() = discard vm.undoFoundationTokenEdit()
+  ## The page's Undo is the editor's undo command, not a private one.
+  ##
+  ## It called `undoFoundationTokenEdit` directly, which skipped the one
+  ## recency-ordered timeline and the keystroke-time refusal check (editor
+  ## spec "Saving"): it could undo a token edit older than an inspector edit
+  ## made after it, and stage a restoration the write then refused, with the
+  ## history already moved. It now runs exactly what Mod+Z runs, and only
+  ## while the next undo is a foundation token edit, so the label stays true.
+  result = proc() =
+    if vm.foundationUndoIsNext:
+      discard vm.runEditorCommand(eckUndo)
 
 proc searchHandler[R, E](r: R; vm: EditorVM; input: E): proc() =
   let captured = input
@@ -146,7 +155,7 @@ proc renderFoundationsPage*[R, E](r: R; vm: EditorVM): E =
   r.appendChild(foundationProjectSection, foundationCanvasMnt.breadcrumb)
   r.appendChild(page, foundationProjectSection)
 
-  when defined(js):
+  when isDomViewHost(E):
     let foundationBridgeBinding = newBridgeBinding()
 
   var lastFoundationSrcdoc = ""
@@ -169,7 +178,7 @@ proc renderFoundationsPage*[R, E](r: R; vm: EditorVM): E =
     # canvas path has something to show.
     let showFoundationProject = showIframe or useCanvas
     let nextSrcdoc =
-      if showIframe: preview.documentHtml
+      if showIframe: identifiedPreviewDocument(preview.documentHtml, story, vm.livePreviewReloadGeneration.val)
       else: ""
     if nextSrcdoc != lastFoundationSrcdoc:
       r.setAttribute(foundationProjectFrame, "srcdoc", nextSrcdoc)
@@ -205,7 +214,7 @@ proc renderFoundationsPage*[R, E](r: R; vm: EditorVM): E =
         r.setStyle(foundationCanvasMnt.wrapper, "min-height", $vh & "px")
         r.setStyle(foundationCanvasMnt.wrapper, "flex", "0 0 auto")
         r.setStyle(foundationCanvasMnt.wrapper, "border-radius", radius)
-    when defined(js):
+    when isDomViewHost(E):
       foundationBridgeBinding.attachIfNeeded(vm, foundationCanvasMnt.canvas,
                                              useCanvas)
       # VRS-M2: fire a resize whenever the viewport changes so the
@@ -301,8 +310,6 @@ proc renderFoundationsPage*[R, E](r: R; vm: EditorVM): E =
   var diagnosticsNode: E
   var impactNode: E
   var sourceNode: E
-  var saveButton: E
-  var revertButton: E
   var undoButton: E
   var applyButton: E
   let detail = ui(r):
@@ -355,20 +362,9 @@ proc renderFoundationsPage*[R, E](r: R; vm: EditorVM): E =
               text_align = "center", cursor = "pointer",
               font_size = "12px", font_weight = "700"):
           text "Undo"
-        tdiv(ref = saveButton, role = "button", tabindex = "0",
-              `aria-label` = "Save foundation source edits",
-              padding = "8px 10px", border_radius = "6px",
-              background_color = success, color = "#052E16",
-              text_align = "center", cursor = "pointer",
-              font_size = "12px", font_weight = "700"):
-          text "Save"
-        tdiv(ref = revertButton, role = "button", tabindex = "0",
-              `aria-label` = "Revert foundation source edits",
-              padding = "8px 10px", border_radius = "6px",
-              background_color = bgSurface, color = textSecondary,
-              text_align = "center", cursor = "pointer",
-              font_size = "12px", font_weight = "700"):
-          text "Revert"
+        # No Save or Revert control: an applied token is written
+        # automatically (editor spec "Saving"), and Undo / Mod+Z take it
+        # back, including after the write.
       tdiv(ref = diagnosticsNode,
             `data-foundation-diagnostics` = "true",
             display = "flex", flex_direction = "column", gap = "6px",
@@ -392,10 +388,6 @@ proc renderFoundationsPage*[R, E](r: R; vm: EditorVM): E =
   r.addEventListener(applyButton, "click", editTokenHandler[R, E](r, vm, valueInput))
   r.addEventListener(applyButton, "keydown", editTokenHandler[R, E](r, vm,
     valueInput))
-  r.addEventListener(saveButton, "click", saveHandler(vm))
-  r.addEventListener(saveButton, "keydown", saveHandler(vm))
-  r.addEventListener(revertButton, "click", revertHandler(vm))
-  r.addEventListener(revertButton, "keydown", revertHandler(vm))
   r.addEventListener(undoButton, "click", undoHandler(vm))
   r.addEventListener(undoButton, "keydown", undoHandler(vm))
   r.appendChild(body, detail)
@@ -471,18 +463,18 @@ proc renderFoundationsPage*[R, E](r: R; vm: EditorVM): E =
     else:
       r.setTextContent(impactNode, "No impact analysis yet")
 
-    let save = vm.evaluateCommand(eckSave)
-    let revert = vm.evaluateCommand(eckRevert)
-    r.setAttribute(saveButton, "aria-disabled",
-      if save.status == ecsDisabled: "true" else: "false")
-    r.setAttribute(revertButton, "aria-disabled",
-      if revert.status == ecsDisabled: "true" else: "false")
+
+  # Its own effect: the timeline reads every history, and an inspector edit
+  # must not rebuild the token list above.
+  createRenderEffect proc() =
+    let enabled = vm.foundationUndoIsNext
     r.setAttribute(undoButton, "aria-disabled",
-      if vm.foundations.undoStack.val.len == 0: "true" else: "false")
-    r.setStyle(saveButton, "opacity", if save.status == ecsDisabled: "0.5" else: "1")
-    r.setStyle(revertButton, "opacity",
-      if revert.status == ecsDisabled: "0.5" else: "1")
-    r.setStyle(undoButton, "opacity",
-      if vm.foundations.undoStack.val.len == 0: "0.5" else: "1")
+      if enabled: "false" else: "true")
+    r.setAttribute(undoButton, "title",
+      if enabled: "Undo the last foundation token edit"
+      elif vm.foundations.undoStack.val.len > 0:
+        "A more recent edit comes first; undo it with Mod+Z"
+      else: "No foundation token edit to undo")
+    r.setStyle(undoButton, "opacity", if enabled: "1" else: "0.5")
 
   page

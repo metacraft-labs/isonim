@@ -1,0 +1,29 @@
+{
+  "p-2": {
+    "padding": "8",
+    "units": {
+      "padding": "px"
+    }
+  },
+  "sm:p-2": {
+    "padding": "8",
+    "variant": "sm",
+    "units": {
+      "padding": "px"
+    }
+  },
+  "dark:text-white": {
+    "color": "#fff",
+    "variant": "dark"
+  },
+  "hover:underline": {
+    "text-decoration-line": "underline",
+    "variant": "hover"
+  },
+  "md:p-6": {
+    "padding": "24",
+    "units": {
+      "padding": "px"
+    }
+  }
+}

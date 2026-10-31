@@ -57,6 +57,7 @@ proc mountSectionExport*[R, E](r: R; parent: E; vm: EditorVM) =
   var listEl: E
   var emptyEl: E
   var addBtnEl: E
+  var rowControls: seq[tuple[sizeButton, formatButton, suffixInput, deleteButton: E]] = @[]
 
   let body = ui(r):
     tdiv(`data-export-section-body` = "true",
@@ -72,13 +73,16 @@ proc mountSectionExport*[R, E](r: R; parent: E; vm: EditorVM) =
             font_size = "11px",
             color = textMuted):
         text "No export targets. Press + to add one."
-      tdiv(ref = addBtnEl,
+      button(ref = addBtnEl, `type` = "button",
             role = "button", tabindex = "0",
             `data-export-add` = "true",
             `aria-label` = "Add export target",
             display = "flex", align_items = "center",
             justify_content = "center",
             height = "26px",
+            padding = "0", margin = "0", box_sizing = "content-box",
+            appearance = "none", font_family = "inherit", line_height = "inherit",
+            background_color = "transparent",
             border = "1px dashed " & border,
             border_radius = "4px",
             color = textMuted, font_size = "11px",
@@ -96,29 +100,34 @@ proc mountSectionExport*[R, E](r: R; parent: E; vm: EditorVM) =
     var deleteBtnEl: E
     let row = ui(r):
       tdiv(`data-export-row` = $idx,
+            `data-inspector-search-label` = "Export size format suffix",
             display = "flex", flex_direction = "row",
             align_items = "center", gap = "6px",
             padding = "4px 6px",
             border = "1px solid " & border, border_radius = "4px"):
-        tdiv(ref = sizeBtnEl,
+        button(ref = sizeBtnEl, `type` = "button",
               role = "button", tabindex = "0",
               `data-export-row-size` = $idx,
               `aria-label` = "Cycle export size",
               display = "flex", align_items = "center",
               justify_content = "center",
               min_width = "32px", height = "22px",
+              border = "none", padding = "0", margin = "0", box_sizing = "content-box",
+              appearance = "none", font_family = "inherit", line_height = "inherit",
               background_color = bgInput,
               border_radius = "3px",
               color = textSecondary, font_size = "11px",
               cursor = "pointer"):
           text sizeLabel(entry.size)
-        tdiv(ref = formatBtnEl,
+        button(ref = formatBtnEl, `type` = "button",
               role = "button", tabindex = "0",
               `data-export-row-format` = $idx,
               `aria-label` = "Cycle export format",
               display = "flex", align_items = "center",
               justify_content = "center",
               min_width = "44px", height = "22px",
+              border = "none", padding = "0", margin = "0", box_sizing = "content-box",
+              appearance = "none", font_family = "inherit", line_height = "inherit",
               background_color = bgInput,
               border_radius = "3px",
               color = textSecondary, font_size = "11px",
@@ -133,17 +142,22 @@ proc mountSectionExport*[R, E](r: R; parent: E; vm: EditorVM) =
                border_radius = "3px",
                color = textPrimary, font_size = "11px",
                padding = "2px 6px", height = "22px")
-        tdiv(ref = deleteBtnEl,
+        button(ref = deleteBtnEl, `type` = "button",
               role = "button", tabindex = "0",
               `data-export-row-delete` = $idx,
               `aria-label` = "Remove export target",
               width = "20px", height = "20px",
+              border = "none", padding = "0", margin = "0", box_sizing = "content-box",
+              appearance = "none", font_family = "inherit",
+              line_height = "inherit", background_color = "transparent",
               display = "flex", align_items = "center",
               justify_content = "center",
               color = textMuted, font_size = "11px",
               cursor = "pointer"):
           text "\xC3\x97"
     r.appendChild(listEl, row)
+    rowControls.add (sizeButton: sizeBtnEl, formatButton: formatBtnEl,
+      suffixInput: suffixInputEl, deleteButton: deleteBtnEl)
     r.setInputValue(suffixInputEl, entry.suffix)
     r.addEventListener(sizeBtnEl, "click", proc() =
       var next = entries.val
@@ -171,22 +185,38 @@ proc mountSectionExport*[R, E](r: R; parent: E; vm: EditorVM) =
     r.addEventListener(deleteBtnEl, "click", proc() =
       var next = entries.val
       if idx >= 0 and idx < next.len:
+        var restoreFocus = false
+        when compiles(r.activeElement()):
+          restoreFocus = r.activeElement() == deleteBtnEl
         next.delete(idx)
-        entries.val = next)
-
-  proc rebuildList() =
-    r.clearChildren(listEl)
-    for i in 0 ..< entries.val.len:
-      mountRow(i, entries.val[i])
+        entries.val = next
+        when compiles(r.focus(addBtnEl)):
+          if restoreFocus:
+            if rowControls.len > 0:
+              r.focus(rowControls[min(idx, rowControls.high)].deleteButton)
+            else:
+              r.focus(addBtnEl))
 
   createRenderEffect proc() =
-    rebuildList()
+    let current = entries.val
+    if rowControls.len != current.len:
+      r.clearChildren(listEl)
+      rowControls.setLen(0)
+      for i, entry in current:
+        mountRow(i, entry)
+    else:
+      # Value changes retain the actual focused button/input instead of
+      # removing it between successive native keyboard activations.
+      for i, entry in current:
+        r.setTextContent(rowControls[i].sizeButton, sizeLabel(entry.size))
+        r.setTextContent(rowControls[i].formatButton, formatLabel(entry.format))
+        if r.inputValue(rowControls[i].suffixInput) != entry.suffix:
+          r.setInputValue(rowControls[i].suffixInput, entry.suffix)
     r.setStyle(emptyEl, "display",
-      if entries.val.len == 0: "block" else: "none")
+      if current.len == 0: "block" else: "none")
 
   let onAdd = proc() =
     var next = entries.val
     next.add ExportEntry(size: es1x, format: efPng, suffix: "")
     entries.val = next
   r.addEventListener(addBtnEl, "click", onAdd)
-  r.addEventListener(addBtnEl, "keydown", onAdd)

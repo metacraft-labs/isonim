@@ -1,7 +1,7 @@
 # IsoNim Editor Maturity Gate Guide
 
 This document is the maturity gate companion for
-`docs/editor-feature-matrix.json`. The matrix is machine checked by
+`docs/contributors/editor-feature-matrix.json`. The matrix is machine checked by
 `tests/test_editor_release_gate.nim`; update both when editor functionality or
 required coverage changes.
 
@@ -66,7 +66,7 @@ exports of `isonim/editor`.
 ## Write Bridge Protocol
 
 The versioned local write bridge contract is documented in
-`docs/editor-write-bridge-protocol.md`. IsoNim owns the generic protocol,
+`docs/contributors/editor-write-bridge-protocol.md`. IsoNim owns the generic protocol,
 client states, source-edit transaction ordering, and diagnostics model. The
 consumer owns concrete workspace roots, file allowlists, symlink/path policy,
 local trust boundary, process launch, and log destination.

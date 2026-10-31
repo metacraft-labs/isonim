@@ -4,6 +4,7 @@ description: How isonim-docs renders pages to HTML on the server.
 section: guide
 order: 4
 ---
+
 # SSR Basics
 
 Every isonim-docs page renders through the exact same route manifest and
@@ -55,12 +56,12 @@ strings.
 
 ## SSR vs. JS mount, side by side
 
-| Aspect | SSR (`nim c`) | JS mount (`nim js`) |
-| --- | --- | --- |
-| Entry point | `renderRoute` | `createRouteApp` |
-| Output | An HTML string | A live DOM node tree |
-| Content loading | Real filesystem read | Compile-time embedded content |
-| Route manifest | Same `docsRouteManifest()` | Same `docsRouteManifest()` |
+| Aspect          | SSR (`nim c`)              | JS mount (`nim js`)           |
+| --------------- | -------------------------- | ----------------------------- |
+| Entry point     | `renderRoute`              | `createRouteApp`              |
+| Output          | An HTML string             | A live DOM node tree          |
+| Content loading | Real filesystem read       | Compile-time embedded content |
+| Route manifest  | Same `docsRouteManifest()` | Same `docsRouteManifest()`    |
 
 See [the ui DSL](./dsl.md) for the markup layer both entry points render
 through, and [Signals & Effects](./signals-effects.md) for why the server

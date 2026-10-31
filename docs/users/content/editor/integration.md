@@ -4,6 +4,7 @@ description: How a host IsoNim app depends on and embeds the editor package.
 section: editor
 order: 4
 ---
+
 # Editor Consumer Integration
 
 The IsoNim editor is a regular, published IsoNim package -- integrating

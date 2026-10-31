@@ -177,7 +177,8 @@ proc mountTaskManager*(container: Element, initialTasks: seq[cstring] = @[]): Di
       else:
         let ul = document.createElement("ul")
         ul.className = "task-list"
-        for t in tasks:
+        proc appendTask(t: Task) =
+          # A proc call gives this item its own callback/effect environment.
           let task = t
           let li = document.createElement("li")
           if task.done:
@@ -204,6 +205,10 @@ proc mountTaskManager*(container: Element, initialTasks: seq[cstring] = @[]): Di
           )
           li.appendChild(removeBtn.Node)
           ul.appendChild(li.Node)
+
+        for t in tasks:
+          appendTask(t)
+
         section.appendChild(ul.Node)
 
     # ---- Footer ----
@@ -225,7 +230,8 @@ proc mountTaskManager*(container: Element, initialTasks: seq[cstring] = @[]): Di
 
         let filtersDiv = document.createElement("div")
         filtersDiv.className = "filters"
-        for f in [fAll, fActive, fCompleted]:
+        proc appendFilter(f: Filter) =
+          # A proc call gives this item its own callback/effect environment.
           let filterVal = f
           let btn = document.createElement("button")
           btn.textContent = cstring($filterVal)
@@ -235,6 +241,10 @@ proc mountTaskManager*(container: Element, initialTasks: seq[cstring] = @[]): Di
             store.setFilter(filterVal)
           )
           filtersDiv.appendChild(btn.Node)
+
+        for f in [fAll, fActive, fCompleted]:
+          appendFilter(f)
+
         footer.appendChild(filtersDiv.Node)
 
         if store.completedCount.val > 0:

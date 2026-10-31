@@ -15,6 +15,7 @@ import isonim/core/computation
 import isonim/dsl/ui
 import isonim/editor/types
 import isonim/editor/viewmodels
+import isonim/editor/views/widgets/property_commit
 import isonim/editor/views/widgets/property_row
 import isonim/editor/views/widgets/section_position
 
@@ -29,6 +30,7 @@ proc mountSectionStroke*[R, E](r: R; parent: E; vm: EditorVM) =
   let strokeStyle = createSignal("solid")
   let strokePosition = createSignal("center")
   let dashPattern = createSignal("")
+  let outlineOffset = createSignal("0px")
 
   createRenderEffect proc() =
     let props = vm.inspector.properties.val
@@ -36,6 +38,7 @@ proc mountSectionStroke*[R, E](r: R; parent: E; vm: EditorVM) =
     strokeWidth.val = parseLeadingFloat(findPropertyValue(props,
       "border-width", "0"), 0.0)
     strokeStyle.val = findPropertyValue(props, "border-style", "solid")
+    outlineOffset.val = findPropertyValue(props, "outline-offset", "0px")
     # CSS has no native "stroke position" — surface a UI-only signal
     # seeded to ``center``; Phase G+1 maps to a CSS-shadow-based
     # outside/inside trick.
@@ -44,13 +47,15 @@ proc mountSectionStroke*[R, E](r: R; parent: E; vm: EditorVM) =
     name = "Color", value = strokeColor, alpha = strokeAlpha,
     bindingReactive = vm.inspectorBindingThunk("border-color"),
     onBindRequest = vm.inspectorBindRequestHandler("border-color"),
-    onDetachRequest = vm.inspectorDetachRequestHandler("border-color")))
+    onDetachRequest = vm.inspectorDetachRequestHandler("border-color"),
+    wiring = vm.inspectorRowWiring("border-color")))
   discard r.mountPropertyRow(parent, propertyRowNumeric(
     name = "Width", value = strokeWidth, unit = strokeWidthUnit,
     units = @[pxUnit], minValue = some(0.0),
     bindingReactive = vm.inspectorBindingThunk("border-width"),
     onBindRequest = vm.inspectorBindRequestHandler("border-width"),
-    onDetachRequest = vm.inspectorDetachRequestHandler("border-width")))
+    onDetachRequest = vm.inspectorDetachRequestHandler("border-width"),
+    wiring = vm.inspectorRowWiring("border-width")))
   discard r.mountPropertyRow(parent, propertyRowChoice(
     name = "Style", value = strokeStyle,
     options = @[
@@ -59,13 +64,20 @@ proc mountSectionStroke*[R, E](r: R; parent: E; vm: EditorVM) =
       (label: "Dotted", value: "dotted")],
     bindingReactive = vm.inspectorBindingThunk("border-style"),
     onBindRequest = vm.inspectorBindRequestHandler("border-style"),
-    onDetachRequest = vm.inspectorDetachRequestHandler("border-style")))
+    onDetachRequest = vm.inspectorDetachRequestHandler("border-style"),
+    wiring = vm.inspectorRowWiring("border-style")))
   discard r.mountPropertyRow(parent, propertyRowChoice(
     name = "Position", value = strokePosition,
     options = @[
       (label: "Inside", value: "inside"),
       (label: "Center", value: "center"),
-      (label: "Outside", value: "outside")]))
+      (label: "Outside", value: "outside")],
+    wiring = InspectorRowWiring(commitMessage: createSignal(""), readOnlyReason: proc(): string =
+      "Stroke position cannot be edited in the inspector yet.")))
+
+  discard r.mountPropertyRow(parent, propertyRowText(
+    name = "Outline offset", value = outlineOffset,
+    wiring = vm.inspectorRowWiring("outline-offset")))
 
   var dashHostEl: E
   let dashHost = ui(r):
@@ -74,7 +86,9 @@ proc mountSectionStroke*[R, E](r: R; parent: E; vm: EditorVM) =
          display = "none", flex_direction = "column")
   r.appendChild(parent, dashHost)
   discard r.mountPropertyRow(dashHostEl, propertyRowText(
-    name = "Dash pattern", value = dashPattern))
+    name = "Dash pattern", value = dashPattern,
+    wiring = InspectorRowWiring(commitMessage: createSignal(""), readOnlyReason: proc(): string =
+      "Dash patterns cannot be edited in the inspector yet.")))
   createRenderEffect proc() =
     let solid = strokeStyle.val == "solid"
     r.setStyle(dashHostEl, "display", if solid: "none" else: "flex")

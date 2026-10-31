@@ -16,6 +16,10 @@
 ##   7. ``extraRootAttr`` / ``extraNameAttr`` propagate to the root +
 ##      name nodes (the legacy property-row selector contract).
 
+## MockRenderer verifies rendered semantics, callback admission and logical
+## focus ownership without simulating browser key defaults. Raw native keydown
+## carries no key and must not call detach. Physical activation, Tab traversal,
+## focus within children and refusal are covered by the compounds GUI.
 import std/[tables, unittest]
 
 import isonim/core/[signals, computation, owner]
@@ -212,4 +216,29 @@ suite "Phase E.2 variable_chip mount":
         "data-property-row-linked-variable", "color/surface")
       check legacyName != nil
       check textContent(legacyName) == "color/surface"
+      dispose()
+
+  test "nil actions are unavailable and raw keydown cannot admit detach":
+    createRoot do (dispose: proc()):
+      let (r, root) = mkRoot()
+      let chip = r.mountVariableChip(root, variableChipConfig(binding = SampleBinding,
+        unavailableReason = "Read-only owner."))
+      for attr in ["data-variable-chip-name", "data-variable-chip-chevron", "data-variable-chip-detach"]:
+        let action = findByAttr(chip, attr, "true")
+        check action.attributes["aria-disabled"] == "true"
+        check action.attributes["tabindex"] == "-1"
+        check action.attributes["title"] == "Read-only owner."
+        check action.styles["cursor"] == "default"
+      var detached = 0
+      let active = r.mountVariableChip(root, variableChipConfig(binding = SampleBinding,
+        onDetach = proc() = inc detached))
+      let detach = findByAttr(active, "data-variable-chip-detach", "true")
+      fireEvent(detach, "keydown")
+      check detached == 0
+      fireEvent(active, "focusin")
+      check detach.styles["display"] == "inline-flex"
+      fireEvent(active, "focusout")
+      check detach.styles["display"] == "none"
+      fireEvent(detach, "click")
+      check detached == 1
       dispose()

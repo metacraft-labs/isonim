@@ -4,6 +4,7 @@ description: The three-tier test harness every isonim-docs suite is built on.
 section: guide
 order: 5
 ---
+
 # Testing Strategy
 
 Every isonim-docs suite follows the same three-tier IsoNim test pyramid,
@@ -21,7 +22,7 @@ same behavior on both the server and the browser.
 2. **Tier 2 -- MockRenderer.** The same ViewModels rendered through
    `isonim/testing/mock_dom`'s `MockRenderer`, asserted on with plain
    tree-walk helpers (`findByTag`, `findAllByTag`) instead of a real DOM
-   or an HTML string -- proves a component's *shape*, independent of
+   or an HTML string -- proves a component's _shape_, independent of
    whichever backend eventually renders it.
 3. **Tier 3 -- SSR/browser integration.** `renderRoute` (SSR, C target)
    or `createRouteApp` (browser mount, JS target) driven end to end

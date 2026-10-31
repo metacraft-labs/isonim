@@ -1,3 +1,4 @@
+import isonim/core/owner
 ## REV-M8 — production mount glue for the design-review gallery.
 ##
 ## REV-M7 shipped the components (``preview_chrome.mountHistoryButton``,
@@ -70,7 +71,8 @@ proc previewIdFor*(story: StoryRef; backend: PreviewBackend): string =
     return ""
   result = canonicalPreviewId(story, backend)
 
-proc resolveBriefId*(story: StoryRef; backend: PreviewBackend): string =
+proc resolveBriefId*(story: StoryRef; backend: PreviewBackend;
+    idx: BriefIndex): string =
   ## Resolve the canonical briefId for the gallery / history-button
   ## flow against the active (story, backend) pair.
   ##
@@ -94,7 +96,6 @@ proc resolveBriefId*(story: StoryRef; backend: PreviewBackend): string =
   ## ``isonim-review capture`` CLI).  Fall back to the first listed
   ## briefId otherwise.
   if story.name.len == 0: return ""
-  let idx = builtInBriefIndex()
   if idx == nil or idx.empty():
     return ""
   let previewId = canonicalPreviewId(story, backend)
@@ -111,6 +112,11 @@ proc resolveBriefId*(story: StoryRef; backend: PreviewBackend): string =
     if id in idx.byBriefId:
       return id
   ""
+
+proc resolveBriefId*(story: StoryRef; backend: PreviewBackend): string =
+  ## Standalone callers retain an independent baked-index snapshot.
+  if story.name.len == 0: return ""
+  resolveBriefId(story, backend, builtInBriefIndex())
 
 proc ensureDesignReviewState*(vm: EditorVM): DesignReviewState =
   for (k, v) in states:
@@ -141,10 +147,13 @@ proc ensureDesignReviewState*(vm: EditorVM): DesignReviewState =
   # Drive ``briefId`` reactively off the EditorVM's selected story + platform.
   let capturedVm = vm
   let capturedState = st
+  # Baked data is fixed for this bundle. Keep this state's read-only snapshot
+  # private rather than parsing all briefs on every story/backend change.
+  let briefIndex = builtInBriefIndex()
   createRenderEffect proc() =
     let story = capturedVm.selectedStory.val
     let backend = capturedVm.platform.val
-    let bid = resolveBriefId(story, backend)
+    let bid = resolveBriefId(story, backend, briefIndex)
     capturedState.briefId.val = bid
     capturedState.galleryVm.briefId.val = bid
     discard previewIdFor(story, backend)
@@ -905,8 +914,7 @@ proc startNarrowViewportProbe*(st: DesignReviewState) =
   ## drives ``st.narrow`` reactively. The 768 px threshold matches
   ## ``browser.nim``'s ``@media (max-width: 768px)`` rule that
   ## collapses the centre column to sidebar-only. A single resize
-  ## listener is installed per state; the listener is intentionally
-  ## not removed because the editor mounts once per page load.
+  ## listener belongs to the current UI owner and is removed on disposal.
   ##
   ## On non-JS targets (native unit tests via the MockRenderer) the
   ## probe is a no-op — tests can drive ``st.narrow.val`` directly.
@@ -915,8 +923,8 @@ proc startNarrowViewportProbe*(st: DesignReviewState) =
     proc setNarrow(value: bool) =
       capturedState.narrow.val = value
     let cb = setNarrow
-    {.emit: ["""
-      (function() {
+    var cleanup: proc()
+    {.emit: [cleanup, """ = (function() {
         var fn = """, cb, """;
         var apply = function() {
           try {
@@ -927,9 +935,13 @@ proc startNarrowViewportProbe*(st: DesignReviewState) =
         apply();
         if (typeof window !== 'undefined' && window.addEventListener) {
           window.addEventListener('resize', apply);
+          return function () { window.removeEventListener('resize', apply); };
         }
+        return function () {};
       })();
     """].}
+
+    onCleanup(cleanup)
 
 proc mountGalleryHostForEditor*[R, E](r: R; parent: E; vm: EditorVM): E =
   ## Build the gallery overlay host: a positioned ``div`` that holds

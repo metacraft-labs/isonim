@@ -28,6 +28,11 @@ type
     ldVertical      ## Children stacked vertically
     ldHorizontal    ## Children arranged horizontally
 
+  NativeEvent* = ref object
+    ## Keyboard payload for controls that distinguish activation from navigation.
+    key*: string
+    defaultPrevented*: bool
+
   NativeWidget* = ref object
     kind*: NativeWidgetKind
     tag*: string              ## Original HTML tag (for mapping/debugging)
@@ -36,6 +41,7 @@ type
     styles*: Table[string, string]
     children*: seq[NativeWidget]
     parent*: NativeWidget
+    eventHandlers*: Table[string, seq[proc(ev: NativeEvent)]]
     eventListeners*: Table[string, seq[proc()]]
     id*: int                  ## Unique widget id
     layout*: LayoutDirection  ## Layout direction for containers
@@ -202,6 +208,21 @@ proc addEventListener*(r: NativeRenderer; node: NativeWidget; event: string; han
     node.eventListeners[event] = @[]
   node.eventListeners[event].add(handler)
 
+proc addEventListener*(r: NativeRenderer; node: NativeWidget; event: string;
+    handler: proc(ev: NativeEvent)) =
+  ## Register a handler that needs a keyboard payload.
+  node.eventHandlers.mgetOrPut(event, @[]).add handler
+
+proc preventDefault*(ev: NativeEvent) =
+  ev.defaultPrevented = true
+
+proc fireEventWith*(node: NativeWidget; event: string; ev: NativeEvent) =
+  ## Dispatch the same event to both callback forms, as the DOM does.
+  for handler in node.eventListeners.getOrDefault(event):
+    handler()
+  for handler in node.eventHandlers.getOrDefault(event):
+    handler(ev)
+
 proc firstChild*(r: NativeRenderer; node: NativeWidget): NativeWidget =
   if node.children.len > 0: node.children[0] else: nil
 
@@ -220,9 +241,7 @@ proc parentNode*(r: NativeRenderer; node: NativeWidget): NativeWidget =
 
 proc fireEvent*(node: NativeWidget; event: string) =
   ## Triggers all handlers registered for the given event.
-  if event in node.eventListeners:
-    for handler in node.eventListeners[event]:
-      handler()
+  node.fireEventWith(event, NativeEvent())
 
 proc textContent*(node: NativeWidget): string =
   ## Returns concatenated text content of a node and descendants.

@@ -32,6 +32,8 @@ import isonim/editor/design_review/brief_index
 import isonim/editor/design_review/log_setup
 
 import ./config
+import ./cmd_source_project
+import ./cmd_editor
 import ./cmd_init
 import ./cmd_db_health
 import ./cmd_serve
@@ -109,7 +111,7 @@ Usage:
                            [--agent-http-timeout-ms <int>]
                            [--dry-run [--dry-run-out <path>]]
       (REV-M6) Drive a review against a completed capture run.
-      Resolves the brief at the run's manifest pin via `git show`,
+      Resolves the brief at the run's workspace pin via `git show`,
       assembles the reviewer prompt, invokes the configured agent
       backend (canned for CI, claude-code for production), and
       persists the result via design_review.record_agent_report +
@@ -138,12 +140,16 @@ Usage:
 
   isonim-review campaign start --doc <path> [--backend claude|codex|custom]
                                 [--no-tail] [--daemon <url>] [--briefs-dir <path>]
-                                [--config <path>]
+                                [--workspace <path>] [--config <path>]
       (CMP-M2) Start a design campaign from the given campaign doc.
-      Resolves brief refs from the on-disk project, opens an ACP session,
+      Resolves brief refs from the on-disk project, pins the workspace
+      exactly as `capture` does (refuses, exit 3, unless every repo of
+      the reprobuild project is clean and pushed), opens an ACP session,
       POSTs /api/campaign/start to the daemon, and streams the agent's
-      first-round response on stdout.  --no-tail prints just the new
-      campaign id and exits without streaming.
+      first-round response on stdout.  The first start records the
+      campaign's start pin; every start records its round's pin.
+      --no-tail prints just the new campaign id and exits without
+      streaming.
 
   isonim-review campaign list [--status <status>] [--limit N] [--offset N]
                               [--daemon <url>] [--config <path>]
@@ -254,11 +260,12 @@ proc applyAgentBackendOverride(cfg: var ReviewConfig; rest: seq[string]) =
     # is one of the recognised ACP kinds; otherwise it belongs to
     # ``run-review``'s reviewer-pipeline selector.
     if agentBackendFlag.toLowerAscii() in
-        ["claude", "codex", "custom",
+        ["claude", "codex", "custom", "harbor",
          "claude-code-acp", "claude-agent-acp", "codex-acp"]:
       override = agentBackendFlag
   if override.len > 0:
     cfg.agent.backend = override
+    cfg.agent.backendExplicit = true
     try:
       validateAgentConfig(cfg)
     except AgentConfigError as e:
@@ -363,7 +370,23 @@ proc dispatchDbHealth(rest: seq[string]): int =
   cmdDbHealth(cfg, asJson, migDir)
 
 proc dispatchServe(rest: seq[string]): int =
-  let (cfg, migDir) = resolveConfigAndDir(rest)
+  var (cfg, migDir) = resolveConfigAndDir(rest)
+  let bindFlag = parseSubArgs(rest, "bind")
+  let portFlag = parseSubArgs(rest, "port")
+  let workspaceFlag = parseSubArgs(rest, "workspace")
+  let promptDefault = parseSubArgs(rest, "default-assistant-prompt")
+  if bindFlag.len > 0: cfg.server.bindAddr = bindFlag
+  if portFlag.len > 0:
+    try: cfg.server.port = parseInt(portFlag)
+    except ValueError:
+      stderr.writeLine("isonim-review: invalid --port")
+      return 2
+    if cfg.server.port < 0 or cfg.server.port > 65535:
+      stderr.writeLine("isonim-review: --port must be between 0 and 65535")
+      return 2
+  if cfg.agent.assistantPromptPath.len == 0 and promptDefault.len > 0:
+    cfg.agent.assistantPromptPath = absolutePath(promptDefault)
+  if workspaceFlag.len > 0: cfg.workspace.root = absolutePath(workspaceFlag)
   let agentRoutesOnly = hasFlag(rest, "agent-routes-only")
   cmdServe(cfg, migDir, agentRoutesOnly)
 
@@ -526,6 +549,7 @@ proc dispatchCampaign(rest: seq[string]): int =
     opts.briefsDir = parseSubArgs(tail, "briefs-dir")
     opts.projectDir = parseSubArgs(tail, "project")
     opts.startedBy = parseSubArgs(tail, "started-by")
+    opts.workspaceRoot = parseSubArgs(tail, "workspace")
     if opts.docPath.len == 0:
       stderr.writeLine "isonim-review campaign start: --doc <path> required"
       return 2
@@ -751,10 +775,18 @@ proc main(): int =
     return 2
 
   if rawArgs.len == 0 or rawArgs[0] in ["--help", "-h"]:
-    echo Usage
+    echo (if getAppFilename().extractFilename() == "isonim": EditorUsage else: Usage)
     return 0
 
   case rawArgs[0]
+  of "--internal-harbor-verify":
+    if rawArgs.len != 5: return 2
+    return cmdHarborVerification(rawArgs[1], rawArgs[2], rawArgs[3], rawArgs[4])
+  of "--internal-harbor-runtime":
+    if rawArgs.len != 3: return 2
+    return cmdHarborPreparation(rawArgs[1], rawArgs[2])
+  of "source-project": return cmdSourceProject(rawArgs[1 .. ^1])
+  of "editor": return cmdEditor(rawArgs[1 .. ^1])
   of "briefs":
     if rawArgs.len < 2 or rawArgs[1] != "check":
       stderr.write("isonim-review briefs: unknown sub-subcommand\n")

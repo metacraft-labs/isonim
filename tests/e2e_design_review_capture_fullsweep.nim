@@ -5,7 +5,7 @@
 ## ``PgFixture`` from REV-M3; no mocks at the DB boundary.
 
 import std/[asyncdispatch, asyncnet, nativesockets, net, os, osproc,
-            streams, strtabs, strutils, times, unittest]
+            streams, strtabs, strutils, unittest]
 
 import db_connector/db_postgres
 
@@ -13,9 +13,10 @@ import isonim_render_serve/packet
 import isonim_render_serve/ws_frame
 import isonim_render_serve/bridge   # computeAcceptKey
 
-import isonim/editor/design_review/manifest_hash
+import isonim/editor/design_review/workspace_pin
 
 import helpers/design_review_pg_fixture
+import helpers/repro_workspace_fixture
 
 # ---------------------------------------------------------------------------
 # Fake bridge — same shape as the unit tests.  Supports optional
@@ -137,31 +138,6 @@ proc shouldHave*(path: string) =
       "e2e_design_review_capture_fullsweep: binary not found at " & path &
       ".  Build it with `just isonim-review-build`.")
 
-proc runOrFail(cmd: string; cwd: string) =
-  let res = execCmdEx(cmd, workingDir = cwd)
-  if res.exitCode != 0:
-    raise newException(IOError, cmd & " failed (" & $res.exitCode &
-                       "):\n" & res.output)
-
-proc initRepo(repoPath: string): string =
-  createDir(repoPath)
-  runOrFail("git init -q -b main && " &
-            "git config user.email 'test@test' && " &
-            "git config user.name 'tester' && " &
-            "git config commit.gpgsign false && " &
-            "echo hi > README.md && " &
-            "git add -A && git commit -q -m initial",
-            repoPath)
-  execCmdEx("git -C " & quoteShell(repoPath) & " rev-parse HEAD").output.strip()
-
-proc writeManifest(workspaceRoot, repoName, sha: string) =
-  let repoDir = workspaceRoot / ".repo"
-  createDir(repoDir)
-  writeFile(repoDir / "manifest.xml",
-    "<?xml version=\"1.0\" encoding=\"UTF-8\"?>\n<manifest>\n" &
-    "  <project name=\"" & repoName & "\" path=\"" & repoName &
-    "\" revision=\"" & sha & "\"/>\n</manifest>\n")
-
 proc writeBrief(workspaceRoot: string) =
   let briefsDir = workspaceRoot / "briefs" / "render"
   createDir(briefsDir)
@@ -184,12 +160,10 @@ proc writeBrief(workspaceRoot: string) =
     "---\nbody\n")
 
 proc buildWorkspace(suffix: string; dirty = false): string =
-  let ws = getTempDir() / ("isonim_e2e_" & suffix &
-                            "_" & $epochTime().int)
-  removeDir(ws)
-  createDir(ws)
-  let sha = initRepo(ws / "repo-a")
-  writeManifest(ws, "repo-a", sha)
+  ## A hermetic reprobuild workspace (one published repo, ``repo-a``)
+  ## with the brief at its root.  Returns the workspace root; remove its
+  ## parent to clean up.
+  let ws = newReproWorkspace("e2e_" & suffix, ["repo-a"]).root
   writeBrief(ws)
   if dirty:
     writeFile(ws / "repo-a" / "README.md", "edited\n")
@@ -249,7 +223,7 @@ suite "REV-M5 capture full sweep (e2e)":
     let fb = startFakeBridge()
     defer: fb.stop()
     let ws = buildWorkspace("clean")
-    defer: removeDir(ws)
+    defer: removeDir(ws.parentDir)
     let storePath = ws / "store"
     let cfg = writeConfig(ws, storePath, pgf.port)
 
@@ -289,7 +263,7 @@ suite "REV-M5 capture full sweep (e2e)":
     let fb = startFakeBridge()
     defer: fb.stop()
     let ws = buildWorkspace("dirty", dirty = true)
-    defer: removeDir(ws)
+    defer: removeDir(ws.parentDir)
     let storePath = ws / "store"
     let cfg = writeConfig(ws, storePath, pgf.port)
     let res = runIsonimReview(@[
@@ -330,7 +304,7 @@ suite "REV-M5 capture full sweep (e2e)":
     let fb1 = startFakeBridge(refuseNthConn = 2)
     defer: fb1.stop()
     let ws = buildWorkspace("retry")
-    defer: removeDir(ws)
+    defer: removeDir(ws.parentDir)
     let storePath = ws / "store"
     let cfg = writeConfig(ws, storePath, pgf.port)
 
@@ -370,13 +344,13 @@ suite "REV-M5 capture full sweep (e2e)":
        WHERE status = 'capture_complete'"""))
     check complete == 1
 
-  test "e2e_capture_records_workspace_manifest_hash":
+  test "e2e_capture_records_workspace_pin":
     let pgf = newPgFixture()
     defer: pgf.shutdown()
     let fb = startFakeBridge()
     defer: fb.stop()
     let ws = buildWorkspace("hash")
-    defer: removeDir(ws)
+    defer: removeDir(ws.parentDir)
     let storePath = ws / "store"
     let cfg = writeConfig(ws, storePath, pgf.port)
 
@@ -386,8 +360,9 @@ suite "REV-M5 capture full sweep (e2e)":
       "--workspace", ws, "--project", ws, "--config", cfg], cwd = ws)
     check res.exitCode == 0
 
-    # The DB row's manifest_hash must equal the value we get from
-    # captureManifestHash() against the same workspace.
+    # The DB row's manifest_hash must be the workspace pin we get from
+    # captureWorkspacePin() against the same (unchanged) workspace, and
+    # its lock record must be stored with it.
     let mig = open("", "design_review_migrator", "",
                    "host=127.0.0.1 port=" & $pgf.port &
                    " dbname=isonim_design_review " &
@@ -396,8 +371,12 @@ suite "REV-M5 capture full sweep (e2e)":
     let stored = mig.getValue(sql"""
       SELECT manifest_hash FROM design_review.runs
       WHERE brief_id = 'render.fixture' LIMIT 1""")
-    check stored.len == 64
+    check classifyPin(stored) == pkWorkspaceLock
 
-    let xml = readFile(ws / ".repo" / "manifest.xml")
-    let computed = captureManifestHashOfBytes(xml)
-    check computed == stored
+    let computed = captureWorkspacePin(ws)
+    check computed.pin == stored
+    let lockToml = mig.getValue(sql"""
+      SELECT lock_toml FROM design_review.workspace_pins WHERE pin = ?""",
+      stored)
+    check lockToml == computed.lockToml
+    check resolvePin(stored, lockToml).repos.len == 1

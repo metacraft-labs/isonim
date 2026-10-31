@@ -5,13 +5,52 @@
 ## Created via withViewModel inside createRoot.
 
 import std/[algorithm, hashes, json, math, options, sequtils, strutils, tables]
-import isonim/core/[signals, computation]
+from std/unicode import runeLen, runeSubStr
+import isonim/core/[signals, computation, owner, batch]
 import isonim/viewmodel
 import isonim/editor/types
+import isonim/editor/html_classes
+import isonim/editor/css_color_literal
+import isonim/editor/design_review/context_policy
+import isonim/editor/element_semantics
 import isonim/editor/streaming_preview
+import nim_agents/activity
+import isonim/dsl/tailwind
+import isonim/editor/agent_context
+
+when defined(js):
+  # `Element` only. A plain `import std/dom` collides with this module's own
+  # `NodeType`, and a whole DOM namespace is more than one field's type needs.
+  from std/dom import Element
+
+## Where a project mounts a story's UI, and the hook that does it.
+##
+## A real DOM element in the browser, and a stand-in everywhere else. The
+## editor's ViewModels compile natively for their tests, so this cannot name
+## `std/dom` unconditionally -- but the field must exist on both backends, or
+## the record's shape would differ between them.
+when defined(js):
+  type PreviewMountHost* = Element
+else:
+  type PreviewMountHost* = RootRef
+
+type PreviewMountHook* = proc(story: StoryRef; host: PreviewMountHost) {.closure.}
+  ## Mount a story's UI into `host`, live.
+  ##
+  ## The project's alternative to handing the editor a string of HTML. A string
+  ## cannot be edited without rewriting and recompiling the source that produced
+  ## it; a mounted tree can, because the values in it are cells the editor
+  ## writes and the framework's own reactivity carries the change to the DOM.
+  ##
+  ## The project keeps ownership of what it renders: it is handed an element
+  ## inside the preview frame and decides what goes in it. The editor never
+  ## parses, rewrites or re-serialises the project's markup.
+
+import isonim/editor/style_provenance_decode
 
 export types
 export streaming_preview
+export style_provenance_decode
 
 # ===========================================================================
 # All ViewModel types (single type block for forward references)
@@ -46,9 +85,29 @@ type
     selectedItem*: Signal[int]  ## Index into canvasItems (-1 = none)
     hoveredItem*: Signal[int]
 
+  PreviewValueRequest* = object
+    ## "Put this value on the element in the preview."
+    ##
+    ## Undo and redo change what the file should say, and the thing the user is
+    ## looking at has to follow -- but the ViewModels cannot touch a DOM, and
+    ## the code that can (`views/widgets/property_commit`) is a per-row widget
+    ## with no business being driven by a global command. So the VM publishes
+    ## the request and the preview view applies it, through exactly the same
+    ## path a fresh edit takes.
+    ##
+    ## `generation` is what makes a repeat fire. Undoing and redoing the same
+    ## property lands on values that alternate, and a signal comparing equal
+    ## payloads would drop every second one.
+    generation*: int
+    elementId*, domPath*, property*, value*: string
+    sourceScope*: SourceScopeChoiceKind
+
   InspectorVM* = ref object of ViewModel
     designSystemSchema*: Signal[DesignSystemSchema]
     selectedElement*: Signal[ElementRef]
+    previewValueRequest*: Signal[PreviewValueRequest]
+      ## Set by undo/redo; applied by the preview view. See
+      ## `PreviewValueRequest`.
     breadcrumbTrail*: Signal[seq[BreadcrumbEntry]]
       ## The status-bar element path. Display state, not selection:
       ## it is the ancestor chain of the last selection that arrived
@@ -67,6 +126,17 @@ type
     layerSearch*: Signal[string]
     sectionSearch*: Signal[string]
     expandedSections*: Signal[seq[InspectorSection]]
+    sectionsUserSet*: Signal[seq[InspectorSection]]
+    revealSectionRequest*: Signal[int]
+      ## Bumped when something asks for the Source section to be scrolled
+      ## into view. A counter rather than a bool because the same request
+      ## can be made twice and must work the second time.
+      ## Sections whose open/closed state the USER decided, by clicking the
+      ## header. Per-kind defaults are applied only to sections absent from
+      ## this list, so selecting a second element never reverses a choice the
+      ## person just made. Same shape as the Layers panel's "seed a node open
+      ## the first time it is seen" rule, and for the same reason: a default
+      ## that re-asserts itself is not a default, it is an override.
     focusedControlId*: Signal[string]
     commandPaletteHooksReady*: Signal[bool]
     expandedLayerIds*: Signal[seq[string]]
@@ -78,6 +148,12 @@ type
     conflicts*: Signal[seq[CSSSourceConflict]]
     undoStack*: Signal[seq[CSSPropertyEditTransaction]]
     redoStack*: Signal[seq[CSSPropertyEditTransaction]]
+    lastHistoryId*: int
+      ## Last ``SourceEditPlan.historyId`` handed to a history entry. One
+      ## counter for the inspector, component-property, foundation and vector
+      ## histories, so ids order every entry on one timeline.
+    lastWriteSequence*: int
+      ## Last ``SourceWriteReceipt.sequence`` handed out.
     hasElement*: Memo[bool]
     properties*: Memo[seq[PropertyInfo]]
     filteredLayers*: Memo[seq[ElementLayerRow]]
@@ -125,6 +201,8 @@ type
       ## so the picker (VBIND-M6) can render a "Previously linked" group.
       ## Empty for every pilot until a binding is recorded / seeded, so it
       ## is byte-inert by default.
+    bindingRevision*: int
+      ## Changes on explicit binding mutation or rehydration, guarding async unlink.
     onBindingsChanged*: proc() {.closure.}
       ## VBIND-M5 SAVE SEAM: fired after ``bindPropertyToVariable`` /
       ## ``detachPropertyBinding`` mutate the persisted state. The
@@ -189,6 +267,15 @@ type
     hasDiagnostics*: Memo[bool]
 
   AgentChatVM* = ref object of ViewModel
+    cancelSupported*: Signal[bool]
+    activity*: Signal[ActivityTimeline]
+    placeholdersDismissed*: Signal[bool]
+    scrollPosition*: float
+    followOutput*: bool
+    pendingPromptText*: string
+    promptAdmitted*: bool
+    promptGeneration*: int
+    controlConversationId*: Signal[string]
     messages*: Signal[seq[ChatMessage]]
     sessionStatus*: Signal[AsyncState]
     accumulatedEdits*: Signal[seq[EditRecord]]
@@ -207,6 +294,13 @@ type
     messageCount*: Memo[int]
     promptAdapter*: AgentPromptAdapter
     cancelAdapter*: AgentCancelAdapter
+    asyncAgentAdapter*: bool
+    promptInFlightState: Signal[bool]
+    closingSessionState: Signal[bool]
+    cancelAsyncAdapter*: proc() {.closure.}
+    closeAdapter*: proc(done: proc(ok: bool) {.closure.}) {.closure.}
+
+  ChatConfigurationDisposer* = proc() {.closure.}
 
   ChatSession* = ref object
     ## One Assistant-tab chat. Each session owns its own ``AgentChatVM``
@@ -218,6 +312,9 @@ type
     id*: string
     title*: Signal[string]
     vm*: AgentChatVM
+    # Successful factory resources live until session close or mount teardown.
+    # Failed attempts dispose their private scope before the session is appended.
+    disposeConfiguration: proc() {.closure.}
 
   ReviewResultsVM* = ref object of ViewModel
     violations*: Signal[seq[Violation]]
@@ -229,6 +326,16 @@ type
   ProjectPreviewVM* = ref object of ViewModel
     hook*: ProjectPreviewHook
     current*: Memo[ProjectPreview]
+    sourceGeneration*: Signal[int]
+      ## Bumped when the PROJECT's code is replaced under a running editor --
+      ## a hot bundle swap. `hook` is a closure compiled from project source,
+      ## and `current` reads it as a plain field, so replacing the closure
+      ## cannot invalidate the memo on its own: nothing the memo tracked
+      ## changed. This signal is what the memo tracks in order to be told.
+      ##
+      ## It is deliberately not a hash of the project's output. The editor
+      ## cannot know whether a new bundle renders differently without running
+      ## it, and running it is the thing being triggered.
 
   FlowPlayerVM* = ref object of ViewModel
     steps*: Signal[seq[FlowStep]]
@@ -287,9 +394,96 @@ type
       ## Empty set = ALL platforms (default). When non-empty, the
       ## left-edge backend strip only surfaces the listed backends.
     viewport*: Signal[PreviewViewport]
+    workspaceId*: string
+    controlInstanceId*: string
+    controlStoryRevealAdapter*: proc() {.closure.}
+      ## Mounted-shell scrolling after explicit successful agent story navigation.
+    controlFocusAdapter*: proc(target: string): bool {.closure.}
+    controlHighlightAdapter*: proc(target: string): bool {.closure.}
+    controlSelectionAdapter*: proc(target: string; focus, highlight: bool): bool {.closure.}
+    hasAsyncSourceProject*: bool
+    sourceProjectMappings*: Signal[JsonNode]
+    sourceProjectMappingDispose*: proc() {.closure.}
+      ## One model-owned mapping subscription, replaced during hot reload.
+      ## Pending transactions retain their mappings and operation identity.
+    sourceProjectBuildInFlight*: bool
+    sourceProjectOperationSerial*: int
+    inspectorSourceCommit*: proc(element: ElementRef; property, value: string;
+      scope: SourceScopeChoiceKind; done: proc(ok: bool; diagnostic: string) {.closure.}) {.closure.}
+      ## Optional asynchronous native source transaction. Completion is delivered
+      ## only after source validation, build and catalog publication or rollback.
+    sourceBindingMetadataHash*, sourceBindingMetadataSaved*: string
+    sourceBindingMetadataSaving*, sourceBindingMetadataSaveAgain*: bool
+    sourceBindingMetadataWaiters*: seq[proc(ok: bool; diagnostic: string) {.closure.}]
+    sourceBindingMetadataDirty*: Signal[bool]
+      ## Nil for hosts without the opt-in project sidecar consumer.
+    sourceBindingMetadataSave*: proc(done: proc(ok: bool; diagnostic: string) {.closure.}) {.closure.}
+    inspectorSourceDetach*: proc(key: PropertyBindingKey; value: string) {.closure.}
+    inspectorSourceHistory*: proc(redo: bool): bool {.closure.}
+    controlSourceFixtures*: seq[ComponentVariantDefinition]
+    controlAsyncCommandAdapter*: proc(request: JsonNode; done: proc(ok: bool; data: JsonNode) {.closure.}) {.closure.}
+    controlSourceTransport*: proc(request: JsonNode; done: proc(data: JsonNode) {.closure.}) {.closure.}
+    controlCaptureAdapter*: proc(): JsonNode {.closure.}
+    controlConnected*: bool
+    requestControlApproval*: proc(id: string; approve: bool) {.closure.}
+    controlRevision*: int
+    controlFingerprint*: string
+    agentControlApproval*: Signal[bool]
+    controlActivity*: Signal[seq[JsonNode]]
+    controlFocusTarget*: Signal[string]
+    controlHighlightTarget*: Signal[string]
+    controlOperations*: Table[string, JsonNode]
+    responsiveBreakpoints*: Signal[seq[ResponsiveBreakpoint]]
+      ## Supplied by the workspace; see `EditorWorkspace.responsiveBreakpoints`.
+    previewShowsPendingEdits*: Signal[bool]
+      ## Set when a commit has already put its value on screen, by setting the
+      ## declaration on the rule the cascade uses (see `applyPreviewStyle`).
+      ##
+      ## Read by `applyWorkspaceEdits` to skip its post-write preview reload.
+      ## That reload rebuilds the preview from project code that has not
+      ## recompiled yet, so it would replace a frame showing the new value with
+      ## one showing the old -- and the user would watch their edit flash away
+      ## a second after making it.
+    previewRenderedWidth*: Signal[int]
+      ## The width in CSS pixels the preview iframe is ACTUALLY laid out at,
+      ## or 0 before anything has measured it.
+      ##
+      ## Not the same as `viewport.width`, and the difference is not a detail.
+      ## `viewport` is the chip the user picked -- Desktop is 1440 -- while the
+      ## iframe is however wide the centre column leaves it, measured at 840.
+      ## Media queries are evaluated by the browser against the real width, so
+      ## at "Desktop" this project renders inside its own
+      ## `@media (max-width:1080px)` block. Any question of the form "which
+      ## rule is deciding this property" has to be asked at the width the
+      ## browser is using, or the answer describes a page nobody is looking at.
+    activeBreakpoint*: Memo[ResponsiveBreakpoint]
+      ## The breakpoint the current preview width falls into, or one with an
+      ## empty `condition` meaning the base. Ambient state, read by the
+      ## chrome bar: a person editing at 850px is editing inside a media
+      ## query whether or not they remember it, and the editor saying so is
+      ## the difference between a scoped change and a surprise.
     workspacePermissions*: Signal[EditorWorkspacePermissions]
     sourceAdapterReady*: Signal[bool]
     workspaceEditStage*: Signal[WorkspaceEditStage]
+    locallyEditedTokens*: Signal[seq[string]]
+      ## Token keys the user has changed in this session but whose new value
+      ## is not yet reflected in what the project reports.
+      ##
+      ## `loadProjectData` re-seeds tokens from source. Without this it would
+      ## re-seed ALL of them, so a rebuild landing while someone was midway
+      ## through a palette would silently revert their work -- the same
+      ## failure as a default that re-asserts itself, one layer down.
+    autoSaveGeneration*: Signal[int]
+      ## Bumped every time a commit stages an edit. The browser layer watches
+      ## this and debounces the actual write; the VM does not own a timer, so
+      ## the rule stays testable without one.
+      ##
+      ## There is no manual mode and no switch. Saving is what the editor
+      ## does with an edit -- an editor that holds your change hostage to a
+      ## second gesture has invented a state the user has to manage, and the
+      ## indicator that state needed was taking up space in the chrome bar
+      ## explaining itself. Failures surface in the status bar; success needs
+      ## no announcement.
     workspaceEditDiagnostics*: Signal[seq[WorkspaceEditDiagnostic]]
     workspaceBridgeRecovered*: Signal[bool]
     workspaceEditPatches*: Signal[seq[WorkspaceFilePatch]]
@@ -319,6 +513,11 @@ type
       ## in ``activeChatId``; the read-only ``chat`` accessor below
       ## returns the matching ``AgentChatVM`` so existing call sites
       ## continue to work unchanged.
+    nextChatNumber: int
+    chatClosePending: bool
+    configureChat*: proc(chat: AgentChatVM) {.closure.}
+    trackChatConfiguration*: proc(dispose: ChatConfigurationDisposer): ChatConfigurationDisposer {.closure.}
+      ## Optional presentation owner records only scopes it establishes.
     activeChatId*: Signal[string]
       ## Identifier of the currently active chat session. Used by the
       ## Assistant-tab strip in ``shell.nim`` to highlight the active
@@ -334,6 +533,9 @@ type
       ## still references it keep compiling; no renderer observes it.
     review*: ReviewResultsVM
     preview*: ProjectPreviewVM
+    previewMount*: PreviewMountHook
+      ## Set from the workspace. Nil for a project that has not adopted
+      ## mounting, whose preview then comes from `documentHtml` as before.
     flowPlayer*: FlowPlayerVM
     streamingPreview*: StreamingPreviewVM
       ## Optional handle to the M57 streaming-preview ViewModel. When
@@ -376,6 +578,28 @@ proc setSectionExpanded*(inspector: InspectorVM; section: InspectorSection;
 proc recordEditorTiming*(editor: EditorVM; kind: EditorPerformanceBudgetKind;
     durationMs: int; detail: string)
 proc detachStyleClass*(editor: EditorVM; property: string): StyleOperationResult {.discardable.}
+proc promptInFlight*(chat: AgentChatVM): bool =
+  ## Preserve bool reads/writes while tracking every lifecycle transition.
+  if chat.promptInFlightState == nil: chat.promptInFlightState = createSignal(false)
+  chat.promptInFlightState.val
+
+proc `promptInFlight=`*(chat: AgentChatVM; value: bool) =
+  if chat.promptInFlightState == nil: chat.promptInFlightState = createSignal(false)
+  chat.promptInFlightState.val = value
+
+proc closingSession*(chat: AgentChatVM): bool =
+  if chat.closingSessionState == nil: chat.closingSessionState = createSignal(false)
+  chat.closingSessionState.val
+
+proc `closingSession=`*(chat: AgentChatVM; value: bool) =
+  if chat.closingSessionState == nil: chat.closingSessionState = createSignal(false)
+  chat.closingSessionState.val = value
+
+proc agentPromptReady*(chat: AgentChatVM): bool =
+  ## Turn completion, not a ready-looking activity update, releases admission.
+  not chat.promptInFlight and not chat.closingSession and
+    chat.sessionStatus.val != asLoading
+
 proc createAgentChatVM*(): AgentChatVM
 
 # ===========================================================================
@@ -441,17 +665,91 @@ proc createChatSession*(id: string; title = ""): ChatSession =
     title: createSignal(displayed),
     vm: createAgentChatVM())
 
+when defined(js):
+  proc reportChatCleanupWarning(message: cstring) {.importjs: "console.warn(#)".}
+
+proc reportChatCleanupFailure(message: string) =
+  try:
+    when defined(js):
+      reportChatCleanupWarning(message.cstring)
+    else:
+      stderr.writeLine(message)
+  except Exception:
+    discard # Diagnostic failure is always secondary to ownership cleanup.
+
+proc disposeChatConfiguration(session: ChatSession) =
+  let dispose = session.disposeConfiguration
+  session.disposeConfiguration = nil
+  if dispose != nil:
+    try:
+      dispose()
+    except Exception:
+      let cleanupError = getCurrentException()
+      reportChatCleanupFailure("chat configuration cleanup failed: " & cleanupError.msg)
+
+proc configureChatSession*(vm: EditorVM; session: ChatSession) =
+  ## Configure initial and new chats under identical per-session ownership.
+  ## Failed attempts clean only their own scope. Successful scopes live until
+  ## successful close or the presentation owner that established them ends.
+  if vm.configureChat == nil: return
+  if session.disposeConfiguration != nil:
+    raise newException(ValueError, "Chat configuration already has an owner")
+  var disposeAttempt: proc()
+  var unregister: ChatConfigurationDisposer
+  var disposed = false
+  let disposeOnce = proc() =
+    if not disposed:
+      disposed = true
+      let release = unregister
+      unregister = nil
+      let cleanup = disposeAttempt
+      disposeAttempt = nil
+      var firstSecondaryError: ref Exception
+      try:
+        if release != nil: release()
+      except Exception:
+        firstSecondaryError = getCurrentException()
+      try:
+        if cleanup != nil: cleanup()
+      except Exception:
+        if firstSecondaryError == nil: firstSecondaryError = getCurrentException()
+      if firstSecondaryError != nil: raise firstSecondaryError
+  try:
+    createRoot proc(dispose: proc()) =
+      disposeAttempt = dispose
+      vm.configureChat(session.vm)
+    session.disposeConfiguration = disposeOnce
+    if vm.trackChatConfiguration != nil:
+      unregister = vm.trackChatConfiguration(proc() =
+        if not disposed:
+          session.disposeConfiguration = nil
+          try:
+            disposeOnce()
+          except Exception:
+            let cleanupError = getCurrentException()
+            reportChatCleanupFailure("chat configuration cleanup failed: " & cleanupError.msg))
+  except Exception:
+    let originalError = getCurrentException()
+    session.disposeConfiguration = nil
+    try:
+      disposeOnce()
+    except Exception:
+      let cleanupError = getCurrentException()
+      reportChatCleanupFailure("new chat configuration cleanup failed: " & cleanupError.msg)
+    raise originalError
+
 proc createNewChat*(vm: EditorVM): string {.discardable.} =
   ## Append a fresh chat session, activate it, and return its id.
-  ## The session id is the 1-based position of the new session at the
-  ## time of creation prefixed with ``"chat-"`` to keep ids stable for
-  ## tests and DOM attributes. Titles follow the ``"New chat"`` /
+  ## Session ids use a monotonically increasing number prefixed with
+  ## ``"chat-"`` so removing a tab never reuses a surviving id. Titles follow the ``"New chat"`` /
   ## ``"New chat 2"`` / … convention so users can distinguish sessions
   ## at a glance until they rename them.
   let nextIndex = vm.chats.val.len
-  let id = "chat-" & $(nextIndex + 1)
+  vm.nextChatNumber = max(vm.nextChatNumber + 1, nextIndex + 1)
+  let id = "chat-" & $vm.nextChatNumber
   let title = defaultChatTitleFor(nextIndex)
   let session = createChatSession(id, title)
+  vm.configureChatSession(session)
   vm.chats.update proc(prev: seq[ChatSession]): seq[ChatSession] =
     result = prev
     result.add session
@@ -486,7 +784,7 @@ proc setChatTitle*(vm: EditorVM; sessionId: string;
       return true
   false
 
-proc closeChat*(vm: EditorVM; id: string): bool {.discardable.} =
+proc removeClosedChat(vm: EditorVM; id: string): bool {.discardable.} =
   ## Remove a chat session by id. The last remaining chat is never
   ## removed — we guarantee ``vm.chats.val.len >= 1`` at all times so
   ## ``vm.chat`` always resolves to something. When the active chat is
@@ -501,6 +799,7 @@ proc closeChat*(vm: EditorVM; id: string): bool {.discardable.} =
       break
   if targetIdx < 0:
     return false
+  sessions[targetIdx].disposeChatConfiguration()
   let wasActive = vm.activeChatId.val == id
   vm.chats.update proc(prev: seq[ChatSession]): seq[ChatSession] =
     result = @[]
@@ -517,6 +816,22 @@ proc closeChat*(vm: EditorVM; id: string): bool {.discardable.} =
         ""
     vm.activeChatId.val = nextActive
   true
+
+proc closeChat*(vm: EditorVM; id: string): bool {.discardable.} =
+  if vm.chatClosePending: return false
+  for session in vm.chats.val:
+    if session.id == id:
+      if session.vm.closeAdapter != nil:
+        vm.chatClosePending = true
+        session.vm.closeAdapter(proc(ok: bool) =
+          vm.chatClosePending = false
+          if ok:
+            if vm.chats.val.len == 1:
+              discard vm.createNewChat()
+            discard vm.removeClosedChat(id))
+        return true
+      return vm.removeClosedChat(id)
+  false
 
 proc activeChatSession*(vm: EditorVM): ChatSession =
   ## Return the active ``ChatSession`` (the wrapper with id + title),
@@ -578,6 +893,8 @@ func commandLabel*(kind: EditorCommandKind): string =
   of eckDelete: "Delete"
   of eckCreateVariant: "Create variant"
   of eckCreateStory: "Create story"
+  of eckBuildProject: "Build project"
+  of eckCapturePreview: "Capture preview"
   of eckOpenSource: "Open source"
   of eckSelectPrevious: "Select previous element"
   of eckSelectNext: "Select next element"
@@ -593,6 +910,12 @@ func commandLabel*(kind: EditorCommandKind): string =
   of eckOpenCommandPalette: "Open command palette"
   of eckNavigateLayersUp: "Navigate layers up"
   of eckNavigateLayersDown: "Navigate layers down"
+  of eckOpenStory: "Open story"
+  of eckSetViewport: "Choose viewport"
+  of eckOpenPanel: "Open panel"
+  of eckSelectItem: "Select item"
+  of eckFocusTarget: "Move focus"
+  of eckHighlightItem: "Highlight item"
 
 func allEditorCommandKinds*(): seq[EditorCommandKind] =
   @[
@@ -652,6 +975,7 @@ func commandShortcut*(kind: EditorCommandKind): string =
   of eckOpenCommandPalette: "Mod+K"
   of eckNavigateLayersUp: "ArrowUp"
   of eckNavigateLayersDown: "ArrowDown"
+  of eckOpenStory, eckSetViewport, eckOpenPanel, eckSelectItem, eckFocusTarget, eckHighlightItem, eckBuildProject, eckCapturePreview: ""
 
 func commandScope*(kind: EditorCommandKind): string =
   case kind
@@ -688,13 +1012,21 @@ func commandDescription*(kind: EditorCommandKind): string =
   of eckFocusInspector: "Move focus to the inspector section search."
   of eckIncrementProperty: "Increase the first numeric selected property."
   of eckDecrementProperty: "Decrease the first numeric selected property."
-  of eckUndo: "Undo the last inspector or vector edit."
-  of eckRedo: "Redo the last inspector or vector edit."
+  of eckUndo: "Undo the most recent edit."
+  of eckRedo: "Redo the most recently undone edit."
   of eckToggleSidebar: "Show or hide the left sidebar."
   of eckToggleInspector: "Show or hide the right inspector or chat panel."
   of eckOpenCommandPalette: "Open the command palette."
   of eckNavigateLayersUp: "Move upward in the visible layer tree."
   of eckNavigateLayersDown: "Move downward in the visible layer tree."
+  of eckOpenStory: "Open a named story in the workspace."
+  of eckSetViewport: "Choose a supported preview viewport."
+  of eckOpenPanel: "Open an editor panel."
+  of eckSelectItem: "Select a named element without moving keyboard focus."
+  of eckFocusTarget: "Move keyboard focus to a named editor control."
+  of eckBuildProject: "Build the current project and refresh its story catalog."
+  of eckCapturePreview: "Capture the mounted preview document."
+  of eckHighlightItem: "Highlight a named element independently of selection."
 
 func allEditorShortcutBindings*(): seq[EditorShortcutBinding] =
   for kind in allEditorCommandKinds():
@@ -1048,7 +1380,8 @@ func cssPropertyCategory*(property: string): CSSPropertyCategory =
   elif prop in ["background-position"]:
     cpcPosition
   elif prop in ["border", "border-width", "border-color", "border-style",
-      "border-radius", "border-top-width", "border-right-width",
+      "border-radius", "border-top-left-radius", "border-top-right-radius",
+      "border-bottom-right-radius", "border-bottom-left-radius", "border-top-width", "border-right-width",
       "border-bottom-width", "border-left-width", "border-top-color",
       "border-right-color", "border-bottom-color", "border-left-color",
       "border-top-style", "border-right-style", "border-bottom-style",
@@ -1131,7 +1464,7 @@ func cssSourcePlanKind*(prop: PropertyInfo; request: PropertyEditRequest;
 proc tryParseFloatValue(raw: string; value: var float): bool =
   try:
     value = raw.parseFloat()
-    true
+    classify(value) notin {fcNan, fcInf, fcNegInf}
   except ValueError:
     false
 
@@ -1214,7 +1547,7 @@ proc defaultLongTailPropertyEvidenceMatrix*(): seq[LongTailPropertyEvidenceRow] 
       @["container-type", "container-name", "@container"],
       ltpesReadOnly, false, false, false, false, false,
       "Container-query metadata is represented in the matrix as read-only until source ownership and browser controls are implemented.",
-      @["docs/editor-long-tail-property-evidence.md",
+      @["docs/contributors/editor-long-tail-property-evidence.md",
         "tests/test_editor_release_gate.nim"])
   ]
 
@@ -1316,9 +1649,9 @@ proc parseCssPropertyValue*(property, raw: string;
   if prop == "aspect-ratio" and text.contains("/"):
     result.kind = cvkLengthPercentage
     return
-  if text.startsWith("#") or text.startsWith("rgb(") or
-      text.startsWith("rgba(") or text.startsWith("hsl(") or
-      text.startsWith("hsla("):
+  if text.startsWith("#") or text.toLowerAscii().startsWith("rgb(") or
+      text.toLowerAscii().startsWith("rgba(") or text.toLowerAscii().startsWith("hsl(") or
+      text.toLowerAscii().startsWith("hsla("):
     result.kind = cvkColor
     result.canonical = text.toLowerAscii()
     return
@@ -1378,6 +1711,24 @@ func validAspectRatio(raw: string): bool =
 func validKeywordForProperty(propName, raw: string): bool =
   let text = raw.strip().toLowerAscii()
   case propName
+  of "width", "height", "min-width", "min-height", "max-width", "max-height",
+      "top", "right", "bottom", "left", "inset", "margin", "margin-top",
+      "margin-right", "margin-bottom", "margin-left", "padding", "padding-top",
+      "padding-right", "padding-bottom", "padding-left", "gap", "row-gap",
+      "column-gap", "font-size", "letter-spacing", "word-spacing", "border-width",
+      "border-radius", "border-top-left-radius", "border-top-right-radius",
+      "border-bottom-right-radius", "border-bottom-left-radius", "border-top-width", "border-right-width", "border-bottom-width",
+      "border-left-width":
+    var numeric = 0.0
+    if tryParseFloatValue(text, numeric): return numeric == 0
+    if text in ["inherit", "initial", "unset", "revert", "revert-layer"]: return true
+    if text == "auto": return propName in ["width", "height", "min-width", "min-height",
+      "top", "right", "bottom", "left", "inset", "margin", "margin-top", "margin-right", "margin-bottom", "margin-left"]
+    if text == "none": return propName in ["max-width", "max-height"]
+    if text == "normal": return propName in ["gap", "row-gap", "column-gap", "letter-spacing", "word-spacing"]
+    if text in ["min-content", "max-content", "fit-content", "stretch"]:
+      return propName in ["width", "height", "min-width", "min-height", "max-width", "max-height"]
+    false
   of "overflow", "overflow-x", "overflow-y":
     text in ["visible", "hidden", "clip", "scroll", "auto"]
   of "overscroll-behavior":
@@ -1455,8 +1806,12 @@ proc validateCssPropertyValue*(prop: PropertyInfo; request: PropertyEditRequest;
   let allowed = allowedValueKinds(category)
   let propName = prop.name.normalizedCssName()
   let raw = normalized.raw.strip()
-  if normalized.kind notin allowed and not (
-      propName == "opacity" and normalized.kind == cvkOpacity):
+  let isRadius = propName == "border-radius" or
+    (propName.startsWith("border-") and propName.endsWith("-radius"))
+  if (isRadius and normalized.kind notin {cvkKeyword, cvkLength,
+      cvkPercentage, cvkLengthPercentage, cvkTokenReference}) or
+      (not isRadius and normalized.kind notin allowed and not (
+      propName == "opacity" and normalized.kind == cvkOpacity)):
     result.add cssDiagnostic(pedInvalidCssValue, prop,
       "This property does not accept " & $normalized.kind & " values.")
 
@@ -1472,6 +1827,9 @@ proc validateCssPropertyValue*(prop: PropertyInfo; request: PropertyEditRequest;
     if not tryParseFloatValue(raw[0 ..< raw.len - normalized.unit.len], parsed):
       result.add cssDiagnostic(pedInvalidCssValue, prop,
         "CSS length values must use a numeric amount.")
+    if normalized.unit in ["ms","s"] and propName notin
+        ["transition-duration","transition-delay","animation-duration","animation-delay"]:
+      result.add cssDiagnostic(pedInvalidCssValue,prop,"This property requires a spatial CSS length unit.")
   if normalized.kind == cvkPercentage:
     var parsed = 0.0
     if raw.len <= 1 or not tryParseFloatValue(raw[0 ..< raw.len - 1], parsed):
@@ -1479,9 +1837,10 @@ proc validateCssPropertyValue*(prop: PropertyInfo; request: PropertyEditRequest;
         "CSS percentage values must use a numeric amount.")
   if normalized.kind in {cvkLength, cvkPercentage} and
       propName notin ["z-index", "rotate"] and
-      normalized.numeric < 0 and propName.startsWith("padding"):
+      normalized.numeric < 0 and (propName.startsWith("padding") or
+        (propName.startsWith("border-") and propName.endsWith("radius"))):
     result.add cssDiagnostic(pedInvalidCssValue, prop,
-      "Padding values cannot be negative.")
+      "Padding and corner radius values cannot be negative.")
   if propName in ["transition-duration", "transition-delay", "animation-duration",
       "animation-delay"] and normalized.kind == cvkLength and
       normalized.numeric < 0:
@@ -1503,6 +1862,9 @@ proc validateCssPropertyValue*(prop: PropertyInfo; request: PropertyEditRequest;
         not tryParseFloatValue(normalized.canonical, parsed):
       result.add cssDiagnostic(pedInvalidCssValue, prop,
         "z-index must be an integer.")
+  if normalized.kind == cvkColor and not validCssColorLiteral(raw):
+    result.add cssDiagnostic(pedInvalidCssValue, prop,
+      "Color literals must contain complete finite color channels.")
   if normalized.kind == cvkColor and raw.startsWith("#"):
     let hex = raw[1 .. ^1]
     if hex.len notin [3, 4, 6, 8] or
@@ -1619,7 +1981,22 @@ proc sourcePlan(prop: PropertyInfo; request: PropertyEditRequest;
   let before = prop.originDetail & " " & prop.name & ": " & prop.value
   let after = prop.originDetail & " " & prop.name & ": " & normalized.canonical
   let expectedOld =
-    if prop.originDetail.startsWith("iframe-dom:"): ""
+    # A value nobody authored cannot be used to verify what was authored.
+    #
+    # `expectedOldValue` is checked by looking for it VERBATIM in the file,
+    # which only works when the property's value is the text that is in the
+    # file. For anything read off `getComputedStyle` it is not: the browser
+    # reports `letter-spacing` as `-0.01px` while the stylesheet says
+    # `var(--sys-tracking-display)`, so the check refused every such edit
+    # with "Source changed before the pending edit could be applied" -- a
+    # conflict against a change nobody made.
+    #
+    # `iframe-dom:` was already exempt for this reason. `computed:` is the
+    # same capture by a different route and needs the same exemption; it was
+    # added later and this was missed, which is exactly the kind of thing two
+    # spellings of one idea cost.
+    if prop.originDetail.startsWith("iframe-dom:") or
+       prop.originDetail.startsWith("computed:"): ""
     else: prop.value
   let variantSuffix =
     if prop.variantKey.len > 0: ":" & prop.variantKey else: ""
@@ -1983,43 +2360,45 @@ proc selectStory*(editor: EditorVM; story: StoryRef): bool {.discardable.} =
   if not editor.hasStory(story):
     return false
 
-  let nextView = viewForStory(story)
-  # M-EVP-8: selecting a non-vector-symbol story while the vector editor
-  # is open closes it before routing to the new view. Selecting the same
-  # vector-symbol story keeps the editor open (no-op on the target /
-  # usages).
-  if editor.activeView.val == evVectorEditor and story.kind != skVectorSymbol:
-    editor.vectorEditorTarget.val = none(StoryRef)
-    editor.vectorEditorUsages.val = @[]
-    editor.vectorEditorUsageIndex.val = 0
-  # Track the prior view so the back affordance has a target. Skip the
-  # snapshot when we're already in the vector editor — the snapshot
-  # taken at ``openVectorEditor`` time is the one we want to restore.
-  if editor.activeView.val != evVectorEditor and
-      editor.activeView.val != nextView:
-    editor.previousView.val = editor.activeView.val
+  # Publish one coherent selection transition before dependent views render.
+  batch proc() =
+    let nextView = viewForStory(story)
+    # M-EVP-8: selecting a non-vector-symbol story while the vector editor
+    # is open closes it before routing to the new view. Selecting the same
+    # vector-symbol story keeps the editor open (no-op on the target /
+    # usages).
+    if editor.activeView.val == evVectorEditor and story.kind != skVectorSymbol:
+      editor.vectorEditorTarget.val = none(StoryRef)
+      editor.vectorEditorUsages.val = @[]
+      editor.vectorEditorUsageIndex.val = 0
+    # Track the prior view so the back affordance has a target. Skip the
+    # snapshot when we're already in the vector editor — the snapshot
+    # taken at ``openVectorEditor`` time is the one we want to restore.
+    if editor.activeView.val != evVectorEditor and
+        editor.activeView.val != nextView:
+      editor.previousView.val = editor.activeView.val
 
-  editor.selectedStory.val = story
-  editor.activeView.val = nextView
-  editor.applyFoundationStoryScope(story)
-  discard editor.ensureComponentPropertySchemaForSelectedStory()
-  editor.storyboard.selectedItem.val = editor.findCanvasItem(story)
-  editor.syncFlowStep(story)
-  editor.recordEditorTiming(epbkStorySelection, 1,
-    "story-selection:" & story.group & "/" & story.name)
-  # RS-M12: publish the ``select-story`` packet to the active bridge.
-  # On the JS target, ``canvas_mount.attachIfNeeded``'s reactive
-  # effect ALSO fires `sendCurrentStory` on its next tick — the
-  # `lastSentStoryId` guard inside the bridge binding dedupes the
-  # two send paths, so packets land exactly once. This explicit
-  # call lets headless test harnesses (and any future native render
-  # surfaces) trigger the send without driving the canvas mount
-  # render effect.
-  let storyId = storyIdFor(story)
-  let kindWire = storyKindWire(story.kind)
-  if editor.streamingPreview != nil:
-    editor.streamingPreview.publishSelectStory(story.group, story.name,
-                                                kindWire, storyId)
+    editor.selectedStory.val = story
+    editor.activeView.val = nextView
+    editor.applyFoundationStoryScope(story)
+    discard editor.ensureComponentPropertySchemaForSelectedStory()
+    editor.storyboard.selectedItem.val = editor.findCanvasItem(story)
+    editor.syncFlowStep(story)
+    editor.recordEditorTiming(epbkStorySelection, 1,
+      "story-selection:" & story.group & "/" & story.name)
+    # RS-M12: publish the ``select-story`` packet to the active bridge.
+    # On the JS target, ``canvas_mount.attachIfNeeded``'s reactive
+    # effect ALSO fires `sendCurrentStory` on its next tick — the
+    # `lastSentStoryId` guard inside the bridge binding dedupes the
+    # two send paths, so packets land exactly once. This explicit
+    # call lets headless test harnesses (and any future native render
+    # surfaces) trigger the send without driving the canvas mount
+    # render effect.
+    let storyId = storyIdFor(story)
+    let kindWire = storyKindWire(story.kind)
+    if editor.streamingPreview != nil:
+      editor.streamingPreview.publishSelectStory(story.group, story.name,
+                                                  kindWire, storyId)
   true
 
 proc computeVectorEditorUsages*(editor: EditorVM; symbolName: string):
@@ -2270,10 +2649,23 @@ proc switchInspectorSection*(editor: EditorVM; section: InspectorSection) =
 # ---------------------------------------------------------------------------
 
 proc openSourceForSelection*(editor: EditorVM) =
-  ## Phase B no-op. Later phases route this through the source
-  ## bridge to open ``vm.inspector.selectedElement``'s
-  ## ``sourceFile``/``sourceLine`` in the editor pane.
-  discard
+  ## Reveal where the selection comes from: expand the Source section and
+  ## put it in view.
+  ##
+  ## It was a no-op ("Phase B"), which made it a button that did nothing --
+  ## and the panel already knows the answer, because `Source` reports the
+  ## file, the line and the cascade that produced each value. Opening an
+  ## external editor is a capability this build does not have; showing what
+  ## it would open is one it does.
+  editor.inspector.setSectionExpanded(isSource, true)
+  # Mark it as a user decision so the per-kind defaults do not close it
+  # again on the next selection -- the person asked for this section.
+  var touched = editor.inspector.sectionsUserSet.val
+  if isSource notin touched:
+    touched.add isSource
+    editor.inspector.sectionsUserSet.val = touched
+  editor.inspector.revealSectionRequest.val =
+    editor.inspector.revealSectionRequest.val + 1
 
 proc toggleSelectionVisible*(editor: EditorVM) =
   ## Flip the selection-header visibility toggle. Owned here (not
@@ -2283,13 +2675,17 @@ proc toggleSelectionVisible*(editor: EditorVM) =
     not editor.inspector.selectionVisible.val
 
 proc duplicateSelection*(editor: EditorVM) =
-  ## Phase B no-op. Later phases route through the workspace edit
-  ## adapter to clone the selected element in source.
+  ## Still unimplemented -- cloning an element means writing new source,
+  ## which is a different capability from editing a declaration.
+  ##
+  ## The BUTTON is now hidden unless `permissions.duplicate` is true, so
+  ## nothing offers this until something can do it. Kept as a named seam so
+  ## the day it lands there is one place to put it.
   discard
 
 proc showSelectionMore*(editor: EditorVM) =
-  ## Phase B no-op. Later phases open the overflow popover anchored
-  ## to the ``⫶⫶`` button.
+  ## Still unimplemented -- there is no overflow menu to open. The button is
+  ## hidden; see `duplicateSelection` for why the proc stays.
   discard
 
 func fallbackElementId(element: ElementRef): string =
@@ -2523,8 +2919,47 @@ proc refreshLayerFlags(inspector: InspectorVM) =
     inspector.hoveredElementId.val,
     inspector.expandedLayerIds.val)
 
+proc publishStyleProvenance(inspector: InspectorVM; next: var ElementRef) =
+  ## Carry the selection's authored provenance across a re-selection, and
+  ## publish its diagnostics.
+  ##
+  ## The same element gets selected more than once, by design. The preview
+  ## bridge selects it from the DOM -- where `data-isonim-props` lives -- and
+  ## then the selection ECHO re-selects it from a layer row, which is built
+  ## from the scene-graph tree and carries no provenance at all. Assigning
+  ## the echo's `ElementRef` verbatim would silently downgrade the selection
+  ## a few milliseconds after it arrived: the chip would appear and vanish,
+  ## and the unresolved-binding diagnostic with it. The breadcrumb already
+  ## has to defend against this same echo; this is the property-level
+  ## counterpart.
+  ##
+  ## Retention is conditional on the id matching, so selecting a DIFFERENT
+  ## element correctly clears what the previous one carried.
+  if next.styleBindings.len == 0:
+    let current = inspector.selectedElement.val
+    if current.styleBindings.len > 0 and
+        current.fallbackElementId() == next.fallbackElementId():
+      next.styleBindings = current.styleBindings
+  inspector.editDiagnostics.val = styleBindingDiagnostics(
+    next.styleBindings, next.sourceFile, next.sourceLine)
+
+proc applyKindDefaultExpansion*(inspector: InspectorVM; element: ElementRef)
+  ## Forward-declared: defined with the other section-expansion procs, but
+  ## the call site is selection, which is here.
+
+proc seedStyleProvenanceBindings(editor: EditorVM; element: ElementRef)
+  ## Forward-declared: the body needs ``resolveVariableValue`` and
+  ## ``sameTokenKey``, both defined further down this module, and the call
+  ## site is selection, which is defined here.
+
 proc selectInspectorElement*(editor: EditorVM; element: ElementRef;
     origin = soExternal): bool {.discardable.} =
+  ## Selecting an element also publishes its *authored* style provenance:
+  ## ``editDiagnostics`` gains an entry per styling construct the DSL captured
+  ## and could not resolve, and ``propertyBindings`` gains a chip for every
+  ## property whose authored form was a token reference. Both are derived from
+  ## ``element.styleBindings`` and both are empty for a selection that carries
+  ## no payload, so a non-IsoNim preview behaves exactly as it did.
   if element.tag.len == 0:
     editor.inspector.selectedElement.val = ElementRef()
     editor.inspector.editDiagnostics.val = @[]
@@ -2543,8 +2978,15 @@ proc selectInspectorElement*(editor: EditorVM; element: ElementRef;
       else: next.sourceKey
   if next.ancestorIds.len == 0:
     next.ancestorIds = @[next.id]
+  # Requirement 8 ("never fail silently"): a class that is in no class index,
+  # or a styling attribute computed at runtime, contributes NOTHING to the
+  # rendered element and used to say so nowhere. It says so here, on the same
+  # signal the inspector already renders edit diagnostics from, at the moment
+  # the user looks at the element.
+  editor.inspector.publishStyleProvenance(next)
   editor.inspector.selectedElement.val = next
-  editor.inspector.editDiagnostics.val = @[]
+  editor.seedStyleProvenanceBindings(next)
+  editor.inspector.applyKindDefaultExpansion(next)
   editor.inspector.noteBreadcrumbSelection(next, origin)
   if editor.inspector.layers.val.len == 0:
     editor.inspector.layers.val = @[next.rowFromElement()]
@@ -2560,10 +3002,22 @@ proc previewDomElementRef*(metadata: StoryRenderMetadata; tag, testId,
     margin, width, height, borderRadius, borderWidth, borderStyle, borderColor,
     fontSize, fontWeight, lineHeight, boxShadow, opacity, rectWidth,
     rectHeight, textContent, elementId, sourceKey, schemaKey, ancestorIds,
-    layerTreeJson: string): ElementRef =
+    layerTreeJson: string; styleBindings = "";
+    computedStyles = ""): ElementRef =
   ## Build the generic inspector selection produced by the browser iframe DOM
   ## bridge. Projects own the preview HTML/source metadata; the editor owns the
   ## normalized ElementRef and editable property model.
+  ##
+  ## ``styleBindings`` is the element's ``data-isonim-props`` payload -- the
+  ## authored style provenance the ``ui`` DSL captured at macro time. Every
+  ## other argument here is a *computed* style read out of the preview iframe,
+  ## and a computed style cannot say whether ``12px`` was written ``p-3``,
+  ## ``padding = "12px"`` or ``var(--space-3)``. That is why every property
+  ## built below used to be stamped ``poInherited``: with only the computed
+  ## value in hand, it was the one claim that was not a guess. The payload is
+  ## the missing half, and ``withStyleProvenance`` restamps the list with it.
+  ## When it is empty -- a non-IsoNim preview document, a hand-built fixture --
+  ## the properties keep exactly the shape they had before.
   let file =
     if sourceFile.len > 0: sourceFile
     else: metadata.sourceFile
@@ -2685,10 +3139,24 @@ proc previewDomElementRef*(metadata: StoryRenderMetadata; tag, testId,
     sourceLine: line,
     sourceColumn: 1,
     depth: max(0, ancestors.len - 1),
-    properties: props,
+    # The computed capture first, restamped with its provenance, then every
+    # property the author set that the capture never asked for. Order matters
+    # only in that the captured ones keep their computed values.
+    # Three sources, best first. The named capture restamped with its
+    # provenance; then what the author wrote that the capture never asked
+    # for; then every remaining property the inspector has a row for, as a
+    # bare computed value. Each later group only fills gaps the earlier ones
+    # left, so a property never loses a better origin to a worse one.
+    properties: block:
+      let named = props.withStyleProvenance(styleBindings)
+      let authored = props.authoredOnlyProperties(styleBindings,
+        schemaPrefix)
+      named & authored & (named & authored).computedStyleProperties(
+        computedStyles, schemaPrefix),
     children: children,
     ancestors: ancestors,
-    ancestorIds: parsedAncestorIds)
+    ancestorIds: parsedAncestorIds,
+    styleBindings: styleBindings)
 
 proc previewDomElementRef*(metadata: StoryRenderMetadata; tag, testId,
     className, sourceFile: string; sourceLine: int; backgroundColor, color,
@@ -2711,9 +3179,18 @@ proc selectInspectorElementById*(editor: EditorVM; id: string;
       # alone reports the row as its own only ancestor, which collapsed
       # the status-bar breadcrumb to a single segment whenever the
       # selection came from a row rather than from the preview.
-      editor.inspector.selectedElement.val =
-        editor.inspector.elementFromRow(row)
-      editor.inspector.editDiagnostics.val = @[]
+      var fromRow = editor.inspector.elementFromRow(row)
+      # A layer row has no `data-isonim-props`; `publishStyleProvenance`
+      # carries it over when this is the SAME element the preview selected.
+      editor.inspector.publishStyleProvenance(fromRow)
+      editor.inspector.selectedElement.val = fromRow
+      editor.seedStyleProvenanceBindings(fromRow)
+      editor.inspector.applyKindDefaultExpansion(fromRow)
+      # By-id actions from Layers, keyboard navigation or commands are
+      # explicit selections, even when they target the breadcrumb's current
+      # parent. Only the preview's returned ElementRef may be its own echo.
+      if origin == soExternal:
+        editor.inspector.breadcrumbWalkId.val = ""
       editor.inspector.noteBreadcrumbSelection(
         editor.inspector.selectedElement.val, origin)
       editor.inspector.refreshLayerFlags()
@@ -2883,6 +3360,120 @@ proc redoFoundationTokenEdit*(editor: EditorVM): bool {.discardable.}
 proc undoComponentVariantEdit*(editor: EditorVM): bool {.discardable.}
 proc redoComponentVariantEdit*(editor: EditorVM): bool {.discardable.}
 proc clearSourceEditJournal*(inspector: InspectorVM)
+proc noteCommitForAutoSave*(editor: EditorVM)
+
+proc scheduleStagedWrite(editor: EditorVM) =
+  ## Schedule the automatic write for a commit that staged a plan outside the
+  ## inspector row path (component properties and states, foundation tokens,
+  ## vector edits, canvas commands, and the undo/redo of those).
+  ##
+  ## The inspector row path schedules from `commitInspectorValue`; these paths
+  ## stage into the same journal and used to schedule nothing, so the edit sat
+  ## pending until somebody pressed a Save control the spec says does not
+  ## exist (editor spec "Saving": every commit stages, the browser layer
+  ## debounces and writes).
+  ##
+  ## Gated like the row path: an edit staged with no adapter ready is reported
+  ## where it was made, and scheduling it would only send the status bar
+  ## through a failure for something the user was already told about.
+  if editor.sourceAdapterReady.val:
+    editor.noteCommitForAutoSave()
+
+func historyEntryOnDisk[T](entry: T): bool =
+  entry.lastWrite.recorded and entry.lastWriteApplied
+
+func splitUnsavedHistory[T](undo, redo: seq[T]): tuple[kept, unsaved,
+    reapply: seq[T]] =
+  ## What Revert/Discard throws away from a component-property, foundation or
+  ## vector history now that it survives writes.
+  ##
+  ## ``unsaved``: undo-stack entries above the last one whose write is on
+  ## disk, top first; their model changes are reverted. ``reapply``: redo-stack
+  ## entries whose undo never reached disk, most recently undone first; the
+  ## discarded undo is reversed so the model again matches the file. Everything
+  ## else on the redo stack stops being redoable, which is what discarding it
+  ## means. Same rule as `discardCssPropertyEdits`: written work is kept.
+  var top = undo.len
+  while top > 0 and not undo[top - 1].historyEntryOnDisk:
+    dec top
+  result.kept = undo[0 ..< top]
+  for i in countdown(undo.high, top):
+    result.unsaved.add undo[i]
+  var r = redo.high
+  while r >= 0 and redo[r].historyEntryOnDisk:
+    result.reapply.add redo[r]
+    dec r
+
+type
+  EditorHistoryKind* = enum
+    ## Which history the next undo/redo acts on. See `nextHistoryKind`.
+    ehkNone, ehkInspector, ehkVector, ehkFoundation, ehkVariant
+
+func topHistoryId[T](stack: seq[T]): int =
+  if stack.len == 0: -1 else: stack[^1].sourceEdit.historyId
+
+proc newestUndoId(editor: EditorVM): int =
+  max([editor.inspector.undoStack.val.topHistoryId,
+    editor.vectorEditor.undoStack.val.topHistoryId,
+    editor.foundations.undoStack.val.topHistoryId,
+    editor.variants.undoStack.val.topHistoryId])
+
+func liveRedo[T](stack: seq[T]; newestUndo: int): seq[T] =
+  ## A redo entry older than the newest undo entry was cut off by a later
+  ## edit (in any history) and is no longer redoable.
+  for entry in stack:
+    let id = entry.sourceEdit.historyId
+    if id <= 0 or id > newestUndo:
+      result.add entry
+
+proc nextHistoryKind*(editor: EditorVM; redo: bool): EditorHistoryKind =
+  ## The four histories are one timeline (editor spec "Saving"): every entry's
+  ## plan carries a ``historyId`` from one counter, so undo takes the newest
+  ## top entry and redo the most recently undone, whichever history holds it.
+  ##
+  ## Ties (entries without an id) keep the old order: inspector, vector,
+  ## foundation, component property.
+  result = ehkNone
+  if not redo:
+    var best = -1
+    for (kind, id) in [
+        (ehkInspector, editor.inspector.undoStack.val.topHistoryId),
+        (ehkVector, editor.vectorEditor.undoStack.val.topHistoryId),
+        (ehkFoundation, editor.foundations.undoStack.val.topHistoryId),
+        (ehkVariant, editor.variants.undoStack.val.topHistoryId)]:
+      if id > best:
+        best = id
+        result = kind
+    return
+  let newest = editor.newestUndoId()
+  var best = high(int)
+  var found = false
+  for (kind, id) in [
+      (ehkInspector, editor.inspector.redoStack.val.liveRedo(newest).topHistoryId),
+      (ehkVector, editor.vectorEditor.redoStack.val.liveRedo(newest).topHistoryId),
+      (ehkFoundation, editor.foundations.redoStack.val.liveRedo(newest).topHistoryId),
+      (ehkVariant, editor.variants.redoStack.val.liveRedo(newest).topHistoryId)]:
+    if id < 0:
+      continue
+    let rank = if id == 0: high(int) - 1 else: id
+    if not found or rank < best:
+      best = rank
+      result = kind
+      found = true
+
+proc pruneCutOffRedo(editor: EditorVM) =
+  ## Drop redo entries a later edit cut off (see `liveRedo`). Each history's
+  ## own edits already clear its redo stack; this is what makes an edit in
+  ## one history end redo in the others.
+  let newest = editor.newestUndoId()
+  template prune(stack: untyped) =
+    let live = stack.val.liveRedo(newest)
+    if live.len != stack.val.len:
+      stack.val = live
+  prune(editor.inspector.redoStack)
+  prune(editor.vectorEditor.redoStack)
+  prune(editor.foundations.redoStack)
+  prune(editor.variants.redoStack)
 proc evaluateCommand*(editor: EditorVM;
     kind: EditorCommandKind): EditorCommandState
 
@@ -2953,6 +3544,15 @@ proc commandRequirementFailure(editor: EditorVM;
   let permissions = editor.workspacePermissions.val
   let source = editor.selectedSourceContext()
 
+  if kind == eckSave and editor.sourceBindingMetadataDirty != nil and editor.sourceBindingMetadataDirty.val:
+    if not permissions.writeSource: return "This workspace is read-only for binding metadata changes."
+    if editor.sourceBindingMetadataSave == nil: return "Binding metadata connection unavailable."
+    return ""
+
+  if kind in {eckOpenStory, eckSetViewport, eckOpenPanel, eckSelectItem,
+      eckFocusTarget, eckHighlightItem}:
+    return "This command requires a typed target payload."
+
   if kind in {eckOpenCommandPalette, eckToggleSidebar, eckToggleInspector,
       eckFocusInspector}:
     return ""
@@ -2970,18 +3570,12 @@ proc commandRequirementFailure(editor: EditorVM;
     return ""
 
   if kind == eckUndo:
-    if editor.inspector.undoStack.val.len == 0 and
-        editor.vectorEditor.undoStack.val.len == 0 and
-        editor.foundations.undoStack.val.len == 0 and
-        editor.variants.undoStack.val.len == 0:
+    if editor.nextHistoryKind(redo = false) == ehkNone:
       return "There is no edit to undo."
     return ""
 
   if kind == eckRedo:
-    if editor.inspector.redoStack.val.len == 0 and
-        editor.vectorEditor.redoStack.val.len == 0 and
-        editor.foundations.redoStack.val.len == 0 and
-        editor.variants.redoStack.val.len == 0:
+    if editor.nextHistoryKind(redo = true) == ehkNone:
       return "There is no edit to redo."
     return ""
 
@@ -3063,7 +3657,8 @@ proc commandRequirementFailure(editor: EditorVM;
   of eckSelectPrevious, eckSelectNext, eckSelectParent, eckSelectChild,
       eckFocusInspector, eckIncrementProperty, eckDecrementProperty, eckUndo,
       eckRedo, eckToggleSidebar, eckToggleInspector, eckOpenCommandPalette,
-      eckNavigateLayersUp, eckNavigateLayersDown:
+      eckNavigateLayersUp, eckNavigateLayersDown, eckOpenStory, eckSetViewport,
+      eckOpenPanel, eckSelectItem, eckFocusTarget, eckHighlightItem, eckBuildProject, eckCapturePreview:
     ""
 
 proc evaluateCommand*(editor: EditorVM;
@@ -3117,54 +3712,67 @@ proc failCommand(editor: EditorVM; kind: EditorCommandKind;
   editor.setCommandState(result)
 
 proc applyWorkspaceFileEdits*(editor: EditorVM): WorkspaceEditResult {.discardable.}
+proc inspectorHistoryRefusal(editor: EditorVM; redo: bool): PropertyEditDiagnostic
+
+proc refuseInspectorHistory(editor: EditorVM; kind: EditorCommandKind;
+    refusal: PropertyEditDiagnostic): EditorCommandState =
+  ## A refused undo/redo changes nothing but what it reports: the history,
+  ## the journal, the preview and the file stay exactly as they were.
+  editor.inspector.editDiagnostics.val = @[refusal]
+  editor.workspaceEditStage.val = wesFailed
+  editor.workspaceEditDiagnostics.val = @[workspaceDiagnostic(wedSourceConflict,
+    refusal.message, file = refusal.file, property = refusal.property)]
+  editor.failCommand(kind, refusal.message)
 proc sendAgentPrompt*(editor: EditorVM): bool {.discardable.}
 
 proc setEditMode*(editor: EditorVM; mode: EditMode) =
-  editor.editMode.val = mode
-  # Phase I/J/L (2026-05-28): the mode strip now carries Spec as a
-  # fourth option in front of View/Comment/Edit. Picking Spec couples
-  # ``surfaceSig`` to ``sSpec`` so the existing centre-column mounting
-  # logic flips to the spec pane; picking any of the other three modes
-  # restores the preview surface. This keeps ``surfaceSig`` as the
-  # authoritative signal driving the spec-pane mount + the display
-  # gating while the visible control is unified into the mode strip.
-  if mode == emSpec:
-    if editor.surfaceSig.val != sSpec:
-      editor.surfaceSig.val = sSpec
-  else:
-    if editor.surfaceSig.val != sPreview:
-      editor.surfaceSig.val = sPreview
-  # M-EVP-12 fix-cycle 2: when the canvas-preview path is active
-  # (Pattern A: any non-Web preview backend), the chrome bar Edit
-  # chip toggles the M-EVP-10 overlay handles *in place* on the
-  # component_detail / page_preview canvas — it must NOT swap the
-  # whole view to `evComponentEdit` (the source-edit screen), which
-  # would unmount the canvas + handles. The auto-switch only applies
-  # to the Web/iframe path where the canvas overlay is not painted.
-  let canvasActive =
-    editor.streamingPreview != nil and
-    editor.streamingPreview.selectedBackend.val != pbWeb
-  # Layout-invariance fix (preview layout identical across modes): a
-  # PAGE story (``evPagePreview``) must NOT swap to the source-edit
-  # canvas (``evComponentEdit``) when entering emComment/emEdit. That
-  # surface lays the composed page out at the fluid centre-column width
-  # (iframe ``width:100%`` inside a ``padding:24px`` scroll box) instead
-  # of the viewport-sized white device frame ``page_preview.nim`` uses,
-  # so the previewed page visibly re-wraps at a different width the
-  # instant the operator toggles the mode chip — and because nothing
-  # restored the surface on leaving Edit (emView left ``activeView`` on
-  # ``evComponentEdit``), View-after-Edit no longer matched
-  # View-before-Edit. Page stories now stay on ``evPagePreview`` across
-  # View/Comment/Edit; ``page_preview.nim`` overlays the editable
-  # selection bridge on the SAME device-frame render so element
-  # selection + the property inspector (the M1-M7 variable binding)
-  # still work. Keeping the surface constant also makes the round-trip
-  # emView→emEdit→emView invariant hold for free. Component stories keep
-  # their existing in-place-vs-source-edit split
-  # (``evComponentDetail`` → ``evComponentEdit``).
-  if mode in {emComment, emEdit} and
-      editor.activeView.val == evComponentDetail and not canvasActive:
-    editor.activeView.val = evComponentEdit
+  # Publish the mode, surface and owning view before dependent previews render.
+  batch proc() =
+    editor.editMode.val = mode
+    # Phase I/J/L (2026-05-28): the mode strip now carries Spec as a
+    # fourth option in front of View/Comment/Edit. Picking Spec couples
+    # ``surfaceSig`` to ``sSpec`` so the existing centre-column mounting
+    # logic flips to the spec pane; picking any of the other three modes
+    # restores the preview surface. This keeps ``surfaceSig`` as the
+    # authoritative signal driving the spec-pane mount + the display
+    # gating while the visible control is unified into the mode strip.
+    if mode == emSpec:
+      if editor.surfaceSig.val != sSpec:
+        editor.surfaceSig.val = sSpec
+    else:
+      if editor.surfaceSig.val != sPreview:
+        editor.surfaceSig.val = sPreview
+    # M-EVP-12 fix-cycle 2: when the canvas-preview path is active
+    # (Pattern A: any non-Web preview backend), the chrome bar Edit
+    # chip toggles the M-EVP-10 overlay handles *in place* on the
+    # component_detail / page_preview canvas — it must NOT swap the
+    # whole view to `evComponentEdit` (the source-edit screen), which
+    # would unmount the canvas + handles. The auto-switch only applies
+    # to the Web/iframe path where the canvas overlay is not painted.
+    let canvasActive =
+      editor.streamingPreview != nil and
+      editor.streamingPreview.selectedBackend.val != pbWeb
+    # Layout-invariance fix (preview layout identical across modes): a
+    # PAGE story (``evPagePreview``) must NOT swap to the source-edit
+    # canvas (``evComponentEdit``) when entering emComment/emEdit. That
+    # surface lays the composed page out at the fluid centre-column width
+    # (iframe ``width:100%`` inside a ``padding:24px`` scroll box) instead
+    # of the viewport-sized white device frame ``page_preview.nim`` uses,
+    # so the previewed page visibly re-wraps at a different width the
+    # instant the operator toggles the mode chip — and because nothing
+    # restored the surface on leaving Edit (emView left ``activeView`` on
+    # ``evComponentEdit``), View-after-Edit no longer matched
+    # View-before-Edit. Page stories now stay on ``evPagePreview`` across
+    # View/Comment/Edit; ``page_preview.nim`` overlays the editable
+    # selection bridge on the SAME device-frame render so element
+    # selection + the property inspector (the M1-M7 variable binding)
+    # still work. Keeping the surface constant also makes the round-trip
+    # emView→emEdit→emView invariant hold for free. Component stories keep
+    # their existing in-place-vs-source-edit split
+    # (``evComponentDetail`` → ``evComponentEdit``).
+    if mode in {emComment, emEdit} and
+        editor.activeView.val == evComponentDetail and not canvasActive:
+      editor.activeView.val = evComponentEdit
 
 proc setVectorTool*(editor: EditorVM; tool: VectorTool) =
   editor.vectorEditor.activeTool.val = tool
@@ -3176,9 +3784,15 @@ proc panVectorCanvas*(editor: EditorVM; dx, dy: float) =
   editor.vectorEditor.panX.val = editor.vectorEditor.panX.val + dx
   editor.vectorEditor.panY.val = editor.vectorEditor.panY.val + dy
 
+proc discardCssPropertyEdits*(inspector: InspectorVM)
+  ## Forward-declared: `runEditorCommand`'s Revert arm delegates to it, and it
+  ## is defined further down with the rest of the edit-history machinery.
+
 proc runEditorCommand*(editor: EditorVM;
     kind: EditorCommandKind): EditorCommandState {.discardable.} =
   ## Dispatch a framework-owned editor command with deterministic state.
+  if kind in {eckUndo, eckRedo}:
+    editor.pruneCutOffRedo()
   let available = editor.evaluateCommand(kind)
   if available.status == ecsDisabled:
     return editor.failCommand(kind, available.diagnostic)
@@ -3197,50 +3811,77 @@ proc runEditorCommand*(editor: EditorVM;
   of eckInspect:
     editor.setEditMode(emView)
     editor.recordEditorTiming(epbkModeSwitch, 1, "command:view")
+  of eckOpenStory, eckSetViewport, eckOpenPanel, eckSelectItem, eckFocusTarget, eckHighlightItem, eckBuildProject, eckCapturePreview:
+    return editor.failCommand(kind, "This command requires a typed target payload.")
   of eckApply:
     discard
   of eckRevert, eckDiscard:
-    let stack = editor.inspector.undoStack.val
-    if stack.len > 0:
-      editor.inspector.selectedElement.val = stack[0].beforeElement
-    let foundationStack = editor.foundations.undoStack.val
-    if foundationStack.len > 0:
+    # The inspector's half is `discardCssPropertyEdits`, not a second copy of
+    # it. This block used to inline the same rule -- revert to
+    # `stack[0].beforeElement`, then clear both stacks -- and the two drifted
+    # apart the moment the history started surviving saves: the inlined copy
+    # kept reverting to the start of the SESSION and throwing away edits that
+    # were already on disk.
+    #
+    # The other three histories follow the same rule for the same reason:
+    # they survive writes now, so "revert to the first entry" would throw
+    # away values that are already on disk. See `splitUnsavedHistory`.
+    editor.inspector.discardCssPropertyEdits()
+    let foundationSplit = splitUnsavedHistory(editor.foundations.undoStack.val,
+      editor.foundations.redoStack.val)
+    if foundationSplit.unsaved.len > 0 or foundationSplit.reapply.len > 0:
       var updatedTokens = editor.foundations.tokens.val
-      for historyIndex in countdown(foundationStack.len - 1, 0):
-        let history = foundationStack[historyIndex]
+      var selectedKey = ""
+      for history in foundationSplit.unsaved:
         for i, token in updatedTokens:
           if token.key.toLowerAscii() == history.key.toLowerAscii():
             updatedTokens[i] = history.beforeToken
             break
+        selectedKey = history.key
+      for history in foundationSplit.reapply:
+        for i, token in updatedTokens:
+          if token.key.toLowerAscii() == history.key.toLowerAscii():
+            updatedTokens[i] = history.afterToken
+            break
+        selectedKey = history.key
       editor.foundations.tokens.val = updatedTokens
-      editor.foundations.selectedTokenKey.val = foundationStack[0].key
-    let variantStack = editor.variants.undoStack.val
-    if variantStack.len > 0:
+      editor.foundations.selectedTokenKey.val = selectedKey
+    let variantSplit = splitUnsavedHistory(editor.variants.undoStack.val,
+      editor.variants.redoStack.val)
+    if variantSplit.unsaved.len > 0 or variantSplit.reapply.len > 0:
       var updatedVariants = editor.variants.variants.val
-      for historyIndex in countdown(variantStack.len - 1, 0):
-        let history = variantStack[historyIndex]
+      var selected = editor.variants.selectedVariant.val
+      for history in variantSplit.unsaved:
         for i, variant in updatedVariants:
           if variant.component == history.beforeVariant.component and
               variant.variantKey == history.beforeVariant.variantKey:
             updatedVariants[i] = history.beforeVariant
             break
+        selected = history.selectedBefore
+      for history in variantSplit.reapply:
+        for i, variant in updatedVariants:
+          if variant.component == history.afterVariant.component and
+              variant.variantKey == history.afterVariant.variantKey:
+            updatedVariants[i] = history.afterVariant
+            break
+        selected = history.selectedAfter
       editor.variants.variants.val = updatedVariants
-      editor.variants.selectedVariant.val = variantStack[0].selectedBefore
-    let vectorStack = editor.vectorEditor.undoStack.val
-    if vectorStack.len > 0:
-      editor.vectorEditor.document.val = vectorStack[0].beforeDocument
-    editor.inspector.clearSourceEditJournal()
-    editor.inspector.undoStack.val = @[]
-    editor.inspector.redoStack.val = @[]
-    editor.foundations.undoStack.val = @[]
+      editor.variants.selectedVariant.val = selected
+    let vectorSplit = splitUnsavedHistory(editor.vectorEditor.undoStack.val,
+      editor.vectorEditor.redoStack.val)
+    if vectorSplit.unsaved.len > 0:
+      editor.vectorEditor.document.val = vectorSplit.unsaved[^1].beforeDocument
+    if vectorSplit.reapply.len > 0:
+      editor.vectorEditor.document.val = vectorSplit.reapply[^1].afterDocument
+    editor.foundations.undoStack.val = foundationSplit.kept & foundationSplit.reapply
     editor.foundations.redoStack.val = @[]
     editor.foundations.impacts.val = @[]
     editor.foundations.diagnostics.val = @[]
-    editor.variants.undoStack.val = @[]
+    editor.variants.undoStack.val = variantSplit.kept & variantSplit.reapply
     editor.variants.redoStack.val = @[]
     editor.variants.diagnostics.val = @[]
     editor.variants.stateDiagnostics.val = @[]
-    editor.vectorEditor.undoStack.val = @[]
+    editor.vectorEditor.undoStack.val = vectorSplit.kept & vectorSplit.reapply
     editor.vectorEditor.redoStack.val = @[]
     editor.inspector.conflicts.val = @[]
     editor.inspector.editDiagnostics.val = @[]
@@ -3251,6 +3892,23 @@ proc runEditorCommand*(editor: EditorVM;
     editor.workspaceEditRequiredTestCommands.val = @[]
     editor.workspaceEditReviewDiagnostics.val = @[]
   of eckSave:
+    if editor.sourceBindingMetadataDirty != nil and editor.sourceBindingMetadataDirty.val:
+      editor.sourceBindingMetadataSave(proc(ok: bool; diagnostic: string) =
+        var completed = running
+        var saved = ok
+        var message = diagnostic
+        if saved and editor.inspector.pendingSourceEdits.val.len > 0:
+          let sourceResult = editor.applyWorkspaceFileEdits()
+          saved = sourceResult.ok
+          if not saved:
+            message = if sourceResult.diagnostics.len > 0: sourceResult.diagnostics[0].message else: "Source edits remain unsaved."
+        if saved and editor.workspaceEditStage.val == wesFailed and editor.workspaceEditDiagnostics.val.len > 0:
+          saved = false
+          message = editor.workspaceEditDiagnostics.val[0].message
+        completed.status = if saved: ecsSucceeded else: ecsFailed
+        completed.diagnostic = message
+        editor.setCommandState(completed))
+      return running
     let saveResult = editor.applyWorkspaceFileEdits()
     if not saveResult.ok:
       return editor.failCommand(kind,
@@ -3277,16 +3935,35 @@ proc runEditorCommand*(editor: EditorVM;
     discard editor.nudgeFirstNumericProperty(1)
   of eckDecrementProperty:
     discard editor.nudgeFirstNumericProperty(-1)
-  of eckUndo:
-    if not editor.inspector.undoCssPropertyEdit():
-      if not editor.undoVectorEdit():
-        if not editor.undoFoundationTokenEdit():
-          discard editor.undoComponentVariantEdit()
-  of eckRedo:
-    if not editor.inspector.redoCssPropertyEdit():
-      if not editor.redoVectorEdit():
-        if not editor.redoFoundationTokenEdit():
-          discard editor.redoComponentVariantEdit()
+  of eckUndo, eckRedo:
+    # One timeline: act on the most recent edit (undo) or the most recently
+    # undone one (redo), whichever history holds it. It used to try the
+    # inspector first, then vector, foundation and component property, so
+    # Ctrl+Z after a component edit undid an older inspector edit instead.
+    let redo = kind == eckRedo
+    let target = editor.nextHistoryKind(redo)
+    if target == ehkInspector and editor.inspectorSourceHistory != nil and
+        editor.inspectorSourceHistory(redo):
+      discard
+    else:
+      let refusal = editor.inspectorHistoryRefusal(redo)
+      if refusal.message.len > 0:
+        return editor.refuseInspectorHistory(kind, refusal)
+      case target
+      of ehkInspector:
+        if redo: discard editor.inspector.redoCssPropertyEdit()
+        else: discard editor.inspector.undoCssPropertyEdit()
+      of ehkVector:
+        if redo: discard editor.redoVectorEdit()
+        else: discard editor.undoVectorEdit()
+      of ehkFoundation:
+        if redo: discard editor.redoFoundationTokenEdit()
+        else: discard editor.undoFoundationTokenEdit()
+      of ehkVariant:
+        if redo: discard editor.redoComponentVariantEdit()
+        else: discard editor.undoComponentVariantEdit()
+      of ehkNone:
+        discard
   of eckToggleSidebar:
     editor.togglePanel(epSidebar)
   of eckToggleInspector:
@@ -3426,6 +4103,27 @@ proc setActiveCategory*(sidebar: SidebarVM; kind: StoryKind;
   else:
     sidebar.setSectionExpanded(section, true)
 
+proc revealControlStory*(editor: EditorVM; story: StoryRef) =
+  ## Explicit navigation reveals its destination; ordinary selection and manual
+  ## disclosure keep their existing behavior. Clear a filter before expanding:
+  ## setSearch restores the user's saved disclosure state on clear.
+  let visible = editor.sidebar.filteredItems.val
+  var destinationMatches = false
+  for group in visible:
+    if group.name == story.group and group.kind == story.kind:
+      for item in group.items:
+        if item.name == story.name: destinationMatches = true
+  if not destinationMatches: editor.sidebar.setSearch("")
+  editor.sidebar.setActiveCategory(story.kind, collapseSiblings = false)
+  editor.sidebar.groups.update proc(previous: seq[StoryGroup]): seq[StoryGroup] =
+    result = previous
+    for i in 0 ..< result.len:
+      if result[i].name == story.group and result[i].kind == story.kind:
+        result[i].expanded = true
+  let panels = editor.panels.val
+  editor.panels.val = PanelVisibility(sidebar: true, inspector: panels.inspector)
+  if editor.controlStoryRevealAdapter != nil: editor.controlStoryRevealAdapter()
+
 proc categoryHasStories*(sidebar: SidebarVM; kind: StoryKind): bool =
   ## M-EVP-9: returns true if at least one workspace has a story of
   ## the given ``kind``. Used to mark the quick-nav icon for an empty
@@ -3459,8 +4157,8 @@ proc selectElement*(inspector: InspectorVM; element: ElementRef;
     next.sourceKey = next.id
   if next.ancestorIds.len == 0:
     next.ancestorIds = @[next.id]
+  inspector.publishStyleProvenance(next)
   inspector.selectedElement.val = next
-  inspector.editDiagnostics.val = @[]
   inspector.noteBreadcrumbSelection(next, origin)
   inspector.refreshLayerFlags()
 
@@ -3481,7 +4179,45 @@ proc setSectionExpanded*(inspector: InspectorVM; section: InspectorSection;
   inspector.expandedSections.val = next
 
 proc toggleSectionExpanded*(inspector: InspectorVM; section: InspectorSection) =
+  ## The USER path -- a header click. Records the intent so the per-kind
+  ## defaults stop deciding this section. `setSectionExpanded` stays the
+  ## neutral setter, used by the defaults themselves and by restore-from-
+  ## storage, neither of which is a statement of intent.
+  var touched = inspector.sectionsUserSet.val
+  if section notin touched:
+    touched.add section
+    inspector.sectionsUserSet.val = touched
   inspector.setSectionExpanded(section, section notin inspector.expandedSections.val)
+
+proc applyKindDefaultExpansion*(inspector: InspectorVM; element: ElementRef) =
+  ## Re-seed the untouched sections for what is now selected.
+  ##
+  ## Called on every selection change. Sections the user has opened or closed
+  ## themselves are left exactly as they are; everything else follows
+  ## `defaultExpandedSections` for the element's kind.
+  if element.tag.len == 0:
+    return
+  # Inlined rather than reaching for the widgets' `findPropertyValue`:
+  # `views/widgets/section_position` sits ABOVE this module, and importing
+  # upward to save three lines would invert the layering.
+  var positionValue = "static"
+  for prop in element.properties:
+    if prop.name == "position":
+      positionValue = prop.value
+      break
+  let positioned = positionValue notin ["", "static"]
+  let wanted = defaultExpandedSections(element.tag, positioned)
+  let touched = inspector.sectionsUserSet.val
+  var next = inspector.expandedSections.val
+  for section in InspectorSection:
+    if section in touched:
+      continue
+    let shouldOpen = section in wanted
+    if shouldOpen and section notin next:
+      next.add section
+    elif not shouldOpen and section in next:
+      next = next.filterIt(it != section)
+  inspector.expandedSections.val = next
 
 func inspectorSectionToSlug*(section: InspectorSection): string =
   ## Phase C (2026-05-28): canonical slug for an ``InspectorSection``
@@ -3612,36 +4348,113 @@ func sameSourceJournalEntry(a, b: SourceEditPlan): bool =
     a.newValue == b.newValue and a.previewBefore == b.previewBefore and
     a.previewAfter == b.previewAfter
 
+func replacesJournaledPlan(plan, existing: SourceEditPlan): bool =
+  ## A later edit to a slot replaces the earlier pending plan for it -- except
+  ## a pending restoration of an already-written edit. That one removes text
+  ## the file really contains; dropping it would leave the undone edit on
+  ## disk while the model says it is gone.
+  plan.sameSourceJournalSlot(existing) and not existing.restoreWrite.recorded
+
+proc inheritUnwrittenExpectation(inspector: InspectorVM;
+    plan: var SourceEditPlan)
+
+func unwrittenExpectation(pending: seq[SourceEditPlan];
+    plan: SourceEditPlan): SourceEditPlan =
+  ## ``plan`` with the expectation of the still-unwritten plan it replaces.
+  ## See `inheritUnwrittenExpectation`.
+  result = plan
+  if result.expectedOldValue.len == 0:
+    return
+  for existing in pending:
+    if result.replacesJournaledPlan(existing) and
+        existing.expectedOldValue.len > 0:
+      result.expectedOldValue = existing.expectedOldValue
+
+func journaledPlans(pending: seq[SourceEditPlan]; plan: SourceEditPlan;
+    replaceExisting: bool): tuple[plans: seq[SourceEditPlan],
+                                  displaced: seq[int]] =
+  ## The journal after `journalSourceEdit(plan, replaceExisting)`, and the
+  ## history ids of the plans it displaced. Pure, so the undo/redo pre-check
+  ## (`inspectorHistoryRefusal`) computes the journal a command will leave
+  ## with the very rule the command applies.
+  var plan = plan
+  if replaceExisting and not plan.restoreWrite.recorded:
+    plan = pending.unwrittenExpectation(plan)
+  for existing in pending:
+    if replaceExisting and plan.replacesJournaledPlan(existing):
+      if existing.historyId > 0 and existing.historyId != plan.historyId:
+        result.displaced.add existing.historyId
+      continue
+    result.plans.add existing
+  result.plans.add plan
+
+func withoutHistoryPlans(pending: seq[SourceEditPlan];
+    historyId: int): seq[SourceEditPlan] =
+  pending.filterIt(it.historyId != historyId)
+
+func withoutJournalEntry(pending: seq[SourceEditPlan];
+    plan: SourceEditPlan): seq[SourceEditPlan] =
+  pending.filterIt(not it.sameSourceJournalEntry(plan))
+
 proc journalSourceEdit*(inspector: InspectorVM; plan: SourceEditPlan;
     replaceExisting = true) =
   ## Single source-edit journal used by manual controls and accepted AI plans.
-  inspector.pendingSourceEdits.update proc(prev: seq[SourceEditPlan]): seq[
-      SourceEditPlan] =
-    result = @[]
-    for existing in prev:
-      if replaceExisting and existing.sameSourceJournalSlot(plan):
-        continue
-      result.add existing
-    result.add plan
-  inspector.sourcePreviews.update proc(prev: seq[CSSSourcePreview]): seq[
-      CSSSourcePreview] =
-    result = @[]
-    for existing in prev:
-      if replaceExisting and existing.plan.sameSourceJournalSlot(plan):
-        continue
-      result.add existing
-    result.add CSSSourcePreview(plan: plan, beforeText: plan.previewBefore,
-      afterText: plan.previewAfter)
+  var plan = plan
+  if replaceExisting and not plan.restoreWrite.recorded:
+    plan = inspector.pendingSourceEdits.val.unwrittenExpectation(plan)
+  let journaled = inspector.pendingSourceEdits.val.journaledPlans(plan,
+    replaceExisting)
+  let displaced = journaled.displaced
+  inspector.pendingSourceEdits.val = journaled.plans
+  var previews: seq[CSSSourcePreview] = @[]
+  for existing in inspector.sourcePreviews.val:
+    if replaceExisting and plan.replacesJournaledPlan(existing.plan):
+      continue
+    previews.add existing
+  previews.add CSSSourcePreview(plan: plan, beforeText: plan.previewBefore,
+    afterText: plan.previewAfter)
+  inspector.sourcePreviews.val = previews
+  if displaced.len > 0:
+    # The replaced plan's edit will never be written on its own, so its
+    # history entry must not be undone as if it had been. See `superseded`.
+    var stack = inspector.undoStack.val
+    for i in 0 ..< stack.len:
+      if stack[i].sourceEdit.historyId in displaced:
+        stack[i].superseded = true
+    inspector.undoStack.val = stack
   inspector.conflicts.val = @[]
   inspector.editDiagnostics.val = @[]
 
+proc stampHistoryEntry(inspector: InspectorVM; plan: var SourceEditPlan) =
+  ## Give a new history entry's plan its identity. See `historyId`.
+  if plan.historyId == 0:
+    inc inspector.lastHistoryId
+    plan.historyId = inspector.lastHistoryId
+
+proc inheritUnwrittenExpectation(inspector: InspectorVM;
+    plan: var SourceEditPlan) =
+  ## A value-verified plan that will replace a still-unwritten plan for the
+  ## same slot is checked against what the FILE says -- which is what the
+  ## replaced plan expected -- not against the value the replaced plan would
+  ## have written and never did. Without this, two choices made within the
+  ## auto-save debounce (``tone=success`` then ``tone=warning``) staged a plan
+  ## expecting ``success`` against a file still saying ``neutral``, and the
+  ## write was refused as a source conflict. Applied by `journalSourceEdit`
+  ## to every replacing plan; history-recording paths also call it first so
+  ## the entry they keep carries the same expectation as the journal.
+  plan = inspector.pendingSourceEdits.val.unwrittenExpectation(plan)
+
+proc dropPendingHistoryPlans(inspector: InspectorVM; historyId: int) =
+  inspector.pendingSourceEdits.val =
+    inspector.pendingSourceEdits.val.withoutHistoryPlans(historyId)
+  inspector.sourcePreviews.val =
+    inspector.sourcePreviews.val.filterIt(it.plan.historyId != historyId)
+  if inspector.pendingSourceEdits.val.len == 0:
+    inspector.conflicts.val = @[]
+
 proc removeJournaledSourceEdit*(inspector: InspectorVM; plan: SourceEditPlan) =
-  inspector.pendingSourceEdits.update proc(prev: seq[SourceEditPlan]): seq[
-      SourceEditPlan] =
-    result = @[]
-    for existing in prev:
-      if not existing.sameSourceJournalEntry(plan):
-        result.add existing
+  inspector.pendingSourceEdits.val =
+    inspector.pendingSourceEdits.val.withoutJournalEntry(plan)
   inspector.sourcePreviews.update proc(prev: seq[CSSSourcePreview]): seq[
       CSSSourcePreview] =
     result = @[]
@@ -3657,9 +4470,9 @@ proc clearSourceEditJournal*(inspector: InspectorVM) =
   inspector.conflicts.val = @[]
   inspector.editDiagnostics.val = @[]
 
-proc sourceJournalOwnershipDiagnostics*(inspector: InspectorVM): seq[
+func sourceJournalOwnershipDiagnostics(plans: seq[SourceEditPlan]): seq[
     PropertyEditDiagnostic] =
-  for plan in inspector.pendingSourceEdits.val:
+  for plan in plans:
     if plan.scope == pesUnspecified:
       result.add PropertyEditDiagnostic(kind: pedSchemaViolation,
         message: "Pending source edit must use an explicit ownership scope.",
@@ -3669,6 +4482,10 @@ proc sourceJournalOwnershipDiagnostics*(inspector: InspectorVM): seq[
       result.add PropertyEditDiagnostic(kind: pedSchemaViolation,
         message: "Pending source edit is missing a stable source owner key.",
         file: plan.file, line: plan.line, property: plan.property)
+
+proc sourceJournalOwnershipDiagnostics*(inspector: InspectorVM): seq[
+    PropertyEditDiagnostic] =
+  sourceJournalOwnershipDiagnostics(inspector.pendingSourceEdits.val)
 
 proc selectElementById*(inspector: InspectorVM; id: string;
     origin = soExternal): bool {.discardable.} =
@@ -3747,20 +4564,74 @@ proc selectPreviousElement*(inspector: InspectorVM): bool {.discardable.} =
     return inspector.selectElementById(rows[rows.high].id)
   inspector.selectElementById(rows[max(0, index - 1)].id)
 
-proc editProperty*(inspector: InspectorVM;
-    request: PropertyEditRequest): PropertyEditResult {.discardable.} =
-  ## Update the selected element and produce source-aware edit data.
+const shorthandSideProperties = [
+  ("border-radius", ["border-top-left-radius", "border-top-right-radius",
+    "border-bottom-right-radius", "border-bottom-left-radius"]),
+  ("padding", ["padding-top", "padding-right", "padding-bottom",
+    "padding-left"])]
+
+func shorthandSideValues(value: string): seq[string] =
+  ## The four side values of a simple 1-4 value shorthand, in CSS clockwise
+  ## order, or nothing when the value is not that simple (an elliptical
+  ## radius with `/`, a function such as `var()` or `calc()`, a keyword list).
+  let text = value.strip()
+  if text.len == 0 or '/' in text or '(' in text:
+    return
+  let parts = text.splitWhitespace()
+  case parts.len
+  of 1: @[parts[0], parts[0], parts[0], parts[0]]
+  of 2: @[parts[0], parts[1], parts[0], parts[1]]
+  of 3: @[parts[0], parts[1], parts[2], parts[1]]
+  of 4: parts
+  else: @[]
+
+func withShorthandSides(element: ElementRef; property,
+    value: string): ElementRef =
+  ## ``element`` with the captured sides of a simple shorthand following an
+  ## edit of that shorthand (editor spec "Native project source capabilities":
+  ## simple padding and corner-radius shorthands expose their individual
+  ## sides).
+  ##
+  ## The side rows read the element's side properties, captured off the
+  ## rendered DOM; the shorthand row read the edit. After Corner radius 12 the
+  ## row said 12 and the preview showed 12px on every corner, while TL/TR/BR/
+  ## BL still said 0 -- before and after the write (isonim-pm issue
+  ## 2026-10-14-consumer-corner-radius-edit-is-previewed-then-refused-only-at-save).
+  ##
+  ## Only sides without an authored value follow: an authored side is its own
+  ## source declaration, which this edit did not change.
+  result = element
+  for (shorthand, sides) in shorthandSideProperties:
+    if property != shorthand:
+      continue
+    let values = shorthandSideValues(value)
+    if values.len != 4:
+      return
+    for i, side in sides:
+      for prop in result.properties.mitems:
+        if prop.name == side and prop.authoredValue.len == 0:
+          prop.value = values[i]
+    return
+
+type PreparedPropertyEdit* = object
+  outcome*: PropertyEditResult
+  transaction*: CSSPropertyEditTransaction
+
+proc preparePropertyEdit*(inspector: InspectorVM;
+    request: PropertyEditRequest): PreparedPropertyEdit =
+  ## Validate and plan without changing selection, journal or history. Native
+  ## asynchronous writes use this same plan and publish it only after their ACK.
+  var outcome: PropertyEditResult
   var normalizedRequest = request
   normalizedRequest.newValue = normalizePrimitiveInputValue(
     request.property, request.newValue)
   let element = inspector.selectedElement.val
   if element.tag.len == 0:
-    result = withStatus(pesRejected, @[
+    outcome = withStatus(pesRejected, @[
       diagnostic(pedMissingSelection, element, normalizedRequest.property,
         "Select an element before editing inspector properties.")
     ])
-    inspector.editDiagnostics.val = result.diagnostics
-    return
+    return PreparedPropertyEdit(outcome: outcome)
 
   var propIndex = -1
   var prop = PropertyInfo()
@@ -3772,12 +4643,11 @@ proc editProperty*(inspector: InspectorVM;
 
   if propIndex < 0:
     if normalizedRequest.newValue.strip.len == 0 or element.sourceFile.len == 0:
-      result = withStatus(pesRejected, @[
+      outcome = withStatus(pesRejected, @[
         diagnostic(pedUnknownProperty, element, normalizedRequest.property,
           "The selected element does not expose this property.")
       ])
-      inspector.editDiagnostics.val = result.diagnostics
-      return
+      return PreparedPropertyEdit(outcome: outcome)
     prop = PropertyInfo(
       name: normalizedRequest.property,
       value: "",
@@ -3791,9 +4661,8 @@ proc editProperty*(inspector: InspectorVM;
   if prop.isShared and normalizedRequest.scope == pesUnspecified:
     diagnostics.add diagnostic(pedSharedScopeRequired, prop,
       "Shared properties require an explicit local or shared scope.")
-    result = withStatus(pesNeedsScope, diagnostics)
-    inspector.editDiagnostics.val = diagnostics
-    return
+    outcome = withStatus(pesNeedsScope, diagnostics)
+    return PreparedPropertyEdit(outcome: outcome)
 
   if prop.origin == poSetStyle and not prop.directStyleAllowed:
     diagnostics.add diagnostic(pedUnsupportedDirectStyle, prop,
@@ -3804,7 +4673,8 @@ proc editProperty*(inspector: InspectorVM;
     diagnostics.add diagnostic(pedViewModelBoundary, prop,
       "CSS and layout edits cannot be applied from ViewModel-owned source.")
 
-  if prop.isTokenDrift(normalizedRequest.newValue):
+  if prop.isTokenDrift(normalizedRequest.newValue) and not
+      (prop.nativeSourceToken and normalizedRequest.scope == pesShared):
     diagnostics.add diagnostic(pedTokenDrift, prop,
       "Theme-token properties must stay on token values instead of literal colors.")
 
@@ -3816,9 +4686,8 @@ proc editProperty*(inspector: InspectorVM;
   diagnostics.add prop.validateCssPropertyValue(normalizedRequest, normalized)
 
   if diagnostics.len > 0:
-    result = withStatus(pesRejected, diagnostics)
-    inspector.editDiagnostics.val = diagnostics
-    return
+    outcome = withStatus(pesRejected, diagnostics)
+    return PreparedPropertyEdit(outcome: outcome)
 
   var updated = element
   if propIndex >= 0:
@@ -3827,29 +4696,155 @@ proc editProperty*(inspector: InspectorVM;
     var added = prop
     added.value = normalized.canonical
     updated.properties.add added
-  inspector.selectedElement.val = updated
-  inspector.editDiagnostics.val = @[]
-
+  updated = updated.withShorthandSides(prop.name, normalized.canonical)
   let sourceChoices = sourceScopeChoices(inspector.designSystemSchema.val,
     element, prop)
   let record = prop.editRecord(normalizedRequest, sourceChoices)
   let plan = prop.sourcePlan(normalizedRequest, sourceChoices)
-  inspector.journalSourceEdit(plan)
-  inspector.undoStack.update proc(prev: seq[CSSPropertyEditTransaction]): seq[
-      CSSPropertyEditTransaction] =
+  PreparedPropertyEdit(outcome: PropertyEditResult(status: pesAccepted,
+    record: record, sourceEdit: plan), transaction: CSSPropertyEditTransaction(
+      record: record, sourceEdit: plan, beforeElement: element, afterElement: updated))
+
+proc acceptPreparedPropertyEdit*(inspector: InspectorVM; prepared: PreparedPropertyEdit;
+    saved = false; applySelection = true) =
+  if prepared.outcome.status != pesAccepted: return
+  var transaction = prepared.transaction
+  if not saved:
+    inspector.inheritUnwrittenExpectation(transaction.sourceEdit)
+  inspector.stampHistoryEntry(transaction.sourceEdit)
+  # A completed source write belongs to its captured element. Changing selection
+  # while a build runs must not write the result into the new element's controls.
+  if applySelection and inspector.selectedElement.val.fallbackElementId() == transaction.beforeElement.fallbackElementId():
+    inspector.selectedElement.val = transaction.afterElement
+  inspector.editDiagnostics.val = @[]
+  if not saved: inspector.journalSourceEdit(transaction.sourceEdit)
+  var confirmed = transaction
+  confirmed.saved = saved
+  inspector.undoStack.update proc(prev: seq[CSSPropertyEditTransaction]): seq[CSSPropertyEditTransaction] =
     result = prev
-    result.add CSSPropertyEditTransaction(
-      record: record,
-      sourceEdit: plan,
-      beforeElement: element,
-      afterElement: updated)
+    result.add confirmed
   inspector.redoStack.val = @[]
 
-  PropertyEditResult(status: pesAccepted, record: record, sourceEdit: plan)
+proc editProperty*(inspector: InspectorVM;
+    request: PropertyEditRequest): PropertyEditResult {.discardable.} =
+  let prepared = inspector.preparePropertyEdit(request)
+  result = prepared.outcome
+  if result.status == pesAccepted:
+    inspector.acceptPreparedPropertyEdit(prepared)
+  else:
+    inspector.editDiagnostics.val = result.diagnostics
+
+func workspacePlanKeys(plan: SourceEditPlan): seq[string] =
+  if plan.schemaKey.len > 0:
+    result.add plan.schemaKey
+    result.add "schema:" & plan.schemaKey
+  if plan.tokenName.len > 0:
+    result.add plan.tokenName
+    result.add "token:" & plan.tokenName
+  if plan.variantKey.len > 0:
+    result.add plan.variantKey
+    result.add "variant:" & plan.variantKey
+  if plan.conflictKey.len > 0:
+    result.add plan.conflictKey
+    result.add "source:" & plan.conflictKey
+  if plan.originDetail.len > 0:
+    result.add plan.originDetail
+
+func resolveWorkspaceSchema(adapter: WorkspaceEditAdapter;
+    plan: SourceEditPlan): tuple[ok: bool, entry: WorkspaceEditableSchemaEntry,
+                                 entryOwnsFile: bool] =
+  ## `entryOwnsFile` says the ENTRY's file is authoritative and the plan's is
+  ## not to be checked against it -- which is true exactly when the match was
+  ## made despite the plan naming a different file, or none.
+  if adapter.isNil:
+    return
+  let keys = workspacePlanKeys(plan)
+  for key in keys:
+    for entry in adapter.schema:
+      if entry.key == key:
+        return (true, entry, false)
+  # Exact file match first: a plan that names a file the schema owns is
+  # unambiguous and keeps its old behaviour.
+  for entry in adapter.schema:
+    if entry.file == plan.file and
+        (entry.property == plan.property or entry.property.len == 0):
+      return (true, entry, false)
+
+  # Then a plan that names NO file. Provenance records which class or token
+  # set a value; which file that lives in is what the schema is here to
+  # answer, and requiring the plan to already know made the schema useful
+  # only for edits that did not need it.
+  #
+  # Then a plan whose file is the ELEMENT's rather than the value's. A
+  # property captured off the rendered DOM carries the element's source
+  # location because the capture has no other to offer -- `font-size` on a
+  # `span.tagline-clause` is set by a CSS rule while the span is in
+  # `home.nim`. Matching that path against the stylesheet's and refusing is
+  # true of the path and false of the edit, and it answered a design system's
+  # commonest edit with "No project schema or source map entry can safely
+  # represent this edit".
+  #
+  # Both fall back only to an entry with an EMPTY property -- a project
+  # saying "this file owns whatever you send me". A schema that names its
+  # properties individually keeps refusing, which is the stricter contract
+  # and still available.
+  let capturedOnly =
+    plan.originDetail.startsWith("iframe-dom:") or
+    plan.originDetail.startsWith("computed:")
+  if plan.file.len == 0 or capturedOnly:
+    for entry in adapter.schema:
+      if entry.property.len == 0:
+        return (true, entry, true)
+
+const UnrepresentableSourceEditMessage =
+  "No project schema or source map entry can safely represent this edit."
+
+proc sourcePlanAdmissionRefusal(editor: EditorVM;
+    plan: SourceEditPlan): string =
+  ## Why the project's writer can never write ``plan``, or "" when it can.
+  ##
+  ## The automatic write resolves every plan against the adapter's schema
+  ## before reading a file (`applyWorkspaceFileEdits`). That answer depends on
+  ## the plan and the schema only, so it is already known when the user
+  ## commits. Asked only at the write, the edit was previewed, journaled and
+  ## put in history first, and then refused by a status-bar alert while the
+  ## preview kept showing it (isonim-pm issue
+  ## 2026-10-14-consumer-corner-radius-edit-is-previewed-then-refused-only-at-save).
+  ## Editor spec "Saving": an edit no rule owns is refused at the commit.
+  ##
+  ## No adapter means nothing to ask: such an edit is reported as staged but
+  ## unwritable where it was made. The native asynchronous source project owns
+  ## its own admission (`inspectorSourceCommit`).
+  let adapter = editor.workspaceEditAdapter
+  if adapter.isNil or editor.hasAsyncSourceProject:
+    return ""
+  let resolved = adapter.resolveWorkspaceSchema(plan)
+  if not resolved.ok:
+    return UnrepresentableSourceEditMessage
+  if not resolved.entryOwnsFile and resolved.entry.file.len > 0 and
+      plan.file.len > 0 and resolved.entry.file != plan.file:
+    return "The source plan file does not match the resolved project " &
+      "schema file."
+  ""
 
 proc editInspectorProperty*(editor: EditorVM;
     request: PropertyEditRequest): PropertyEditResult {.discardable.} =
-  result = editor.inspector.editProperty(request)
+  var prepared = editor.inspector.preparePropertyEdit(request)
+  if prepared.outcome.status == pesAccepted:
+    # Refused here, before the model, history or journal move, rather than
+    # by the automatic write afterwards. See `sourcePlanAdmissionRefusal`.
+    let plan = prepared.transaction.sourceEdit
+    let refusal = editor.sourcePlanAdmissionRefusal(plan)
+    if refusal.len > 0:
+      prepared.outcome = PropertyEditResult(status: pesRejected,
+        diagnostics: @[PropertyEditDiagnostic(kind: pedSchemaViolation,
+          message: refusal & " Nothing was changed.", file: plan.file, line: plan.line,
+          property: plan.property)])
+  result = prepared.outcome
+  if result.status == pesAccepted:
+    editor.inspector.acceptPreparedPropertyEdit(prepared)
+  else:
+    editor.inspector.editDiagnostics.val = result.diagnostics
   if result.status == pesAccepted:
     editor.workspaceEditStage.val = wesDirty
     editor.workspaceEditDiagnostics.val = @[]
@@ -3915,7 +4910,7 @@ proc editInspectorProperty*(editor: EditorVM;
           of pedInvalidCssValue, pedInvalidPropertyCombination,
               pedSchemaViolation, pedSourceConflict:
             vcDirectStyle
-          of pedInvalidTokenReference:
+          of pedInvalidTokenReference, pedUnresolvedStyleBinding:
             vcDryTokens
         result.add Violation(
           severity: if d.kind in {pedSharedScopeRequired, pedMissingSelection,
@@ -3958,11 +4953,288 @@ proc applyPendingSourceEdits*(inspector: InspectorVM;
   if remaining.len == 0:
     inspector.clearSourceEditJournal()
 
-proc undoCssPropertyEdit*(inspector: InspectorVM): bool {.discardable.} =
-  let stack = inspector.undoStack.val
-  if stack.len == 0:
-    return false
+func invertPlan(plan: SourceEditPlan): SourceEditPlan =
+  ## The edit that puts a VALUE-VERIFIED write back the way it was.
+  ##
+  ## Same target, values swapped. `expectedOldValue` becomes what the original
+  ## edit wrote, because that is what is on disk now -- the conflict check has
+  ## to be told the truth about the state it is overwriting, or an undo would
+  ## be refused as a stale write.
+  ##
+  ## Only valid when the forward plan itself verified a value
+  ## (`expectedOldValue` non-empty), i.e. when the writer rewrote text it
+  ## found. A forward plan with no expectation is written by APPENDING a
+  ## declaration; its new value is then not a locator for anything, and
+  ## using it as one is how an undo rewrote a sibling edit that happened to
+  ## share the value. Such edits are undone through their write receipt
+  ## (`restoreWrite`) or not at all -- see `inspectorHistoryStep`.
+  result = plan
+  result.oldValue = plan.newValue
+  result.newValue = plan.oldValue
+  result.previewBefore = plan.previewAfter
+  result.previewAfter = plan.previewBefore
+  result.expectedOldValue = plan.newValue
+  result.restoreWrite = SourceWriteReceipt()
 
+func lineAlignedOccurrences(content, lines: string): seq[int] =
+  if lines.len == 0:
+    return
+  var at = content.find(lines)
+  while at >= 0:
+    let startsLine = at == 0 or content[at - 1] == '\n'
+    let endsLine = lines[^1] == '\n' or at + lines.len == content.len or
+      content[at + lines.len] == '\n'
+    if startsLine and endsLine:
+      result.add at
+    at = content.find(lines, at + 1)
+
+func sourceWriteReceipt*(file, before, after: string): SourceWriteReceipt =
+  ## Describe one write by the whole lines it replaced.
+  ##
+  ## The changed span is the part between the longest common prefix and the
+  ## longest common suffix, widened to line boundaries. A whole line is what
+  ## identifies a declaration or an appended marker; the value inside it does
+  ## not (`6px` names every declaration that happens to be `6px`).
+  result = SourceWriteReceipt(recorded: true, file: file, afterContent: after)
+  let limit = min(before.len, after.len)
+  var prefix = 0
+  while prefix < limit and before[prefix] == after[prefix]:
+    inc prefix
+  var suffix = 0
+  while suffix < limit - prefix and
+      before[before.len - 1 - suffix] == after[after.len - 1 - suffix]:
+    inc suffix
+  var start = prefix
+  while start > 0 and before[start - 1] != '\n':
+    dec start
+  var beforeEnd = before.len - suffix
+  var afterEnd = after.len - suffix
+  while suffix > 0 and
+      ((afterEnd > start and after[afterEnd - 1] != '\n') or
+       (beforeEnd > start and before[beforeEnd - 1] != '\n')):
+    inc beforeEnd
+    inc afterEnd
+    dec suffix
+  result.offset = start
+  result.before = before[start ..< beforeEnd]
+  result.after = after[start ..< afterEnd]
+  result.uniqueWhenWritten = result.after.len > 0 and
+    after.lineAlignedOccurrences(result.after).len == 1
+
+func restoreSourceWrite*(content: string; receipt: SourceWriteReceipt;
+    action = "Undo"): tuple[ok: bool; content, message: string] =
+  ## Put back exactly the lines `receipt` replaced, where it wrote them.
+  ##
+  ## Safe only while the written lines can still be identified:
+  ##
+  ## - the file is byte-identical to how that write left it (the normal case:
+  ##   history is a stack, so everything written after it has been undone), or
+  ## - the written lines occurred exactly once when they were written AND
+  ##   occur exactly once now, on line boundaries. Uniqueness now alone is not
+  ##   enough: if identical lines already existed when the edit wrote its
+  ##   copy, the one left after someone else deleted a copy may be the
+  ##   pre-existing line, and restoring it would delete an edit nobody undid.
+  ##
+  ## Anything else is refused without a change. Guessing would restore over
+  ## an edit the user did not undo, which is the specification's "unsafe
+  ## restoration".
+  if not receipt.recorded:
+    return (false, content, action & " refused: no record of the source lines this edit wrote.")
+  let fileName = if receipt.file.len > 0: receipt.file else: "the source file"
+  if content == receipt.afterContent:
+    return (true,
+      content[0 ..< receipt.offset] & receipt.before &
+        content[receipt.offset + receipt.after.len .. ^1], "")
+  if receipt.after.len == 0:
+    return (false, content, action & " refused: " & fileName &
+      " changed after this edit was written, and the place it removed text " &
+      "from can no longer be identified. No source was changed.")
+  if not receipt.uniqueWhenWritten:
+    return (false, content, action & " refused: " & fileName & " changed " &
+      "after this edit was written, and the lines it wrote were not unique " &
+      "when written, so the copy it wrote cannot be identified. No source " &
+      "was changed.")
+  let hits = content.lineAlignedOccurrences(receipt.after)
+  if hits.len == 1:
+    let at = hits[0]
+    return (true,
+      content[0 ..< at] & receipt.before & content[at + receipt.after.len .. ^1],
+      "")
+  if hits.len == 0:
+    return (false, content, action & " refused: the source lines this edit " &
+      "wrote are no longer in " & fileName & ", so restoring them could " &
+      "overwrite other changes. No source was changed.")
+  (false, content, action & " refused: the source lines this edit wrote " &
+    "appear " & $hits.len & " times in " & fileName & " and the one it wrote " &
+    "cannot be identified. No source was changed.")
+
+type
+  InspectorHistoryStepKind* = enum
+    ihsNone          ## Nothing to undo/redo in the inspector history.
+    ihsDropPending   ## The entry's last plan is still unwritten: drop it.
+    ihsRestoreWrite  ## Invert the entry's last completed write exactly.
+    ihsReplayPlan    ## Journal the entry's forward plan again.
+    ihsInvertPlan    ## Journal a value-verified inverse (no receipt known).
+    ihsRefuse        ## Unsafe: nothing identifies what to restore.
+
+  InspectorHistoryStep* = object
+    kind*: InspectorHistoryStepKind
+    plan*: SourceEditPlan
+    message*: string
+
+func restorePlan[T](txn: T; redo: bool): SourceEditPlan =
+  ## The plan that inverts ``txn.lastWrite`` exactly. Shared by every history
+  ## entry type that carries a write receipt (inspector, component property,
+  ## foundation token, vector).
+  result = txn.sourceEdit
+  if not redo:
+    result.oldValue = txn.sourceEdit.newValue
+    result.newValue = txn.sourceEdit.oldValue
+    result.previewBefore = txn.sourceEdit.previewAfter
+    result.previewAfter = txn.sourceEdit.previewBefore
+  result.expectedOldValue = ""
+  result.restoreWrite = txn.lastWrite
+
+func staleRedoReceipt[T](undo: seq[T]; entry: T): tuple[stale: bool;
+    diskValue: string] =
+  ## Whether ``entry``'s redo receipt still describes the file.
+  ##
+  ## The receipt is the write that undid ``entry``. Undoing it also re-stages
+  ## the previous edit to the same slot when that edit's plan had been
+  ## replaced before it was written (two choices inside the debounce). Once
+  ## that edit is written, the lines the receipt restored are gone, so
+  ## restoring the receipt is refused even though nobody else touched the
+  ## file. Then the slot holds the previous edit's value, which is exactly
+  ## what a value-verified replay of ``entry`` expects to replace.
+  for i in countdown(undo.high, 0):
+    if undo[i].sourceEdit.sameSourceJournalSlot(entry.sourceEdit):
+      if undo[i].historyEntryOnDisk and
+          undo[i].lastWrite.sequence > entry.lastWrite.sequence:
+        return (true, undo[i].sourceEdit.newValue)
+      return
+
+func replayOverDiskValue(plan: SourceEditPlan; diskValue: string): SourceEditPlan =
+  ## ``plan`` again, verified against the value the file now holds.
+  result = plan
+  result.oldValue = diskValue
+  result.expectedOldValue = diskValue
+  result.restoreWrite = SourceWriteReceipt()
+
+proc inspectorHistoryStep*(inspector: InspectorVM;
+    redo: bool): InspectorHistoryStep =
+  ## Decide how the top inspector history entry is undone or redone, without
+  ## changing anything. One decision shared by the command (which checks it
+  ## against the file first) and by `undoCssPropertyEdit`/`redoCssPropertyEdit`.
+  let stack = if redo: inspector.redoStack.val else: inspector.undoStack.val
+  if stack.len == 0:
+    return InspectorHistoryStep(kind: ihsNone)
+  let txn = stack[^1]
+  let id = txn.sourceEdit.historyId
+  if id > 0 and inspector.pendingSourceEdits.val.anyIt(it.historyId == id):
+    # Its last plan never reached disk; withdrawing it is the whole step.
+    return InspectorHistoryStep(kind: ihsDropPending)
+  if not redo:
+    if not txn.saved:
+      return InspectorHistoryStep(kind: ihsDropPending)
+    if txn.lastWrite.recorded and txn.lastWriteApplied:
+      return InspectorHistoryStep(kind: ihsRestoreWrite,
+        plan: txn.restorePlan(redo = false))
+    if txn.sourceEdit.expectedOldValue.len > 0:
+      return InspectorHistoryStep(kind: ihsInvertPlan,
+        plan: txn.sourceEdit.invertPlan())
+    return InspectorHistoryStep(kind: ihsRefuse,
+      plan: txn.sourceEdit,
+      message: "Undo refused: this " & txn.sourceEdit.property & " edit was " &
+        "added to the source without a recorded location, so the line it " &
+        "wrote cannot be identified and undoing it could overwrite other " &
+        "edits. No source was changed.")
+  # Redo. An appended declaration is position-independent: appending it again
+  # restores it exactly and cannot touch anything else.
+  if txn.sourceEdit.expectedOldValue.len == 0:
+    return InspectorHistoryStep(kind: ihsReplayPlan, plan: txn.sourceEdit)
+  if txn.lastWrite.recorded and not txn.lastWriteApplied:
+    let stale = inspector.undoStack.val.staleRedoReceipt(txn)
+    if stale.stale:
+      return InspectorHistoryStep(kind: ihsReplayPlan,
+        plan: txn.sourceEdit.replayOverDiskValue(stale.diskValue))
+    return InspectorHistoryStep(kind: ihsRestoreWrite,
+      plan: txn.restorePlan(redo = true))
+  InspectorHistoryStep(kind: ihsReplayPlan, plan: txn.sourceEdit)
+
+proc journalSupersededBelow(inspector: InspectorVM; plan: SourceEditPlan) =
+  ## After undoing an edit, the previous edit to the same slot is current
+  ## again. If its plan was replaced in the journal before being written, its
+  ## effect is not on disk, so journal it again.
+  var stack = inspector.undoStack.val
+  for i in countdown(stack.high, 0):
+    if stack[i].sourceEdit.sameSourceJournalSlot(plan):
+      if stack[i].superseded:
+        stack[i].superseded = false
+        stack[i].saved = false
+        inspector.undoStack.val = stack
+        inspector.journalSourceEdit(stack[i].sourceEdit)
+      return
+
+proc supersedePendingBelow(inspector: InspectorVM; plan: SourceEditPlan) =
+  ## Before an exact redo of an edit, withdraw a still-unwritten plan of the
+  ## previous edit to the same slot: the redo restores text written on top of
+  ## the state BEFORE that plan, and the redone edit wins the slot anyway.
+  var stack = inspector.undoStack.val
+  for i in countdown(stack.high, 0):
+    if stack[i].sourceEdit.sameSourceJournalSlot(plan):
+      let id = stack[i].sourceEdit.historyId
+      if id > 0 and inspector.pendingSourceEdits.val.anyIt(
+          it.historyId == id and not it.restoreWrite.recorded):
+        inspector.dropPendingHistoryPlans(id)
+        stack[i].superseded = true
+        inspector.undoStack.val = stack
+      return
+
+proc requestPreviewValue(inspector: InspectorVM; element: ElementRef;
+                         property, value: string;
+                         sourceScope = sskLocalInstance) =
+  ## Ask the preview view to show `value`. See `PreviewValueRequest`.
+  let elementId =
+    if element.id.len > 0: element.id
+    elif element.sourceKey.len > 0: element.sourceKey
+    else: element.schemaKey
+  if elementId.len == 0 or property.len == 0: return
+  inspector.previewValueRequest.val = PreviewValueRequest(
+    generation: inspector.previewValueRequest.val.generation + 1,
+    elementId: elementId, domPath: element.domPath,
+    property: property, value: value, sourceScope: sourceScope)
+
+proc refuseHistoryStep(inspector: InspectorVM; step: InspectorHistoryStep) =
+  inspector.editDiagnostics.val = @[PropertyEditDiagnostic(
+    kind: pedSourceConflict, message: step.message, file: step.plan.file,
+    line: step.plan.line, property: step.plan.property)]
+
+proc undoCssPropertyEdit*(inspector: InspectorVM): bool {.discardable.} =
+  ## Walk one edit back: in the model, in the preview, and in the file.
+  ##
+  ## All three, because undoing only the first two is what "Ctrl+Z did nothing"
+  ## looked like from the outside. The previous implementation restored the
+  ## element snapshot and dropped the edit from the journal, which is a correct
+  ## undo ONLY while the edit is still pending -- and under auto-save it never
+  ## is. The value stayed on disk and stayed on screen.
+  ##
+  ## An edit that has not been written yet is undone by dropping its plan --
+  ## the file never changed. Once it HAS been written, the undo is a new plan
+  ## that auto-save writes. That plan restores exactly the lines the edit's
+  ## own write replaced (its receipt), never "whatever text equals the value",
+  ## so a sibling edit that shares the value is untouched. When nothing
+  ## identifies those lines the undo is refused and nothing changes.
+  let step = inspector.inspectorHistoryStep(redo = false)
+  case step.kind
+  of ihsNone:
+    return false
+  of ihsRefuse:
+    inspector.refuseHistoryStep(step)
+    return false
+  else:
+    discard
+
+  let stack = inspector.undoStack.val
   let txn = stack[^1]
   inspector.selectedElement.val = txn.beforeElement
   inspector.undoStack.val = stack[0 ..< stack.len - 1]
@@ -3970,36 +5242,296 @@ proc undoCssPropertyEdit*(inspector: InspectorVM): bool {.discardable.} =
       CSSPropertyEditTransaction] =
     result = prev
     result.add txn
-  inspector.removeJournaledSourceEdit(txn.sourceEdit)
+  case step.kind
+  of ihsDropPending:
+    if txn.sourceEdit.historyId > 0:
+      inspector.dropPendingHistoryPlans(txn.sourceEdit.historyId)
+    else:
+      inspector.removeJournaledSourceEdit(txn.sourceEdit)
+  of ihsRestoreWrite:
+    inspector.journalSourceEdit(step.plan, replaceExisting = false)
+  of ihsInvertPlan, ihsReplayPlan:
+    inspector.journalSourceEdit(step.plan)
+  of ihsNone, ihsRefuse:
+    discard
+  inspector.journalSupersededBelow(txn.sourceEdit)
+  inspector.editDiagnostics.val = @[]
+  inspector.requestPreviewValue(txn.beforeElement, txn.sourceEdit.property,
+                                txn.sourceEdit.oldValue, txn.sourceEdit.sourceScope)
   true
 
 proc redoCssPropertyEdit*(inspector: InspectorVM): bool {.discardable.} =
-  let stack = inspector.redoStack.val
-  if stack.len == 0:
+  ## The same, forwards. Symmetric with `undoCssPropertyEdit` on purpose: redo
+  ## withdraws a still-unwritten undo, appends an appended declaration again,
+  ## or exactly inverts the written undo, and shows the value it restores.
+  let step = inspector.inspectorHistoryStep(redo = true)
+  case step.kind
+  of ihsNone:
     return false
+  of ihsRefuse:
+    inspector.refuseHistoryStep(step)
+    return false
+  else:
+    discard
 
+  let stack = inspector.redoStack.val
   let txn = stack[^1]
   inspector.selectedElement.val = txn.afterElement
   inspector.redoStack.val = stack[0 ..< stack.len - 1]
+  case step.kind
+  of ihsDropPending:
+    if txn.sourceEdit.historyId > 0:
+      inspector.dropPendingHistoryPlans(txn.sourceEdit.historyId)
+    else:
+      inspector.removeJournaledSourceEdit(txn.sourceEdit)
+  of ihsRestoreWrite:
+    inspector.supersedePendingBelow(txn.sourceEdit)
+    inspector.journalSourceEdit(step.plan, replaceExisting = false)
+  of ihsInvertPlan, ihsReplayPlan:
+    inspector.journalSourceEdit(step.plan)
+  of ihsNone, ihsRefuse:
+    discard
   inspector.undoStack.update proc(prev: seq[CSSPropertyEditTransaction]): seq[
       CSSPropertyEditTransaction] =
     result = prev
     result.add txn
-  inspector.journalSourceEdit(txn.sourceEdit)
+  inspector.editDiagnostics.val = @[]
+  inspector.requestPreviewValue(txn.afterElement, txn.sourceEdit.property,
+                                txn.sourceEdit.newValue, txn.sourceEdit.sourceScope)
   true
 
+proc nextWriteReceipt(inspector: InspectorVM;
+    patch: WorkspaceFilePatch): SourceWriteReceipt =
+  result = sourceWriteReceipt(patch.file, patch.beforeContent,
+    patch.afterContent)
+  inc inspector.lastWriteSequence
+  result.sequence = inspector.lastWriteSequence
+
+proc creditInspectorWrite(inspector: InspectorVM; id: int;
+    receipt: SourceWriteReceipt): bool =
+  ## Credit one write to the inspector entry whose plan produced it. An entry
+  ## on the undo stack was written forwards (an edit or a redo); one on the
+  ## redo stack was written backwards (an undo).
+  var undo = inspector.undoStack.val
+  for i in countdown(undo.high, 0):
+    if undo[i].sourceEdit.historyId == id:
+      undo[i].lastWrite = receipt
+      undo[i].lastWriteApplied = true
+      undo[i].superseded = false
+      inspector.undoStack.val = undo
+      return true
+  var redo = inspector.redoStack.val
+  for i in countdown(redo.high, 0):
+    if redo[i].sourceEdit.historyId == id:
+      redo[i].lastWrite = receipt
+      redo[i].lastWriteApplied = false
+      inspector.redoStack.val = redo
+      return true
+  false
+
+proc recordSourceWrites*(inspector: InspectorVM;
+    patches: seq[WorkspaceFilePatch]) =
+  ## Credit each completed write to the history entry whose plan produced it.
+  ##
+  ## Called by the workspace transaction once the bytes are on disk. The
+  ## receipt is what the next undo/redo of that entry inverts. Inspector-only;
+  ## the editor transaction uses `recordHistoryWrites`, which covers every
+  ## history with the same receipt sequence.
+  for patch in patches:
+    let id = patch.plan.historyId
+    if id <= 0:
+      continue
+    discard inspector.creditInspectorWrite(id, inspector.nextWriteReceipt(patch))
+
 proc discardCssPropertyEdits*(inspector: InspectorVM) =
+  ## Throw the work away: the element, the journal AND the history.
+  ##
+  ## Discard means "drop the work that is not on disk", so it reverts to where
+  ## the first UNSAVED edit found the element -- not to where the session
+  ## started. Those were the same thing only while saving cleared the history;
+  ## now that it does not, reverting to `stack[0]` would silently throw away
+  ## edits the user had already saved.
+  ##
+  ## The saved entries stay in the history, because they are still things the
+  ## user did and still things Ctrl+Z should walk back through. What is
+  ## discarded stops being redoable, which is what discarding it means.
   let stack = inspector.undoStack.val
-  if stack.len > 0:
-    inspector.selectedElement.val = stack[0].beforeElement
+  var firstUnsaved = -1
+  for idx, txn in stack:
+    if not txn.saved:
+      firstUnsaved = idx
+      break
+  if firstUnsaved >= 0:
+    inspector.selectedElement.val = stack[firstUnsaved].beforeElement
+    inspector.undoStack.val = stack[0 ..< firstUnsaved]
   inspector.clearSourceEditJournal()
-  inspector.undoStack.val = @[]
   inspector.redoStack.val = @[]
 
 proc markCssPropertyEditsSaved*(inspector: InspectorVM) =
+  ## The journal is what is UNSAVED, so a successful save empties it.
+  ##
+  ## The undo and redo stacks are not, and they used to be cleared here too.
+  ## That was survivable while saving was something a person chose to do; it
+  ## stopped being survivable the moment saving became automatic, because
+  ## auto-save fires 900ms after every edit and a person reaching for Ctrl+Z
+  ## always arrives too late. The command was refused with "There is no edit to
+  ## undo" and nothing happened -- which is not what undo does in any editor
+  ## anyone has used.
+  ##
+  ## Undo is independent of save. It walks back through what the user did; save
+  ## is a separate concern about what is on disk, and undoing after a save is
+  ## simply another edit that will itself be saved.
   inspector.clearSourceEditJournal()
-  inspector.undoStack.val = @[]
-  inspector.redoStack.val = @[]
+  inspector.undoStack.update proc(prev: seq[CSSPropertyEditTransaction]): seq[
+      CSSPropertyEditTransaction] =
+    result = prev
+    for i in 0 ..< result.len:
+      result[i].saved = true
+
+# ---------------------------------------------------------------------------
+# Component-property, foundation-token and vector history across writes
+# ---------------------------------------------------------------------------
+#
+# These three histories used to be emptied by every successful write. That was
+# survivable while saving was a gesture; once saving became automatic it meant
+# Ctrl+Z after any edit arrived ~900ms too late and did nothing, while the
+# file kept the value (editor spec "Universal Patterns": full operation
+# history). They now follow the inspector's rule: an entry whose plan is still
+# pending is undone by withdrawing the plan; an entry that was written is
+# undone by a new plan that restores exactly the lines its write replaced
+# (its receipt), which auto-save then writes like any other edit.
+
+proc creditHistoryWrite[T](undo, redo: var seq[T]; id: int;
+    receipt: SourceWriteReceipt): tuple[undoChanged, redoChanged: bool] =
+  for i in countdown(undo.high, 0):
+    if undo[i].sourceEdit.historyId == id:
+      undo[i].lastWrite = receipt
+      undo[i].lastWriteApplied = true
+      return (true, false)
+  for i in countdown(redo.high, 0):
+    if redo[i].sourceEdit.historyId == id:
+      redo[i].lastWrite = receipt
+      redo[i].lastWriteApplied = false
+      return (false, true)
+
+proc recordHistoryWrites(editor: EditorVM; patches: seq[WorkspaceFilePatch]) =
+  ## Credit each completed write to the history entry, in whichever history,
+  ## whose plan produced it. History ids are handed out by one counter, so an
+  ## id names exactly one entry across all four histories.
+  var vecUndo = editor.vectorEditor.undoStack.val
+  var vecRedo = editor.vectorEditor.redoStack.val
+  var fndUndo = editor.foundations.undoStack.val
+  var fndRedo = editor.foundations.redoStack.val
+  var varUndo = editor.variants.undoStack.val
+  var varRedo = editor.variants.redoStack.val
+  var vecChanged, fndChanged, varChanged = false
+  for patch in patches:
+    let id = patch.plan.historyId
+    if id <= 0:
+      continue
+    let receipt = editor.inspector.nextWriteReceipt(patch)
+    if editor.inspector.creditInspectorWrite(id, receipt):
+      continue
+    var credited = creditHistoryWrite(varUndo, varRedo, id, receipt)
+    if credited.undoChanged or credited.redoChanged:
+      varChanged = true
+      continue
+    credited = creditHistoryWrite(fndUndo, fndRedo, id, receipt)
+    if credited.undoChanged or credited.redoChanged:
+      fndChanged = true
+      continue
+    credited = creditHistoryWrite(vecUndo, vecRedo, id, receipt)
+    if credited.undoChanged or credited.redoChanged:
+      vecChanged = true
+  if varChanged:
+    editor.variants.undoStack.val = varUndo
+    editor.variants.redoStack.val = varRedo
+  if fndChanged:
+    editor.foundations.undoStack.val = fndUndo
+    editor.foundations.redoStack.val = fndRedo
+  if vecChanged:
+    editor.vectorEditor.undoStack.val = vecUndo
+    editor.vectorEditor.redoStack.val = vecRedo
+
+proc pendingHistoryPlan(inspector: InspectorVM; id: int): bool =
+  id > 0 and inspector.pendingSourceEdits.val.anyIt(it.historyId == id)
+
+proc sourceHistoryStep[T](inspector: InspectorVM; undoStack, redoStack: seq[T];
+    redo: bool): InspectorHistoryStep =
+  ## How the top entry of a component-property, foundation or vector history
+  ## is undone or redone. The same decision as `inspectorHistoryStep`, minus
+  ## the inspector-only cases.
+  let stack = if redo: redoStack else: undoStack
+  if stack.len == 0:
+    return InspectorHistoryStep(kind: ihsNone)
+  let entry = stack[^1]
+  if inspector.pendingHistoryPlan(entry.sourceEdit.historyId):
+    # Its last plan never reached disk; withdrawing it is the whole step.
+    return InspectorHistoryStep(kind: ihsDropPending, plan: entry.sourceEdit)
+  if not redo:
+    if entry.lastWrite.recorded and entry.lastWriteApplied:
+      return InspectorHistoryStep(kind: ihsRestoreWrite,
+        plan: entry.restorePlan(redo = false))
+    # Neither pending nor written: a later edit to the same slot replaced its
+    # plan before it was written, so nothing of it is on disk to restore.
+    return InspectorHistoryStep(kind: ihsDropPending, plan: entry.sourceEdit)
+  if entry.lastWrite.recorded and not entry.lastWriteApplied:
+    let stale = undoStack.staleRedoReceipt(entry)
+    if stale.stale and entry.sourceEdit.expectedOldValue.len > 0:
+      return InspectorHistoryStep(kind: ihsReplayPlan,
+        plan: entry.sourceEdit.replayOverDiskValue(stale.diskValue))
+    return InspectorHistoryStep(kind: ihsRestoreWrite,
+      plan: entry.restorePlan(redo = true))
+  InspectorHistoryStep(kind: ihsReplayPlan, plan: entry.sourceEdit)
+
+proc applySourceHistoryStep(editor: EditorVM; step: InspectorHistoryStep;
+    entryPlan: SourceEditPlan; replaceExisting: bool) =
+  case step.kind
+  of ihsDropPending:
+    if entryPlan.historyId > 0:
+      editor.inspector.dropPendingHistoryPlans(entryPlan.historyId)
+    else:
+      editor.inspector.removeJournaledSourceEdit(entryPlan)
+  of ihsRestoreWrite:
+    editor.inspector.journalSourceEdit(step.plan, replaceExisting = false)
+  of ihsInvertPlan, ihsReplayPlan:
+    editor.inspector.journalSourceEdit(step.plan,
+      replaceExisting = replaceExisting)
+  of ihsNone, ihsRefuse:
+    discard
+  editor.workspaceEditStage.val =
+    if editor.inspector.pendingSourceEdits.val.len == 0: wesClean else: wesDirty
+  editor.scheduleStagedWrite()
+
+proc journalSupersededHistoryBelow[T](editor: EditorVM; stack: seq[T];
+    plan: SourceEditPlan) =
+  ## After undoing an entry, the previous entry for the same slot is current
+  ## again. If its plan was replaced in the journal before it was written, its
+  ## value is not on disk, so stage it again.
+  for i in countdown(stack.high, 0):
+    if stack[i].sourceEdit.sameSourceJournalSlot(plan):
+      let below = stack[i]
+      let id = below.sourceEdit.historyId
+      if id > 0 and not (below.lastWrite.recorded and below.lastWriteApplied) and
+          not editor.inspector.pendingHistoryPlan(id):
+        editor.inspector.journalSourceEdit(below.sourceEdit)
+        editor.workspaceEditStage.val = wesDirty
+        editor.scheduleStagedWrite()
+      return
+
+proc withdrawPendingHistoryBelow[T](editor: EditorVM; stack: seq[T];
+    plan: SourceEditPlan) =
+  ## Before redoing an entry whose write is (or will again be) on disk,
+  ## withdraw a still-unwritten forward plan of the previous entry for the
+  ## same slot: the redone entry wins the slot, and that plan's expected old
+  ## value no longer describes the file.
+  for i in countdown(stack.high, 0):
+    if stack[i].sourceEdit.sameSourceJournalSlot(plan):
+      let id = stack[i].sourceEdit.historyId
+      if id > 0 and editor.inspector.pendingSourceEdits.val.anyIt(
+          it.historyId == id and not it.restoreWrite.recorded):
+        editor.inspector.dropPendingHistoryPlans(id)
+      return
 
 proc actualConflictMatchesPlan(actual: CSSSourceConflict;
     plan: SourceEditPlan): bool =
@@ -4159,6 +5691,40 @@ func ownershipMatches(ownership: DesignSourceOwnership; element: ElementRef;
       prop.schemaKey, prop.tokenName, prop.variantKey, element.schemaKey]:
     return true
   ownership.elementSourceKey.len > 0 or ownership.domPath.len > 0
+
+func designSourceOwnershipIsAmbiguous*(schema: DesignSystemSchema;
+    element: ElementRef; prop: PropertyInfo): bool =
+  ## Presentation requires known selectors and agreement on the owner node
+  ## and destination. Match using the writer's existing predicate;
+  ## leave its first-match admission/resolution behavior unchanged.
+  var seen = false
+  var ownerKey: string
+  var destination: DesignSourceOwnership
+  for ownership in schema.sourceOwnership:
+    if not ownership.ownershipMatches(element, prop): continue
+    # The legacy matcher accepts an unspecified selected path. Presentation
+    # cannot treat that as proof of this path-scoped owner, even when another
+    # alias matches; retain the writer predicate's behavior unchanged.
+    if ownership.domPath.len > 0 and element.domPath.len == 0: return true
+    let key = if ownership.nodeKey.len > 0: ownership.nodeKey else: ownership.schemaKey
+    let node = schema.findDesignNode(key)
+    if not node.ok: return true
+    for candidate in schema.nodes:
+      if candidate.key == key and candidate != node.node: return true
+    var target = ownership
+    # These fields select the edge; they are not the authored destination.
+    # Redundant aliases to the same node/destination retain its known owner.
+    target.elementSourceKey = ""
+    target.domPath = ""
+    target.property = ""
+    target.schemaKey = ""
+    target.nodeKey = ""
+    # Writer availability does not change the known owner destination.
+    target.unstructuredViewCode = false
+    if seen and (key != ownerKey or target != destination): return true
+    seen = true
+    ownerKey = key
+    destination = target
 
 func validateDesignSystemSchema*(schema: DesignSystemSchema): seq[
     DesignSchemaDiagnostic] =
@@ -4579,6 +6145,9 @@ proc stageDirectCanvasPlan(editor: EditorVM; operation: DirectCanvasOperation;
     isShared: plan.scope == pesShared,
     editOrigin: peoInspector,
     sourcePlanKind: plan.planKind)
+  var plan = plan
+  editor.inspector.inheritUnwrittenExpectation(plan)
+  editor.inspector.stampHistoryEntry(plan)
   editor.inspector.selectedElement.val = afterElement
   editor.inspector.journalSourceEdit(plan)
   editor.inspector.undoStack.update proc(prev: seq[CSSPropertyEditTransaction]): seq[
@@ -4666,8 +6235,8 @@ proc planOwnedDirectSourceEdit(editor: EditorVM; operation: DirectCanvasOperatio
       if prop.originDetail.startsWith("iframe-dom:"): "" else: oldValue)
   result.ok = true
 
-proc applyDirectCanvasOperation*(editor: EditorVM;
-    operation: DirectCanvasOperation): DirectCanvasOperationResult {.discardable.} =
+proc stageDirectCanvasOperation(editor: EditorVM;
+    operation: DirectCanvasOperation): DirectCanvasOperationResult =
   ## Route iframe direct manipulation into the same source-backed journal used
   ## by inspector edits. Schema ownership wins; DOM-style fallback is used only
   ## for consumer previews that expose a generic source-map adapter.
@@ -4828,6 +6397,17 @@ proc applyDirectCanvasOperation*(editor: EditorVM;
         operation: op, sourceEdit: fallback.sourceEdit,
         diagnostics: fallback.diagnostics)
 
+proc applyDirectCanvasOperation*(editor: EditorVM;
+    operation: DirectCanvasOperation): DirectCanvasOperationResult {.discardable.} =
+  ## A canvas gesture or context command is a commit like an inspector row:
+  ## what it stages is written automatically. Context commands that run
+  ## another editor command (Duplicate, Open source, ...) stage nothing
+  ## themselves, and `noteCommitForAutoSave` schedules only when something is
+  ## staged.
+  result = editor.stageDirectCanvasOperation(operation)
+  if result.ok:
+    editor.scheduleStagedWrite()
+
 proc applyDirectCanvasResize*(editor: EditorVM; property,
     value: string): DirectCanvasOperationResult {.discardable.} =
   editor.applyDirectCanvasOperation(DirectCanvasOperation(kind: dcokResize,
@@ -4913,7 +6493,7 @@ func sourceScopeChoiceLabel*(kind: SourceScopeChoiceKind): string =
   of sskSemanticToken: "Semantic token"
   of sskGlobalPrimitiveToken: "Global primitive token"
 
-func sourceScopeKindForNode(kind: DesignSchemaNodeKind): SourceScopeChoiceKind =
+func sourceScopeKindForNode*(kind: DesignSchemaNodeKind): SourceScopeChoiceKind =
   case kind
   of dsnStoryFixture:
     sskStoryFixture
@@ -4958,13 +6538,15 @@ proc sourceScopeChoices*(schema: DesignSystemSchema; element: ElementRef;
       usageCount = 0; affectedComponents: seq[string] = @[];
       affectedStories: seq[StoryRef] = @[]; reason = "";
       impact = DesignSchemaImpact()): SourceScopeChoice =
-    let risk = sourceScopeRisk(impact, usageCount)
+    let risk = if prop.nativeSourceToken and kind == sskSemanticToken: ssrHigh else: sourceScopeRisk(impact, usageCount)
     let label = kind.sourceScopeChoiceLabel()
     let owner =
       if ownerLabel.len > 0: ownerLabel
       elif schema.ownerPackage.len > 0: schema.ownerPackage
       else: "Project"
-    let summary = sourceScopeSummary(kind, max(usageCount, impact.usageCount))
+    let summary = if prop.nativeSourceToken and kind == sskSemanticToken:
+      "Known direct matches: " & $usageCount & ". Inherited or unsupported references may also change."
+      else: sourceScopeSummary(kind, max(usageCount, impact.usageCount))
     let scopeImpact = SourceScopeImpact(
       ownerLabel: owner,
       sourceFile: file,
@@ -4990,11 +6572,26 @@ proc sourceScopeChoices*(schema: DesignSystemSchema; element: ElementRef;
     if prop.sourceFile.len > 0: prop.sourceFile else: element.sourceFile,
     if prop.sourceLine > 0: prop.sourceLine else: element.sourceLine,
     if prop.schemaKey.len > 0: prop.schemaKey else: element.schemaKey,
-    prop.hasSource or prop.directStyleAllowed or element.hasSource,
-    1, reason = "Edit this element without changing shared sources.")
+    (prop.hasSource or prop.directStyleAllowed or element.hasSource) and not prop.nativeSourceShared,
+    1, reason = if prop.nativeSourceShared: "This declaration belongs to a shared stylesheet rule."
+      else: "Edit this element without changing shared sources.")
 
   for kind in [sskStoryFixture, sskComponentSchemaApi, sskSharedClass,
       sskComponentToken, sskSemanticToken, sskGlobalPrimitiveToken]:
+    let nativeKind = if prop.nativeSourceToken: sskSemanticToken else: sskSharedClass
+    if prop.nativeSourceShared and kind == nativeKind and
+        prop.sourceFile.len > 0 and prop.authoredValue.len > 0 and
+        ((prop.nativeSourceToken and prop.tokenName.len > 0 and prop.schemaKey.startsWith("tokens.native.")) or
+          (not prop.nativeSourceToken and prop.schemaKey.startsWith("classes.native."))):
+      # The native manifest owns an exact declaration, including derived sides
+      # that have no independent legacy source-line entry. Its guarded writer
+      # validates file/key/hash/value; do not invent a line or substitute an
+      # unrelated design-schema owner for this capability.
+      result.add makeChoice(kind, ownerLabel = prop.originDetail,
+        file = prop.sourceFile, line = prop.sourceLine, schemaKey = prop.schemaKey,
+        editable = true, usageCount = prop.sharedCount,
+        reason = "This edit changes the shared source declaration.")
+      continue
     var best = DesignSchemaNode()
     for node in schema.nodes:
       if node.property != prop.name:
@@ -5012,7 +6609,7 @@ proc sourceScopeChoices*(schema: DesignSystemSchema; element: ElementRef;
         (kind == sskStoryFixture and prop.schemaKey.startsWith("fixtures.")) or
         (kind == sskComponentSchemaApi and
           (prop.schemaKey.startsWith("components.") or prop.variantKey.len > 0)) or
-        (kind == sskSharedClass and
+        (kind == sskSharedClass and not prop.nativeSourceToken and
           (prop.schemaKey.startsWith("classes.") or prop.sharedCount > 0)) or
         (kind == sskComponentToken and
           (prop.tokenName.startsWith("component.") or
@@ -5056,10 +6653,37 @@ proc sourceScopeChoices*(schema: DesignSystemSchema; element: ElementRef;
         reason = "Source-backed " & kind.sourceScopeChoiceLabel().toLowerAscii(),
         impact = impact)
 
+func sharedScopePlan(prop: PropertyInfo; request: PropertyEditRequest;
+    choices: seq[SourceScopeChoice]; choice: SourceScopeChoice): SourceEditPlan
+
 proc sourceScopeChoices*(editor: EditorVM; prop: PropertyInfo): seq[
     SourceScopeChoice] =
-  sourceScopeChoices(editor.designSystemSchema.val,
+  result = sourceScopeChoices(editor.designSystemSchema.val,
     editor.inspector.selectedElement.val, prop)
+  # Native source editing owns CSS constants, not winning inline declarations.
+  # Keep their disclosure metadata while projecting the adapter's refusal.
+  if editor.hasAsyncSourceProject and prop.origin == poSetStyle:
+    for choice in result.mitems:
+      choice.editable = false
+      choice.reason = "Read-only: native source editing does not own this inline declaration."
+  # A shared scope whose edit the project's writer has no entry for is shown
+  # disabled, with the reason, instead of being offered (and, when it is the
+  # first writable-looking scope, pre-selected) and then refused by the
+  # automatic write. The plan's identity -- file, schema key, token -- does
+  # not depend on the value typed, so the current value stands in for it.
+  # Local scope is checked when committed (`editInspectorProperty`).
+  if not editor.workspaceEditAdapter.isNil and not editor.hasAsyncSourceProject:
+    let request = PropertyEditRequest(property: prop.name, newValue: prop.value,
+      kind: pekCss, scope: pesShared, origin: peoInspector)
+    let choices = result
+    for choice in result.mitems:
+      if choice.kind == sskLocalInstance or not choice.editable:
+        continue
+      let refusal = editor.sourcePlanAdmissionRefusal(
+        prop.sharedScopePlan(request, choices, choice))
+      if refusal.len > 0:
+        choice.editable = false
+        choice.reason = refusal
 
 proc sourceScopeImpacts*(schema: DesignSystemSchema; element: ElementRef;
     prop: PropertyInfo): seq[SourceScopeImpact] =
@@ -5075,8 +6699,6 @@ proc sourceScopeImpacts*(editor: EditorVM; prop: PropertyInfo): seq[
 
 func sharedDesignCategory*(prop: PropertyInfo;
     sourceScope = sskLocalInstance): SharedDesignEditorCategory =
-  discard sourceScope
-
   let name = prop.name.normalizedCssName()
   if cssPropertyCategory(name) == cpcColor or name in [
       "background", "background-color", "color", "border-color",
@@ -5097,6 +6719,12 @@ func sharedDesignCategory*(prop: PropertyInfo;
   elif cssPropertyCategory(name) == cpcTransitions or
       name.startsWith("transition") or name.startsWith("animation"):
     sdecMotion
+  elif sourceScope == sskSharedClass and name in [
+      "background-size", "border-style", "outline-offset", "filter",
+      "transform", "flex-wrap", "overflow", "aspect-ratio"]:
+    # These literal class declarations have file-write and Undo/redo coverage.
+    # Token families still require their own supported semantic editor.
+    sdecSharedClass
   else:
     sdecUnsupported
 
@@ -5384,7 +7012,21 @@ proc editSharedDesignProperty*(editor: EditorVM; property, newValue: string;
     editor.inspector.editDiagnostics.val = result.diagnostics
     return
 
-  let plan = result.sourceEdit
+  # The scope was admitted on the field's current value, but a plan's
+  # identity can depend on the value committed (a token reference sets its
+  # token). Check the plan that will actually be journaled.
+  let admission = editor.sourcePlanAdmissionRefusal(result.sourceEdit)
+  if admission.len > 0:
+    let refused = PropertyEditDiagnostic(kind: pedSchemaViolation,
+      message: admission & " Nothing was changed.",
+      file: result.sourceEdit.file, line: result.sourceEdit.line,
+      property: property)
+    editor.inspector.editDiagnostics.val = @[refused]
+    return SharedDesignEditResult(status: pesRejected, editor: result.editor,
+      diagnostics: @[refused])
+  var plan = result.sourceEdit
+  editor.inspector.inheritUnwrittenExpectation(plan)
+  editor.inspector.stampHistoryEntry(plan)
   let beforeElement = editor.inspector.selectedElement.val
   var afterElement = beforeElement
   for i, prop in afterElement.properties:
@@ -5396,6 +7038,7 @@ proc editSharedDesignProperty*(editor: EditorVM; property, newValue: string;
       afterElement.properties[i].tokenName = plan.tokenName
       afterElement.properties[i].originDetail = plan.originDetail
       break
+  afterElement = afterElement.withShorthandSides(property, plan.newValue)
 
   let record = EditRecord(file: plan.file, line: plan.line,
     property: plan.property, oldValue: plan.oldValue, newValue: plan.newValue,
@@ -6303,6 +7946,50 @@ proc hasAliasCycle(tokens: seq[FoundationTokenEntry]; startKey,
     seen.add lowered
     current = tokens.aliasTarget(current)
 
+proc noteTokenEditedLocally*(editor: EditorVM; key: string) =
+  ## Mark a token as carrying an unsaved local value.
+  var edited = editor.locallyEditedTokens.val
+  for existing in edited:
+    if existing.sameTokenKey(key):
+      return
+  edited.add key
+  editor.locallyEditedTokens.val = edited
+
+proc clearLocalTokenEdits*(editor: EditorVM) =
+  ## Called once a save has made source agree with the editor. After that a
+  ## refresh SHOULD take the file's values -- they are the user's own, now
+  ## written down.
+  editor.locallyEditedTokens.val = @[]
+
+func mergeTokensPreservingLocalEdits*(fromSource: seq[FoundationTokenEntry];
+    current: seq[FoundationTokenEntry];
+    locallyEdited: seq[string]): seq[FoundationTokenEntry] =
+  ## What the token list becomes when the project reports new values.
+  ##
+  ## Source wins for every token the user has not touched -- that is the
+  ## whole point of refreshing. The user wins for the ones they have, because
+  ## the alternative is a rebuild quietly discarding work in progress, and
+  ## because they can still see what the file says by saving or reverting.
+  ##
+  ## A token the user edited that has DISAPPEARED from source is dropped: it
+  ## no longer exists, and keeping a local edit to a deleted token would show
+  ## a row that nothing can write.
+  result = fromSource
+  if locallyEdited.len == 0:
+    return
+  for i, token in result:
+    var isLocal = false
+    for key in locallyEdited:
+      if key.sameTokenKey(token.key):
+        isLocal = true
+        break
+    if not isLocal:
+      continue
+    for existing in current:
+      if existing.key.sameTokenKey(token.key):
+        result[i] = existing
+        break
+
 proc foundationImpact*(editor: EditorVM; tokenKey: string): FoundationTokenImpact =
   result.tokenKey = tokenKey
   for prop in editor.inspector.selectedElement.val.properties:
@@ -6395,11 +8082,6 @@ proc selectFoundationToken*(editor: EditorVM; key: string): bool {.discardable.}
       return true
   false
 
-proc removePendingFoundationEdit(editor: EditorVM; edit: SourceEditPlan) =
-  editor.inspector.removeJournaledSourceEdit(edit)
-  editor.workspaceEditStage.val =
-    if editor.inspector.pendingSourceEdits.val.len == 0: wesClean else: wesDirty
-
 proc undoFoundationTokenEdit*(editor: EditorVM): bool {.discardable.} =
   let stack = editor.foundations.undoStack.val
   if stack.len == 0:
@@ -6410,6 +8092,8 @@ proc undoFoundationTokenEdit*(editor: EditorVM): bool {.discardable.} =
     if token.key.sameTokenKey(entry.key):
       updated[i] = entry.beforeToken
       break
+  let step = editor.inspector.sourceHistoryStep(
+    editor.foundations.undoStack.val, editor.foundations.redoStack.val, redo = false)
   editor.foundations.tokens.val = updated
   editor.foundations.selectedTokenKey.val = entry.key
   editor.foundations.undoStack.val = stack[0 ..< stack.len - 1]
@@ -6417,7 +8101,9 @@ proc undoFoundationTokenEdit*(editor: EditorVM): bool {.discardable.} =
       FoundationEditHistoryEntry] =
     result = prev
     result.add entry
-  editor.removePendingFoundationEdit(entry.sourceEdit)
+  editor.applySourceHistoryStep(step, entry.sourceEdit, replaceExisting = true)
+  editor.journalSupersededHistoryBelow(editor.foundations.undoStack.val,
+    entry.sourceEdit)
   true
 
 proc redoFoundationTokenEdit*(editor: EditorVM): bool {.discardable.} =
@@ -6430,6 +8116,11 @@ proc redoFoundationTokenEdit*(editor: EditorVM): bool {.discardable.} =
     if token.key.sameTokenKey(entry.key):
       updated[i] = entry.afterToken
       break
+  let step = editor.inspector.sourceHistoryStep(
+    editor.foundations.undoStack.val, editor.foundations.redoStack.val, redo = true)
+  if step.kind in {ihsDropPending, ihsRestoreWrite}:
+    editor.withdrawPendingHistoryBelow(editor.foundations.undoStack.val,
+      entry.sourceEdit)
   editor.foundations.tokens.val = updated
   editor.foundations.selectedTokenKey.val = entry.key
   editor.foundations.redoStack.val = stack[0 ..< stack.len - 1]
@@ -6437,8 +8128,7 @@ proc redoFoundationTokenEdit*(editor: EditorVM): bool {.discardable.} =
       FoundationEditHistoryEntry] =
     result = prev
     result.add entry
-  editor.inspector.journalSourceEdit(entry.sourceEdit)
-  editor.workspaceEditStage.val = wesDirty
+  editor.applySourceHistoryStep(step, entry.sourceEdit, replaceExisting = true)
   true
 
 proc editFoundationToken*(editor: EditorVM; key, newValue: string): FoundationEditResult {.discardable.} =
@@ -6463,7 +8153,9 @@ proc editFoundationToken*(editor: EditorVM; key, newValue: string): FoundationEd
     editor.foundations.diagnostics.val = diagnostics
     return FoundationEditResult(status: pesRejected, diagnostics: diagnostics)
 
-  let plan = token.sourcePlan(newValue)
+  var plan = token.sourcePlan(newValue)
+  editor.inspector.inheritUnwrittenExpectation(plan)
+  editor.inspector.stampHistoryEntry(plan)
   var updatedTokens = editor.foundations.tokens.val
   updatedTokens[tokenIndex].value = newValue.strip()
   if newValue.strip().isTokenAliasValue:
@@ -6472,6 +8164,9 @@ proc editFoundationToken*(editor: EditorVM; key, newValue: string): FoundationEd
     updatedTokens[tokenIndex].aliasOf = ""
   let afterToken = updatedTokens[tokenIndex]
   editor.foundations.tokens.val = updatedTokens
+  # Remember that this one is the user's, so a refresh from source does not
+  # take it back.
+  editor.noteTokenEditedLocally(afterToken.key)
 
   let impact = editor.foundationImpact(key)
   editor.foundations.impacts.val = @[impact]
@@ -6489,6 +8184,7 @@ proc editFoundationToken*(editor: EditorVM; key, newValue: string): FoundationEd
   editor.foundations.redoStack.val = @[]
   editor.inspector.journalSourceEdit(plan)
   editor.workspaceEditStage.val = wesDirty
+  editor.scheduleStagedWrite()
   FoundationEditResult(status: pesAccepted, sourceEdit: plan, impacts: @[impact])
 
 proc variantDiagnostic(kind: ComponentVariantDiagnosticKind;
@@ -7139,6 +8835,7 @@ proc addPendingComponentPlan(editor: EditorVM; plan: SourceEditPlan) =
   editor.inspector.journalSourceEdit(plan)
   editor.workspaceEditStage.val = wesDirty
   editor.workspaceEditDiagnostics.val = @[]
+  editor.scheduleStagedWrite()
   editor.chat.accumulatedEdits.update proc(prev: seq[EditRecord]): seq[
       EditRecord] =
     result = prev
@@ -7159,8 +8856,11 @@ proc addPendingComponentPlan(editor: EditorVM; plan: SourceEditPlan) =
 
 proc stageComponentVariantJournal(editor: EditorVM;
     beforeVariant, afterVariant: ComponentVariantDefinition;
-    selectedBefore, selectedAfter: int; plan: SourceEditPlan) =
-  editor.addPendingComponentPlan(plan)
+    selectedBefore, selectedAfter: int; plan: var SourceEditPlan) =
+  editor.inspector.inheritUnwrittenExpectation(plan)
+  editor.inspector.stampHistoryEntry(plan)
+  let staged = plan
+  editor.addPendingComponentPlan(staged)
   editor.variants.undoStack.update proc(prev: seq[ComponentVariantEditHistoryEntry]): seq[
       ComponentVariantEditHistoryEntry] =
     result = prev
@@ -7169,7 +8869,7 @@ proc stageComponentVariantJournal(editor: EditorVM;
       afterVariant: afterVariant,
       selectedBefore: selectedBefore,
       selectedAfter: selectedAfter,
-      sourceEdit: plan)
+      sourceEdit: staged)
   editor.variants.redoStack.val = @[]
 
 func sourcePlan(variant: ComponentVariantDefinition;
@@ -7472,6 +9172,8 @@ proc undoComponentVariantEdit*(editor: EditorVM): bool {.discardable.} =
   let entry = stack[^1]
   var updated = editor.variants.variants.val
   discard updated.replaceVariant(entry.beforeVariant)
+  let step = editor.inspector.sourceHistoryStep(
+    editor.variants.undoStack.val, editor.variants.redoStack.val, redo = false)
   editor.variants.variants.val = updated
   editor.variants.selectedVariant.val = entry.selectedBefore
   editor.variants.undoStack.val = stack[0 ..< stack.len - 1]
@@ -7479,9 +9181,9 @@ proc undoComponentVariantEdit*(editor: EditorVM): bool {.discardable.} =
       ComponentVariantEditHistoryEntry] =
     result = prev
     result.add entry
-  editor.inspector.removeJournaledSourceEdit(entry.sourceEdit)
-  editor.workspaceEditStage.val =
-    if editor.inspector.pendingSourceEdits.val.len == 0: wesClean else: wesDirty
+  editor.applySourceHistoryStep(step, entry.sourceEdit, replaceExisting = true)
+  editor.journalSupersededHistoryBelow(editor.variants.undoStack.val,
+    entry.sourceEdit)
   true
 
 proc redoComponentVariantEdit*(editor: EditorVM): bool {.discardable.} =
@@ -7491,6 +9193,11 @@ proc redoComponentVariantEdit*(editor: EditorVM): bool {.discardable.} =
   let entry = stack[^1]
   var updated = editor.variants.variants.val
   discard updated.replaceVariant(entry.afterVariant)
+  let step = editor.inspector.sourceHistoryStep(
+    editor.variants.undoStack.val, editor.variants.redoStack.val, redo = true)
+  if step.kind in {ihsDropPending, ihsRestoreWrite}:
+    editor.withdrawPendingHistoryBelow(editor.variants.undoStack.val,
+      entry.sourceEdit)
   editor.variants.variants.val = updated
   editor.variants.selectedVariant.val = entry.selectedAfter
   editor.variants.redoStack.val = stack[0 ..< stack.len - 1]
@@ -7498,39 +9205,8 @@ proc redoComponentVariantEdit*(editor: EditorVM): bool {.discardable.} =
       ComponentVariantEditHistoryEntry] =
     result = prev
     result.add entry
-  editor.inspector.journalSourceEdit(entry.sourceEdit)
-  editor.workspaceEditStage.val = wesDirty
+  editor.applySourceHistoryStep(step, entry.sourceEdit, replaceExisting = true)
   true
-
-func workspacePlanKeys(plan: SourceEditPlan): seq[string] =
-  if plan.schemaKey.len > 0:
-    result.add plan.schemaKey
-    result.add "schema:" & plan.schemaKey
-  if plan.tokenName.len > 0:
-    result.add plan.tokenName
-    result.add "token:" & plan.tokenName
-  if plan.variantKey.len > 0:
-    result.add plan.variantKey
-    result.add "variant:" & plan.variantKey
-  if plan.conflictKey.len > 0:
-    result.add plan.conflictKey
-    result.add "source:" & plan.conflictKey
-  if plan.originDetail.len > 0:
-    result.add plan.originDetail
-
-func resolveWorkspaceSchema(adapter: WorkspaceEditAdapter;
-    plan: SourceEditPlan): tuple[ok: bool, entry: WorkspaceEditableSchemaEntry] =
-  if adapter.isNil:
-    return
-  let keys = workspacePlanKeys(plan)
-  for key in keys:
-    for entry in adapter.schema:
-      if entry.key == key:
-        return (true, entry)
-  for entry in adapter.schema:
-    if entry.file == plan.file and
-        (entry.property == plan.property or entry.property.len == 0):
-      return (true, entry)
 
 func workspaceOpFailed(op: WorkspaceOperationResult): bool =
   not op.ok
@@ -7640,6 +9316,417 @@ proc requireWorkspaceAdapter(editor: EditorVM): tuple[ok: bool,
     return
   result.ok = true
 
+type DraftedWorkspacePlan = object
+  ok: bool
+  patch: WorkspaceFilePatch
+  diagnostics: seq[WorkspaceEditDiagnostic]
+
+proc stampedForWrite(editor: EditorVM; plan: SourceEditPlan): SourceEditPlan =
+  ## ``plan`` as the write sends it: stamped with the width the preview is
+  ## showing (see `applyWorkspaceFileEdits`).
+  result = plan
+  result.viewportWidth =
+    if editor.previewRenderedWidth.val > 0: editor.previewRenderedWidth.val
+    else: editor.viewport.val.width
+
+proc draftWorkspacePlan(adapter: WorkspaceEditAdapter;
+    drafts: var seq[WorkspaceFileDraft]; plan: SourceEditPlan): DraftedWorkspacePlan =
+  ## Resolve ``plan`` and apply it to the in-memory draft of its file,
+  ## reading the file on first use. Nothing is written.
+  ##
+  ## The single per-plan step of the write transaction. `applyWorkspaceFileEdits`
+  ## runs it for every pending plan before writing anything, and the undo/redo
+  ## pre-check (`inspectorHistoryRefusal`) runs the same steps for the pending
+  ## plans plus the one the command would stage, so a command the write would
+  ## refuse is refused at the keystroke instead.
+  let resolved = adapter.resolveWorkspaceSchema(plan)
+  if not resolved.ok:
+    result.diagnostics.add workspaceDiagnostic(wedMissingSchema,
+      UnrepresentableSourceEditMessage,
+      file = plan.file,
+      schemaKey = if plan.schemaKey.len > 0: plan.schemaKey else: plan.conflictKey,
+      property = plan.property)
+    return
+
+  # Skipped when the entry owns the file: the resolution already knew the
+  # plan named a different path and matched anyway, because the path it
+  # named is the element's rather than the value's. Re-checking it here
+  # would refuse the edit the fallback exists to allow.
+  if not resolved.entryOwnsFile and
+      resolved.entry.file.len > 0 and plan.file.len > 0 and
+      resolved.entry.file != plan.file:
+    result.diagnostics.add workspaceDiagnostic(wedUnsafeSourceMap,
+      "The source plan file does not match the resolved project schema file.",
+      file = plan.file,
+      schemaKey = resolved.entry.key,
+      property = plan.property)
+    return
+
+  let targetFile =
+    if resolved.entryOwnsFile: resolved.entry.file
+    elif plan.file.len > 0: plan.file
+    else: resolved.entry.file
+  var draftPos = drafts.draftIndex(targetFile)
+  if draftPos < 0:
+    let read = adapter.readFile(targetFile)
+    if not read.ok:
+      if read.diagnostics.len > 0:
+        result.diagnostics.add read.diagnostics
+      else:
+        result.diagnostics.add workspaceDiagnostic(wedReadFailed,
+          "Could not read " & targetFile & ".", file = targetFile,
+          schemaKey = resolved.entry.key, property = plan.property)
+      return
+    drafts.add WorkspaceFileDraft(file: targetFile,
+      beforeContent: read.content,
+      currentContent: read.content)
+    draftPos = drafts.high
+
+  if plan.restoreWrite.recorded:
+    # Undo/redo of a written edit: put back exactly the lines that write
+    # replaced. Owned here rather than by the project's `patchFile`, whose
+    # contract is "apply this value", because a value is not a location --
+    # see `restoreSourceWrite`.
+    if plan.restoreWrite.file.len > 0 and plan.restoreWrite.file != targetFile:
+      result.diagnostics.add workspaceDiagnostic(wedUnsafeSourceMap,
+        "Undo/redo refused: the edit was written to " &
+          plan.restoreWrite.file & " but now resolves to " & targetFile &
+          ". No source was changed.",
+        file = targetFile, schemaKey = resolved.entry.key,
+        property = plan.property)
+      return
+    let restored = restoreSourceWrite(drafts[draftPos].currentContent,
+      plan.restoreWrite, "Undo/redo")
+    if not restored.ok:
+      result.diagnostics.add workspaceDiagnostic(wedSourceConflict,
+        restored.message, file = targetFile,
+        schemaKey = resolved.entry.key, property = plan.property)
+      return
+    result.patch = WorkspaceFilePatch(plan: plan, schema: resolved.entry,
+      file: targetFile, beforeContent: drafts[draftPos].currentContent,
+      afterContent: restored.content, affectedStory: resolved.entry.story)
+    drafts[draftPos].currentContent = restored.content
+    result.ok = true
+    return
+
+  if plan.expectedOldValue.len > 0 and
+      not adapter.allowMissingExpectedOldValue and
+      plan.expectedOldValue notin drafts[draftPos].currentContent:
+    result.diagnostics.add workspaceDiagnostic(wedSourceConflict,
+      "Source changed before the pending edit could be applied; reload or rebase the stale source plan, then retry.",
+      file = targetFile,
+      schemaKey = resolved.entry.key,
+      property = plan.property)
+    return
+
+  let patchResult = adapter.patchFile(plan, drafts[draftPos].currentContent,
+    resolved.entry)
+  if not patchResult.ok:
+    if patchResult.diagnostics.len > 0:
+      result.diagnostics.add patchResult.diagnostics
+    else:
+      result.diagnostics.add workspaceDiagnostic(wedPatchFailed,
+        "Could not create a patch for " & plan.property & ".",
+        file = plan.file,
+        schemaKey = resolved.entry.key,
+        property = plan.property)
+    return
+
+  var patch = patchResult.patch
+  if patch.file.len == 0:
+    patch.file = targetFile
+  patch.plan = plan
+  patch.schema = resolved.entry
+  patch.beforeContent = drafts[draftPos].currentContent
+  if patch.affectedStory.isEmptyStoryRef:
+    patch.affectedStory = resolved.entry.story
+  if patch.afterContent.len == 0 and drafts[draftPos].currentContent.len > 0:
+    result.diagnostics.add workspaceDiagnostic(wedPatchFailed,
+      "Project adapter returned an empty patched source.",
+      file = targetFile,
+      schemaKey = resolved.entry.key,
+      property = plan.property)
+    return
+
+  drafts[draftPos].currentContent = patch.afterContent
+  result.patch = patch
+  result.ok = true
+
+proc nextHistoryStep(editor: EditorVM; redo: bool): InspectorHistoryStep =
+  ## The step the next undo/redo command will take, in the history the
+  ## timeline says it acts on (`nextHistoryKind`).
+  case editor.nextHistoryKind(redo)
+  of ehkNone:
+    InspectorHistoryStep(kind: ihsNone)
+  of ehkInspector:
+    editor.inspector.inspectorHistoryStep(redo)
+  of ehkVector:
+    editor.inspector.sourceHistoryStep(editor.vectorEditor.undoStack.val,
+      editor.vectorEditor.redoStack.val, redo)
+  of ehkFoundation:
+    editor.inspector.sourceHistoryStep(editor.foundations.undoStack.val,
+      editor.foundations.redoStack.val, redo)
+  of ehkVariant:
+    editor.inspector.sourceHistoryStep(editor.variants.undoStack.val,
+      editor.variants.redoStack.val, redo)
+
+func stepJournal(pending: seq[SourceEditPlan]; step: InspectorHistoryStep;
+    entryPlan: SourceEditPlan; replaceExisting: bool): seq[SourceEditPlan] =
+  ## The journal after `applySourceHistoryStep` (and the identical arms of
+  ## `undoCssPropertyEdit` / `redoCssPropertyEdit`).
+  case step.kind
+  of ihsDropPending:
+    if entryPlan.historyId > 0: pending.withoutHistoryPlans(entryPlan.historyId)
+    else: pending.withoutJournalEntry(entryPlan)
+  of ihsRestoreWrite:
+    pending.journaledPlans(step.plan, replaceExisting = false).plans
+  of ihsInvertPlan, ihsReplayPlan:
+    pending.journaledPlans(step.plan, replaceExisting).plans
+  of ihsNone, ihsRefuse:
+    pending
+
+func withdrawnBelow[T](pending: seq[SourceEditPlan]; undoStack: seq[T];
+    plan: SourceEditPlan): seq[SourceEditPlan] =
+  ## The journal after `withdrawPendingHistoryBelow` / `supersedePendingBelow`:
+  ## the nearest same-slot entry below loses its unwritten forward plan.
+  result = pending
+  for i in countdown(undoStack.high, 0):
+    if undoStack[i].sourceEdit.sameSourceJournalSlot(plan):
+      let id = undoStack[i].sourceEdit.historyId
+      if id > 0 and pending.anyIt(it.historyId == id and
+          not it.restoreWrite.recorded):
+        result = pending.withoutHistoryPlans(id)
+      return
+
+func restagedBelow[T](pending: seq[SourceEditPlan]; stackBelow: seq[T];
+    plan: SourceEditPlan): seq[SourceEditPlan] =
+  ## The journal after `journalSupersededHistoryBelow`: the nearest same-slot
+  ## entry below, if its plan is neither on disk nor pending, is staged again.
+  result = pending
+  for i in countdown(stackBelow.high, 0):
+    if stackBelow[i].sourceEdit.sameSourceJournalSlot(plan):
+      let below = stackBelow[i]
+      let id = below.sourceEdit.historyId
+      if id > 0 and not below.historyEntryOnDisk and
+          not pending.anyIt(it.historyId == id):
+        result = pending.journaledPlans(below.sourceEdit,
+          replaceExisting = true).plans
+      return
+
+func restagedSupersededBelow(pending: seq[SourceEditPlan];
+    stackBelow: seq[CSSPropertyEditTransaction];
+    plan: SourceEditPlan): seq[SourceEditPlan] =
+  ## The journal after the inspector's `journalSupersededBelow`.
+  result = pending
+  for i in countdown(stackBelow.high, 0):
+    if stackBelow[i].sourceEdit.sameSourceJournalSlot(plan):
+      if stackBelow[i].superseded:
+        result = pending.journaledPlans(stackBelow[i].sourceEdit,
+          replaceExisting = true).plans
+      return
+
+func historyJournal[T](pending: seq[SourceEditPlan]; undoStack, redoStack: seq[T];
+    step: InspectorHistoryStep; redo, replaceExisting,
+    restagesBelow: bool): seq[SourceEditPlan] =
+  ## The journal the component-property, foundation or vector undo/redo
+  ## leaves: the same steps, in the same order, as `undoFoundationTokenEdit`,
+  ## `redoFoundationTokenEdit`, the component-property pair and the vector
+  ## pair (vector neither withdraws nor re-stages).
+  if not redo:
+    let entry = undoStack[^1]
+    result = pending.stepJournal(step, entry.sourceEdit, replaceExisting)
+    if restagesBelow:
+      result = result.restagedBelow(undoStack[0 ..< undoStack.high],
+        entry.sourceEdit)
+  else:
+    let entry = redoStack[^1]
+    result = pending
+    if restagesBelow and step.kind in {ihsDropPending, ihsRestoreWrite}:
+      result = result.withdrawnBelow(undoStack, entry.sourceEdit)
+    result = result.stepJournal(step, entry.sourceEdit, replaceExisting)
+
+proc journalAfterHistoryCommand(editor: EditorVM; redo: bool;
+    step: InspectorHistoryStep): seq[SourceEditPlan] =
+  ## The journal the next undo/redo command will leave, computed with the
+  ## same journal rules (`journaledPlans`, `withoutHistoryPlans`, ...) in the
+  ## same order as the command applies them -- including the earlier edit an
+  ## undo stages again and the plan a redo withdraws. Nothing changes.
+  let pending = editor.inspector.pendingSourceEdits.val
+  case editor.nextHistoryKind(redo)
+  of ehkNone:
+    pending
+  of ehkInspector:
+    let inspector = editor.inspector
+    if not redo:
+      let stack = inspector.undoStack.val
+      let txn = stack[^1]
+      pending.stepJournal(step, txn.sourceEdit, replaceExisting = true)
+        .restagedSupersededBelow(stack[0 ..< stack.high], txn.sourceEdit)
+    else:
+      let txn = inspector.redoStack.val[^1]
+      var journal = pending
+      if step.kind == ihsRestoreWrite:
+        journal = journal.withdrawnBelow(inspector.undoStack.val,
+          txn.sourceEdit)
+      journal.stepJournal(step, txn.sourceEdit, replaceExisting = true)
+  of ehkVector:
+    pending.historyJournal(editor.vectorEditor.undoStack.val,
+      editor.vectorEditor.redoStack.val, step, redo,
+      replaceExisting = false, restagesBelow = false)
+  of ehkFoundation:
+    pending.historyJournal(editor.foundations.undoStack.val,
+      editor.foundations.redoStack.val, step, redo,
+      replaceExisting = true, restagesBelow = true)
+  of ehkVariant:
+    pending.historyJournal(editor.variants.undoStack.val,
+      editor.variants.redoStack.val, step, redo,
+      replaceExisting = true, restagesBelow = true)
+
+proc inspectorHistoryRefusal(editor: EditorVM; redo: bool): PropertyEditDiagnostic =
+  ## Why the next undo/redo must be refused, or an empty message.
+  ##
+  ## Decided before anything moves, so a refusal leaves history, journal,
+  ## preview and source untouched. The write that follows the command is one
+  ## transaction over the journal the command leaves, so the check computes
+  ## that journal (`journalAfterHistoryCommand`: the step's own plan, the
+  ## earlier edit an undo stages again, the plans a redo withdraws) and drafts
+  ## it in memory, in order, with the write's own per-plan step
+  ## (`draftWorkspacePlan`) after the write's journal-ownership check.
+  ## Nothing is written.
+  ##
+  ## It used to simulate only pending restorations, and then only the step's
+  ## own plan. The command succeeded and the write refused the transaction:
+  ## history and preview had moved, the plans stayed pending (isonim-pm issue
+  ## 2026-10-13-unsafe-undo-with-a-pending-same-file-edit-is-refused-only-at-save).
+  ##
+  ## A command that only withdraws plans adds nothing the write could refuse,
+  ## so it is never refused here, even while another pending edit cannot be
+  ## written. Not simulated: a project's `review` hook (it runs after the
+  ## patches are built); no current project's review refuses
+  ## deterministically.
+  let step = editor.nextHistoryStep(redo)
+  let action = if redo: "Redo" else: "Undo"
+  case step.kind
+  of ihsRefuse:
+    return PropertyEditDiagnostic(kind: pedSourceConflict,
+      message: step.message.replace("Undo refused", action & " refused"),
+      file: step.plan.file, line: step.plan.line, property: step.plan.property)
+  of ihsNone:
+    return
+  of ihsRestoreWrite, ihsInvertPlan, ihsReplayPlan, ihsDropPending:
+    discard
+  if not editor.workspacePermissions.val.writeSource:
+    return
+  let adapterReq = editor.requireWorkspaceAdapter()
+  if not adapterReq.ok:
+    return
+  let adapter = adapterReq.adapter
+  let before = editor.inspector.pendingSourceEdits.val
+  let after = editor.journalAfterHistoryCommand(redo, step)
+  if not after.anyIt(it notin before):
+    return
+  var drafts: seq[WorkspaceFileDraft] = @[]
+  for plan in after:
+    # The write refuses the journal outright for a plan without an owner
+    # (`sourceJournalOwnershipDiagnostics`), before drafting anything.
+    var drafted = DraftedWorkspacePlan()
+    let ownership = sourceJournalOwnershipDiagnostics(@[plan])
+    if ownership.len > 0:
+      drafted.diagnostics.add workspaceDiagnostic(wedUnsafeSourceMap,
+        ownership[0].message, file = plan.file, property = plan.property)
+    else:
+      drafted = adapter.draftWorkspacePlan(drafts,
+        editor.stampedForWrite(plan))
+    if drafted.ok:
+      continue
+    let reason =
+      if drafted.diagnostics.len > 0: drafted.diagnostics[0].message
+      else: "it cannot be written"
+    if plan in before:
+      # Already pending before the command: the command would be written
+      # together with an edit that cannot be.
+      let what =
+        if plan.property.len > 0: "the pending " & plan.property & " edit"
+        else: "a pending edit"
+      return PropertyEditDiagnostic(kind: pedSourceConflict,
+        message: action & " refused: " & what &
+          (if plan.file.len > 0: " to " & plan.file else: "") &
+          " cannot be written (" & reason.strip(chars = {'.', ' '}) &
+          "), and this " & action.toLowerAscii & " would be written with it. " &
+          "No source was changed.",
+        file: plan.file, line: plan.line, property: plan.property)
+    var message = reason.replace("Undo/redo refused", action & " refused")
+    if not message.startsWith(action & " refused"):
+      message = action & " refused: " & message.strip(chars = {' '}) &
+        (if message.endsWith("."): "" else: ".") & " No source was changed."
+    return PropertyEditDiagnostic(kind: pedSourceConflict,
+      message: message, file: plan.file, line: plan.line,
+      property: plan.property)
+
+proc saveIndicator*(editor: EditorVM): SaveIndicator =
+  ## What the chrome bar's save control shows right now.
+  ##
+  ## Derived rather than stored, so it cannot disagree with the pipeline it
+  ## describes. Every input is already a signal the pipeline maintains:
+  ## `workspaceEditStage` for the transaction, `pendingSourceEdits` for what
+  ## is staged, `workspaceEditDiagnostics` for why a save was refused.
+  ##
+  ## The label is never empty. Colour alone is unreadable to a colour-blind
+  ## user and invisible in a screenshot review, so each state changes the
+  ## text too.
+  let pending = editor.inspector.pendingSourceEdits.val.len +
+    (if editor.sourceBindingMetadataDirty != nil and editor.sourceBindingMetadataDirty.val: 1 else: 0)
+  case editor.workspaceEditStage.val
+  of wesApplying, wesFormatting, wesRegenerating, wesCompiling,
+     wesReloading, wesReviewing:
+    SaveIndicator(state: sisSaving, label: "Saving…", pending: pending)
+  of wesFailed:
+    let detail =
+      if editor.workspaceEditDiagnostics.val.len > 0:
+        editor.workspaceEditDiagnostics.val[0].message
+      else:
+        "The last save was refused."
+    SaveIndicator(state: sisFailed, label: "Not saved", detail: detail,
+                  pending: pending)
+  of wesDirty:
+    # A dirty stage with nothing staged is clean in every way the user can
+    # see. The stage is set by several paths -- a foundation edit, a chat
+    # proposal -- that may then be reverted, and reporting "Unsaved" with
+    # nothing to save is the indicator lying in the safe direction, which is
+    # still lying.
+    if pending == 0:
+      SaveIndicator(state: sisClean, label: "Saved")
+    elif pending == 1:
+      SaveIndicator(state: sisDirty, label: "1 unsaved change", pending: 1)
+    else:
+      SaveIndicator(state: sisDirty, label: $pending & " unsaved changes",
+                    pending: pending)
+  of wesClean:
+    if pending > 0:
+      # Staged edits with a clean stage: the commit path stages before the
+      # stage signal moves. Trust the count -- it is the thing that would be
+      # lost.
+      SaveIndicator(state: sisDirty,
+        label: (if pending == 1: "1 unsaved change"
+                else: $pending & " unsaved changes"),
+        pending: pending)
+    else:
+      SaveIndicator(state: sisClean, label: "Saved")
+
+proc noteCommitForAutoSave*(editor: EditorVM) =
+  ## Called after a commit stages a plan. Bumps a generation the browser
+  ## layer debounces into an actual write.
+  ##
+  ## A generation rather than a direct call: the VM has no timer and should
+  ## not grow one, and a commit that wrote immediately would write once per
+  ## keystroke in a numeric field.
+  ##
+  ## Nothing gates this but "did anything stage". A commit that was REFUSED
+  ## stages nothing and so schedules nothing, which is the only condition
+  ## that ever mattered.
+  if editor.inspector.pendingSourceEdits.val.len > 0:
+    editor.autoSaveGeneration.val = editor.autoSaveGeneration.val + 1
+
 proc applyWorkspaceFileEdits*(editor: EditorVM): WorkspaceEditResult {.discardable.} =
   ## Apply pending source plans through a project-owned adapter transaction.
   ## Files are read and patched before writes begin; failed post-write operations
@@ -7649,6 +9736,29 @@ proc applyWorkspaceFileEdits*(editor: EditorVM): WorkspaceEditResult {.discardab
     editor.workspaceEditStage.val = wesClean
     editor.workspaceEditDiagnostics.val = @[]
     return WorkspaceEditResult(ok: true, stage: wesClean)
+
+  # The permission gate belongs HERE, not only at command dispatch.
+  #
+  # `commandRequirementFailure` refuses eckApply/eckSave on a read-only
+  # workspace, which greys out the Save chip and is what a user sees. But this
+  # proc is the public transaction entry point, and three callers reach it
+  # WITHOUT going through a command: `retryWorkspaceFileEdits`,
+  # `acceptAgentProposedEdit` and `revertAgentProposedEdit`. On a workspace
+  # declaring `writeSource: false` they each wrote to disk and reported
+  # success.
+  #
+  # The agent path is the one that matters: an AI-proposed edit, accepted in a
+  # workspace the project declared read-only, mutated source and told the user
+  # it had worked. A permission that holds at one door and not the other three
+  # is not a permission.
+  #
+  # Checked against the adapter's absence rather than instead of it: a
+  # workspace can be writable and adapterless, and that is a different
+  # diagnostic.
+  if not editor.workspacePermissions.val.writeSource:
+    return editor.failWorkspaceEdit(@[workspaceDiagnostic(wedMissingOperation,
+      "This workspace is read-only for source changes.",
+      file = "", schemaKey = "", property = "")])
 
   let ownershipDiagnostics = editor.inspector.sourceJournalOwnershipDiagnostics()
   if ownershipDiagnostics.len > 0:
@@ -7687,88 +9797,25 @@ proc applyWorkspaceFileEdits*(editor: EditorVM): WorkspaceEditResult {.discardab
   var drafts: seq[WorkspaceFileDraft] = @[]
   var fullReload = false
 
-  for plan in pending:
-    let resolved = adapter.resolveWorkspaceSchema(plan)
-    if not resolved.ok:
-      diagnostics.add workspaceDiagnostic(wedMissingSchema,
-        "No project schema or source map entry can safely represent this edit.",
-        file = plan.file,
-        schemaKey = if plan.schemaKey.len > 0: plan.schemaKey else: plan.conflictKey,
-        property = plan.property)
+  for basePlan in pending:
+    # Stamp the width the preview is showing, so a responsive stylesheet can
+    # be edited at all. Without it an adapter has only a selector and a
+    # property, and a responsive stylesheet has no single answer to "which
+    # rule owns this" -- it has one per width. Stamped here rather than when
+    # the edit was journaled because this is the single funnel every plan
+    # passes through; the cost is that switching viewport during the
+    # auto-save debounce targets the NEW width, which is also the width whose
+    # rendering the user is looking at when the write lands.
+    let drafted = adapter.draftWorkspacePlan(drafts,
+      editor.stampedForWrite(basePlan))
+    if not drafted.ok:
+      diagnostics.add drafted.diagnostics
       continue
-
-    if resolved.entry.file.len > 0 and plan.file.len > 0 and
-        resolved.entry.file != plan.file:
-      diagnostics.add workspaceDiagnostic(wedUnsafeSourceMap,
-        "The source plan file does not match the resolved project schema file.",
-        file = plan.file,
-        schemaKey = resolved.entry.key,
-        property = plan.property)
-      continue
-
-    let targetFile =
-      if plan.file.len > 0: plan.file
-      else: resolved.entry.file
-    var draftPos = drafts.draftIndex(targetFile)
-    if draftPos < 0:
-      let read = adapter.readFile(targetFile)
-      if not read.ok:
-        if read.diagnostics.len > 0:
-          diagnostics.add read.diagnostics
-        else:
-          diagnostics.add workspaceDiagnostic(wedReadFailed,
-            "Could not read " & targetFile & ".", file = targetFile,
-            schemaKey = resolved.entry.key, property = plan.property)
-        continue
-      drafts.add WorkspaceFileDraft(file: targetFile,
-        beforeContent: read.content,
-        currentContent: read.content)
-      draftPos = drafts.high
-
-    if plan.expectedOldValue.len > 0 and
-        not adapter.allowMissingExpectedOldValue and
-        plan.expectedOldValue notin drafts[draftPos].currentContent:
-      diagnostics.add workspaceDiagnostic(wedSourceConflict,
-        "Source changed before the pending edit could be applied; reload or rebase the stale source plan, then retry.",
-        file = targetFile,
-        schemaKey = resolved.entry.key,
-        property = plan.property)
-      continue
-
-    let patchResult = adapter.patchFile(plan, drafts[draftPos].currentContent,
-      resolved.entry)
-    if not patchResult.ok:
-      if patchResult.diagnostics.len > 0:
-        diagnostics.add patchResult.diagnostics
-      else:
-        diagnostics.add workspaceDiagnostic(wedPatchFailed,
-          "Could not create a patch for " & plan.property & ".",
-          file = plan.file,
-          schemaKey = resolved.entry.key,
-          property = plan.property)
-      continue
-
-    var patch = patchResult.patch
-    if patch.file.len == 0:
-      patch.file = targetFile
-    patch.plan = plan
-    patch.schema = resolved.entry
-    patch.beforeContent = drafts[draftPos].currentContent
-    if patch.affectedStory.isEmptyStoryRef:
-      patch.affectedStory = resolved.entry.story
-    if patch.afterContent.len == 0 and drafts[draftPos].currentContent.len > 0:
-      diagnostics.add workspaceDiagnostic(wedPatchFailed,
-        "Project adapter returned an empty patched source.",
-        file = targetFile,
-        schemaKey = resolved.entry.key,
-        property = plan.property)
-      continue
-
-    drafts[draftPos].currentContent = patch.afterContent
+    let patch = drafted.patch
     patches.add patch
     files.addUniqueFile patch.file
-    if resolved.entry.key.len > 0 and resolved.entry.key notin schemaKeys:
-      schemaKeys.add resolved.entry.key
+    if patch.schema.key.len > 0 and patch.schema.key notin schemaKeys:
+      schemaKeys.add patch.schema.key
     affectedStories.addUniqueStory patch.affectedStory
     fullReload = fullReload or patch.fullReload
 
@@ -7825,6 +9872,23 @@ proc applyWorkspaceFileEdits*(editor: EditorVM): WorkspaceEditResult {.discardab
       fullReload = fullReload or write.fullReload
       written.add patch
 
+  # The fast path, published the moment the bytes are on disk.
+  #
+  # Deliberately before formatting, regeneration and compilation: those are the
+  # slow half, and the point of this is that the user stops waiting for them to
+  # see what they just did. A formatter that rewrites whitespace can make the
+  # `before` text stop matching, in which case the swap simply does not apply
+  # and the preview updates when the rebuild lands -- the old behaviour, which
+  # is the right thing to degrade to.
+  # Did the commit already put this on screen?
+  #
+  # `applyPreviewStyle` sets the declaration on the rule the cascade uses, at
+  # commit time, in about 4ms -- long before this write. When it did, the
+  # preview is current and reloading it is not merely redundant but harmful,
+  # for the reason on `previewShowsPendingEdits`.
+  let previewIsUpToDate = editor.previewShowsPendingEdits.val
+  editor.previewShowsPendingEdits.val = false
+
   if adapter.formatFiles != nil:
     editor.workspaceEditStage.val = wesFormatting
     let formatted = adapter.formatFiles(files)
@@ -7876,13 +9940,11 @@ proc applyWorkspaceFileEdits*(editor: EditorVM): WorkspaceEditResult {.discardab
     requiredTestCommands.add reloaded.requiredTestCommands
     reviewDiagnostics.add reloaded.reviewDiagnostics
 
+  # History survives the write in every history, not only the inspector's:
+  # the write is credited to the entries that produced it, so their undo
+  # restores exactly what it replaced. See `recordHistoryWrites`.
+  editor.recordHistoryWrites(patches)
   editor.inspector.markCssPropertyEditsSaved()
-  editor.vectorEditor.undoStack.val = @[]
-  editor.vectorEditor.redoStack.val = @[]
-  editor.foundations.undoStack.val = @[]
-  editor.foundations.redoStack.val = @[]
-  editor.variants.undoStack.val = @[]
-  editor.variants.redoStack.val = @[]
   editor.chat.accumulatedEdits.val = @[]
   editor.workspaceEditStage.val = wesClean
   editor.workspaceEditDiagnostics.val = @[]
@@ -7893,7 +9955,14 @@ proc applyWorkspaceFileEdits*(editor: EditorVM): WorkspaceEditResult {.discardab
   editor.workspaceEditGeneratedArtifacts.val = generatedArtifacts
   editor.workspaceEditRequiredTestCommands.val = requiredTestCommands
   editor.workspaceEditReviewDiagnostics.val = reviewDiagnostics
-  if not adapter.stagingOnly:
+  # An adapter that returned preview style edits has asserted the preview is
+  # already showing this change, so reloading it is not merely redundant -- it
+  # is harmful. The reload rebuilds the preview from the project code COMPILED
+  # INTO the current bundle, which is still the pre-edit code until the project
+  # recompiles. Measured: it replaced a frame that had just been given the new
+  # stylesheet with one carrying the old one, and the value the user had just
+  # replaced flashed back for ~30ms before the swap was re-applied.
+  if not adapter.stagingOnly and not previewIsUpToDate:
     editor.livePreviewReloadGeneration.val = editor.livePreviewReloadGeneration.val + 1
   editor.recordEditorTiming(epbkSaveReload, 1,
     if fullReload: "preview-reload:full" else: "preview-reload:affected")
@@ -8171,6 +10240,170 @@ func componentVariantContext(variants: seq[ComponentVariantDefinition];
           result.add "state " & state.key & "=" & state.value &
             " schema=" & state.schemaKey
 
+proc previewClassNames*(html: string): seq[string] =
+  ## Current compiled preview classes share the native/JS HTML tokenizer.
+  htmlClassNames(html)
+
+const AgentContextNominalChars* = 3500
+
+proc boundAgentPromptContext*(context: AgentPromptContext;
+    maxChars = AgentContextNominalChars; preserveTailwind = 0): AgentPromptContext =
+  ## Editor policy, independent of any provider's cumulative quota. Keep whole
+  ## structured records and every field. User constraints, pending edits and
+  ## diffs remain exact: an oversized required snapshot must be rejected by the
+  ## backend without admission, rather than acknowledged after data loss.
+  result = context
+  # Rebinding uses the current inventory/relevance arguments, not stale policy
+  # declarations from an earlier snapshot. Ordinary availability prose remains.
+  result.contextAvailability = result.contextAvailability.filterIt(
+    not it.startsWith("availableTailwindClasses: required minimum"))
+  let classMinimum = compiledClassMinimum(context.availableTailwindClasses.len, preserveTailwind)
+  if classMinimum > 128:
+    let marker = compiledClassMinimumMarker(classMinimum)
+    if marker notin result.contextAvailability: result.contextAvailability.add marker
+  proc boundedText(text: string; limit: int): string =
+    let count = runeLen(text)
+    if count <= limit: return text
+    result = runeSubStr(text, 0, limit div 2) &
+      "\n[truncated " & $count & " Unicode characters by editor context budget]\n" &
+      runeSubStr(text, count - limit div 2, limit div 2)
+  # Retain the current edited/selected ownership records before generic schema
+  # inventory, and one actionable diagnostic per source/category. Bounded
+  # context must not hide the very edit or diagnostic the user is discussing.
+  var schemaPriority, mapPriority, treePriority: int
+  var schemaFirst, schemaRest: seq[AgentDesignSystemSchemaEntry]
+  for entry in result.designSystemSchema:
+    let relevant = result.pendingSourceEdits.anyIt(it.schemaKey.len > 0 and it.schemaKey == entry.key) or
+      result.accumulatedEdits.anyIt(it.property == entry.property and (it.file.len == 0 or it.file == entry.file)) or
+      result.selectedSchemaNodes.anyIt(it.key == entry.key)
+    if relevant: schemaFirst.add entry
+    else: schemaRest.add entry
+  schemaPriority = schemaFirst.len
+  result.designSystemSchema = schemaFirst & schemaRest
+  var mapFirst, mapRest: seq[AgentSourceMapEntry]
+  for entry in result.sourceMap:
+    if result.accumulatedEdits.anyIt(it.property == entry.property) or
+        result.pendingSourceEdits.anyIt(it.schemaKey.len > 0 and it.schemaKey == entry.schemaKey):
+      mapFirst.add entry
+    else: mapRest.add entry
+  mapPriority = mapFirst.len
+  result.sourceMap = mapFirst & mapRest
+  # A lone root conveys no current hierarchy. Keep small published trees and
+  # selected/edited descendants with their actual ancestor chain. Preserve
+  # source order within each part; rows retain their real IDs/depth/properties.
+  var treeIds: seq[string]
+  for i, row in result.renderedComponentTree:
+    let relevant = i < 8 or row.selected or
+      (result.selectedElement.id.len > 0 and row.id == result.selectedElement.id) or
+      row.id in result.selectedElement.ancestorIds or
+      result.pendingSourceEdits.anyIt(it.schemaKey.len > 0 and it.schemaKey == row.schemaKey) or
+      result.accumulatedEdits.anyIt(it.file.len > 0 and it.file == row.sourceFile and it.line == row.sourceLine)
+    if relevant and row.id notin treeIds: treeIds.add row.id
+  var addedAncestor = true
+  while addedAncestor:
+    addedAncestor = false
+    for row in result.renderedComponentTree:
+      if row.id in treeIds and row.parentId.len > 0 and row.parentId notin treeIds:
+        treeIds.add row.parentId
+        addedAncestor = true
+  var treeFirst, treeRest: seq[ElementLayerRow]
+  for row in result.renderedComponentTree:
+    if row.id in treeIds: treeFirst.add row
+    else: treeRest.add row
+  treePriority = treeFirst.len
+  result.renderedComponentTree = treeFirst & treeRest
+  for id in treeIds:
+    if not result.renderedComponentTree.anyIt(it.id == id):
+      result.contextAvailability.add "renderedComponentTree: a required ancestor is unavailable in the published tree"
+      break
+  var diagnosticGroups: seq[string]
+  var diagnosticFirst, diagnosticRest: seq[AgentDiagnosticSnapshot]
+  for entry in result.diagnostics:
+    let group = entry.source & ":" & entry.category
+    if group notin diagnosticGroups:
+      diagnosticGroups.add group
+      diagnosticFirst.add entry
+    else: diagnosticRest.add entry
+  result.diagnostics = diagnosticFirst & diagnosticRest
+  proc minimumRecords(field: string): int =
+    case field
+    of "designSystemSchema": max(1, schemaPriority)
+    of "sourceMap": max(1, mapPriority)
+    of "diagnostics": max(1, diagnosticGroups.len)
+    of "selectedSchemaNodes": max(1, context.selectedSchemaNodes.len)
+    of "renderedComponentTree": max(1, treePriority)
+    of "availableTailwindClasses": classMinimum
+    else: 1
+  var diagnostics: seq[AgentDiagnosticSnapshot]
+  for diagnostic in result.diagnostics:
+    var entry = diagnostic
+    entry.message = boundedText(entry.message, 512)
+    if entry.message != diagnostic.message:
+      let marker = "diagnostics.message: within-record Unicode text truncated; location/severity/category preserved"
+      if marker notin result.contextAvailability: result.contextAvailability.add marker
+    diagnostics.add entry
+  result.diagnostics = diagnostics
+  var snapshots: seq[string]
+  for snapshot in result.domSnapshots:
+    let bounded = boundedText(snapshot, 1024)
+    if bounded != snapshot:
+      let marker = "domSnapshots: within-record Unicode text truncated; partial HTML context, use capture-preview for full mounted document"
+      if marker notin result.contextAvailability: result.contextAvailability.add marker
+    snapshots.add bounded
+  result.domSnapshots = snapshots
+  template cap(field: untyped; budget: int) =
+    block:
+      let before = result.field.len
+      while result.field.len > minimumRecords(astToStr(field)) and runeLen($(%result.field)) > budget:
+        result.field = result.field[0 ..< result.field.len - 1]
+      if result.field.len != before:
+        result.contextAvailability.add astToStr(field) & ": truncated to " &
+          $result.field.len & " of " & $before & " complete records (editor context budget)"
+  cap(diagnostics, 1024)
+  cap(designSystemSchema, 2048)
+  cap(selectedSchemaNodes, 2048)
+  cap(componentVariantContext, 1024)
+  cap(renderedComponentTree, 2048)
+  cap(themeTokens, 2048)
+  cap(sourceMap, 1024)
+  cap(reviewAnnotations, 2048)
+  cap(domSnapshots, 2048)
+  cap(screenshotRefs, 1024)
+  cap(tokenContext, 1024)
+  cap(availableTailwindClasses, 2048)
+  # Reduce remaining optional arrays fairly while keeping at least one complete
+  # record per populated field. Protected user/edit data is never consumed here.
+  var changed = true
+  while runeLen($(%result)) > maxChars and changed:
+    changed = false
+    template trim(field: untyped) =
+      if runeLen($(%result)) > maxChars and result.field.len > minimumRecords(astToStr(field)):
+        let before = result.field.len
+        result.field = result.field[0 ..< before - 1]
+        let marker = astToStr(field) & ": bounded further by total editor context budget"
+        if marker notin result.contextAvailability: result.contextAvailability.add marker
+        changed = true
+    trim(diagnostics)
+    trim(designSystemSchema)
+    trim(componentVariantContext)
+    trim(renderedComponentTree)
+    trim(themeTokens)
+    trim(sourceMap)
+    trim(reviewAnnotations)
+    trim(domSnapshots)
+    trim(screenshotRefs)
+    trim(tokenContext)
+    trim(availableTailwindClasses)
+    trim(selectedSchemaNodes)
+  if runeLen($(%result)) > maxChars:
+    let protected = %* {"selectedStory": result.selectedStory, "selectedElement": result.selectedElement,
+      "accumulatedEdits": result.accumulatedEdits, "pendingSourceEdits": result.pendingSourceEdits,
+      "designSystemConstraints": result.designSystemConstraints, "currentFileDiffs": result.currentFileDiffs}
+    if runeLen($protected) > maxChars:
+      result.contextAvailability.add "required context exceeds nominal editor budget; exact user constraints, edits and diffs retained for truthful backend admission"
+    else:
+      result.contextAvailability.add "optional context identities or complete records exceed nominal editor budget; preserved rather than corrupted, backend quota may reject this snapshot"
+
 proc buildAgentPromptContext*(editor: EditorVM): AgentPromptContext =
   let schemaEntries = designSystemSchemaSnapshot(editor.designSystemSchema.val) &
     schemaSnapshot(editor.workspaceEditAdapter) &
@@ -8208,18 +10441,68 @@ proc buildAgentPromptContext*(editor: EditorVM): AgentPromptContext =
       workspacePatchDiffs(editor.workspaceEditPatches.val),
     platform: editor.platform.val,
     backend: editor.chat.backend.val)
+  # The published inspector rows describe the current mounted document. Empty
+  # data is reported honestly instead of substituting the selected schema.
+  result.renderedComponentTree = editor.inspector.layers.val
+  if result.renderedComponentTree.len == 0:
+    result.contextAvailability.add "renderedComponentTree: unavailable (preview not published)"
+  for name in tailwindStyles.keys:
+    result.availableTailwindClasses.add name
+  result.availableTailwindClasses.sort()
+  result.tailwindClassTotal = result.availableTailwindClasses.len
+  var usedClasses: seq[string]
+  let previewHtml = editor.preview.current.val.documentHtml
+  var relevantClasses = previewClassNames(previewHtml)
+  for prop in editor.inspector.selectedElement.val.properties:
+    let name = prop.originDetail.classNameFromOriginDetail()
+    if name.len > 0: relevantClasses.add name
+    if prop.name in ["class", "className"]: relevantClasses.add prop.value.splitWhitespace()
+  for edit in editor.inspector.pendingSourceEdits.val:
+    let name = edit.originDetail.classNameFromOriginDetail()
+    if name.len > 0: relevantClasses.add name
+    if edit.property in ["class", "className"]:
+      relevantClasses.add edit.oldValue.splitWhitespace()
+      relevantClasses.add edit.newValue.splitWhitespace()
+  for name in relevantClasses:
+    if name in result.availableTailwindClasses and name notin usedClasses: usedClasses.add name
+  var remainingClasses: seq[string]
+  for name in result.availableTailwindClasses:
+    if name notin usedClasses: remainingClasses.add name
+  result.availableTailwindClasses = usedClasses & remainingClasses
+  if result.tailwindClassTotal == 0:
+    result.contextAvailability.add "availableTailwindClasses: unavailable (no compiled tailwind-styles.json)"
+  elif result.tailwindClassTotal > max(512, usedClasses.len):
+    result.availableTailwindClasses.setLen(max(512, usedClasses.len))
+    result.contextAvailability.add "availableTailwindClasses: truncated to " &
+      $result.availableTailwindClasses.len & " current-preview/selected/edited-prioritized compiled classes"
+  result.captureActiveThemeContext()
+  result.themeTokens = editor.foundations.tokens.val
+  if result.themeTokens.len == 0:
+    result.contextAvailability.add "themeTokens: unavailable (project has published no foundation tokens)"
+  elif result.themeTokens.len > 512:
+    result.themeTokens.setLen(512)
+    result.contextAvailability.add "themeTokens: truncated to 512 project tokens"
   result.selectedSchemaNodes = result.selectedSchemaSnapshot()
   result.tokenContext = tokenContext(result.selectedElement, schemaEntries)
   result.componentVariantContext = componentVariantContext(
     editor.variants.variants.val, result.selectedStory, result.selectedElement)
+  result = boundAgentPromptContext(result, preserveTailwind = usedClasses.len)
 
 proc addUserMessage*(chat: AgentChatVM; text: string) =
+  chat.placeholdersDismissed.val = true
+  chat.activity.update proc(previous: ActivityTimeline): ActivityTimeline =
+    result = previous
+    result.beginTurn(text)
   chat.messages.update proc(prev: seq[ChatMessage]): seq[ChatMessage] =
     result = prev
     result.add ChatMessage(kind: cmkUser, text: text, timestamp: 0.0)
   chat.inputText.val = ""
 
-proc addAgentResponse*(chat: AgentChatVM; text: string) =
+proc addAgentResponse*(chat: AgentChatVM; text: string; recordActivity = true) =
+  if recordActivity:
+    chat.activity.update proc(previous: ActivityTimeline): ActivityTimeline =
+      result = previous
+      result.appendAssistant(text)
   chat.messages.update proc(prev: seq[ChatMessage]): seq[ChatMessage] =
     result = prev
     result.add ChatMessage(kind: cmkAgent, text: text, timestamp: 0.0)
@@ -8581,16 +10864,34 @@ proc rebaseAgentProposedEdit*(editor: EditorVM; id: string): bool {.discardable.
       return editor.sendAgentPrompt()
   false
 
+proc acknowledgeAgentPrompt*(chat: AgentChatVM; generation: int;
+    submitted: seq[EditRecord]) =
+  ## Called only after this exact turn reaches the provider/durable input boundary.
+  if not chat.promptInFlight or chat.closingSession or
+      chat.promptGeneration != generation or chat.promptAdmitted: return
+  chat.promptAdmitted = true
+  let current = chat.accumulatedEdits.val
+  if submitted.len <= current.len and current[0 ..< submitted.len] == submitted:
+    chat.accumulatedEdits.val = current[submitted.len ..< current.len]
+
 proc sendAgentPrompt*(editor: EditorVM): bool {.discardable.} =
+  if editor.chat.inputText.val.strip.len > 0:
+    editor.chat.placeholdersDismissed.val = true
+  if not editor.chat.agentPromptReady(): return false
   let prompt = editor.chat.inputText.val.strip()
   if prompt.len == 0:
     return false
 
+  let originalDraft = editor.chat.inputText.val
+  editor.chat.pendingPromptText = originalDraft
+  editor.chat.promptAdmitted = false
+  inc editor.chat.promptGeneration
   editor.chat.addUserMessage(prompt)
   editor.chat.sessionStatus.val = asLoading
   editor.chat.connectionState.val = "streaming"
 
   if editor.chat.promptAdapter == nil:
+    editor.chat.inputText.val = originalDraft
     editor.chat.sessionStatus.val = asError
     editor.chat.connectionState.val = "adapter-missing"
     editor.chat.messages.update proc(prev: seq[ChatMessage]): seq[ChatMessage] =
@@ -8602,17 +10903,22 @@ proc sendAgentPrompt*(editor: EditorVM): bool {.discardable.} =
   let context = editor.buildAgentPromptContext()
   editor.chat.lastPromptContext.val = context
   if editor.chat.promptAdapter(prompt, context):
+    if editor.chat.asyncAgentAdapter: return true
     if editor.chat.sessionStatus.val == asLoading:
       editor.chat.sessionStatus.val = asReady
     if editor.chat.connectionState.val == "streaming":
       editor.chat.connectionState.val = "ready"
     return true
 
+  if editor.chat.inputText.val.len == 0: editor.chat.inputText.val = originalDraft
   editor.chat.sessionStatus.val = asError
   editor.chat.connectionState.val = "error"
   false
 
 proc cancelAgentPrompt*(editor: EditorVM): bool {.discardable.} =
+  if editor.chat.cancelAsyncAdapter != nil:
+    editor.chat.cancelAsyncAdapter()
+    return true
   if editor.chat.cancelAdapter == nil:
     return false
   result = editor.chat.cancelAdapter()
@@ -8894,12 +11200,17 @@ proc pushVariableBindingHistory*(vm: EditorVM; elementId, propertyName,
           keys.add k
       result[idx].variableKeys = keys)
 
+proc ensureBindingRevision*(inspector: InspectorVM) =
+  ## Hot replacement can retain an inspector built before this counter existed.
+  when defined(js):
+    {.emit: ["if (!Number.isInteger(", inspector, ".bindingRevision)) ", inspector, ".bindingRevision = 0;"].}
+
 proc bindPropertyToVariable*(vm: EditorVM; key: PropertyBindingKey;
     variableKey: string) =
   ## Adds or replaces a binding under ``key``. Updates the live VM signal
   ## and (VBIND-M5) records the variable in the previously-linked history
   ## and fires the consumer's ``onBindingsChanged`` save hook so the
-  ## sidecar can be persisted. Phase E.4 also stages a source-edit plan.
+  ## sidecar can be persisted; linking does not change component CSS.
   if key.elementId.len == 0 or key.propertyName.len == 0 or
       variableKey.len == 0:
     return
@@ -8915,6 +11226,8 @@ proc bindPropertyToVariable*(vm: EditorVM; key: PropertyBindingKey;
       binding.sourceFileRef = token.sourceFile
       binding.sourceLineRef = token.sourceLine
       break
+  vm.inspector.ensureBindingRevision()
+  inc vm.inspector.bindingRevision
   vm.inspector.propertyBindings.update(proc(
       prev: Table[PropertyBindingKey, VariableBinding]):
       Table[PropertyBindingKey, VariableBinding] =
@@ -8926,9 +11239,14 @@ proc bindPropertyToVariable*(vm: EditorVM; key: PropertyBindingKey;
     vm.inspector.onBindingsChanged()
 
 proc detachPropertyBinding*(vm: EditorVM; key: PropertyBindingKey;
-    detachedValue: string) =
+    detachedValue: string; sourceConfirmed = false) =
   ## VBIND-M3: UNLINK → LOCAL LITERAL OVERRIDE.
   ##
+  ## Native source hosts confirm the file/build first and retain the binding
+  ## on refusal or an unresolved literal. ``sourceConfirmed`` is used only by
+  ## that owning bridge after confirmation; it avoids a second draft/undo.
+  ## Other hosts retain the staged adapter contract below, including explicit
+  ## empty detach semantics.
   ## Removes the binding under ``key`` and converts the property into a
   ## LOCAL literal override for the selected element, seeded with
   ## ``detachedValue`` — typically the binding's previously-resolved
@@ -8950,6 +11268,14 @@ proc detachPropertyBinding*(vm: EditorVM; key: PropertyBindingKey;
   ## name the currently-selected element — ``editCssProperty`` edits the
   ## selection, so journaling a detach for an off-screen element would
   ## mis-target; such a detach only removes the in-memory binding.
+  vm.inspector.ensureBindingRevision()
+  # Opted-in native hosts confirm the actual file/build before removing the
+  # chip. Other consumers retain the existing journal + save-adapter contract.
+  if not sourceConfirmed and vm.inspectorSourceDetach != nil:
+    vm.inspectorSourceDetach(key, detachedValue)
+    return
+  vm.inspector.ensureBindingRevision()
+  inc vm.inspector.bindingRevision
   # VBIND-M5: capture the variable being unlinked BEFORE removal so it
   # floats to the front of the previously-linked history (so re-opening
   # the picker offers the just-unlinked variable at the top — VBIND-M6).
@@ -8967,7 +11293,7 @@ proc detachPropertyBinding*(vm: EditorVM; key: PropertyBindingKey;
     vm.pushVariableBindingHistory(key.elementId, key.propertyName, detachedKey)
   if vm.inspector.onBindingsChanged != nil:
     vm.inspector.onBindingsChanged()
-  if detachedValue.len == 0:
+  if sourceConfirmed or detachedValue.len == 0:
     return
   if key.propertyName.len == 0:
     return
@@ -9110,6 +11436,8 @@ proc rehydratePropertyBindings*(vm: EditorVM;
   ## ``applyWorkspace`` never touched ``propertyBindings``). Because every
   ## pilot's workspace defaults to empty metadata, this seeds nothing and
   ## the inspector renders exactly as before.
+  vm.inspector.ensureBindingRevision()
+  inc vm.inspector.bindingRevision
   var tbl = initTable[PropertyBindingKey, VariableBinding]()
   for pb in persisted:
     if pb.elementId.len == 0 or pb.propertyName.len == 0 or
@@ -9131,6 +11459,66 @@ proc rehydratePropertyBindings*(vm: EditorVM;
       propertyName: pb.propertyName)] = binding
   vm.inspector.propertyBindings.val = tbl
   vm.inspector.variableBindingHistory.val = history
+
+proc seedStyleProvenanceBindings(editor: EditorVM; element: ElementRef) =
+  ## Turn the element's authored token references into inspector bindings.
+  ##
+  ## This is what makes the linked chip real. ``inspectorBindingFor`` has been
+  ## the read path since VBIND-M1 and its own doc comment says it "returns
+  ## ``none`` for every row today" because nothing seeds the table outside a
+  ## workspace sidecar. A token reference the author actually wrote --
+  ## ``padding = "var(--space-3)"`` -- is exactly such a seed, and it is one
+  ## the source can be trusted for: the DSL read it off the attribute, not off
+  ## a computed value.
+  ##
+  ## Three deliberate restraints:
+  ##
+  ## * An EXISTING entry for a key is never overwritten. A binding the user
+  ##   made, or one rehydrated from the workspace sidecar, outranks what the
+  ##   source happened to say when the page was compiled.
+  ## * ``onBindingsChanged`` is NOT fired. This table entry is derived from
+  ##   source, not a user decision, and persisting it into the sidecar would
+  ##   turn a fact the source already states into duplicated state that can
+  ##   drift from it.
+  ## * A token the foundations do not know becomes ``vbsBoundMissing`` rather
+  ##   than being dropped -- the inspector already renders that as a broken
+  ##   link, which is the whole point of requirement 8. A binding that cannot
+  ##   be resolved must be visible, not absent.
+  let elementId = element.fallbackElementId()
+  if elementId.len == 0 or element.styleBindings.len == 0:
+    return
+  var additions: seq[(PropertyBindingKey, VariableBinding)] = @[]
+  for prop in element.properties:
+    if not prop.isTokenBound():
+      continue
+    let key = PropertyBindingKey(elementId: elementId, propertyName: prop.name)
+    if editor.inspector.propertyBindings.val.hasKey(key):
+      continue
+    let resolved = editor.resolveVariableValue(prop.tokenName)
+    var binding = VariableBinding(
+      state: if resolved.len > 0: vbsBound else: vbsBoundMissing,
+      variableKey: prop.tokenName,
+      resolvedValue: if resolved.len > 0: resolved else: prop.value)
+    for token in editor.foundations.tokens.val:
+      if token.key.sameTokenKey(prop.tokenName):
+        binding.sourceFileRef = token.sourceFile
+        binding.sourceLineRef = token.sourceLine
+        break
+    additions.add (key, binding)
+  if additions.len == 0:
+    return
+  editor.inspector.propertyBindings.update(proc(
+      prev: Table[PropertyBindingKey, VariableBinding]):
+      Table[PropertyBindingKey, VariableBinding] =
+    result = prev
+    for (key, binding) in additions:
+      result[key] = binding)
+
+proc unresolvedStyleBindingsForSelection*(editor: EditorVM): seq[StyleBinding] =
+  ## Every authored styling construct on the current selection that resolved
+  ## to nothing. The per-element view of requirement 8; the whole-page view is
+  ## ``editor/scene_graph_hooks.sceneUnresolvedBindings``.
+  unresolvedStyleBindings(editor.inspector.selectedElement.val.styleBindings)
 
 proc collectWorkspaceBindingMetadata*(vm: EditorVM):
     tuple[bindings: seq[PersistedPropertyBinding],
@@ -9324,9 +11712,29 @@ proc createInspectorVM*(designSystemSchema: Signal[DesignSystemSchema] = nil;
           return true
       true
 
+    var visibleIds: seq[string] = @[]
+    if query.len > 0:
+      for row in allRows:
+        if not row.matches(): continue
+        if row.id notin visibleIds: visibleIds.add row.id
+        var parentId = row.parentId
+        var visited: seq[string] = @[]
+        while parentId.len > 0 and parentId notin visited:
+          visited.add parentId
+          if parentId notin visibleIds: visibleIds.add parentId
+          let index = allRows.rowIndex(parentId)
+          if index < 0: break
+          parentId = allRows[index].parentId
     for row in allRows:
-      if row.matches() and row.parentExpanded():
-        result.add row
+      if (query.len > 0 and row.id in visibleIds) or
+          (query.len == 0 and row.parentExpanded()):
+        var displayed = row
+        if query.len > 0:
+          for child in allRows:
+            if child.parentId == row.id and child.id in visibleIds:
+              displayed.expanded = true
+              break
+        result.add displayed
   )
 
   let visibleSections = createMemo[seq[InspectorSection]](proc(): seq[
@@ -9397,7 +11805,17 @@ proc createInspectorVM*(designSystemSchema: Signal[DesignSystemSchema] = nil;
   )
 
   let isDirty = createMemo[bool](proc(): bool =
-    pendingSourceEdits.val.len > 0 or undoStack.val.len > 0
+    ## UNSAVED work, and nothing else.
+    ##
+    ## This used to be "unsaved or has history", which fused two different
+    ## questions and is why saving had to clear the undo stack: with the stack
+    ## counting towards dirtiness, a saved document that still remembered what
+    ## you did would have claimed to be unsaved forever.
+    ##
+    ## They are not the same thing. The journal is what is not on disk; the
+    ## undo stack is what you did this session. Saving empties the first and
+    ## must not touch the second.
+    pendingSourceEdits.val.len > 0
   )
 
   let denseRowContract = createMemo[InspectorDenseRowContract](
@@ -9442,12 +11860,15 @@ proc createInspectorVM*(designSystemSchema: Signal[DesignSystemSchema] = nil;
   InspectorVM(
     designSystemSchema: schemaSignal,
     selectedElement: selectedElement,
+    previewValueRequest: createSignal(PreviewValueRequest()),
     breadcrumbTrail: createSignal[seq[BreadcrumbEntry]](@[]),
     breadcrumbWalkId: createSignal(""),
     layers: layers,
     layerSearch: layerSearch,
     sectionSearch: sectionSearch,
     expandedSections: expandedSections,
+    sectionsUserSet: createSignal[seq[InspectorSection]](@[]),
+    revealSectionRequest: createSignal(0),
     focusedControlId: focusedControlId,
     commandPaletteHooksReady: commandPaletteHooksReady,
     expandedLayerIds: expandedLayerIds,
@@ -10190,7 +12611,8 @@ proc commitVectorDocument(editor: EditorVM; operation: VectorOperationKind;
 
   let beforeSvg = beforeDoc.exportVectorDocumentSvg.optimizeVectorSvg
   let afterSvg = afterDoc.exportVectorDocumentSvg.optimizeVectorSvg
-  let plan = afterDoc.vectorSourcePlan(beforeSvg, afterSvg)
+  var plan = afterDoc.vectorSourcePlan(beforeSvg, afterSvg)
+  editor.inspector.stampHistoryEntry(plan)
   editor.vectorEditor.document.val = afterDoc
   editor.vectorEditor.diagnostics.val = afterDoc.validateVectorAccessibility()
   editor.vectorEditor.undoStack.update proc(prev: seq[VectorEditTransaction]): seq[
@@ -10203,6 +12625,7 @@ proc commitVectorDocument(editor: EditorVM; operation: VectorOperationKind;
   editor.vectorEditor.redoStack.val = @[]
   editor.inspector.journalSourceEdit(plan, replaceExisting = false)
   editor.workspaceEditStage.val = wesDirty
+  editor.scheduleStagedWrite()
   VectorOperationResult(ok: true, operation: operation, document: afterDoc,
     sourceEdit: plan, diagnostics: editor.vectorEditor.diagnostics.val)
 
@@ -10238,7 +12661,8 @@ proc commitVectorSourceSnapshot*(editor: EditorVM; operation: VectorOperationKin
       name: afterDoc.name, source: afterDoc.source, a11y: afterDoc.a11y)
   afterDoc.symbols[0].svgContent = normalized
   let expected = if requireExpectedOldValue: beforeSvg else: ""
-  let plan = afterDoc.vectorSourcePlan(beforeSvg, normalized, expected)
+  var plan = afterDoc.vectorSourcePlan(beforeSvg, normalized, expected)
+  editor.inspector.stampHistoryEntry(plan)
 
   editor.vectorEditor.document.val = afterDoc
   editor.vectorEditor.diagnostics.val = afterDoc.validateVectorAccessibility()
@@ -10252,6 +12676,7 @@ proc commitVectorSourceSnapshot*(editor: EditorVM; operation: VectorOperationKin
   editor.vectorEditor.redoStack.val = @[]
   editor.inspector.journalSourceEdit(plan, replaceExisting = false)
   editor.workspaceEditStage.val = wesDirty
+  editor.scheduleStagedWrite()
   VectorOperationResult(ok: true, operation: operation, document: afterDoc,
     sourceEdit: plan, diagnostics: editor.vectorEditor.diagnostics.val)
 
@@ -10838,15 +13263,15 @@ proc undoVectorEdit*(editor: EditorVM): bool {.discardable.} =
   if stack.len == 0:
     return false
   let tx = stack[^1]
+  let step = editor.inspector.sourceHistoryStep(
+    editor.vectorEditor.undoStack.val, editor.vectorEditor.redoStack.val, redo = false)
   editor.vectorEditor.undoStack.val = stack[0 ..< stack.len - 1]
   editor.vectorEditor.redoStack.update proc(prev: seq[VectorEditTransaction]): seq[
       VectorEditTransaction] =
     result = prev
     result.add tx
-  editor.inspector.removeJournaledSourceEdit(tx.sourceEdit)
   editor.vectorEditor.document.val = tx.beforeDocument
-  editor.workspaceEditStage.val =
-    if editor.inspector.pendingSourceEdits.val.len == 0: wesClean else: wesDirty
+  editor.applySourceHistoryStep(step, tx.sourceEdit, replaceExisting = false)
   true
 
 proc redoVectorEdit*(editor: EditorVM): bool {.discardable.} =
@@ -10854,14 +13279,15 @@ proc redoVectorEdit*(editor: EditorVM): bool {.discardable.} =
   if stack.len == 0:
     return false
   let tx = stack[^1]
+  let step = editor.inspector.sourceHistoryStep(
+    editor.vectorEditor.undoStack.val, editor.vectorEditor.redoStack.val, redo = true)
   editor.vectorEditor.redoStack.val = stack[0 ..< stack.len - 1]
   editor.vectorEditor.undoStack.update proc(prev: seq[VectorEditTransaction]): seq[
       VectorEditTransaction] =
     result = prev
     result.add tx
   editor.vectorEditor.document.val = tx.afterDocument
-  editor.inspector.journalSourceEdit(tx.sourceEdit, replaceExisting = false)
-  editor.workspaceEditStage.val = wesDirty
+  editor.applySourceHistoryStep(step, tx.sourceEdit, replaceExisting = false)
   true
 
 proc createVectorEditorVM*(): VectorEditorVM =
@@ -10885,7 +13311,11 @@ proc createVectorEditorVM*(): VectorEditorVM =
     selectedSymbol.val >= 0
   )
   let isDirty = createMemo[bool](proc(): bool =
-    undoStack.val.len > 0
+    ## Unsaved work, not "has history": history survives writes now, so a
+    ## written document that remembers what you did is clean. Same rule as
+    ## the inspector's `isDirty`; see `splitUnsavedHistory`.
+    let split = splitUnsavedHistory(undoStack.val, redoStack.val)
+    split.unsaved.len > 0 or split.reapply.len > 0
   )
 
   let filteredSymbols = createMemo[seq[VectorSymbol]](proc(): seq[VectorSymbol] =
@@ -10970,7 +13400,10 @@ proc createFoundationEditorVM*(): FoundationEditorVM =
       filtered[0]
     else:
       FoundationTokenEntry())
-  let isDirty = createMemo[bool](proc(): bool = undoStack.val.len > 0)
+  let isDirty = createMemo[bool](proc(): bool =
+    ## Unsaved work, not "has history"; see the vector editor's `isDirty`.
+    let split = splitUnsavedHistory(undoStack.val, redoStack.val)
+    split.unsaved.len > 0 or split.reapply.len > 0)
   let hasDiagnostics = createMemo[bool](proc(): bool = diagnostics.val.len > 0)
   FoundationEditorVM(
     tokens: tokens,
@@ -11045,6 +13478,13 @@ proc createAgentChatVM*(): AgentChatVM =
   let messageCount = createMemo[int](proc(): int = messages.val.len)
 
   AgentChatVM(
+    promptInFlightState: createSignal(false),
+    closingSessionState: createSignal(false),
+    cancelSupported: createSignal(false),
+    activity: createSignal(ActivityTimeline()),
+    placeholdersDismissed: createSignal(false),
+    followOutput: true,
+    controlConversationId: createSignal(""),
     messages: messages,
     sessionStatus: sessionStatus,
     accumulatedEdits: accumulatedEdits,
@@ -11091,9 +13531,15 @@ proc createReviewResultsVM*(): ReviewResultsVM =
     hasIssues: hasIssues)
 
 proc createProjectPreviewVM*(selectedStory: Signal[StoryRef];
-    platform: Signal[Platform]): ProjectPreviewVM =
-  let preview = ProjectPreviewVM(hook: defaultPreviewHook)
+    platform: Signal[Platform]; reloadGeneration: Signal[int] = nil): ProjectPreviewVM =
+  let preview = ProjectPreviewVM(hook: defaultPreviewHook, sourceGeneration: createSignal(0))
   preview.current = createMemo[ProjectPreview](proc(): ProjectPreview =
+    if reloadGeneration != nil: discard reloadGeneration.val
+    # Tracked but unused: this read is the whole reason the signal exists.
+    # `hook` is a field, not a signal, so a hot swap that installs a new
+    # closure leaves this memo valid and the preview showing output from
+    # code that is no longer on disk.
+    discard preview.sourceGeneration.val
     preview.hook(selectedStory.val, platform.val)
   )
   preview
@@ -11157,6 +13603,28 @@ proc createEditorVM*(): EditorVM =
   let rightSidebarTab = createSignal(rstManual)
   let platform = createSignal(pbWeb)
   let viewport = createSignal(defaultViewport(pbWeb))
+  let responsiveBreakpoints = createSignal[seq[ResponsiveBreakpoint]](@[])
+  let previewShowsPendingEdits = createSignal(false)
+  let previewRenderedWidth = createSignal(0)
+  # The width every breakpoint question is asked at: what the preview is
+  # really laid out at when that is known, and the chip's nominal width until
+  # it is.
+  let effectiveWidth = createMemo[int](proc(): int =
+    let measured = previewRenderedWidth.val
+    if measured > 0: measured else: viewport.val.width)
+  # Narrowest-first order is the workspace's contract, so "the first one that
+  # matches" is also "the tightest one that matches" -- which is what the
+  # cascade does when overlapping `max-width` blocks all apply.
+  let activeBreakpoint = createMemo[ResponsiveBreakpoint](
+    proc(): ResponsiveBreakpoint =
+      let width = effectiveWidth.val
+      for bp in responsiveBreakpoints.val:
+        let underMax = bp.maxWidth < 0 or width <= bp.maxWidth
+        let overMin = bp.minWidth < 0 or width >= bp.minWidth
+        if underMax and overMin:
+          return bp
+      ResponsiveBreakpoint(label: "", condition: "", minWidth: -1,
+                           maxWidth: -1))
   let workspacePermissions = createSignal(defaultWorkspacePermissions())
   let sourceAdapterReady = createSignal(false)
   let workspaceEditStage = createSignal(wesClean)
@@ -11229,7 +13697,7 @@ proc createEditorVM*(): EditorVM =
     if storedOpen != 0:
       aiDrawerOpen.val = true
   let review = createReviewResultsVM()
-  let preview = createProjectPreviewVM(selectedStory, platform)
+  let preview = createProjectPreviewVM(selectedStory, platform, livePreviewReloadGeneration)
   let flowPlayer = createFlowPlayerVM()
   # M57 contract: ``streamingPreview`` is documented as an optional
   # handle (see the type doc on ``EditorVM.streamingPreview``). The
@@ -11259,9 +13727,21 @@ proc createEditorVM*(): EditorVM =
     rightSidebarTab: rightSidebarTab,
     platform: platform,
     viewport: viewport,
+    controlConnected: true,
+    agentControlApproval: createSignal(false),
+    controlActivity: createSignal(newSeq[JsonNode]()),
+    controlFocusTarget: createSignal(""),
+    controlHighlightTarget: createSignal(""),
+    controlOperations: initTable[string, JsonNode](),
+    responsiveBreakpoints: responsiveBreakpoints,
+    previewShowsPendingEdits: previewShowsPendingEdits,
+    previewRenderedWidth: previewRenderedWidth,
+    activeBreakpoint: activeBreakpoint,
     workspacePermissions: workspacePermissions,
     sourceAdapterReady: sourceAdapterReady,
     workspaceEditStage: workspaceEditStage,
+    locallyEditedTokens: createSignal[seq[string]](@[]),
+    autoSaveGeneration: createSignal(0),
     workspaceEditDiagnostics: workspaceEditDiagnostics,
     workspaceBridgeRecovered: workspaceBridgeRecovered,
     workspaceEditPatches: workspaceEditPatches,
