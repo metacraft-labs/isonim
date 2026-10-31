@@ -69,6 +69,19 @@ suite "content extension scanner":
     let table = parse("| absolute | value |\n| --- | --- |\n| $|x|$ | $y$ |")
     check seen == @[("|x|", false, 3), ("y", false, 3)]
     check table.blocks[0].rows[0].len == 2
+  test "a table without formulas parses and renders the same with maths on or off":
+    # Turning maths on must not change a site's other tables: cells are
+    # inline content either way, and only a formula keeps its pipes.
+    let source = "| A `code` | [link](https://example.test/a) |\n| --- | --- |\n" &
+      "| a \\| b | `\\|` and `x|y` |\n| <https://example.test/b> | `$a|b$` |"
+    let off = parseMarkdownDoc(source)
+    let on = parse(source)
+    check seen.len == 0
+    check on.blocks[0].rows == off.blocks[0].rows
+    check off.blocks[0].rows[0] == @["a | b", "`|` and `x", "y`"]
+    check off.blocks[0].rows[1] == @["<https://example.test/b>", "`$a", "b$`"]
+    check renderProseHtml(on) == renderProseHtml(off)
+    check "<td><code>|</code> and `x</td><td>y`</td>" in renderProseHtml(off)
   test "passive SVG grammar refuses remote CSS forms and unsupported selectors":
     for css in ["background-image:image-set('https://example.test/x' 1x)",
         "behavior:none", "fill:red", "--diagram-mask-visible:black"]:

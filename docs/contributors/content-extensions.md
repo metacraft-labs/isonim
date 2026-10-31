@@ -124,7 +124,20 @@ Unmatched delimiters stay literal. Escaped dollars and code spans/fences stay
 literal; escaped dollars _inside_ TeX do not close the expression. TeX is
 opaque inside strike and table syntax, including `$|x|$`. Explicit link
 labels can contain math; destinations, titles and image alt text remain data.
-Existing parsing calls without hooks preserve their earlier output.
+Existing parsing calls without hooks preserve their earlier output, except
+for table cells (below).
+
+Table cells are inline content, as the
+[GFM table extension](https://github.github.com/gfm/#tables-extension-)
+specifies, whether or not maths is on: `Block.headerSpans` and
+`Block.cellSpans` are filled for every table, so code spans, links,
+autolinks and strikes in cells render, and links in cells are seen by
+`visitInlineSpans`. A cell ends at every pipe not escaped with a backslash,
+including one inside a code span or a link; `\|` is a literal pipe, also
+inside a code span, and `Block.rows` holds the cell text with it unescaped.
+With maths on, a formula keeps its pipes. (Before, cells were parsed only
+with maths on, and without it `\|` split the cell, so turning maths on
+changed every table of a site.)
 
 The pinned KaTeX CLI uses `--format mathml`, default error throwing
 and its default disabled trust option. The adapter removes only the outer

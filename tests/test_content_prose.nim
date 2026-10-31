@@ -133,6 +133,35 @@ suite "long-form prose":
       "<tr><td>1 &amp; 2</td><td>&lt;x&gt;</td></tr>" &
       "</tbody></table></div>"
 
+  test "table cells hold inline content, as GFM specifies, with no extension on":
+    # https://github.github.com/gfm/#tables-extension-: cells are inline
+    # content; a pipe escaped with a backslash is a literal pipe, also inside
+    # a code span (example 200), and an unescaped one ends the cell, even
+    # inside backticks.
+    let doc = parseMarkdownDoc("| Syntax | Example |\n| --- | --- |\n" &
+      "| code | `[^label]` |\n| link | [a link](https://example.org/y) and https://example.org/x |\n" &
+      "| escaped | a \\| b, `\\|` |\n| split | `a|b` |\n| ~~gone~~ | x \\\\|")
+    let table = doc.blocks[0]
+    check table.rows[2] == @["escaped", "a | b, `|`"]
+    check table.rows[3] == @["split", "`a", "b`"]
+    check table.rows[4] == @["~~gone~~", "x \\\\"]
+    check table.headerSpans.len == 2
+    check table.cellSpans.len == table.rows.len
+    let html = renderProseHtml(doc)
+    check "<th>Syntax</th><th>Example</th>" in html
+    check "<td>code</td><td><code>[^label]</code></td>" in html
+    check "<td>link</td><td><a href=\"https://example.org/y\">a link</a> and " &
+      "<a href=\"https://example.org/x\">https://example.org/x</a></td>" in html
+    check "<td>escaped</td><td>a | b, <code>|</code></td>" in html
+    check "<td>split</td><td>`a</td><td>b`</td>" in html
+    check "<td><del>gone</del></td><td>x \\</td>" in html
+    # Links in cells are seen by the reference traversal consumers use to
+    # check them.
+    var hrefs: seq[string]
+    visitInlineSpans(doc.blocks, proc(span: InlineSpan) =
+      if span.kind == ikLink: hrefs.add span.href)
+    check hrefs == @["https://example.org/y", "https://example.org/x"]
+
   test "nested tables and code blocks get the same scroll boxes":
     # Quotes and footnotes render their bodies through the same renderer.
     let html = renderProseHtml(parseMarkdownDoc(

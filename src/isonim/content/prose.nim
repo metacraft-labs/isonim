@@ -147,7 +147,7 @@ proc imageAlt*(span: InlineSpan): string =
 
 proc proseImages*(blocks: seq[Block]): seq[InlineSpan] =
   ## Every image span of the prose subset `renderProseHtml` renders, in
-  ## document order: in headings, paragraphs, list items, maths-enabled
+  ## document order: in headings, paragraphs, list items,
   ## table cells, admonitions, quotes, figures and footnotes, and inside
   ## struck-through text. A consumer checks them against its own alt-text
   ## policy with `InlineSpan.line` for the location.

@@ -256,8 +256,10 @@ type
     of bkTable:
       headers*: seq[string]
       rows*: seq[seq[string]]
-      headerSpans*: seq[seq[InlineSpan]] ## Populated only for opt-in math.
-      cellSpans*: seq[seq[seq[InlineSpan]]]
+      headerSpans*: seq[seq[InlineSpan]]
+        ## Each header cell parsed as inline content, as GFM specifies;
+        ## parallels `headers` for every parsed table, maths on or off.
+      cellSpans*: seq[seq[seq[InlineSpan]]] ## The same for `rows`.
       tableCaption*: seq[InlineSpan]
         ## The table's caption, written as a paragraph that starts with
         ## `Table:` or `:` next to the table (Pandoc's `table_captions`
@@ -937,32 +939,51 @@ proc isTableSeparatorRow(line: string): bool =
   true
 
 proc splitTableRow(line: string; math = false): seq[string] =
+  ## The cells of a GFM table row, as the table extension splits them
+  ## (https://github.github.com/gfm/#tables-extension-, example 200): a cell
+  ## ends at every pipe that is not escaped with a backslash, also inside a
+  ## code span or a link, and `\|` stands for a literal pipe in the cell's
+  ## content, also inside a code span. The cells are then parsed as inline
+  ## content, whether or not maths is on. With maths on, a formula is the one
+  ## exception: its TeX keeps its pipes (`|x|`, `\|`) unsplit and unchanged,
+  ## so a `$` opens a formula only outside a code span, as in paragraphs.
   var s = line.strip()
   if s.startsWith("|"): s = s[1 .. ^1]
-  if s.endsWith("|"): s = s[0 ..< ^1]
-  if not math:
-    for cell in s.split('|'): result.add cell.strip()
-    return
-  var start, i: int
+  if s.endsWith("|"):
+    # The closing pipe, unless a backslash escapes it (`\\|` escapes the
+    # backslash instead).
+    var slashes = 0
+    while slashes + 2 <= s.len and s[^(slashes + 2)] == '\\': inc slashes
+    if slashes mod 2 == 0: s = s[0 ..< ^1]
+  var cell = ""
+  var i = 0
+  var codeUntil = 0 # A `$` before this offset is inside a code span.
   while i < s.len:
     if s[i] == '\\' and i + 1 < s.len:
+      # cmark-gfm's unescape_pipes: `\|` is the pipe itself; every other
+      # escape stays for the inline parser.
+      if s[i + 1] == '|': cell.add '|'
+      else: cell.add s[i .. i + 1]
       i += 2
       continue
-    let opaque = opaqueInlineEnd(s, i)
-    if opaque > i:
-      i = opaque
-      continue
-    if s[i] == '$':
+    if math and s[i] == '`' and i >= codeUntil:
+      let width = tickRun(s, i)
+      let close = codeSpanEnd(s, i, width)
+      codeUntil = if close >= 0: close + width else: i + width
+    if math and s[i] == '$' and i >= codeUntil:
       let width = if i + 1 < s.len and s[i + 1] == '$': 2 else: 1
       let close = mathEnd(s, i, width)
       if close >= 0:
+        cell.add s[i ..< close + width]
         i = close + width
         continue
     if s[i] == '|':
-      result.add s[start ..< i].strip()
-      start = i + 1
+      result.add cell.strip()
+      cell = ""
+    else:
+      cell.add s[i]
     inc i
-  result.add s[start .. ^1].strip()
+  result.add cell.strip()
 
 proc headingMarkerLevel(line: string): int =
   ## Returns the heading level (1-6) if `line` is `#`..`######` followed
@@ -1781,16 +1802,17 @@ proc parseBlocks(body: string; ctx: ParseContext; sourceRelPath: string = "";
           let (text, after) = captionParagraph(lines, next)
           caption = parseInlineSpans(text, sourceRelPath, resolveContentPath, resolveSymbol, ctx.renderers, firstLine + next)
           i = after
+      # GFM cells hold inline content (https://github.github.com/gfm/#tables-extension-),
+      # so they are parsed like a paragraph's text whatever extensions are on.
       var headerSpans: seq[seq[InlineSpan]]
       var cellSpans: seq[seq[seq[InlineSpan]]]
-      if ctx.renderers.math != nil:
-        for header in headers:
-          headerSpans.add parseInlineSpans(header, sourceRelPath, resolveContentPath, resolveSymbol, ctx.renderers, blockLine)
-        for n, row in rows:
-          var cells: seq[seq[InlineSpan]]
-          for cell in row:
-            cells.add parseInlineSpans(cell, sourceRelPath, resolveContentPath, resolveSymbol, ctx.renderers, blockLine + 2 + n)
-          cellSpans.add cells
+      for header in headers:
+        headerSpans.add parseInlineSpans(header, sourceRelPath, resolveContentPath, resolveSymbol, ctx.renderers, blockLine)
+      for n, row in rows:
+        var cells: seq[seq[InlineSpan]]
+        for cell in row:
+          cells.add parseInlineSpans(cell, sourceRelPath, resolveContentPath, resolveSymbol, ctx.renderers, blockLine + 2 + n)
+        cellSpans.add cells
       result.add Block(kind: bkTable, headers: headers, rows: rows,
         headerSpans: headerSpans, cellSpans: cellSpans, tableCaption: caption)
       continue
