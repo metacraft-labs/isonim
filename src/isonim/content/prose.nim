@@ -61,6 +61,7 @@ type
     nextCaption: int
     heading: string              ## Visible text of the last heading rendered.
     avoid: ProsePageScope        ## Also counted as used, during one call.
+    anchorPrefix: string         ## Put before the parser's IDs, during one call.
 
 proc newProsePageScope*(idPrefix = ""): ProsePageScope =
   ## A scope with nothing used yet. `idPrefix` is put in front of every ID
@@ -70,38 +71,67 @@ proc newProsePageScope*(idPrefix = ""): ProsePageScope =
   ProsePageScope(idPrefix: idPrefix, ids: initHashSet[string](),
     names: initHashSet[string]())
 
-proc reserveIds(scope: ProsePageScope; blocks: seq[Block]) =
-  ## Record the IDs the parser assigned (headings, endnotes, references) so
-  ## a generated ID never repeats one, in this document or an earlier one.
-  proc spans(list: seq[InlineSpan]) =
-    for span in list:
-      if span.referenceId.len > 0: scope.ids.incl span.referenceId
-      spans(span.children)
+proc reserve*(scope, other: ProsePageScope) =
+  ## Count every ID and table-region name `other` has used as used in
+  ## `scope` too. This builds one scope a rendering can `avoid` from several
+  ## pages: a post's excerpt that a layout may print beside any post's
+  ## content avoids a scope that reserves every content scope.
+  for id in other.ids: scope.ids.incl id
+  for name in other.names: scope.names.incl name
+
+proc addParserId(found: var seq[string]; id: string) =
+  if id.len > 0 and id notin found: found.add id
+
+proc spanIds(list: seq[InlineSpan]; found: var seq[string]) =
+  for span in list:
+    found.addParserId span.referenceId
+    spanIds(span.children, found)
+
+proc parserIds(blocks: seq[Block]; found: var seq[string]) =
+  ## The IDs the parser assigned (headings, endnotes, references), each once,
+  ## in document order. The parser makes them unique within the document.
   for blk in blocks:
     case blk.kind
     of bkHeading:
-      scope.ids.incl blk.headingId
-      spans(blk.headingSpans)
-    of bkParagraph: spans(blk.spans)
+      found.addParserId blk.headingId
+      spanIds(blk.headingSpans, found)
+    of bkParagraph: spanIds(blk.spans, found)
     of bkList:
-      for item in blk.items: spans(item)
+      for item in blk.items: spanIds(item, found)
     of bkTable:
-      for header in blk.headerSpans: spans(header)
+      for header in blk.headerSpans: spanIds(header, found)
       for row in blk.cellSpans:
-        for cell in row: spans(cell)
-      spans(blk.tableCaption)
+        for cell in row: spanIds(cell, found)
+      spanIds(blk.tableCaption, found)
     of bkAdmonition:
-      for paragraph in blk.bodyParagraphs: spans(paragraph)
-    of bkBlockquote: scope.reserveIds(blk.quoteBlocks)
+      for paragraph in blk.bodyParagraphs: spanIds(paragraph, found)
+    of bkBlockquote: parserIds(blk.quoteBlocks, found)
     of bkTabs:
-      for tab in blk.tabs: scope.reserveIds(tab.blocks)
-    of bkFigure: spans(blk.caption)
+      for tab in blk.tabs: parserIds(tab.blocks, found)
+    of bkFigure: spanIds(blk.caption, found)
     of bkFootnotes:
       for note in blk.footnotes:
-        scope.ids.incl note.id
-        for reference in note.referenceIds: scope.ids.incl reference
-        scope.reserveIds(note.blocks)
+        found.addParserId note.id
+        for reference in note.referenceIds: found.addParserId reference
+        parserIds(note.blocks, found)
     else: discard
+
+proc idUsed(scope: ProsePageScope; id: string): bool
+
+proc reserveIds(scope: ProsePageScope; blocks: seq[Block]) =
+  ## Record the IDs the parser assigned, as they will be written (with the
+  ## call's anchor prefix), so a generated ID never repeats one, in this
+  ## document or an earlier one. A prefixed ID that is already used means
+  ## the caller gave two documents of one page the same prefix: that would
+  ## repeat an ID and send a link to the wrong document, so it fails.
+  var found: seq[string]
+  parserIds(blocks, found)
+  for id in found:
+    let written = scope.anchorPrefix & id
+    if scope.anchorPrefix.len > 0 and scope.idUsed(written):
+      raise newException(ValueError, "the ID " & written &
+        " is already used on this page; give each document its own anchorPrefix")
+    scope.ids.incl written
 
 proc nameKey(name: string): string =
   ## The form in which two names are compared. axe-core's `landmark-unique`
@@ -180,8 +210,15 @@ proc footnoteBackLabel*(note: Footnote; occurrence: int): string =
   "Back to reference " & $note.number &
     (if occurrence == 0: "" else: " (" & $(occurrence + 1) & ")")
 
-proc proseSpansHtml*(spans: seq[InlineSpan]): string =
+proc anchorHref(href, anchorPrefix: string): string =
+  ## A link to an ID the parser assigned, as `spansHtml` writes it.
+  if anchorPrefix.len > 0 and href.startsWith("#"): "#" & anchorPrefix & href[1 .. ^1]
+  else: href
+
+proc spansHtml(spans: seq[InlineSpan]; anchorPrefix: string): string =
   ## Escape every source-derived value, including destinations and titles.
+  ## `anchorPrefix` goes before every endnote reference's ID and the link to
+  ## its note (see `renderProseHtml`); authored links are written as given.
   for span in spans:
     if not span.generated.isEmpty:
       result.add fragmentHtml(span.generated)
@@ -190,26 +227,29 @@ proc proseSpansHtml*(spans: seq[InlineSpan]): string =
     of ikText: result.add escapeHtml(span.text)
     of ikCode: result.add "<code>" & escapeHtml(span.text) & "</code>"
     of ikLink:
-      result.add "<a href=\"" & escapeAttr(span.href) & "\"" & titleAttribute(span.title) & ">" & (if span.children.len > 0: proseSpansHtml(span.children) else: escapeHtml(span.text)) & "</a>"
+      result.add "<a href=\"" & escapeAttr(span.href) & "\"" & titleAttribute(span.title) & ">" & (if span.children.len > 0: spansHtml(span.children, anchorPrefix) else: escapeHtml(span.text)) & "</a>"
     of ikImage:
       result.add "<img src=\"" & escapeAttr(span.href) & "\" alt=\"" & escapeAttr(imageAlt(span)) & "\"" & titleAttribute(span.title) & ">"
     of ikSymRef:
       if span.href.len > 0: result.add "<a href=\"" & escapeAttr(span.href) & "\">"
       result.add "<code>" & escapeHtml(span.text) & "</code>"
       if span.href.len > 0: result.add "</a>"
-    of ikStrike: result.add "<del>" & proseSpansHtml(span.children) & "</del>"
+    of ikStrike: result.add "<del>" & spansHtml(span.children, anchorPrefix) & "</del>"
     of ikFootnoteRef:
       if span.footnoteNumber == 0:
         result.add escapeHtml("[^" & span.text & "]")
       else:
-        result.add "<sup id=\"" & escapeAttr(span.referenceId) & "\"><a href=\"" &
-          escapeAttr(span.href) & "\" role=\"doc-noteref\">" & $span.footnoteNumber & "</a></sup>"
+        result.add "<sup id=\"" & escapeAttr(anchorPrefix & span.referenceId) & "\"><a href=\"" &
+          escapeAttr(anchorHref(span.href, anchorPrefix)) & "\" role=\"doc-noteref\">" & $span.footnoteNumber & "</a></sup>"
 
-proc renderProseExtensionHtml*(blk: Block;
+proc proseSpansHtml*(spans: seq[InlineSpan]): string =
+  ## Escape every source-derived value, including destinations and titles.
+  spansHtml(spans, "")
+
+proc extensionHtml(blk: Block;
     renderBlocks: proc(blocks: seq[Block]): string {.closure.};
-    renderSpans: proc(spans: seq[InlineSpan]): string {.closure.}): string =
-  ## Callback seam: a quote's body uses the caller's normal heading, code and
-  ## component rendering, without a second parser or a docs dependency here.
+    renderSpans: proc(spans: seq[InlineSpan]): string {.closure.};
+    anchorPrefix: string): string =
   case blk.kind
   of bkBlockquote:
     result = "<blockquote>" & renderBlocks(blk.quoteBlocks) & "</blockquote>"
@@ -220,15 +260,22 @@ proc renderProseExtensionHtml*(blk: Block;
     result = "<section class=\"footnotes\" role=\"doc-endnotes\"><ol>"
     for index, note in blk.footnotes:
       let value = if note.number == index + 1: "" else: " value=\"" & $note.number & "\""
-      result.add "<li id=\"" & escapeAttr(note.id) & "\"" & value & ">" & renderBlocks(note.blocks)
+      result.add "<li id=\"" & escapeAttr(anchorPrefix & note.id) & "\"" & value & ">" & renderBlocks(note.blocks)
       for n, reference in note.referenceIds:
         if n > 0: result.add " "
-        result.add "<a href=\"#" & escapeAttr(reference) & "\" role=\"doc-backlink\" aria-label=\"" &
+        result.add "<a href=\"#" & escapeAttr(anchorPrefix & reference) & "\" role=\"doc-backlink\" aria-label=\"" &
           escapeAttr(footnoteBackLabel(note, n)) & "\">↩</a>"
       result.add "</li>"
     result.add "</ol></section>"
   of bkExcerptBreak: result = ""
   else: raise newException(ValueError, "Not a prose extension: " & $blk.kind)
+
+proc renderProseExtensionHtml*(blk: Block;
+    renderBlocks: proc(blocks: seq[Block]): string {.closure.};
+    renderSpans: proc(spans: seq[InlineSpan]): string {.closure.}): string =
+  ## Callback seam: a quote's body uses the caller's normal heading, code and
+  ## component rendering, without a second parser or a docs dependency here.
+  extensionHtml(blk, renderBlocks, renderSpans, "")
 
 proc tableOpen(blk: Block; scope: ProsePageScope): tuple[open, caption: string] =
   ## The region's start tag, named uniquely within `scope`, and the
@@ -239,29 +286,29 @@ proc tableOpen(blk: Block; scope: ProsePageScope): tuple[open, caption: string] 
     if name == captionText:
       let id = scope.captionId()
       return (tableScrollOpen & " aria-labelledby=\"" & escapeAttr(id) & "\">",
-        "<caption id=\"" & escapeAttr(id) & "\">" & proseSpansHtml(blk.tableCaption) & "</caption>")
+        "<caption id=\"" & escapeAttr(id) & "\">" & spansHtml(blk.tableCaption, scope.anchorPrefix) & "</caption>")
     # The caption's text already names a region on this page: the caption
     # stays as written, and the region gets the numbered name.
     return (tableScrollOpen & " aria-label=\"" & escapeAttr(name) & "\">",
-      "<caption>" & proseSpansHtml(blk.tableCaption) & "</caption>")
+      "<caption>" & spansHtml(blk.tableCaption, scope.anchorPrefix) & "</caption>")
   let base = if scope.heading.len > 0: tableRegionLabel & ": " & scope.heading
              else: tableRegionLabel
   result.open = tableScrollOpen & " aria-label=\"" & escapeAttr(scope.uniqueName(base)) & "\">"
   if blk.tableCaption.len > 0:
-    result.caption = "<caption>" & proseSpansHtml(blk.tableCaption) & "</caption>"
+    result.caption = "<caption>" & spansHtml(blk.tableCaption, scope.anchorPrefix) & "</caption>"
 
 proc renderBlocks(blocks: seq[Block]; scope: ProsePageScope): string =
   for blk in blocks:
     case blk.kind
     of bkHeading:
       let tag = "h" & $blk.level
-      result.add "<" & tag & " id=\"" & escapeAttr(blk.headingId) & "\">" &
-        (if blk.headingSpans.len > 0: proseSpansHtml(blk.headingSpans)
+      result.add "<" & tag & " id=\"" & escapeAttr(scope.anchorPrefix & blk.headingId) & "\">" &
+        (if blk.headingSpans.len > 0: spansHtml(blk.headingSpans, scope.anchorPrefix)
          else: escapeHtml(blk.headingText)) & "</" & tag & ">"
       scope.heading =
         if blk.headingSpans.len > 0: plainText(blk.headingSpans)
         else: headingLabel(blk.headingText).splitWhitespace().join(" ")
-    of bkParagraph: result.add "<p>" & proseSpansHtml(blk.spans) & "</p>"
+    of bkParagraph: result.add "<p>" & spansHtml(blk.spans, scope.anchorPrefix) & "</p>"
     of bkList:
       let tag = if blk.listKind == lkOrdered: "ol" else: "ul"
       result.add "<" & tag & ">"
@@ -275,9 +322,9 @@ proc renderBlocks(blocks: seq[Block]; scope: ProsePageScope): string =
           # Adjacent text alone does not name a control, disabled or not.
           result.add "<label><input type=\"checkbox\" disabled"
           if blk.tasks[n] == tsChecked: result.add " checked"
-          result.add "> " & proseSpansHtml(item) & "</label></li>"
+          result.add "> " & spansHtml(item, scope.anchorPrefix) & "</label></li>"
         else:
-          result.add proseSpansHtml(item) & "</li>"
+          result.add spansHtml(item, scope.anchorPrefix) & "</li>"
       result.add "</" & tag & ">"
     of bkCodeFence:
       if not blk.generated.isEmpty:
@@ -289,25 +336,26 @@ proc renderBlocks(blocks: seq[Block]; scope: ProsePageScope): string =
       let (open, caption) = tableOpen(blk, scope)
       result.add open & "<table>" & caption & "<thead><tr>"
       for n, header in blk.headers:
-        result.add "<th>" & (if n < blk.headerSpans.len: proseSpansHtml(blk.headerSpans[n]) else: escapeHtml(header)) & "</th>"
+        result.add "<th>" & (if n < blk.headerSpans.len: spansHtml(blk.headerSpans[n], scope.anchorPrefix) else: escapeHtml(header)) & "</th>"
       result.add "</tr></thead><tbody>"
       for n, row in blk.rows:
         result.add "<tr>"
         for c, cell in row:
-          result.add "<td>" & (if n < blk.cellSpans.len and c < blk.cellSpans[n].len: proseSpansHtml(blk.cellSpans[n][c]) else: escapeHtml(cell)) & "</td>"
+          result.add "<td>" & (if n < blk.cellSpans.len and c < blk.cellSpans[n].len: spansHtml(blk.cellSpans[n][c], scope.anchorPrefix) else: escapeHtml(cell)) & "</td>"
         result.add "</tr>"
       result.add "</tbody></table></div>"
     of bkAdmonition:
       result.add "<aside>"
-      for para in blk.bodyParagraphs: result.add "<p>" & proseSpansHtml(para) & "</p>"
+      for para in blk.bodyParagraphs: result.add "<p>" & spansHtml(para, scope.anchorPrefix) & "</p>"
       result.add "</aside>"
     of bkBlockquote, bkFigure, bkFootnotes, bkExcerptBreak:
       let nested = proc(children: seq[Block]): string = renderBlocks(children, scope)
-      result.add renderProseExtensionHtml(blk, nested, proseSpansHtml)
+      let spans = proc(list: seq[InlineSpan]): string = spansHtml(list, scope.anchorPrefix)
+      result.add extensionHtml(blk, nested, spans, scope.anchorPrefix)
     else: raise newException(ValueError, "A consumer renderer is required for " & $blk.kind)
 
 proc renderProseHtml*(blocks: seq[Block]; scope: ProsePageScope;
-    heading = ""): string =
+    heading = ""; anchorPrefix = ""): string =
   ## Render the semantic prose subset as one document of a page whose IDs
   ## and table-region names `scope` tracks (see `ProsePageScope`).
   ## `heading` is the visible text of the page's heading just before the
@@ -315,22 +363,39 @@ proc renderProseHtml*(blocks: seq[Block]; scope: ProsePageScope;
   ## an excerpt): a table before the document's own first heading is named
   ## after it. Docs-specific components require the owning consumer
   ## renderer; unsupported kinds fail visibly, never vanish.
-  scope.reserveIds(blocks)
-  # A table is named after a heading of its own document, or of the page
-  # just before it, never after one of an earlier document.
-  scope.heading = heading.splitWhitespace().join(" ")
-  renderBlocks(blocks, scope)
+  ##
+  ## `anchorPrefix` goes before every ID the parser assigned (heading
+  ## anchors, endnotes `fn-…` and references `fnref-…`) and into the
+  ## links between them, so the endnote references and back-links of this
+  ## rendering lead to its own endnotes and references. Parser IDs are
+  ## unique within one document only, so a page that shows a second
+  ## rendering of a document (an excerpt beside its post's content), or
+  ## several documents (the excerpts of a listing), gives each of them but
+  ## one its own prefix, as markdown-it-footnote's `env.docId`
+  ## (https://github.com/markdown-it/markdown-it-footnote) and Goldmark's
+  ## `WithFootnoteIDPrefix` (https://github.com/yuin/goldmark) do for
+  ## footnotes. Authored links (`[see](#setup)`) are written unchanged. A
+  ## prefixed ID already used in `scope` (or in an `avoid` scope) raises
+  ## `ValueError`: two documents were given the same prefix.
+  scope.anchorPrefix = anchorPrefix
+  try:
+    scope.reserveIds(blocks)
+    # A table is named after a heading of its own document, or of the page
+    # just before it, never after one of an earlier document.
+    scope.heading = heading.splitWhitespace().join(" ")
+    result = renderBlocks(blocks, scope)
+  finally: scope.anchorPrefix = ""
 
 proc renderProseHtml*(blocks: seq[Block]; scope, avoid: ProsePageScope;
-    heading = ""): string =
-  ## Like `renderProseHtml(blocks, scope, heading)`, but the names and IDs
-  ## used in `avoid` count as used too, while what this call uses is
-  ## recorded in `scope` only. For a document that may share a page with
-  ## each of two groups: a post's excerpt sits beside the other excerpts on
-  ## a listing (`scope`) and may also sit beside its own post's content
-  ## (`avoid`).
+    heading = ""; anchorPrefix = ""): string =
+  ## Like `renderProseHtml(blocks, scope, heading, anchorPrefix)`, but the
+  ## names and IDs used in `avoid` count as used too, while what this call
+  ## uses is recorded in `scope` only. For a document that may share a page
+  ## with each of two groups: a post's excerpt sits beside the other
+  ## excerpts on a listing (`scope`) and may also sit beside a post's
+  ## content (`avoid`, which `reserve` can fill from several scopes).
   scope.avoid = avoid
-  try: result = renderProseHtml(blocks, scope, heading)
+  try: result = renderProseHtml(blocks, scope, heading, anchorPrefix)
   finally: scope.avoid = nil
 
 proc renderProseHtml*(blocks: seq[Block]): string =
@@ -338,12 +403,12 @@ proc renderProseHtml*(blocks: seq[Block]): string =
   renderProseHtml(blocks, newProsePageScope())
 
 proc renderProseHtml*(doc: MarkdownDoc; scope: ProsePageScope;
-    heading = ""): string =
-  renderProseHtml(doc.blocks, scope, heading)
+    heading = ""; anchorPrefix = ""): string =
+  renderProseHtml(doc.blocks, scope, heading, anchorPrefix)
 
 proc renderProseHtml*(doc: MarkdownDoc; scope, avoid: ProsePageScope;
-    heading = ""): string =
-  renderProseHtml(doc.blocks, scope, avoid, heading)
+    heading = ""; anchorPrefix = ""): string =
+  renderProseHtml(doc.blocks, scope, avoid, heading, anchorPrefix)
 
 proc renderProseHtml*(doc: MarkdownDoc): string = renderProseHtml(doc.blocks)
 

@@ -334,6 +334,88 @@ suite "long-form prose":
     # ...and the avoided names were not copied into it.
     check "aria-label=\"Table: Results\"" in renderProseHtml(doc, excerpts)
 
+  test "an anchor prefix keeps a second rendering's IDs apart, and its links its own":
+    # A post page that shows the excerpt beside the content renders the
+    # start of one document twice; a listing joins several documents whose
+    # parser IDs (heading slugs, fn-1, fnref-1) are the same.
+    proc ids(html: string): seq[string] =
+      var at = 0
+      while true:
+        at = html.find(" id=\"", at)
+        if at < 0: break
+        result.add html[at + 5 ..< html.find("\"", at + 5)]
+        inc at
+    proc fragments(html: string): seq[string] =
+      var at = 0
+      while true:
+        at = html.find("href=\"#", at)
+        if at < 0: break
+        result.add html[at + 7 ..< html.find("\"", at + 7)]
+        inc at
+    proc unique(list: seq[string]): bool =
+      for n, item in list:
+        if item in list[n + 1 .. ^1]: return false
+      true
+    let source = "## Background\n\nIt starts with a note[^n] and [a link](#background).\n\n" &
+      "<!--more-->\n\nMore[^m].\n\n[^n]: The first note.\n\n[^m]: The second."
+    let doc = parseMarkdownDoc(source)
+    let other = parseMarkdownDoc(source.replace("note[^n]", "note[^n] and the same again[^n]"))
+    let content = newProsePageScope()
+    let page = renderProseHtml(doc, content)
+    check ids(page) == @["background", "fnref-1", "fnref-2", "fn-1", "fn-2"]
+    let excerpts = newProsePageScope("excerpt_")
+    let first = renderProseHtml(doc.excerpt, excerpts, content, anchorPrefix = "excerpt.a_")
+    let second = renderProseHtml(other.excerpt, excerpts, anchorPrefix = "excerpt.b_")
+    check first == "<h2 id=\"excerpt.a_background\">Background</h2>" &
+      "<p>It starts with a note<sup id=\"excerpt.a_fnref-1\"><a href=\"#excerpt.a_fn-1\" " &
+      "role=\"doc-noteref\">1</a></sup> and <a href=\"#background\">a link</a>.</p>" &
+      "<section class=\"footnotes\" role=\"doc-endnotes\"><ol><li id=\"excerpt.a_fn-1\">" &
+      "<p>The first note.</p><a href=\"#excerpt.a_fnref-1\" role=\"doc-backlink\" " &
+      "aria-label=\"Back to reference 1\">↩</a></li></ol></section>"
+    # Each rendering's note references and back-links lead into itself; the
+    # authored link keeps naming the content's heading.
+    for html in [page, first, second]:
+      for target in fragments(html):
+        check target in ids(html) or (html != page and target == "background")
+    check unique(ids(page & first)) and unique(ids(first & second))
+    check ids(second) == @["excerpt.b_background", "excerpt.b_fnref-1", "excerpt.b_fnref-1-2", "excerpt.b_fn-1"]
+    # Without a prefix the second rendering repeats every parser ID.
+    let plain = renderProseHtml(doc.excerpt, newProsePageScope("excerpt_"), content)
+    check ids(plain) == @["background", "fnref-1", "fn-1"]
+    # One prefix for two documents of one page would repeat an ID: refused.
+    expect ValueError:
+      discard renderProseHtml(other.excerpt, excerpts, anchorPrefix = "excerpt.a_")
+    # The prefix lasts one call: the same scope renders unprefixed after it.
+    check ids(renderProseHtml(parseMarkdownDoc("## Later"), excerpts)) == @["later"]
+
+  test "a scope can reserve what other scopes used, for a rendering that avoids them all":
+    # A layout may print any post's excerpt beside any post's content.
+    # Post A has two tables under "Results"; post B, whose excerpt is all
+    # of it, has one.
+    let a = parseMarkdownDoc("## Results\n\n| A |\n| - |\n| 1 |\n\n| B |\n| - |\n| 2 |")
+    let b = parseMarkdownDoc("## Results\n\n| C |\n| - |\n| 3 |")
+    let contentA = newProsePageScope()
+    let contentB = newProsePageScope()
+    let pageA = renderProseHtml(a, contentA)
+    discard renderProseHtml(b, contentB)
+    check "aria-label=\"Table: Results\"" in pageA
+    check "aria-label=\"Table: Results (2)\"" in pageA
+    # Avoiding only its own post's content, B's excerpt takes a name that
+    # post A's page already has: the gap `reserve` closes.
+    let ownOnly = renderProseHtml(b, newProsePageScope("excerpt_"), contentB, anchorPrefix = "excerpt.b_")
+    check "aria-label=\"Table: Results (2)\"" in ownOnly
+    let contents = newProsePageScope()
+    contents.reserve(contentA)
+    contents.reserve(contentB)
+    let excerpts = newProsePageScope("excerpt_")
+    let excerptB = renderProseHtml(b, excerpts, contents, anchorPrefix = "excerpt.b_")
+    check "aria-label=\"Table: Results (3)\"" in excerptB
+    # Avoiding does not write back: the excerpt's "(3)" is not in
+    # `contents`, so another rendering avoiding it gets "(3)" again.
+    check "aria-label=\"Table: Results (3)\"" in renderProseHtml(b, newProsePageScope(), contents)
+    # Reserving copies: the reserved scopes are unchanged.
+    check "aria-label=\"Table: Results (2)\"" in renderProseHtml(b, newProsePageScope(), contentB)
+
   test "a table before the document's first heading can take the page's heading":
     # A listing shows each excerpt under its post's title.
     let doc = parseMarkdownDoc("| A |\n| - |\n| 1 |\n\n## Later\n\n| B |\n| - |\n| 2 |")

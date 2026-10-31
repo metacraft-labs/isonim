@@ -96,6 +96,22 @@ generated ID, so two scopes whose output may meet on one page cannot
 generate the same one. The heading a table is named after never carries
 over from one document into the next.
 
+The IDs the parser assigns (heading anchors, endnotes `fn-<n>`, references
+`fnref-<n>`) are unique within one document only, so the same page showing
+a second rendering of a document (a post's excerpt beside its content), or
+several documents (a listing's excerpts), would repeat them. Pass each of
+those renderings its own `anchorPrefix`:
+`renderProseHtml(doc, scope, anchorPrefix = "excerpt.a_")` writes every
+parser ID with that prefix and points the endnote references and back-links
+at the prefixed IDs, so each rendering's notes link within itself, as
+markdown-it-footnote's `env.docId` and Goldmark's `WithFootnoteIDPrefix`
+do for footnotes. Authored links such as `[see](#setup)` are left as
+written. A prefixed ID already used in the scope, or in the scope passed
+as `avoid`, raises `ValueError`, since the caller gave two documents the
+same prefix. `scope.reserve(other)` counts everything `other` used as used
+in `scope` too, which builds one `avoid` scope out of several pages (every
+post's content, for an excerpt a layout may print on any post's page).
+
 An image written `![](src){decorative}` is decorative: the span's
 `decorative` flag is set, the marker is consumed, and `renderProseHtml`
 writes `alt=""` (`imageAlt(span)`). CommonMark cannot tell an empty alt text
