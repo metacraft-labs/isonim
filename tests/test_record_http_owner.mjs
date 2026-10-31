@@ -33,16 +33,20 @@ import {domV1Hash} from '@codetracer/boundary-shim/dist/browser/dom-v1.js';
 import {decodeRecord,encodeLog} from '@codetracer/boundary-format';
 import {installReplayRuntime} from '@codetracer/boundary-replay/dist/browser/runtime.js';
 import {newReplayContext} from '@codetracer/boundary-shim/dist/browser/replay/context.js';
-import {createFrameworkReplayFetch} from '@codetracer/boundary-shim/dist/browser/replay/net.js';
+import {createReplayFetch,createFrameworkReplayFetch} from '@codetracer/boundary-shim/dist/browser/replay/net.js';
+import {patchTimeSeams} from '@codetracer/boundary-shim/dist/browser/seams-time.js';
+import {patchStorage} from '@codetracer/boundary-shim/dist/browser/seams-storage.js';
 import {replayTimeSeams} from '@codetracer/boundary-shim/dist/browser/replay/time.js';
-globalThis.rhOwner={TaskKind,Recorder,captureOriginals,readEnvironment,sensitiveState,currentSensitiveValues,createRecordFetch,domV1Hash,decodeRecord,encodeLog,installReplayRuntime,newReplayContext,createFrameworkReplayFetch,replayTimeSeams};
+globalThis.rhOwner={TaskKind,Recorder,patchTimeSeams,patchStorage,captureOriginals,readEnvironment,sensitiveState,currentSensitiveValues,createRecordFetch,domV1Hash,decodeRecord,encodeLog,installReplayRuntime,newReplayContext,createReplayFetch,createFrameworkReplayFetch,replayTimeSeams};
 `;
+const replayMode = process.env.REPLAY_HTTP_BUNDLE !== undefined;
 const bundle = await build({
   stdin: {
     resolveDir: artifact,
     contents:
       prelude +
-      readFileSync(process.env.RECORD_HTTP_BUNDLE, "utf8") +
+      readFileSync(replayMode ? process.env.REPLAY_HTTP_BUNDLE : process.env.RECORD_HTTP_BUNDLE, "utf8") +
+      (replayMode ? "\nObject.assign(globalThis,{rpInit,rpHttp,rpRpc,rpRaw,rpPreparedFetch,rpSelectedClock}); globalThis.rhUseReplayProduction=true;" : "") +
       "\nObject.assign(globalThis,{rhInit,rhHttp,rhRpc,rhView,rhReplayHttp,rhReplayRpc,rhTimerInit,rhTimer,rhPublicHttp,rhPublicRpc,rhPublicSelect,rhDispatch,rhRaw,rhPreparedFetch,rhCustomSelect,rhFakeStart,rhFakeState,rhFakeAdvance,rhFakeEnd});",
   },
   bundle: true,
@@ -118,8 +122,8 @@ async function slot(id) {
   assert.fail("actual local request missing " + id);
 }
 try {
-  for (const kind of ["http", "rpc"])
-    for (const scenario of kind === "http"
+  for (const kind of replayMode && process.env.REPLAY_HTTP_CASE === "constructed-null" ? ["http"] : ["http", "rpc"])
+    for (const scenario of replayMode && process.env.REPLAY_HTTP_CASE === "constructed-null" ? ["constructed-null", "ready"] : kind === "http"
       ? [
           "ready",
           "null",
@@ -518,13 +522,13 @@ try {
             const a = rhOwner,
               runner = a.installReplayRuntime(window, { log }),
               ctx = a.newReplayContext(window, runner),
-              fetch = a.createFrameworkReplayFetch(ctx);
+              fetch = globalThis.rhUseReplayProduction ? (rpInit(ctx), null) : a.createFrameworkReplayFetch(ctx);
             globalThis.nullError = undefined;
             try {
               const pending =
                 kind === "http"
-                  ? rhReplayHttp(fetch, url, "payload")
-                  : rhReplayRpc(fetch, url, "payload", null, {
+                  ? (globalThis.rhUseReplayProduction ? rpHttp(url,"payload") : rhReplayHttp(fetch, url, "payload"))
+                  : (globalThis.rhUseReplayProduction ? rpRpc : rhReplayRpc.bind(null,fetch))(url, "payload", null, {
                       "Isonim-After": "after",
                       "Idempotency-Key": "key",
                     });
@@ -561,30 +565,91 @@ try {
         async ({ log, kind, url, abort }) => {
           const a = rhOwner;
           const runner = a.installReplayRuntime(window, { log });
-          const ctx = a.newReplayContext(window, runner),
-            fetch = a.createFrameworkReplayFetch(ctx),
+          const ctx = a.newReplayContext(window, runner);
+          if(globalThis.rhUseReplayProduction) {
+            const task=ctx.nextTaskId,request=ctx.nextReqId;globalThis.rhReplayCounts={task:0,request:0};
+            ctx.nextTaskId=()=>{rhReplayCounts.task++;return task();};ctx.nextReqId=()=>{rhReplayCounts.request++;return request();};
+          }
+          const fetch = globalThis.rhUseReplayProduction ? (rpInit(ctx), null) : a.createFrameworkReplayFetch(ctx),
             controller = new AbortController();
           globalThis.replayController = controller;
+          const NativePromise=Promise;
+          if(globalThis.rhUseReplayProduction) {
+            const ownerText=Response.prototype.text;
+            globalThis.rhReplayObservations={text:0,receivers:[],resolutions:[],completion:0,nativePromise:false,dispatchBefore:rhDispatch()};
+            Response.prototype.text=function(...args){rhReplayObservations.text++;rhReplayObservations.receivers.push(this instanceof ctx.orig.Response&&args.length===0);return ownerText.apply(this,args);};
+            if(kind==='http')window.Promise=class extends NativePromise {
+              constructor(executor){const cell={resolve:0,reject:0};rhReplayObservations.resolutions.push(cell);
+                super((resolve,reject)=>executor(function(...args){cell.resolve++;return resolve.apply(this,args);},function(...args){cell.reject++;return reject.apply(this,args);}));}
+            };
+          }
+          try {
           const pending =
             kind === "http"
-              ? rhReplayHttp(fetch, url, "payload")
-              : rhReplayRpc(fetch, url, "payload", controller.signal, {
+              ? (globalThis.rhUseReplayProduction ? rpHttp(url, "payload") : rhReplayHttp(fetch, url, "payload"))
+              : (globalThis.rhUseReplayProduction ? rpRpc : rhReplayRpc.bind(null,fetch))(url, "payload", controller.signal, {
                   "Isonim-After": "after",
                   "Idempotency-Key": "key",
                 });
+          if(globalThis.rhUseReplayProduction) {
+            rhReplayObservations.nativePromise=pending instanceof NativePromise;
+            ctx.orig.promiseThen.call(pending,()=>{rhReplayObservations.completion++;},()=>{rhReplayObservations.completion++;});
+          }
           // Signal abort is page work, matching the same abort decision as record;
           // no cursor/task is forced and all completion delivery is owner-controlled.
           if (abort && kind === "rpc") controller.abort();
-          const value = await pending;
-          return kind === "http" ? rhView(value) : value;
+            const value = await pending;
+            return kind === "http" ? rhView(value) : value;
+          } catch(e) {
+            if (!globalThis.rhUseReplayProduction) throw e;
+            return {__privateReplayError: {name:e.name, message:e.message, divergence:e.divergence}, status:runner.status(), pending:runner.peek()};
+          } finally {if(globalThis.rhUseReplayProduction){window.Promise=NativePromise;rhReplayObservations.dispatchAfter=rhDispatch();}}
         },
         { log: record.log, kind, url, abort: scenario.endsWith("abort") },
       );
+      if (replayMode) {
+        const snapshot=await replay.evaluate(() => ({status:__ctReplay.status(), pending:__ctReplay.peek(), counts:rhReplayCounts, observations:rhReplayObservations}));
+        writeFileSync(process.env.RECORD_HTTP_RESULTS+"-replay-last.json",JSON.stringify({kind,scenario,replayed,snapshot},(_,v)=>typeof v==='bigint'?String(v):v,2));
+        if (process.env.REPLAY_HTTP_INVERSE === "raw-global") {
+          assert.equal(snapshot.pending.record.record,"NetRequest","raw Replay bypass leaves genuine pending request");
+          assert.equal(snapshot.pending.record.url,new URL(url,base).href,"exact identified pending request");
+          assert.equal(snapshot.pending.seq,"1","exact pending first request sequence");
+          assert.equal(String(snapshot.pending.record.req_id),"1");assert.equal(snapshot.pending.record.api,1);
+          assert.equal(snapshot.pending.record.method,"POST");assert.equal(snapshot.pending.record.body_digest,"239f59ed55e737c77147cf55ad0c1b030b6d7ee748a7426952f9b852d5a935e5");
+          assert.deepEqual(snapshot.counts,{task:0,request:0},"raw Replay bypass performs no owner allocation");
+          assert.equal(requests.filter(r=>r.id===id).length-beforeCount,1,"raw Replay bypass actually reaches identified server");
+        }
+        if (process.env.REPLAY_HTTP_INVERSE === "rpc-body" && kind === "rpc") {
+          assert.equal(snapshot.status.state,"diverged","actual owner rejects mismatched private Replay body");
+          const digest="239f59ed55e737c77147cf55ad0c1b030b6d7ee748a7426952f9b852d5a935e5";
+          assert.deepEqual(snapshot.status.divergence,{
+            kind:"ArgumentMismatch",seq:"1",
+            recorded:`NetRequest{req_id=1, api=1, method="POST", url="${base+url}", body_digest="${digest}"}`,
+            actual:`NetRequest{req_id=1, api=1, method="POST", url="${base+url}", body_digest=""}`,
+            detail:`NetRequest.body_digest differs: recorded "${digest}", the page's ""`,
+            cause:"mismatch",sensitiveRead:null,lastCheckpoint:null,
+          },"precise actual owner body/digest checked divergence tuple");
+        }
+        assert.equal(requests.filter(r=>r.id===id).length-beforeCount,0,"semantic: private Replay performs no native HTTP");
+        assert.equal(snapshot.status.divergence,undefined,"semantic: private Replay body matches recorded request");
+        if (kind === "rpc" && scenario.endsWith("abort"))
+          assert.equal(replayed.status,record.outcome.value.status,"semantic: private Replay preserves abort projection");
+      }
       assert.deepEqual(
         replayed,
         record.outcome.value,
         "semantic: actual record/replay buffered result equality",
       );
+      let replayObservations;
+      if(replayMode) {
+        replayObservations=await replay.evaluate(()=>rhReplayObservations);
+        assert.equal(replayObservations.text,scenario.startsWith("head-")&&!scenario.endsWith("complete")?0:1,"semantic: private Replay consumes exactly one delivered body");
+        assert(replayObservations.receivers.every(Boolean),"actual private Replay body receiver and argument identity");
+        assert(replayObservations.nativePromise,"private Replay returns actual native Promise");
+        assert.equal(replayObservations.completion,1,"semantic: private Replay completes exactly once");
+        assert.equal(replayObservations.dispatchAfter,replayObservations.dispatchBefore,"semantic: private Replay adds no public dispatch");
+        if(kind==='http')assert.deepEqual(replayObservations.resolutions[0],{resolve:1,reject:0},"semantic: private Replay HTTP resolves exactly once");
+      }
       await replay.waitForFunction(() =>
         ["done", "diverged"].includes(__ctReplay.status().state),
       );
@@ -598,7 +663,7 @@ try {
         beforeCount,
         "owner Replay performs no raw HTTP",
       );
-      results.push({ kind, scenario, record, replayed });
+      results.push({ kind, scenario, record, replayed, ...(replayMode ? {replayObservations} : {}) });
       await replay.close();
       console.log("PASS actual owner roundtrip " + id);
     }
@@ -1006,18 +1071,17 @@ try {
       const a = rhOwner,
         runner = a.installReplayRuntime(window, { log }),
         ctx = a.newReplayContext(window, runner),
-        fetch = a.createFrameworkReplayFetch(ctx);
+        fetch = globalThis.rhUseReplayProduction ? (rpInit(ctx), null) : a.createFrameworkReplayFetch(ctx);
       a.replayTimeSeams(ctx);
       let fired = 0;
-      const first = rhReplayHttp(fetch, "/ready?id=shared-first", "one"),
+      const first = globalThis.rhUseReplayProduction ? rpHttp("/ready?id=shared-first", "one") : rhReplayHttp(fetch, "/ready?id=shared-first", "one"),
         timer = new Promise((resolve) =>
           setTimeout(() => {
             fired++;
             resolve();
           }, 1),
         ),
-        second = rhReplayRpc(
-          fetch,
+        second = (globalThis.rhUseReplayProduction ? rpRpc : rhReplayRpc.bind(null,fetch))(
           "/ready?id=shared-second",
           "two",
           null,
@@ -1315,6 +1379,10 @@ try {
     await p.close();
   }
 
+  if (replayMode) {
+    const {runReplayHttpControls}=await import("./replay_http_controls.mjs");
+    await runReplayHttpControls({assert,page,results,requests,base,recordSetup:setup});
+  }
   writeFileSync(
     process.env.RECORD_HTTP_RESULTS,
     JSON.stringify(results, null, 2) + "\n",

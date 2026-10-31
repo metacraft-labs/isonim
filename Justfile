@@ -2277,3 +2277,7 @@ test-record-upload-owner:
 # Fixed private Record HTTP/RPC preparation; installed owner artifact required.
 test-record-http-owner:
     python3 tools/test_record_http_owner.py
+
+# Fixed private Replay HTTP/RPC preparation; installed owner artifact required.
+test-replay-http-owner:
+    python3 tools/test_replay_http_owner.py

@@ -414,3 +414,33 @@ backend. Native HTTP204's existing named body refusal is checked separately from
 a constructed native null-body success control. Compiled source inverses must
 fail precise semantic assertions and retain successful source companions. No
 full recording, privacy, lifecycle or framework-conformance claim follows.
+
+### Private fixed Replay HTTP/RPC preparation
+
+`repro exec -- just test-replay-http-owner` uses the same installed-package,
+Chromium and browser-test dependencies. It imports the actual private
+`core/private/replay_http` module with `isonimInternalReplayHttp` on JavaScript.
+A trusted caller supplies its existing owner fetch Replay context, including the
+actual cursor, captured originals, sensitive-value callback and shared request
+and task allocators. The constructor checks linkage and requires captured fetch
+and Response; it cannot establish their provenance or the caller's policy.
+
+The module delegates to the installed owner's fixed framework fetch factory and
+the existing buffered HTTP/RPC request and response helpers. It creates no
+Replay context, scheduler or ID namespace, selects no clock, installs no global
+fetch and adds no public dispatch. Foreign native/constructed Response consumers
+retain their native Promise and exceptions; owned responses keep their original
+owner after an unrelated public clock switch. Scope/context conflicts and failed
+preparation retain the owner's refusal behavior.
+
+The shared browser harness keeps the Record gate's direct composition and timing
+controls. The Replay gate instead invokes the new module in real Replay pages,
+using genuine Record logs, strict decoding, automatic owner delivery and DONE.
+It also covers native204 refusal, null-body success, native clone consumption,
+foreign reads at pending neutral records and after DONE/divergence, selected
+backend authority, exact helper fault timing, omission and effect ceilings.
+Compiled source inverses must fail their common semantic assertions after genuine
+companions pass. A raw-network bypass is checked by actual identified server I/O
+and its untouched pending request before any DONE wait. This is nonselectable
+library preparation; private clock namespace integration, activation, privacy and
+complete framework conformance remain separate work.
