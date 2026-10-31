@@ -388,3 +388,29 @@ kept separately from the current snapshot, so earlier copied objects cannot move
 with a later cell replacement. A snapshot of the actual current loop-widened cell
 retains that cell's possible known RHS receivers. These local flow summaries add
 no runtime counters, general call graph, escaping-closure or type inference.
+
+### Private fixed Record HTTP/RPC preparation
+
+`repro exec -- just test-record-http-owner` requires `CT_ARTIFACT` to name an
+installed recorder package and the normal browser-test dependencies. Set
+`PLAYWRIGHT_CHROMIUM_EXECUTABLE` when Chromium is not on `PATH`. Missing inputs
+fail the gate; the driver neither installs dependencies nor builds the recorder.
+
+The deliberately imported `core/private/record_http` module is available only
+with `isonimInternalRecordHttp` on JavaScript. A trusted caller supplies the
+actual owner context, Recorder and matching captured originals. Construction
+checks linkage; it does not prove the caller's sensitive-value or scrub policy.
+One owner-prepared fetch callable is reused for buffered HTTP and browser RPC,
+using their existing request builders and response projections. Their distinct
+synchronous fault timing, HTTP599 versus RPC0/-1 results and RPC response metadata
+remain intact. The private operations carry `RawNondet` and add no public
+settlement dispatch. They do not select a clock or install an active backend.
+
+The gate compiles actual Nim operations and checks real local HTTP, native
+Promise/Response behavior, strict owner decoding and the actual owned Replay
+loop. Its fixture-only owner Replay context and time seams prove the Record-side
+round trip and shared timer/network IDs; they do not qualify an IsoNim Replay
+backend. Native HTTP204's existing named body refusal is checked separately from
+a constructed native null-body success control. Compiled source inverses must
+fail precise semantic assertions and retain successful source companions. No
+full recording, privacy, lifecycle or framework-conformance claim follows.

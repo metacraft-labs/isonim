@@ -2177,6 +2177,7 @@ test-replay-reads-owner: test-replay-ssr-guard
     python3 tools/test_record_storage_owner.py
     python3 tools/test_record_history_owner.py
     python3 tools/test_record_upload_owner.py
+    python3 tools/test_record_http_owner.py
 
 # Artifact-free ordinary/recordable SSR byte fidelity and private-guard inverse.
 test-replay-ssr-guard:
@@ -2272,3 +2273,7 @@ test-public-directive *args:
 # Private actual-owner upload bridge; requires the supported owner artifact.
 test-record-upload-owner:
     python3 tools/test_record_upload_owner.py
+
+# Fixed private Record HTTP/RPC preparation; installed owner artifact required.
+test-record-http-owner:
+    python3 tools/test_record_http_owner.py
