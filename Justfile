@@ -2293,3 +2293,15 @@ test-client-creation-ordinals:
 # USED renderer/Link output stays identical when creation metadata is unused.
 test-client-creation-used-ordinary: build-tailwind
     python3 tools/test_client_creation_used_ordinary.py
+
+# Explicit typed renderer/context and shared-source Link, using native Chromium.
+test-client-routing:
+    python3 tools/test_client_routing.py
+
+# Effects, native omission and exact dormant ordinary output.
+test-client-routing-contract:
+    python3 tools/test_client_routing_contract.py
+
+# Fixed entry/source/output admission and genuine refusal inverses.
+test-client-routing-admission:
+    python3 tools/test_client_routing_admission.py

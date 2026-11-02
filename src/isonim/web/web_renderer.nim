@@ -381,3 +381,112 @@ var n=c.ordinals.get(e); return n===undefined ? null : n.toString(10);
     template numberedElement(native: untyped): untyped =
       assignInternalClientCreationOrdinal(context, native)
     createElementBody(tag, numberedElement)
+
+when defined(isonimInternalClientRouting):
+  when not defined(isonimInternalClientOrdinals):
+    {.error: "private client routing requires isonimInternalClientOrdinals".}
+
+  type InternalClientRenderer* = object
+    ## Explicit trusted linkage for one caller-owned creation namespace. Copies
+    ## retain the same context; construction never allocates a new namespace.
+    context: InternalClientCreationOrdinals
+    ordinary: WebRenderer
+
+  proc requireClientContext(context: InternalClientCreationOrdinals)
+      {.importjs: """(function(c){if(!c || !(c.ordinals instanceof WeakMap) ||
+typeof c.next !== 'bigint') throw new TypeError('invalid private client creation context');})(#)""",
+       tags: [RawNondet].}
+
+  proc newInternalClientRenderer*(context: InternalClientCreationOrdinals): InternalClientRenderer =
+    requireClientContext(context)
+    InternalClientRenderer(context: context)
+
+  proc createElement*(r: InternalClientRenderer; tag: string): Element =
+    requireClientContext(r.context)
+    createInternalClientElement(r.context, r.ordinary, tag)
+
+  proc appendRawHtml*(r: InternalClientRenderer; parent: Element; html: string)
+      {.error: "private client routing does not admit parsed raw HTML".}
+  proc setInnerHtml*(r: InternalClientRenderer; node: Element; html: string)
+      {.error: "private client routing does not admit parsed inner HTML".}
+
+  proc createTextNode*(r: InternalClientRenderer; text: string): Node =
+    r.ordinary.createTextNode(text)
+
+  proc appendChild*(r: InternalClientRenderer; parent, child: Element) =
+    r.ordinary.appendChild(parent, child)
+
+  proc appendChild*(r: InternalClientRenderer; parent: Element; child: Node) =
+    r.ordinary.appendChild(parent, child)
+
+  proc appendChild*(r: InternalClientRenderer; parent, child: Node) =
+    r.ordinary.appendChild(parent, child)
+
+  proc setAttribute*(r: InternalClientRenderer; node: Element; name, value: string) =
+    r.ordinary.setAttribute(node, name, value)
+
+  proc removeAttribute*(r: InternalClientRenderer; node: Element; name: string) =
+    r.ordinary.removeAttribute(node, name)
+
+  proc setTextContent*(r: InternalClientRenderer; node: Element; text: string) =
+    r.ordinary.setTextContent(node, text)
+
+  proc setTextContent*(r: InternalClientRenderer; node: Node; text: string) =
+    r.ordinary.setTextContent(node, text)
+
+  proc addEventListener*(r: InternalClientRenderer; node: Element; event: string; handler: proc()) =
+    r.ordinary.addEventListener(node, event, handler)
+
+  proc addEventListener*(r: InternalClientRenderer; node: Element; event: string; handler: proc(ev: Event)) =
+    r.ordinary.addEventListener(node, event, handler)
+
+  proc firstChild*(r: InternalClientRenderer; node: Element): Node =
+    r.ordinary.firstChild(node)
+
+  proc nextSibling*(r: InternalClientRenderer; node: Element): Node =
+    r.ordinary.nextSibling(node)
+
+  proc parentNode*(r: InternalClientRenderer; node: Element): Node =
+    r.ordinary.parentNode(node)
+
+  proc isNilNode*(r: InternalClientRenderer; node: Element): bool =
+    r.ordinary.isNilNode(node)
+
+  proc firstElementChild*(r: InternalClientRenderer; node: Element): Element =
+    r.ordinary.firstElementChild(node)
+
+  proc nextElementSibling*(r: InternalClientRenderer; node: Element): Element =
+    r.ordinary.nextElementSibling(node)
+
+  proc getAttribute*(r: InternalClientRenderer; node: Element; name: string): string =
+    r.ordinary.getAttribute(node, name)
+
+  proc inputValue*(r: InternalClientRenderer; node: Element): string =
+    r.ordinary.inputValue(node)
+
+  proc setInputValue*(r: InternalClientRenderer; node: Element; value: string) =
+    r.ordinary.setInputValue(node, value)
+
+  proc setChecked*(r: InternalClientRenderer; node: Element; checked: bool) =
+    r.ordinary.setChecked(node, checked)
+
+  proc setStyle*(r: InternalClientRenderer; node: Element; prop, value: string) =
+    r.ordinary.setStyle(node, prop, value)
+
+  proc removeChild*(r: InternalClientRenderer; parent, child: Element) =
+    r.ordinary.removeChild(parent, child)
+
+  proc insertBefore*(r: InternalClientRenderer; parent, child, reference: Element) =
+    r.ordinary.insertBefore(parent, child, reference)
+
+  proc clearChildren*(r: InternalClientRenderer; node: Element) =
+    r.ordinary.clearChildren(node)
+
+  proc clearEventListeners*(r: InternalClientRenderer; node: Element) =
+    r.ordinary.clearEventListeners(node)
+
+# A private routing preparation build excludes the WHOLE effective HMR mode,
+# even if its creator happens to be removed by dead-code elimination. Ordinary
+# HMR builds do not select this private facade and retain their existing meaning.
+when defined(isonimInternalClientRouting) and defined(isonimHmr):
+  {.error: "private client routing does not admit HMR mode".}
