@@ -49,7 +49,9 @@ proc createInputRow*[R, E](r: R; placeholder: string;
     tdiv(class = "w-12 h-12 rounded-full items-center justify-center")
   r.setStyle(addBtn, "background-color", themeColor("primary"))
 
-  let plusIcon = r.createTextNode("+")
+  # Styled text needs an element handle: DOM Text nodes have no style.
+  let plusIcon = r.createElement("span")
+  r.setTextContent(plusIcon, "+")
   r.setStyle(plusIcon, "color", "#FFFFFF")
   r.setStyle(plusIcon, "font-size", "24")
   r.setStyle(plusIcon, "text-align", "center")
@@ -58,10 +60,10 @@ proc createInputRow*[R, E](r: R; placeholder: string;
   r.appendChild(addBtn, plusIcon)
 
   r.addEventListener(addBtn, "click", proc() =
-    let text = r.textContent(input)
+    let text = r.inputValue(input)
     if text.len > 0:
       onAdd(text)
-      r.setTextContent(input, "")
+      r.setInputValue(input, "")
   )
 
   r.appendChild(row, input)
@@ -82,7 +84,8 @@ proc createTaskRow*[R, E](r: R; task: proc(): TaskData;
   let checkbox = ui(r):
     tdiv(class = "w-6 h-6 rounded-md items-center justify-center")
 
-  let check = r.createTextNode("\u2713")
+  let check = r.createElement("span")
+  r.setTextContent(check, "\u2713")
   r.setStyle(check, "color", "#FFFFFF")
   r.setStyle(check, "font-size", "14")
   r.setStyle(check, "text-align", "center")
@@ -121,7 +124,8 @@ proc createTaskRow*[R, E](r: R; task: proc(): TaskData;
   let delBtn = ui(r):
     tdiv(class = "p-2 items-center justify-center")
 
-  let delIcon = r.createTextNode("\u2715")
+  let delIcon = r.createElement("span")
+  r.setTextContent(delIcon, "\u2715")
   r.setStyle(delIcon, "color", themeColor("error"))
   r.setStyle(delIcon, "font-size", "20")
   r.setStyle(delIcon, "text-align", "center")
@@ -164,7 +168,8 @@ proc createFilterBar*[R, E](r: R; currentFilter: proc(): FilterMode;
       tdiv(class = "py-2 px-4 rounded-2xl items-center justify-center")
 
     let textWidth = max(label.len * 9, 30)
-    let text = r.createTextNode(label)
+    let text = r.createElement("span")
+    r.setTextContent(text, label)
     r.setStyle(text, "font-size", "14")
     r.setStyle(text, "height", "18")
     r.setStyle(text, "width", $textWidth)

@@ -197,6 +197,7 @@ test-c:
     nim c -r tests/test_nimcache_is_worktree_local.nim
     nim c -r tests/test_signals.nim
     nim c -r tests/test_effects.nim
+    nim c -r tests/test_branded_task_app.nim
     nim c -r tests/test_clock.nim
     nim c -r tests/test_nondet_seams.nim
     python3 tests/test_core_layering.py
@@ -331,6 +332,8 @@ test-js: build-tailwind
     nim js -r --out:build/test_editor_control.js tests/test_editor_control.nim
     nim js -r tests/test_choice_row_activation.nim
     nim js -r tests/test_loop_accessors.nim
+    nim js --out:build/test_branded_task_app.js tests/test_branded_task_app.nim
+    python3 tools/run_nim_js_test.py build/test_branded_task_app.js
     nim js -r --out:build/test_keyed_effect_lifetime.js tests/test_keyed_effect_lifetime.nim
     nim js -r tests/test_signals.nim
     nim js -r tests/test_effects.nim
@@ -2305,3 +2308,11 @@ test-client-routing-contract:
 # Fixed entry/source/output admission and genuine refusal inverses.
 test-client-routing-admission:
     python3 tools/test_client_routing_admission.py
+
+# Actual production branded app, real DOM input/lifetime and source inverses.
+test-branded-task-app: build-tailwind
+    python3 tools/test_branded_task_app.py
+
+# Separate hard intended-appearance oracle; never swallowed into a green suite.
+test-branded-task-app-style: build-tailwind
+    python3 tools/test_branded_task_app.py --style
