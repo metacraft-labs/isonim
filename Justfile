@@ -2289,3 +2289,7 @@ test-record-refusals-owner:
 # Explicit private renderer metadata, with real native and SSR browser controls.
 test-client-creation-ordinals:
     python3 tools/test_client_creation_ordinals.py
+
+# USED renderer/Link output stays identical when creation metadata is unused.
+test-client-creation-used-ordinary: build-tailwind
+    python3 tools/test_client_creation_used_ordinary.py
