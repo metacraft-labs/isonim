@@ -37,7 +37,7 @@ try {
     check(rows.length===1&&rows[0].receiver===document&&rows[0].args.length===1&&rows[0].args[0]===tag&&rows[0].result===e,'exact-native-creation');
     check(rows[0].before===m+expectedMeter(1)&&api.count()===m+expectedMeter(1),'meter-precedes-native');return e;
    }
-   const queryWitnesses=[];
+   const queryWitnesses=[];let nativeFailure;
    const query=(e,ctx=c)=>{
     const n=calls.length,m=api.count(),clock=api.clock(),reads=[],restores=[],get=WeakMap.prototype.get;
     WeakMap.prototype.get=function(...args){const value=Reflect.apply(get,this,args);reads.push({receiver:this,args,value});return value;};
@@ -51,6 +51,7 @@ try {
     check(calls.length===n&&api.count()===m&&api.clock()===clock&&work.length===0&&globalThis.__ctBoundaryProtocol===protocol,'query-has-no-native-meter-timer-clock-IID-wire-work');
     queryWitnesses.push({reads,e,ctx,v});return v;
    };
+   const forwarded=q=>q.reads.length===1&&q.reads[0].receiver===q.ctx.ordinals&&q.reads[0].args.length===1&&q.reads[0].args[0]===q.e&&(q.reads[0].value===undefined?q.v===null:q.v===q.reads[0].value.toString(10));
    try{
     if(name==='creation-order-before-lookup'){
      const a=make('article');api.text('between');const b=make('aside'),d=make('footer');
@@ -67,10 +68,20 @@ try {
      check(got===saved&&got.isConnected&&calls.length===n&&api.count()===m+expectedMeter(1),'real-fresh-SSR-adoption-identity');check(query(got)===null,name);
      check(query(make('nav'))==='1','SSR-adoption-does-not-consume');
     }else if(name==='native-failure-does-not-consume'){
+     // A separate context keeps the intended invalid-then-success oracle at1.
+     // Both original and the targeted ordering mutant MUST pass this first.
+     const successContext=api.context(),success=make('p',successContext);
+     const successOnlyOrdinal=query(success,successContext);
+     check(forwarded(queryWitnesses.at(-1)),'native-failure-success-only-production-query');
+     nativeFailure={successOnlyOrdinal};
+     check(successOnlyOrdinal==='1','native-failure-success-only-control');
      const n=calls.length,m=api.count();let caught;try{api.create(c,'invalid tag');}catch(e){caught=e;}
      targetCalls+=calls.length-n;
-     check(caught===lastError&&caught instanceof DOMException&&caught.name==='InvalidCharacterError'&&calls.length===n+1&&calls.at(-1).receiver===document&&calls.at(-1).args[0]==='invalid tag'&&api.count()===m+expectedMeter(1),'exact-native-error-identity');
-     const e=make('p');check(query(e)==='1',name);
+     check(caught===lastError&&caught instanceof DOMException&&caught.name==='InvalidCharacterError'&&calls.length===n+1&&calls.at(-1).receiver===document&&calls.at(-1).args.length===1&&calls.at(-1).args[0]==='invalid tag'&&calls.at(-1).error===caught&&api.count()===m+expectedMeter(1),'exact-native-error-identity');
+     const e=make('p'),invalidThenSuccessOrdinal=query(e);
+     check(forwarded(queryWitnesses.at(-1)),'native-failure-after-error-production-query');
+     nativeFailure={successOnlyOrdinal,invalidThenSuccessOrdinal,nativeErrorIdentity:caught===lastError};
+     check(invalidThenSuccessOrdinal==='1',name);
     }else if(name==='lifetime-and-contexts'){
      const e=make('section');check(query(e)==='1','first-retained-ordinal');document.body.append(e);e.remove();check(query(e)==='1','removed-retained-ordinal');
      const c2=api.context();check(query(e,c2)===null,'separate-context-unknown');const fresh=make('section',c2);check(query(fresh,c2)==='1'&&query(fresh)===null,'independent-namespace');
@@ -86,9 +97,9 @@ try {
      const n=calls.length,m=api.count();const outer=api.create(nested,'ordinal-nested');targetCalls+=calls.length-n;check(calls.length===n+2&&calls[n].result===inner&&calls[n+1].result===outer&&calls[n].receiver===document&&calls[n+1].receiver===document&&api.count()===m+expectedMeter(2),'actual-custom-element-nested-creation');check(query(inner,nested)==='1'&&query(outer,nested)==='2','read-next-after-native-completes');
      check(Object.keys(c).sort().join(',')==='next,ordinals'&&c.ordinals instanceof WeakMap&&typeof c.next==='bigint','only-weak-forward-metadata');
     }
-    for(const q of queryWitnesses)check(q.reads.length===1&&q.reads[0].receiver===q.ctx.ordinals&&q.reads[0].args.length===1&&q.reads[0].args[0]===q.e&&(q.reads[0].value===undefined?q.v===null:q.v===q.reads[0].value.toString(10)),'actual-production-WeakMap-get-forwarding');
-    check(targetCalls===calls.length,'exact-target-native-call-accounting');return {name,checks,targetCalls,ok:true};
-   }catch(e){return {name,checks,targetCalls,ok:false,error:String(e)};}finally{document.createElement=native;}
+    for(const q of queryWitnesses)check(forwarded(q),'actual-production-WeakMap-get-forwarding');
+    check(targetCalls===calls.length,'exact-target-native-call-accounting');return {name,checks,targetCalls,nativeFailure,ok:true};
+   }catch(e){return {name,checks,targetCalls,nativeFailure,ok:false,error:String(e)};}finally{document.createElement=native;}
   },name);
   results.push(row);await page.close();assert.deepEqual(errors,[]);assert.equal(row.ok,true,row.error);
  }
