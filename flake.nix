@@ -4,6 +4,7 @@
   inputs = {
     nixpkgs.url = "github:NixOS/nixpkgs/nixpkgs-unstable";
     flake-utils.url = "github:numtide/flake-utils";
+    codetracer-js-recorder.url = "github:metacraft-labs/codetracer-js-recorder/agents";
     nix-nim-development.url = "github:metacraft-labs/nix-nim-development/agents";
     nim-everywhere = {
       url = "github:metacraft-labs/nim-everywhere/agents";
@@ -20,6 +21,7 @@
       self,
       nixpkgs,
       flake-utils,
+      codetracer-js-recorder,
       nix-nim-development,
       nim-everywhere,
       git-hooks,
@@ -149,6 +151,9 @@
       {
         devShells.default = pkgs.mkShell {
           NIM_EVERYWHERE_SRC = toString nim-everywhere;
+          # Owner integration gates import the supported installed SDK; the
+          # ordinary application graph does not evaluate recording modules.
+          CT_ARTIFACT = "${codetracer-js-recorder.packages.${system}.default}/lib/codetracer-js-recorder";
           packages =
             (with pkgs; [
               nimble
