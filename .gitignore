@@ -49,6 +49,8 @@ tests/test_rpc_dispatch
 tests/test_traceparent_meta
 tests/routing/t_manifest_streaming_buffered
 tests/routing/t_manifest_mapped_exceptions
+tests/routing/t_manifest_csrf_binding
+tests/routing/t_csrf_binding_runtime
 tests/test_route_manifest
 tests/test_file_routes
 tests/test_content_markdown
@@ -60,6 +62,7 @@ tests/test_theming_dtcg
 tests/test_static_export
 tests/test_static_script_policy
 tests/test_escape_writers
+tests/test_branded_task_app
 benchmarks/runner/
 benchmarks/results/
 # Matches the directory AND the dev shell's symlink into the Nix store:
