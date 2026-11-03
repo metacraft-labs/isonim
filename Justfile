@@ -2316,3 +2316,7 @@ test-branded-task-app: build-tailwind
 # Separate hard intended-appearance oracle; never swallowed into a green suite.
 test-branded-task-app-style: build-tailwind
     python3 tools/test_branded_task_app.py --style
+
+# Explicit private full-component lifecycle qualification; no recording activation.
+test-client-routing-task-lifecycle: build-tailwind
+    python3 tools/test_client_routing_task_lifecycle.py
