@@ -2,8 +2,15 @@
 """Fixed private HTTP/RPC: compiled production, real HTTP/owner Replay and inverses.
 
 Run in the documented dev shell with CT_ARTIFACT pointing to the installed owner
-package. Tool discovery uses supported compiler metadata, never a store-layout
-or architecture guess. No package/bootstrap provisioning occurs in this driver.
+package. Required fetch-factory capabilities are matching Record/Replay Request
+conversion, causal pre-header cancellation (also without AbortSignal.any), and
+captured native FinalizationRegistry support. Keep package selection explicit:
+
+    repro exec -- env CT_ARTIFACT=/path/to/installed/recorder just test-record-http-owner test-replay-http-owner
+
+Set CT_ARTIFACT inside the dev-shell command: the shell may supply its own default.
+Tool discovery uses supported compiler metadata, never a store-layout or
+architecture guess. No package/bootstrap provisioning occurs in this driver.
 """
 from pathlib import Path
 import hashlib
@@ -42,7 +49,16 @@ record_bundle = None
 def sha(path):
     return hashlib.sha256(path.read_bytes()).hexdigest()
 
+def resource_guard(name):
+    stat = os.statvfs(OUT)
+    disk = stat.f_bavail * stat.f_frsize
+    memory = int(next(line.split()[1] for line in Path('/proc/meminfo').read_text().splitlines() if line.startswith('MemAvailable:'))) * 1024
+    evidence = {'disk_available':disk,'memory_available':memory,'minimum':8*1024**3}
+    (OUT/(name+'-RESOURCE.json')).write_text(json.dumps(evidence)+'\n')
+    assert min(disk,memory) >= 8*1024**3, 'BLOCKED: resource admission '+name
+
 def invoke(name, command, env=ENV, candidate=MODULE):
+    resource_guard(name)
     (OUT/(name+'-BEFORE.json')).write_text(json.dumps({
         'command':command, 'cwd':str(ROOT), 'candidate':str(candidate),
         'sha256':sha(candidate), 'inputs':sha(OUT/'INPUTS-BEFORE.json')
@@ -59,6 +75,7 @@ nim = Path(shutil.which('nim') or '')
 assert nim.is_file(), 'actual Nim required'
 dump_command = [str(nim),'dump','--dump.format:json','--hint:Conf:on',FIXTURE]
 (OUT/'NIM-DUMP-BEFORE.json').write_text(json.dumps({'command':dump_command,'tool':str(nim.resolve()),'sha256':sha(nim.resolve())},indent=2)+'\n')
+resource_guard('nim-dump')
 dump = subprocess.run(dump_command,cwd=ROOT,env=ENV,text=True,stdout=subprocess.PIPE,stderr=subprocess.PIPE)
 (OUT/'nim-dump.stdout').write_text(dump.stdout)
 (OUT/'nim-dump.stderr').write_text(dump.stderr)
@@ -66,6 +83,7 @@ assert dump.returncode == 0, 'supported Nim metadata discovery must succeed'
 metadata = json.loads(dump.stdout)
 engine, library = Path(metadata['nimExe']), Path(metadata['libpath'])
 configs = [Path(p) for p in re.findall(r"used config file '([^']+)'",dump.stderr)]
+resource_guard('full-input-scan')
 inputs = []
 for directory in [ROOT/'src',ROOT.parent/'nim-everywhere/src',ROOT/'tests/fixtures',
                   ROOT/'tests/browser/node_modules',ARTIFACT/'packages',
@@ -74,7 +92,7 @@ for directory in [ROOT/'src',ROOT.parent/'nim-everywhere/src',ROOT/'tests/fixtur
     for path in sorted(directory.resolve().rglob('*')):
         if path.is_file() and (directory.name != 'packages' or (path.name == 'package.json' or ('dist' in path.parts and path.suffix in ['.js','.json']))):
             inputs.append({'path':str(path),'sha256':sha(path),'size':path.stat().st_size})
-for path in [Path(__file__),ROOT/'tests/test_record_http_owner.mjs',ROOT/'tests/replay_http_controls.mjs',ROOT/'tools/test_record_http_owner.py',ROOT/'tools/test_replay_http_owner.py',ROOT/'Justfile',engine,*configs]:
+for path in [Path(__file__),ROOT/'tests/test_record_http_owner.mjs',ROOT/'tests/replay_http_controls.mjs',ROOT/'tests/typed_http_7c_controls.mjs',ROOT/'tools/test_record_http_owner.py',ROOT/'tools/test_replay_http_owner.py',ROOT/'Justfile',engine,*configs]:
     assert path.is_file(), str(path)+' required'
     inputs.append({'path':str(path),'sha256':sha(path),'size':path.stat().st_size})
 for tool in ['nim','node','python3','chromium']:
@@ -91,6 +109,7 @@ metadata_paths = [ARTIFACT/name for name in ['package.json','package-lock.json',
 for path in metadata_paths:
     if path.is_file(): inputs.append({'path':str(path),'sha256':sha(path),'size':path.stat().st_size})
 (OUT/'INPUTS-BEFORE.json').write_text(json.dumps(inputs,indent=2)+'\n')
+ENV['HTTP7C_INPUTS'] = str(OUT/'INPUTS-BEFORE.json')
 
 def compile_js(name, fixture, flags=(), candidate=MODULE):
     output = OUT/(name+'.js')
@@ -113,6 +132,45 @@ def browser(name, bundle, expected=None, candidate=MODULE):
 for name, flags in [('default',[]),('recordable',['-d:isonimRecordable']),('release',['-d:release']),('recordable-release',['-d:release','-d:isonimRecordable']),('strict',['-d:isonimStrictNondet'])]:
     js = compile_js(name,FIXTURE,[*FLAGS,*flags])
     browser(name,js)
+
+typed_bundles = {}
+# New bounded typed cases use the genuine existing combined private fixture.
+# Both complete gates keep their original five-mode cases and inverses above/below.
+for name, flags in [('default',[]),('recordable',['-d:isonimRecordable']),('release',['-d:release']),('recordable-release',['-d:release','-d:isonimRecordable']),('strict',['-d:isonimStrictNondet'])]:
+    typed = compile_js('typed7c-'+name,'tests/fixtures/replay_http.nim',
+        ['-d:isonimInternalReplayHttp','-d:isonimInternalRecordHttp','-d:isonimInternalRecordTimers',*flags])
+    typed_bundles[name] = typed
+    env = {**ENV,'RECORD_HTTP_BUNDLE':str(typed),'REPLAY_HTTP_BUNDLE':str(typed),
+        'HTTP7C_ONLY':'1','RECORD_HTTP_RESULTS':str(OUT/('typed7c-'+name+'-results.json'))}
+    invoke('typed7c-'+name+'-browser',['node','tests/test_record_http_owner.mjs'],env).check_returncode()
+
+# Exact single installed correction inverses, each paired with the same case
+# and unchanged genuine installed package. Setup/compile/timeouts never qualify.
+owner_inverses = [
+    ('conversion','get-body','semantic: typed7c Replay exact native projection get-body'),
+    ('conversion','crlf-header','semantic: typed7c Replay exact native projection crlf-header'),
+    ('reason','reason-null','semantic: typed7c Replay exact native projection reason-null'),
+    ('falsy','reason-zero','semantic: typed7c Replay exact native projection reason-zero'),
+    ('falsy','reason-false','semantic: typed7c Replay exact native projection reason-false'),
+    ('falsy','reason-empty','semantic: typed7c Replay exact native projection reason-empty'),
+    ('causal','reason-error','semantic: typed7c Record exact native projection reason-error'),
+    ('causal','reason-string','semantic: typed7c Record exact native projection reason-string'),
+    ('follower','no-any-error','semantic: typed7c causal abort outcome no-any-error'),
+    ('follower','no-any-string','semantic: typed7c causal abort outcome no-any-string'),
+    ('dependent','stopped-error','semantic: typed7c causal abort outcome stopped-error'),
+    ('follower','no-any-stopped-error','semantic: typed7c causal abort outcome no-any-stopped-error'),
+]
+for inverse, case, expected in owner_inverses:
+    for altered in [False,True]:
+        name='typed7c-inverse-'+inverse+'-'+case+('-mutant' if altered else '-companion')
+        env={**ENV,'RECORD_HTTP_BUNDLE':str(typed_bundles['default']),
+            'REPLAY_HTTP_BUNDLE':str(typed_bundles['default']),'HTTP7C_ONLY':'1','HTTP7C_CASE':case,
+            'RECORD_HTTP_RESULTS':str(OUT/(name+'-results.json'))}
+        if altered: env['HTTP7C_OWNER_INVERSE']=inverse
+        result=invoke(name,['node','tests/test_record_http_owner.mjs'],env)
+        if altered:
+            assert result.returncode==1 and 'AssertionError [ERR_ASSERTION]: '+expected in result.stdout, 'precise installed owner correction inverse '+name
+        else: result.check_returncode()
 
 for boundary in range(5):
     flags = [*FLAGS,'-d:isonimStrictNondet','-d:httpBoundary='+str(boundary)]
@@ -263,6 +321,7 @@ for reject in [[],['-d:httpReject']]:
     command = ['nim','js',*FLAGS,*reject,'-d:httpBoundary=1','--path:'+str(ROOT/'src'),'--path:'+str(ROOT.parent/'nim-everywhere/src'),'--out:'+str(OUT/('effect-inverse-'+str(bool(reject))+'.js')),str(fixture)]
     invoke('effect-inverse-'+str(bool(reject)),command,candidate=mutant).check_returncode()
 
+resource_guard('full-after-binding')
 for item in inputs:
     assert sha(Path(item['path'])) == item['sha256'], 'qualification input changed: '+item['path']
 (OUT/'PASS.json').write_text(json.dumps({'result':'PASS','mode':MODE,'semantic_inverses':list(mutations),'effect_boundaries':5,'focused_count_inverse':'genuine resolver double-call' if REPLAY else None,'effect_inverse':'own raw tag removal','limits':'bounded '+MODE+' preparation, no selected IsoNim Replay/privacy/full milestone acceptance'},indent=2)+'\n')

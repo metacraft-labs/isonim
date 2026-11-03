@@ -8,7 +8,9 @@
  * faulting. No codec, body algorithm, cursor or scheduler is mocked.
  */
 import assert from "node:assert/strict";
-import { readFileSync, writeFileSync } from "node:fs";
+import { readFileSync, writeFileSync, realpathSync } from "node:fs";
+import {createHash} from "node:crypto";
+import {resolve} from "node:path";
 import { createRequire } from "node:module";
 import { createServer } from "node:http";
 const root = process.cwd(),
@@ -40,21 +42,71 @@ import {replayTimeSeams} from '@codetracer/boundary-shim/dist/browser/replay/tim
 globalThis.rhOwner={TaskKind,Recorder,patchTimeSeams,patchStorage,captureOriginals,readEnvironment,sensitiveState,currentSensitiveValues,createRecordFetch,domV1Hash,decodeRecord,encodeLog,installReplayRuntime,newReplayContext,createReplayFetch,createFrameworkReplayFetch,replayTimeSeams};
 `;
 const replayMode = process.env.REPLAY_HTTP_BUNDLE !== undefined;
-const bundle = await build({
+const checksum=value=>createHash('sha256').update(value).digest('hex');
+const ownerInverse=process.env.HTTP7C_OWNER_INVERSE;
+const inverseDefinitions={
+  conversion:{file:'/replay/net.js',old:'const request = new orig.Request(input, init);\n                signal = orig.requestSignal?.descriptor.get?.call(request);',replacement:'signal = init?.signal;'},
+  reason:{file:'/replay/net.js',old:'? signalReason()\n                : failureError(w, outcome, signal);',replacement:'? (signalReason() ?? new w.DOMException("The user aborted a request.", "AbortError"))\n                : failureError(w, outcome, signal);'},
+  falsy:{file:'/replay/net.js',old:'? signalReason()\n                : failureError(w, outcome, signal);',replacement:'? (signalReason() || new w.DOMException("The user aborted a request.", "AbortError"))\n                : failureError(w, outcome, signal);'},
+  causal:{file:'/fetch-cancellation.js',old:'if (error === token && pageSignal !== undefined) {',replacement:'if (false && error === token && pageSignal !== undefined) {'},
+  dependent:{file:'/fetch-cancellation.js',old:'const follow = dependentSignalFactory(orig);',replacement:'const follow = undefined;'},
+  follower:{file:'/fetch-cancellation.js',old:'if (!OrigRequest || !requestSignal)',replacement:'if (true || !OrigRequest || !requestSignal)'},
+};
+const inverseProof=[];
+const beforeInputs=process.env.HTTP7C_INPUTS?new Map(JSON.parse(readFileSync(process.env.HTTP7C_INPUTS,'utf8')).map(row=>[realpathSync(row.path),row.sha256])):null;
+const boundFile=path=>{const actual=realpathSync(path),data=readFileSync(actual),sha256=checksum(data);if(beforeInputs)assert.equal(sha256,beforeInputs.get(actual),'preconsumer selected input '+actual);return {path:actual,sha256,bytes:data.length};};
+const plugins=ownerInverse?[{name:'single-owner-correction-inverse',setup(api){api.onLoad({filter:/\.js$/},args=>{
+  const definition=inverseDefinitions[ownerInverse];assert(definition,'named owner correction inverse');
+  if(!args.path.endsWith(definition.file))return;
+  const contents=readFileSync(args.path,'utf8');assert.equal(contents.split(definition.old).length-1,1,'unique actual installed owner correction site');
+  const changed=contents.replace(definition.old,definition.replacement);
+  inverseProof.push({inverse:ownerInverse,input:boundFile(args.path),old:definition.old,replacement:definition.replacement,transformedSha256:checksum(changed)});
+  return {contents:changed,loader:'js'};
+});}}]:[];
+const options = {
   stdin: {
     resolveDir: artifact,
     contents:
       prelude +
       readFileSync(replayMode ? process.env.REPLAY_HTTP_BUNDLE : process.env.RECORD_HTTP_BUNDLE, "utf8") +
-      (replayMode ? "\nObject.assign(globalThis,{rpInit,rpHttp,rpRpc,rpRaw,rpPreparedFetch,rpSelectedClock}); globalThis.rhUseReplayProduction=true;" : "") +
-      "\nObject.assign(globalThis,{rhInit,rhHttp,rhRpc,rhView,rhReplayHttp,rhReplayRpc,rhTimerInit,rhTimer,rhPublicHttp,rhPublicRpc,rhPublicSelect,rhDispatch,rhRaw,rhPreparedFetch,rhCustomSelect,rhFakeStart,rhFakeState,rhFakeAdvance,rhFakeEnd});",
+      (replayMode ? "\nObject.assign(globalThis,{rpInit,rpHttp,rpRpc,rpRaw,rpPreparedFetch,rpSelectedClock,rpTypedInvalid}); globalThis.rhUseReplayProduction=true;" : "") +
+      "\nObject.assign(globalThis,{rhInit,rhHttp,rhRpc,rhTypedInvalid,rhView,rhReplayHttp,rhReplayRpc,rhTimerInit,rhTimer,rhPublicHttp,rhPublicRpc,rhPublicSelect,rhDispatch,rhRaw,rhPreparedFetch,rhCustomSelect,rhFakeStart,rhFakeState,rhFakeAdvance,rhFakeEnd});",
   },
   bundle: true,
   platform: "browser",
   format: "iife",
   write: false,
   metafile: true,
-});
+  plugins,
+};
+// Freeze actual generated stdin/options before handing them to the real bundler.
+writeFileSync(process.env.RECORD_HTTP_RESULTS+'-stdin.js',options.stdin.contents);
+writeFileSync(process.env.RECORD_HTTP_RESULTS+'-BUILD-BEFORE.json',JSON.stringify({stdin:checksum(options.stdin.contents),compiled:{path:replayMode?process.env.REPLAY_HTTP_BUNDLE:process.env.RECORD_HTTP_BUNDLE,sha256:checksum(readFileSync(replayMode?process.env.REPLAY_HTTP_BUNDLE:process.env.RECORD_HTTP_BUNDLE))},platform:options.platform,format:options.format,bundle:options.bundle,metafile:options.metafile,ownerInverse:ownerInverse??null},null,2));
+const bundle=await build(options);
+const graph=Object.keys(bundle.metafile.inputs).filter(path=>path!=='<stdin>').map(path=>boundFile(resolve(path)));
+if(ownerInverse)assert.equal(inverseProof.length,1,'one actual installed owner correction input transformed');
+// These are real esbuild source-frame scopes, not a JavaScript AST claim.
+const emittedScopes=bundle.outputFiles[0].text.split(/^  \/\/ /m).filter(part=>{
+  const source=part.split('\n',1)[0];
+  return source.endsWith('/replay/net.js') || source.endsWith('/fetch-cancellation.js');
+}).map(part=>({source:part.split('\n',1)[0],code:part,sha256:checksum(part)}));
+assert.equal(emittedScopes.length,2,'actual installed correction module emission scopes');
+if(ownerInverse){
+  const definition=inverseDefinitions[ownerInverse],scope=emittedScopes.find(row=>row.source.endsWith(definition.file));
+  assert(scope,'actual inverse owning module emitted');
+  if(ownerInverse==='conversion')assert(scope.code.includes('signal = init?.signal;')&&!scope.code.includes('new orig.Request(input, init)'),'exact skipped-conversion correction emitted');
+  if(ownerInverse==='reason')assert(scope.code.includes('signalReason() ?? new w.DOMException'),'exact null-fallback correction inverse emitted');
+  if(ownerInverse==='falsy')assert(scope.code.includes('signalReason() || new w.DOMException'),'exact falsy-fallback correction inverse emitted');
+  if(ownerInverse==='causal')assert(scope.code.includes('if (false)'),'exact disabled causal classifier emitted');
+  if(ownerInverse==='dependent')assert(scope.code.includes('const follow = void 0;'),'exact disabled native dependent signal preparation emitted');
+  if(ownerInverse==='follower')assert(scope.code.includes('if (true)'),'exact disabled private follower fallback emitted');
+}
+writeFileSync(process.env.RECORD_HTTP_RESULTS+'-EMITTED-MODULE-SCOPES.json',JSON.stringify(emittedScopes,null,2));
+const emitted=bundle.outputFiles.map(file=>({path:file.path,sha256:checksum(file.contents),bytes:file.contents.length}));
+writeFileSync(process.env.RECORD_HTTP_RESULTS+'-bundle.js',bundle.outputFiles[0].text);
+writeFileSync(process.env.RECORD_HTTP_RESULTS+'-GRAPH-BEFORE-CONSUMER.json',JSON.stringify({graph,emitted,inverseProof},null,2));
+// The exact verified output is then handed unchanged to fresh Chromium realms.
+assert.equal(checksum(bundle.outputFiles[0].contents),emitted[0].sha256);
 writeFileSync(
   process.env.RECORD_HTTP_RESULTS + "-metafile.json",
   JSON.stringify(bundle.metafile, null, 2),
@@ -122,6 +174,10 @@ async function slot(id) {
   assert.fail("actual local request missing " + id);
 }
 try {
+  if (process.env.HTTP7C_ONLY) {
+    const {runTypedHttp7c}=await import('./typed_http_7c_controls.mjs');
+    await runTypedHttp7c({assert,page,slot,requests,results});
+  } else {
   // Independent native reference: the existing compiled direct RPC composition
   // consumes a real held network body in a fresh realm before owner preparation.
   // Wait for the actual native text consumer, so this is a pending-body abort,
@@ -1479,6 +1535,7 @@ try {
   if (replayMode) {
     const {runReplayHttpControls}=await import("./replay_http_controls.mjs");
     await runReplayHttpControls({assert,page,results,requests,base,recordSetup:setup});
+  }
   }
   writeFileSync(
     process.env.RECORD_HTTP_RESULTS,

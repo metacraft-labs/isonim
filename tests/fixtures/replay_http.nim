@@ -13,6 +13,10 @@ proc rpHttp(url,body:cstring):PlatformFuture[HttpResponse] {.exportc:"rpHttp".} 
     headers: @[HttpHeader(name:"X-Duplicate",value:"first"),HttpHeader(name:"X-Duplicate",value:"last"),HttpHeader(name:"Content-Type",value:"text/plain")]))
 proc rpRpc(url,body:cstring;signal,extra:JsObject):PlatformFuture[JsObject] {.exportc:"rpRpc".} =
   replayBrowserFetch(replayNetwork,"POST",url,body,"csrf","context","text/plain",signal,extra)
+proc rpTypedInvalid(url:cstring; badHeader:bool):PlatformFuture[HttpResponse] {.exportc:"rpTypedInvalid".} =
+  replayHttp(replayNetwork,HttpRequest(url: $url,httpMethod:hmGet,
+    body: (if badHeader: "" else: "nonempty"),
+    headers: (if badHeader: @[HttpHeader(name:"X-Validation",value:"bad\r\nvalue")] else: @[])))
 proc rpRaw(url:cstring;init:JsObject):PlatformFuture[JsObject] {.exportc:"rpRaw".} =
   fetchRaw(observedReplayLinkage(replayNetwork),url,init)
 proc rpPreparedFetch():JsObject {.exportc:"rpPreparedFetch".} = observedReplayLinkage(replayNetwork).fetch

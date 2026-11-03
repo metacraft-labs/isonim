@@ -17,6 +17,11 @@ proc buffered(url,body:cstring):PlatformFuture[HttpResponse] {.exportc:"rhHttp".
     headers: @[HttpHeader(name:"X-Duplicate",value:"first"),HttpHeader(name:"X-Duplicate",value:"last"),HttpHeader(name:"Content-Type",value:"text/plain")]))
 proc rpc(url,body:cstring;signal,extra:JsObject):PlatformFuture[JsObject] {.exportc:"rhRpc".} =
   recordBrowserFetch(network,"POST",url,body,"csrf","context","text/plain",signal,extra)
+proc typedInvalid(url:cstring; badHeader:bool):PlatformFuture[HttpResponse] {.exportc:"rhTypedInvalid".} =
+  ## Representable typed inputs reach the actual imported production builder.
+  recordHttp(network,HttpRequest(url: $url,httpMethod:hmGet,
+    body: (if badHeader: "" else: "nonempty"),
+    headers: (if badHeader: @[HttpHeader(name:"X-Validation",value:"bad\r\nvalue")] else: @[])))
 proc supplied(fetch:JsObject;url:cstring;init:JsObject):PlatformFuture[JsObject] {.importjs:"#.call(window,#,#)",tags:[RawNondet].}
 proc replayBuffered(fetch:JsObject;url,body:cstring):PlatformFuture[HttpResponse] {.exportc:"rhReplayHttp".} =
   let parts=prepareHttpRequestRaw(rawBackendAccess,HttpRequest(url: $url,httpMethod:hmPost,body: $body,
