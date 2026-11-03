@@ -173,6 +173,8 @@ try {
       check('intended-font-' + text, labels.map(style => style.fontSize), labels.map(() => font));
     }
     const inputStyle = observations.boxStyles.input.inline;
+    check('intended-input-font-assigned', inputStyle['font-size'], '16px');
+    check('intended-input-font-computed', observations.boxStyles.input.computed['font-size'], '16px');
     check('intended-input-padding', inputStyle.padding, '12px');
     check('intended-input-radius', inputStyle['border-radius'], '8px');
     check('intended-input-height-assigned', inputStyle.height, '48px');

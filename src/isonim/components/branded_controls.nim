@@ -37,11 +37,11 @@ proc createInputRow*[R, E](r: R; placeholder: string;
 
   let input = r.createElement("input")
   r.setStyle(input, "background-color", "#F1F5F9")
-  r.setStyle(input, "border-radius", "8")
-  r.setStyle(input, "padding", "12")
-  r.setStyle(input, "font-size", "16")
+  r.setStyle(input, "border-radius", "8px")
+  r.setStyle(input, "padding", "12px")
+  r.setStyle(input, "font-size", "16px")
   r.setStyle(input, "flex-grow", "1")
-  r.setStyle(input, "height", "48")
+  r.setStyle(input, "height", "48px")
   r.setStyle(input, "color", themeColor("text-primary"))
   r.setAttribute(input, "placeholder", placeholder)
 
@@ -53,10 +53,10 @@ proc createInputRow*[R, E](r: R; placeholder: string;
   let plusIcon = r.createElement("span")
   r.setTextContent(plusIcon, "+")
   r.setStyle(plusIcon, "color", "#FFFFFF")
-  r.setStyle(plusIcon, "font-size", "24")
+  r.setStyle(plusIcon, "font-size", "24px")
   r.setStyle(plusIcon, "text-align", "center")
-  r.setStyle(plusIcon, "height", "28")
-  r.setStyle(plusIcon, "width", "28")
+  r.setStyle(plusIcon, "height", "28px")
+  r.setStyle(plusIcon, "width", "28px")
   r.appendChild(addBtn, plusIcon)
 
   r.addEventListener(addBtn, "click", proc() =
@@ -87,10 +87,10 @@ proc createTaskRow*[R, E](r: R; task: proc(): TaskData;
   let check = r.createElement("span")
   r.setTextContent(check, "\u2713")
   r.setStyle(check, "color", "#FFFFFF")
-  r.setStyle(check, "font-size", "14")
+  r.setStyle(check, "font-size", "14px")
   r.setStyle(check, "text-align", "center")
-  r.setStyle(check, "height", "18")
-  r.setStyle(check, "width", "18")
+  r.setStyle(check, "height", "18px")
+  r.setStyle(check, "width", "18px")
   r.appendChild(checkbox, check)
 
   createRenderEffect proc() =
@@ -103,7 +103,7 @@ proc createTaskRow*[R, E](r: R; task: proc(): TaskData;
     else:
       r.setStyle(checkbox, "background-color", "transparent")
       r.setStyle(checkbox, "border-color", themeColor("border"))
-      r.setStyle(checkbox, "border-width", "2")
+      r.setStyle(checkbox, "border-width", "2px")
       r.setStyle(check, "display", "none")
 
   r.addEventListener(checkbox, "click", onToggle)
@@ -127,10 +127,10 @@ proc createTaskRow*[R, E](r: R; task: proc(): TaskData;
   let delIcon = r.createElement("span")
   r.setTextContent(delIcon, "\u2715")
   r.setStyle(delIcon, "color", themeColor("error"))
-  r.setStyle(delIcon, "font-size", "20")
+  r.setStyle(delIcon, "font-size", "20px")
   r.setStyle(delIcon, "text-align", "center")
-  r.setStyle(delIcon, "height", "24")
-  r.setStyle(delIcon, "width", "24")
+  r.setStyle(delIcon, "height", "24px")
+  r.setStyle(delIcon, "width", "24px")
   r.appendChild(delBtn, delIcon)
   r.addEventListener(delBtn, "click", onDelete)
 
@@ -145,7 +145,7 @@ proc createEmptyState*[R, E](r: R; message: string): E =
 
   let emptyText = ui(r):
     span(class = "text-lg text-center h-14 self-center")
-  r.setStyle(emptyText, "width", "300")
+  r.setStyle(emptyText, "width", "300px")
   r.setStyle(emptyText, "color", themeColor("text-secondary"))
   r.setTextContent(emptyText, message)
   r.appendChild(empty, emptyText)
@@ -170,9 +170,9 @@ proc createFilterBar*[R, E](r: R; currentFilter: proc(): FilterMode;
     let textWidth = max(label.len * 9, 30)
     let text = r.createElement("span")
     r.setTextContent(text, label)
-    r.setStyle(text, "font-size", "14")
-    r.setStyle(text, "height", "18")
-    r.setStyle(text, "width", $textWidth)
+    r.setStyle(text, "font-size", "14px")
+    r.setStyle(text, "height", "18px")
+    r.setStyle(text, "width", $textWidth & "px")
     r.appendChild(btn, text)
 
     createRenderEffect proc() =
@@ -199,7 +199,7 @@ proc createClearButton*[R, E](r: R; hasCompleted: proc(): bool;
 
   let clearText = ui(r):
     span(class = "text-sm h-5 self-center")
-  r.setStyle(clearText, "width", "130")
+  r.setStyle(clearText, "width", "130px")
   r.setTextContent(clearText, "Clear Completed")
   r.appendChild(clearBtn, clearText)
 

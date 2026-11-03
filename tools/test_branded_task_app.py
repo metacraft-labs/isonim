@@ -141,10 +141,49 @@ def browser(name, bundle, source=ROOT / 'src'):
     return run(name + '-browser', ['node', 'tests/test_branded_task_app.mjs'], [source / MODULE, bundle, ROOT / 'tests/test_branded_task_app.mjs', ROOT / 'build/tailwind.css'])
 
 
+def isolated_project(name, source_text, original):
+    selected = SOURCE_ROOT / name / 'isonim'
+    shutil.copytree(ROOT / 'src', selected / 'src', symlinks=True)
+    (selected / 'src' / MODULE).write_text(source_text)
+    sibling = ROOT.parent / 'nim-everywhere'
+    if sibling.is_dir():
+        shutil.copytree(sibling, selected.parent / 'nim-everywhere', symlinks=True,
+                        ignore=shutil.ignore_patterns('.git', '.nimcache', 'build', 'node_modules'))
+    for relative in ['config.nims', 'tests/config.nims', 'tests/fixtures/config.nims', 'tests/fixtures/branded_task_app_browser.nim', 'build/tailwind-styles.json']:
+        destination = selected / relative
+        destination.parent.mkdir(parents=True, exist_ok=True)
+        shutil.copyfile(ROOT / relative, destination)
+        assert sha(destination) == sha(ROOT / relative)
+
+    differences = [str(path.relative_to(selected / 'src')) for path in (selected / 'src').rglob('*')
+                   if path.is_file() and sha(path) != sha(ROOT / 'src' / path.relative_to(selected / 'src'))]
+    assert differences == ([] if source_text == original else [str(MODULE)]), 'unrelated source mutation'
+    return selected
+
+
 result, bundle = compile_app('ordinary')
 result.check_returncode()
 browser('ordinary', bundle).check_returncode()
 if ARGS.style:
+    original = (ROOT / 'src' / MODULE).read_text()
+    anchor = 'r.setStyle(input, "font-size", "16px")'
+    assert original.count(anchor) == 1, 'input font production inverse anchor drift'
+    changed = original.replace(anchor, 'r.setStyle(input, "font-size", "16")')
+    for kind, source_text in [('companion', original), ('mutant', changed)]:
+        name = 'input-font-' + kind
+        selected = isolated_project(name, source_text, original)
+        result, bundle = compile_app(name, selected / 'src')
+        result.check_returncode()
+        result = browser(name, bundle, selected / 'src')
+        if kind == 'companion':
+            result.check_returncode()
+        else:
+            assert result.returncode == 1 and 'semantic: intended-input-font-assigned' in result.stdout, 'precise inline font inverse refusal missing'
+            evidence = json.loads((OUT / (name + '-assertions.json')).read_text())
+            assert evidence['checks'][-1] == {'name':'intended-input-font-assigned', 'actual':'', 'expected':'16px'}, 'wrong inline assertion killed inverse'
+            input_style = evidence['observations']['boxStyles']['input']
+            assert input_style['inline']['font-size'] == '' and input_style['computed']['font-size'] == '16px', 'native invalid-font/inherited-default witness missing'
+    print('PASS intended native styles and input-font production inverse with samepath companion', flush=True)
     raise SystemExit(0)
 
 # MockRenderer provides transport-only companion coverage on both Nim backends.
@@ -181,22 +220,7 @@ mutations = {
 for name, (changed, diagnostic, semantic) in mutations.items():
     assert changed != original, 'production inverse missing anchor'
     for kind, source_text in [('companion', original), ('mutant', changed)]:
-        selected = SOURCE_ROOT / (name + '-' + kind) / 'isonim'
-        shutil.copytree(ROOT / 'src', selected / 'src', symlinks=True)
-        (selected / 'src' / MODULE).write_text(source_text)
-        sibling = ROOT.parent / 'nim-everywhere'
-        if sibling.is_dir():
-            shutil.copytree(sibling, selected.parent / 'nim-everywhere', symlinks=True,
-                            ignore=shutil.ignore_patterns('.git', '.nimcache', 'build', 'node_modules'))
-        for relative in ['config.nims', 'tests/config.nims', 'tests/fixtures/config.nims', 'tests/fixtures/branded_task_app_browser.nim', 'build/tailwind-styles.json']:
-            destination = selected / relative
-            destination.parent.mkdir(parents=True, exist_ok=True)
-            shutil.copyfile(ROOT / relative, destination)
-            assert sha(destination) == sha(ROOT / relative)
-
-        differences = [str(path.relative_to(selected / 'src')) for path in (selected / 'src').rglob('*')
-                       if path.is_file() and sha(path) != sha(ROOT / 'src' / path.relative_to(selected / 'src'))]
-        assert differences == ([] if kind == 'companion' else [str(MODULE)]), 'unrelated source mutation'
+        selected = isolated_project(name + '-' + kind, source_text, original)
         result, bundle = compile_app(name + '-' + kind, selected / 'src')
         if kind == 'mutant' and diagnostic:
             assert result.returncode == 1 and diagnostic in result.stdout and str(selected / 'src' / MODULE) in result.stdout, 'precise expected compiler refusal missing'
