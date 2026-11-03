@@ -382,6 +382,91 @@ var n=c.ordinals.get(e); return n===undefined ? null : n.toString(10);
       assignInternalClientCreationOrdinal(context, native)
     createElementBody(tag, numberedElement)
 
+when defined(isonimInternalClientTargets):
+  when not defined(isonimInternalClientRouting) or not defined(isonimInternalClientOrdinals):
+    {.error: "private client targets require client routing and ordinals".}
+
+  type InternalClientTargetContext* = distinct JsObject
+    ## Explicit same-realm linkage. The inverse retains scalar keys and weak
+    ## wrappers only; its reachability is its lifetime, with no reset policy.
+
+  proc makeInternalClientTargetContext(forward: InternalClientCreationOrdinals):
+      InternalClientTargetContext {.importjs: "({forward: #, targets: new Map()})",
+      tags: [RawNondet].}
+
+  proc newInternalClientTargetContext*(): InternalClientTargetContext =
+    ## Allocate one unchanged forward namespace and its separate weak inverse.
+    makeInternalClientTargetContext(newInternalClientCreationOrdinals())
+
+  proc targetForwardContext(context: InternalClientTargetContext):
+      InternalClientCreationOrdinals {.importjs: "#.forward", tags: [RawNondet].}
+
+  proc requireInternalClientTargetContext(context: InternalClientTargetContext)
+      {.importjs: """(function(c){
+if(!c || !c.forward || !(c.forward.ordinals instanceof WeakMap) ||
+ typeof c.forward.next !== 'bigint' || !(c.targets instanceof Map))
+ throw new TypeError('invalid private client target context');
+})(#)""", tags: [RawNondet].}
+
+  proc requireInternalClientTargetLink(context: InternalClientTargetContext;
+      forward: InternalClientCreationOrdinals) {.importjs: """(function(c,f){
+if(c.forward !== f) throw new TypeError('mismatched private client target context');
+})(#,#)""", tags: [RawNondet].}
+
+  proc hasInternalClientTargets(context: InternalClientTargetContext): bool
+      {.importjs: "(# != null)", tags: [RawNondet].}
+
+  proc indexInternalClientTarget(context: InternalClientTargetContext;
+      element: Element): Element {.importjs: """(function(c,e){
+var n=c.forward.ordinals.get(e); var ref=new WeakRef(e); c.targets.set(n,ref); return e;
+})(#,#)""", tags: [RawNondet].}
+
+  proc createInternalClientTargetElement(context: InternalClientTargetContext;
+      forward: InternalClientCreationOrdinals; r: WebRenderer; tag: string): Element =
+    # Linkage is checked before the shared meter/HY/native operation. The fixed
+    # projection commits forward metadata first, then indexes that ACTUAL value.
+    # A later allocation failure propagates; this context must then be abandoned.
+    requireInternalClientTargetContext(context)
+    requireInternalClientTargetLink(context, forward)
+    template indexedElement(native: untyped): untyped =
+      indexInternalClientTarget(context,
+        assignInternalClientCreationOrdinal(forward, native))
+    createElementBody(tag, indexedElement)
+
+  proc internalClientTargetOrdinal*(context: InternalClientTargetContext;
+      element: Element): cstring =
+    ## Observe the same production forward metadata; never populate the inverse.
+    requireInternalClientTargetContext(context)
+    internalClientCreationOrdinal(targetForwardContext(context), element)
+
+  proc internalClientTargetIid(target: cstring): cstring
+      {.importjs: """(function(t){
+return typeof t==='string' && t.startsWith('iid:') && t.length>4 ? t.slice(4) : null;
+})(#)""", tags: [RawNondet].}
+
+  proc lookupInternalClientTarget(context: InternalClientTargetContext;
+      target: cstring): JsObject {.importjs: """(function(c,t){
+if(typeof t!=='string') return null;
+if(t==='doc') return document;
+if(t==='win') return window;
+// Unlike the usual end anchor, the final negative lookahead also excludes a trailing newline.
+if(!/^ord:[1-9][0-9]*(?![\s\S])/.test(t)) return null;
+var n=BigInt(t.slice(4)); var ref=c.targets.get(n);
+return ref===undefined ? null : ref.deref() || null;
+})(#,#)""", tags: [RawNondet].}
+
+  proc resolveInternalClientTarget*(context: InternalClientTargetContext;
+      target: cstring): JsObject =
+    ## Resolve a live weak ordinal in this namespace, or the existing build-wide
+    ## IID registry. Detached caller-held elements remain valid live results.
+    ## Dynamic dereference remains visible to installed recorder instrumentation.
+    requireInternalClientTargetContext(context)
+    when defined(isonimStableIds):
+      let iid = internalClientTargetIid(target)
+      if not iid.isNil:
+        return resolveIidLookup(iid)
+    lookupInternalClientTarget(context, target)
+
 when defined(isonimInternalClientRouting):
   when not defined(isonimInternalClientOrdinals):
     {.error: "private client routing requires isonimInternalClientOrdinals".}
@@ -391,6 +476,8 @@ when defined(isonimInternalClientRouting):
     ## retain the same context; construction never allocates a new namespace.
     context: InternalClientCreationOrdinals
     ordinary: WebRenderer
+    when defined(isonimInternalClientTargets):
+      targets: InternalClientTargetContext
 
   proc requireClientContext(context: InternalClientCreationOrdinals)
       {.importjs: """(function(c){if(!c || !(c.ordinals instanceof WeakMap) ||
@@ -401,7 +488,15 @@ typeof c.next !== 'bigint') throw new TypeError('invalid private client creation
     requireClientContext(context)
     InternalClientRenderer(context: context)
 
+  when defined(isonimInternalClientTargets):
+    proc newInternalClientTargetRenderer*(context: InternalClientTargetContext): InternalClientRenderer =
+      requireInternalClientTargetContext(context)
+      InternalClientRenderer(context: targetForwardContext(context), targets: context)
+
   proc createElement*(r: InternalClientRenderer; tag: string): Element =
+    when defined(isonimInternalClientTargets):
+      if hasInternalClientTargets(r.targets):
+        return createInternalClientTargetElement(r.targets, r.context, r.ordinary, tag)
     requireClientContext(r.context)
     createInternalClientElement(r.context, r.ordinary, tag)
 

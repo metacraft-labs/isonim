@@ -124,8 +124,13 @@ def qualify_creation_ordinals():
      source=OUT/('raw-tag-loss-'+mode);shutil.copytree(ROOT/'src',source/'src',symlinks=True)
      changed=source/'src/isonim/web/web_renderer.nim'
      marker='})(#,#)""", tags: [RawNondet].}'
-     assert original.count(marker)==2
-     changed.write_text(original.replace(marker,'})(#,#)""".}',1))
+     # Select the actual assignment declaration, independently of unrelated
+     # raw two-argument bindings added elsewhere in the same owning module.
+     start=original.index('  proc assignInternalClientCreationOrdinal(')
+     end=original.index('  proc ',start+8)
+     declaration=original[start:end]
+     assert declaration.count(marker)==1
+     changed.write_text(original[:start]+declaration.replace(marker,'})(#,#)""".}',1)+original[end:])
      fixture=source/'tests/fixtures/client_creation_ordinals_raw_effect.nim';fixture.parent.mkdir(parents=True);shutil.copy2(ROOT/'tests/fixtures/client_creation_ordinals_raw_effect.nim',fixture)
      compile('raw-tag-loss-'+mode,fixture,[*FLAGS,*flags,'-d:rejectAssignment'],source)
      try:raw_rejection('raw-tag-loss-unchanged-rejection-'+mode,source,fixture)

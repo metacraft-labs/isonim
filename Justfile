@@ -2320,3 +2320,7 @@ test-branded-task-app-style: build-tailwind
 # Explicit private full-component lifecycle qualification; no recording activation.
 test-client-routing-task-lifecycle: build-tailwind
     python3 tools/test_client_routing_task_lifecycle.py
+
+# Explicit private live target preparation; no automatic recording activation.
+test-client-target-resolver: build-tailwind
+    python3 tools/test_client_target_resolver.py

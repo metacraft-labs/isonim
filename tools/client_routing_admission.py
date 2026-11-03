@@ -24,8 +24,16 @@ def site_key(kind, row):
     return kind, row.get('owner', '<module-init>'), row['sha256']
 
 
+PRODUCTION_CREATION_OWNERS = ('createInternalClientElement__',
+                              'createInternalClientTargetElement__')
+
+
+def is_production_creation_owner(owner):
+    return owner.startswith(PRODUCTION_CREATION_OWNERS)
+
+
 def unadmitted_operation(kind, owner):
-    return not ((kind == 'createElement' and owner.startswith('createInternalClientElement__')) or
+    return not ((kind == 'createElement' and is_production_creation_owner(owner)) or
                 (kind == 'clearChildrenEmpty' and owner.startswith('clearChildren__')))
 
 
@@ -95,7 +103,7 @@ def inspect_candidate(bundle, catalog, actual_inputs, bound_inputs, finite_refer
         if refuse_site(reason, row):
             raise AdmissionError(reason + ':' + row.get('owner', '<module-init>'))
     if not any(row['property'] == 'createElement' and
-               row['owner'].startswith('createInternalClientElement__') for row in catalog['members']):
+               is_production_creation_owner(row['owner']) for row in catalog['members']):
         raise AdmissionError('missing-production-creation-site')
     return {'status': 'candidate-inspected-review-pending',
             'scope': 'Exact fixed source/compiler/config/parser/output only; no arbitrary-JS authorization',
