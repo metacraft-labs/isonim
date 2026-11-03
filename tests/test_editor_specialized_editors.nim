@@ -46,6 +46,7 @@ import isonim/core/[computation, owner, signals]
 import isonim/testing/mock_dom
 import isonim/editor
 import isonim/editor/css_compound_values
+import isonim/editor/numeric_precision
 import isonim/editor/demo_workspace
 import isonim/editor/views/shell
 import isonim/editor/views/widgets/advanced_controls
@@ -1110,3 +1111,34 @@ suite "the timing curve editor":
       check vm.stacks == (0, 0)
       check foundation[] == DemoFoundationInitialSource
       dispose()
+
+suite "compound number field precision":
+  ## Editor spec "Numeric Inputs": a typed value, an expression and a step
+  ## are exact to their operands' precision, and authored digits are kept.
+  test "typed values and steps keep exact decimals with their unit":
+    check numberFieldValue("0.1+0.2", "px") == "0.3px"
+    check numberFieldValue("1.23456", "px") == "1.23456px"
+    check numberFieldValue("10/3deg", "px") == "3.3333deg"
+    check numberFieldValue("-0", "px") == "0px"
+    check numberFieldValue("auto", "px") == "auto"
+    check steppedFieldValue("1.1px", "px", 0.1, none(float), none(float)) == "1.2px"
+    check steppedFieldValue("0.3px", "px", -0.1, none(float), none(float)) == "0.2px"
+    check steppedFieldValue("1.23456px", "px", 1.0, none(float), none(float)) == "2.23456px"
+    check steppedFieldValue("-0.7deg", "deg", -0.1, none(float), none(float)) == "-0.8deg"
+    check steppedFieldValue("0.05px", "px", -0.1, some(0.0), none(float)) == "0px"
+    check steppedFieldValue("auto", "px", 1.0, none(float), none(float)) == ""
+
+  test "gradient and curve gestures keep authored digits and drop residue":
+    # The angle control's press (45 degrees) and scrub (a degree per pixel)
+    # are steps from the authored angle.
+    check steppedAngle(33.33333) == 78.33333
+    check scrubbedAngle(33.33333, 5.0, false) == 38.33333
+    check scrubbedAngle(359.5, 1.0, false) == 0.5
+    # A dragged stop is placed at two decimals.
+    check draggedStopPercent(12.345, 7.0, 213.0) == 15.63
+    check draggedStopPercent(0.0, 100.0, 300.0) == 33.33
+    # A dragged control point is placed at three decimals.
+    let p = draggedControlPoint(0.1234, 0.5, 7.0, -3.0)
+    check p.x == roundToDecimals(0.1234 + 7.0 / curveSize, curveResolution)
+    check decimalPlaces(p.x) <= curveResolution
+    check decimalPlaces(p.y) <= curveResolution

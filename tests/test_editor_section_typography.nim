@@ -10,6 +10,7 @@ import std/[options, tables, unittest]
 
 import isonim/core/[signals, computation, owner]
 import isonim/editor/types
+import isonim/editor/element_semantics
 import isonim/editor/viewmodels
 import isonim/editor/views/widgets/section_typography
 import isonim/testing/mock_dom
@@ -50,21 +51,33 @@ suite "Phase G section_typography":
       check empty != nil
       check empty.styles.getOrDefault("display") == "none"
 
-      vm.inspector.selectedElement.val = ElementRef(tag: "div")
+      vm.inspector.selectedElement.val = ElementRef(tag: "img")
       check empty.styles.getOrDefault("display") == "block"
+
+      # A container passes its font on to its text: no placeholder.
+      vm.inspector.selectedElement.val = ElementRef(tag: "div")
+      check empty.styles.getOrDefault("display") == "none"
 
       vm.inspector.selectedElement.val = ElementRef(tag: "p")
       check empty.styles.getOrDefault("display") == "none"
+
+      vm.inspector.selectedElement.val = ElementRef(tag: "button")
+      check empty.styles.getOrDefault("display") == "none"
       dispose()
 
-  test "isTextLikeTag classifies common text tags":
-    check isTextLikeTag("p")
-    check isTextLikeTag("h1")
-    check isTextLikeTag("span")
-    check isTextLikeTag("label")
-    check not isTextLikeTag("div")
-    check not isTextLikeTag("button")
-    check not isTextLikeTag("img")
+  test "canHoldText follows the catalogue's \"When element can hold text\"":
+    # Editor spec "Section catalogue": containers keep Typography (their
+    # text children inherit the font); only elements that render no text
+    # and have no text children lose it.
+    for tag in ["p", "h1", "span", "a", "li", "button", "input", "div",
+        "section", "header", "main", "ul", "table", "form", "my-widget", "DIV",
+        "svg", "SVG"]:
+      check canHoldText(tag)
+    for tag in ["img", "picture", "video", "audio", "canvas", "iframe",
+        "frame", "embed", "object", "path", "rect", "circle",
+        "ellipse", "line", "polyline", "polygon", "image", "hr", "br", "wbr",
+        "meter", "progress", "IMG"]:
+      check not canHoldText(tag)
 
   test "friendly font weight labels submit valid CSS numeric weights":
     for i, expected in ["100", "300", "400", "500", "600", "700"]:

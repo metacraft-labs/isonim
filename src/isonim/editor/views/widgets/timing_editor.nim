@@ -38,6 +38,7 @@ import isonim/dsl/ui
 import isonim/editor/types
 import isonim/editor/viewmodels
 import isonim/editor/css_compound_values
+import isonim/editor/numeric_precision
 import isonim/editor/views/view_lifecycle
 import ./advanced_controls
 import ./property_commit
@@ -67,9 +68,11 @@ func curvePixel*(x, y: float): tuple[left, top: float] =
 func draggedControlPoint*(startX, startY, dx, dy: float): tuple[x, y: float] =
   ## A control point at (``startX``, ``startY``) dragged by (``dx``, ``dy``)
   ## pixels: right increases x, up increases y. x stays within 0..1 (CSS
-  ## requires it) and y within -1..2.
-  (x: clamp(startX + dx / curveSize, 0.0, 1.0),
-   y: clamp(startY - dy / curveSize, -1.0, 2.0))
+  ## requires it) and y within -1..2. The point is computed from the
+  ## pointer, so it has no authored precision and is placed at
+  ## `curveResolution` decimal places (editor spec "Numeric Inputs").
+  (x: roundToDecimals(clamp(startX + dx / curveSize, 0.0, 1.0), curveResolution),
+   y: roundToDecimals(clamp(startY - dy / curveSize, -1.0, 2.0), curveResolution))
 
 func reducedMotionReport*(duration, timing, coverage: string;
     previewAvailable: bool): string =
@@ -276,13 +279,9 @@ proc mountTimingContents*[R, E](r: R; panel: E; vm: EditorVM;
     proc point(curve: CubicBezier): tuple[x, y: float] =
       if index == 1: (x: curve.x1, y: curve.y1) else: (x: curve.x2, y: curve.y2)
     proc moved(curve: CubicBezier; x, y: float): CubicBezier =
-      result = curve
-      if index == 1:
-        result.x1 = x
-        result.y1 = y
-      else:
-        result.x2 = x
-        result.y2 = y
+      # A changed number is written as computed; an unchanged one, and the
+      # other point, keep their authored text (`curveWithPoint`).
+      curveWithPoint(curve, index, x, y)
     createRenderEffect proc() =
       let p = point(shown())
       let place = curvePixel(p.x, clamp(p.y, -0.25, 1.25))
@@ -364,10 +363,10 @@ proc mountTimingContents*[R, E](r: R; panel: E; vm: EditorVM;
       var x = p.x
       var y = p.y
       case key
-      of "ArrowLeft": x -= size
-      of "ArrowRight": x += size
-      of "ArrowUp": y += size
-      else: y -= size
+      of "ArrowLeft": x = x.steppedNumber(-size)
+      of "ArrowRight": x = x.steppedNumber(size)
+      of "ArrowUp": y = y.steppedNumber(size)
+      else: y = y.steppedNumber(-size)
       commitCurve(moved(current, clamp(x, 0.0, 1.0), clamp(y, -1.0, 2.0)), "Curve"))
     onCleanup(proc() = cancel())
   mountHandle(1)

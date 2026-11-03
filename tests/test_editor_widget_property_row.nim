@@ -31,10 +31,11 @@
 ## drive interactions via the VM OR via ``fireEvent``, and assert
 ## the resulting attribute / structure invariants.
 
-import std/[options, sequtils, tables, unittest]
+import std/[math, options, sequtils, strutils, tables, unittest]
 
 import isonim/core/[signals, computation, owner]
 import isonim/editor/types
+import isonim/editor/numeric_precision
 import isonim/editor/views/choice_row
 import isonim/editor/views/widgets/property_row
 import isonim/testing/mock_dom
@@ -1010,4 +1011,211 @@ suite "property_row scope chips":
         fireEvent(chip, "click")
         check chosen == @[name]
         check commits == @["20px"]
+      dispose()
+
+suite "stepped numeric precision":
+  ## A step or scrub moves an authored decimal by a decimal step; the sum is
+  ## exact to the finer of the two precisions, never the binary64 residue of
+  ## the addition (`1.1 + 0.1` is `1.2000000000000002` in binary64).
+  test "decimal places are those of the shortest round-trip decimal":
+    check decimalPlaces(120.0) == 0
+    check decimalPlaces(1.1) == 1
+    check decimalPlaces(-0.125) == 3
+    check decimalPlaces(1.23456) == 5
+    check decimalPlaces(0.30000000000000004) == 17
+    check decimalPlaces(1e-20) == 20
+    check decimalPlaces(1.5e-7) == 8
+    check decimalPlaces(1e20) == 0
+    check decimalPlaces(NaN) == 0
+    check decimalPlaces(Inf) == 0
+
+  test "an inexact result is rounded once, never to zero":
+    check roundInexact(1.0 / 3.0, 4) == 0.3333
+    check roundInexact(1.0 / 30000.0, 4) == 0.00003333
+    check roundInexact(66.66666666666667, 4) == 66.6667
+    check roundInexact(0.0, 4) == 0.0
+    # Beyond the exact power-of-ten table the mantissa is rounded instead.
+    check roundInexact(1e-30, 4) == 1e-30
+    check roundInexact(1e-20 / 3.0, 4) == 3.333e-21
+    check roundInexact(-2e-25 / 3.0, 4) == -6.667e-26
+    check parseNumericInput("1e-20/3").value.get == 3.333e-21
+
+  test "row numbers are spelled the same natively and under JS":
+    ## The spelling ECMAScript's Number::toString gives, which the browser
+    ## editor has always written: plain decimal from 1e-6 up to 1e21.
+    for (value, text) in [(1e20, "100000000000000000000"),
+        (1.5e21, "1.5e+21"), (1e21, "1e+21"), (1e-7, "1e-7"),
+        (-2.5e-8, "-2.5e-8"), (1e-6, "0.000001"), (123.0, "123"),
+        (0.1, "0.1"), (-0.0, "0"), (3.333e-21, "3.333e-21"),
+        (1.7976931348623157e308, "1.7976931348623157e+308")]:
+      check formatExactNumber(value) == text
+      check parseNumericInput(text & "px").value.get == value
+
+  test "plain decimal text is the same natively and under JS":
+    for (value, text) in [(1e-7, "0.0000001"), (-1.5e-7, "-0.00000015"),
+        (1e20, "100000000000000000000"), (1.5e21, "1500000000000000000000"),
+        (0.1, "0.1"), (120.0, "120"), (-0.0, "0"), (33.33333, "33.33333"),
+        (1.2345e-5, "0.000012345")]:
+      check exactNumberText(value) == text
+      check parseFloat(text) == value
+
+  test "significant digits are those of the shortest round-trip decimal":
+    check significantDigits(0.00125) == 3
+    check significantDigits(120.0) == 2
+    check significantDigits(1e20) == 1
+    check significantDigits(-1.5) == 2
+    check significantDigits(1.0 / 3.0) == 16
+    check significantDigits(0.0009765625) == 7
+    check significantDigits(1e-20) == 1
+    check significantDigits(0.0) == 0
+    check significantDigits(NaN) == 0
+
+  test "a step is exact to the finer of the value's and the step's precision":
+    # The Arrow (1), Shift (10) and Alt (0.1) steps on values whose binary64
+    # sums carry noise, both directions, negative values included.
+    for (start, delta, expected) in [(1.1, 0.1, "1.2"), (0.7, 0.1, "0.8"),
+        (0.3, -0.1, "0.2"), (-0.7, -0.1, "-0.8"), (-1.1, 0.1, "-1"),
+        (10.1, -10.0, "0.1"), (0.2, 0.1, "0.3"), (82.0, 0.1, "82.1"),
+        (1.23456, 1.0, "2.23456"), (1.23456, 0.1, "1.33456"),
+        (120.125, 0.1, "120.225"), (-0.1, 0.1, "0"), (0.1, -0.1, "0"),
+        (1e-20, 1.0, "1"), (1e20, 1.0, formatExactNumber(1e20)),
+        (0.125, 0.1, "0.225")]:
+      let stepped = steppedNumber(start, delta)
+      check formatExactNumber(stepped) == expected
+      check parseNumericInput(formatExactNumber(stepped) & "px").value.get == stepped
+    # Never -0 (it would be written as `-0px`).
+    check formatExactNumber(steppedNumber(-0.1, 0.1)) == "0"
+    # Non-finite input passes through unchanged.
+    check steppedNumber(Inf, 1.0) == Inf
+    check steppedNumber(NaN, 1.0).isNaN
+
+  test "percent and ratio convert at each other's precision":
+    check percentToRatio(80.0126) == 0.800126
+    check percentToRatio(0.35) == 0.0035
+    check percentToRatio(7.0) == 0.07
+    check ratioToPercent(0.0035) == 0.35
+    check ratioToPercent(0.07) == 7.0
+    check ratioToPercent(0.29) == 29.0
+    check ratioToPercent(0.07000000000000002) == 7.000000000000002
+    # A ratio that is itself binary64 residue keeps the plain product.
+    check ratioToPercent(0.8001260000000001) == 0.8001260000000001 * 100.0
+
+  test "typed arithmetic is exact to its operands' precision":
+    # Sums, differences and products of decimals terminate; their binary64
+    # results (`0.1 + 0.2` is `0.30000000000000004`) do not reach the field.
+    for (typed, expected, unit) in [("0.1+0.2px", "0.3", "px"),
+        ("1.1*3", "3.3", ""), ("2.5-0.7rem", "1.8", "rem"),
+        ("0.7+0.1", "0.8", ""), ("-0.3-0.1em", "-0.4", "em"),
+        ("1.1^2", "1.21", ""), ("(0.1+0.2)*3", "0.9", ""),
+        ("1.23456+1", "2.23456", ""), ("0.1-0.1", "0", ""),
+        # A quotient or fractional power that terminates within 15
+        # significant digits is exact; otherwise it is rounded to
+        # `inexactPlaces` (4), or to its operands' finer precision.
+        ("10/3", "3.3333", ""), ("10/3rem", "3.3333", "rem"),
+        ("-2/3px", "-0.6667", "px"), ("120+1/8px", "120.125", "px"),
+        ("1/32", "0.03125", ""), ("1/1024turn", "0.0009765625", "turn"),
+        ("1.234567/1", "1.234567", ""), ("1.2345678/3", "0.4115226", ""),
+        ("2^0.5", "1.4142", ""), ("2^-1", "0.5", ""),
+        # An inexact part is carried unrounded and the result rounded once,
+        # at the end (not 0.9999 / 99.9999 / 66.6666).
+        ("(1/3)*3", "1", ""), ("1/3+1/3+1/3", "1", ""), ("100/3*3", "100", ""),
+        ("100/3*2", "66.6667", ""), ("10/3-10/3", "0", ""),
+        ("2^0.5*2^0.5", "2", ""), ("1/3*1.23456", "0.41152", ""),
+        # A small nonzero result keeps four significant digits.
+        ("1/30000", "0.00003333", ""), ("1/30000turn", "0.00003333", "turn"),
+        ("1/3000", "0.0003333", ""), ("-1/30000", "-0.00003333", ""),
+        # A minus sign negates a parenthesised group (editor spec "Numeric
+        # Inputs"), nested, with a unit, and keeping exactness.
+        ("-(2+3)", "-5", ""), ("-(2+3)px", "-5", "px"), ("-(-(1/3))*3", "1", ""),
+        ("-(0.1+0.2)", "-0.3", ""), ("10*-(1.1)", "-11", ""),
+        ("-(2)^2", "-4", ""), ("+(2+3)em", "5", "em"), ("- (4/2)", "-2", ""),
+        # A sign applies after a power and may follow one (approved
+        # 2026-11); one sign per operand, as in CSS calc().
+        ("-2^2", "-4", ""), ("2^-1", "0.5", ""), ("2^-(1)", "0.5", ""),
+        ("-2^-2", "-0.25", ""), ("2^-3^2", "0.001953125", ""),
+        ("5--3", "8", ""), ("5 - -3px", "8", "px"), ("-0.5em", "-0.5", "em"),
+        ("+4", "4", ""), ("-(2+3)", "-5", ""),
+        ("3-(-(1.5))", "4.5", ""), ("-(-(-(1)))", "-1", ""), ("-(0)", "0", ""),
+        # Negation keeps the inexact mark, so the result is rounded once.
+        ("-(1/3)", "-0.3333", ""), ("-(10/3)rem", "-3.3333", "rem"),
+        ("-(1/3)+0.1", "-0.2333", ""), ("0.1+-(1/3)", "-0.2333", ""),
+        # A literal without arithmetic stays exactly as authored.
+        ("0.30000000000000004px", "0.30000000000000004", "px"),
+        ("1.23456789px", "1.23456789", "px")]:
+      let parsed = parseNumericInput(typed)
+      check parsed.value.isSome
+      check parsed.unit == unit
+      if parsed.value.isSome:
+        check formatExactNumber(parsed.value.get) == expected
+    check inexactPlaces == 4
+    # Still refused: a sign with nothing to negate, or an unclosed group.
+    for typed in ["-()", "-(2+3", "-", "-(px", "(-)", "--1", "-+-1", "- -1",
+        "+-1", "-+1", "5---3", "2^--1"]:
+      check parseNumericInput(typed).value.isNone
+
+  test "a typed expression commits the exact sum with its unit":
+    createRoot proc(dispose: proc()) =
+      let value = createSignal(10.0)
+      let unit = createSignal(pxUnit)
+      var seen: seq[string]
+      var cfg = propertyRowNumeric(
+        name = "W", value = value, unit = unit, units = @[pxUnit])
+      cfg.onCommitValue = proc(v: string) = seen.add v
+      let (r, root) = mkRoot()
+      discard r.mountPropertyRow(root, cfg)
+      let input = findByAttr(root, "data-property-row-input", "true")
+      r.setInputValue(input, "0.1+0.2px")
+      fireEvent(input, "change")
+      check seen == @["0.3px"]
+      check r.inputValue(input) == "0.3"
+      r.setInputValue(input, "10/3")
+      fireEvent(input, "change")
+      check seen == @["0.3px", "3.3333px"]
+      dispose()
+
+  test "scrubbed values are exact to the start value's and the step's precision":
+    let none0 = none(float)
+    # Alt at 1x speed: 3px of 0.1 from 1.1 (binary64: 1.4000000000000001).
+    check scrubbedValue(1.1, 3.0, 20.0, 1.0, false, true, none0, none0) == 1.4
+    check formatExactNumber(scrubbedValue(1.1, 3.0, 20.0, 1.0, false, true,
+      none0, none0)) == "1.4"
+    # Alt at the 2x near speed: 3px of 0.2 from 1.1 (binary64: 1.7000000000000002).
+    check scrubbedValue(1.1, 3.0, 0.0, 1.0, false, true, none0, none0) == 1.7
+    # Leftward and negative.
+    check scrubbedValue(-1.1, -3.0, 20.0, 1.0, false, true, none0, none0) == -1.4
+    # Shift's coarse step from a fraction (binary64: 0.09999999999999964).
+    check scrubbedValue(10.1, -1.0, 20.0, 1.0, true, false, none0, none0) == 0.1
+    # The finest speed (1/4) with Alt moves 0.025 per pixel.
+    check scrubbedValue(0.7, 3.0, 100.0, 1.0, false, true, none0, none0) == 0.775
+    # Authored precision finer than the step is kept, not rounded to the step.
+    check formatExactNumber(scrubbedValue(1.23456, 1.0, 20.0, 1.0, false,
+      false, none0, none0)) == "2.23456"
+    check formatExactNumber(scrubbedValue(0.125, 1.0, 20.0, 1.0, false, true,
+      none0, none0)) == "0.225"
+    # A drag that crosses zero writes 0, not -0.
+    check formatExactNumber(scrubbedValue(-0.1, 1.0, 20.0, 1.0, false, true,
+      none0, none0)) == "0"
+
+  test "a mounted row's Alt scrub previews and commits the exact sum":
+    createRoot proc(dispose: proc()) =
+      let value = createSignal(1.1)
+      let unit = createSignal(pxUnit)
+      var seen: seq[string]
+      var cfg = propertyRowNumeric(
+        name = "W", value = value, unit = unit, units = @[pxUnit])
+      cfg.onCommitValue = proc(v: string) = seen.add v
+      let (r, root) = mkRoot()
+      discard r.mountPropertyRow(root, cfg)
+      let labelNode = findByAttr(root, "data-property-row-slot",
+        "label-scrubber")
+      let input = findByAttr(root, "data-property-row-input", "true")
+      proc drag(event: string; x, y: float) =
+        fireEventWith(labelNode, event, MockEvent(`type`: event,
+          clientX: x, clientY: y, altKey: true))
+      drag("mousedown", 0.0, 0.0)
+      drag("mousemove", 3.0, 20.0)
+      check r.inputValue(input) == "1.4"
+      check value.val == 1.4
+      drag("mouseup", 3.0, 20.0)
+      check seen == @["1.4px"]
       dispose()

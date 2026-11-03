@@ -46,6 +46,7 @@ from isonim/core/batch import untrack
 import isonim/dsl/ui
 import isonim/editor/viewmodels
 import isonim/editor/css_compound_values
+import isonim/editor/numeric_precision
 import isonim/editor/views/view_lifecycle
 import ./advanced_controls
 import ./color_popover
@@ -80,12 +81,20 @@ func gradientStopLabel*(index: int; percent: float): string =
 
 func steppedAngle*(degrees: float): float =
   ## The angle pressing the angle control turns ``degrees`` to.
-  normalizedDegrees(degrees + angleStepDegrees)
+  normalizedDegrees(steppedNumber(degrees, angleStepDegrees))
+
+func draggedStopPercent*(start, dx, width: float): float =
+  ## Where a stop dragged ``dx`` pixels along a ``width``-pixel bar from
+  ## ``start`` percent lands: a position the pointer computes, so it has no
+  ## authored precision and is placed at `stopResolution` decimal places.
+  roundToDecimals(start + dx / width * 100.0, stopResolution)
 
 func scrubbedAngle*(start, dx: float; snap: bool): float =
   ## The angle a horizontal drag of ``dx`` pixels from ``start`` gives: one
   ## degree per pixel, or with ``snap`` (Shift) the nearest 15 degrees.
-  var value = start + round(dx)
+  # A whole degree per pixel from the authored angle, which keeps its
+  # fraction (editor spec "Numeric Inputs").
+  var value = steppedNumber(start, round(dx))
   if snap: value = round(value / 15.0) * 15.0
   normalizedDegrees(value)
 
@@ -319,8 +328,8 @@ proc mountGradientContents*[R, E](r: R; panel: E; vm: EditorVM;
         return
       let size = if advShift(ev): 15.0 else: 1.0
       let current = untrack(base)
-      commitGradient(current.gradientWithAngle(current.angle +
-        (if key in ["ArrowRight", "ArrowUp"]: size else: -size)), "Angle"))
+      commitGradient(current.gradientWithAngle(steppedNumber(current.angle,
+        (if key in ["ArrowRight", "ArrowUp"]: size else: -size))), "Angle"))
   onCleanup(proc() = angleCancel())
   discard mountCompoundNumberField[R, E](r, angleRow, CompoundNumberField(
     label: "Angle", ariaLabel: "Edit " & gradientProperty & " gradient angle",
@@ -423,7 +432,7 @@ proc mountGradientContents*[R, E](r: R; panel: E; vm: EditorVM;
         if abs(x - startX) < scrubThreshold: return
         dragging = true
       draft.val = some(untrack(base).gradientWithStopMoved(index,
-        startPercent + (x - startX) / width * 100.0)))
+        draggedStopPercent(startPercent, x - startX, width))))
     r.addPointerListener(handle, "pointerup", proc(x, y: float; shift, alt: bool) =
       handleGesture = false
       if not pressed: return
@@ -434,7 +443,7 @@ proc mountGradientContents*[R, E](r: R; panel: E; vm: EditorVM;
       var moved = index
       let current = untrack(base)
       let next = current.gradientWithStopMoved(index,
-        startPercent + (x - startX) / width * 100.0, moved)
+        draggedStopPercent(startPercent, x - startX, width), moved)
       if serializeCssGradient(next) == serializeCssGradient(current):
         draft.val = none(CssGradient)
         return
@@ -466,8 +475,9 @@ proc mountGradientContents*[R, E](r: R; panel: E; vm: EditorVM;
         return
       let size = if advShift(ev): 10.0 else: 1.0
       var moved = index
-      let next = current.gradientWithStopMoved(index, current.stopPercent(index) +
-        (if key == "ArrowRight": size else: -size), moved)
+      let next = current.gradientWithStopMoved(index,
+        steppedNumber(current.stopPercent(index),
+          (if key == "ArrowRight": size else: -size)), moved)
       if commitGradient(next, "Move stop"): selectedStop.val = moved)
     onCleanup(proc() = cancel())
 

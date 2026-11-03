@@ -23,6 +23,7 @@ from isonim/core/batch import untrack
 import isonim/core/nondet as nondet
 import isonim/dsl/ui
 import isonim/editor/types
+import isonim/editor/numeric_precision
 import isonim/editor/viewmodels
 import isonim/editor/views/view_lifecycle
 import ./property_commit
@@ -381,10 +382,12 @@ proc numberFieldValue*(text, unit: string): string =
   if raw.len == 0: return ""
   let parsed = parseNumericInput(raw)
   if parsed.value.isNone: return raw
-  var rounded = round(parsed.value.get * 1000.0) / 1000.0
-  if rounded == 0.0: rounded = 0.0
-  let digits = formatExactNumber(rounded)
-  digits & (if parsed.unit.len > 0: parsed.unit else: unit)
+  # The evaluator's result is already exact to its operands' precision
+  # (editor spec "Numeric Inputs"): `0.1+0.2` is `0.3`, and an authored
+  # `1.23456` keeps every digit, so no fixed rounding is applied here.
+  var value = parsed.value.get
+  if value == 0.0: value = 0.0 # no "-0px"
+  formatExactNumber(value) & (if parsed.unit.len > 0: parsed.unit else: unit)
 
 proc steppedFieldValue*(text, unit: string; delta: float;
     minimum, maximum: Option[float]): string =
@@ -392,11 +395,11 @@ proc steppedFieldValue*(text, unit: string; delta: float;
   ## number.
   let parsed = parseNumericInput(text.strip())
   if parsed.value.isNone: return ""
-  var next = parsed.value.get + delta
+  # Exact to the finer of the value's and the step's precision.
+  var next = steppedNumber(parsed.value.get, delta)
   if minimum.isSome and next < minimum.get: next = minimum.get
   if maximum.isSome and next > maximum.get: next = maximum.get
-  numberFieldValue(formatExactNumber(round(next * 1000.0) / 1000.0) &
-    parsed.unit, unit)
+  numberFieldValue(formatExactNumber(next) & parsed.unit, unit)
 
 proc mountCompoundNumberField*[R, E](r: R; parent: E;
     field: CompoundNumberField): E =
@@ -525,7 +528,8 @@ proc mountCompoundNumberField*[R, E](r: R; parent: E;
     let value = scrubbedValue(startValue, x - startX, 0.0,
       if field.step > 0: field.step else: 1.0, shift, alt,
       field.minimum, field.maximum)
-    let text = numberFieldValue(formatExactNumber(round(value * 1000.0) / 1000.0) &
+    # `scrubbedValue` is already exact to the start's and the step's precision.
+    let text = numberFieldValue(formatExactNumber(value) &
       startUnit, field.unit)
     r.setInputValue(inputEl, text)
     if field.draft != nil: field.draft(text)

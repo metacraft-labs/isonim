@@ -12,6 +12,7 @@ import isonim/viewmodel
 import isonim/editor/types
 import isonim/editor/html_classes
 import isonim/editor/css_color_literal
+import isonim/editor/numeric_precision
 import isonim/editor/design_review/context_policy
 import isonim/editor/element_semantics
 import isonim/editor/streaming_preview
@@ -1639,7 +1640,9 @@ proc parseCssPropertyValue*(property, raw: string;
     if text.endsWith("%"):
       var parsed = 0.0
       if tryParseFloatValue(text[0 ..< text.len - 1], parsed):
-        result.numeric = parsed / 100.0
+        # The ratio at the percent's precision: `80.0126%` is `0.800126`,
+        # not the binary64 quotient `0.8001260000000001`.
+        result.numeric = percentToRatio(parsed)
         result.canonical = $result.numeric
     else:
       discard tryParseFloatValue(text, result.numeric)

@@ -2878,7 +2878,7 @@ const inspectorPlaceholderSections* = [
   ## Assistant tab pair lists these twelve sections in
   ## user-decided order. Each entry is ``(slug, displayName)``.
   ## Phase C wires real expansion state + conditional visibility
-  ## (Typography only when text element, Component properties only
+  ## (Typography when the element can hold text, Component properties only
   ## for instances). Phase G moved per-section content into
   ## per-section widget files; the retired single-body manual
   ## inspector they were extracted from has been removed.
@@ -3505,11 +3505,12 @@ proc renderInspectorPanel*[R, E](r: R; vm: EditorVM): E =
   ##   * Mount no single-body manual inspector; section content comes
   ##     from the per-section widget files.
   ##
-  ## All section bodies render as visible (empty) for Phase B. Every
-  ## frame ships with ``data-expanded="true"`` so Phase C can flip
-  ## individual sections without re-mounting. Conditional visibility
-  ## (Typography only when text element, Component properties only
-  ## for instances, etc.) lands in Phase C as well.
+  ## Every section frame is mounted once and shown or hidden in place,
+  ## so presence can change without re-mounting. The catalogue's
+  ## conditional presence applies to Typography (when the element can
+  ## hold text), Selection colours (only with a colour), Component
+  ## properties (only for a component instance) and State (only with
+  ## reactive state).
 
   # Selection header. Sits above the section list and stays pinned —
   # ``flex-shrink: 0`` inside the header proc.
@@ -3644,8 +3645,25 @@ proc renderInspectorPanel*[R, E](r: R; vm: EditorVM): E =
       let nameMatched = searchTextMatches(displayName, query) or
         searchTextMatches(slug, query)
       let matched = query.len == 0 or nameMatched or rowsMatched
-      let applicable = slug != "component-properties" or
-        isComponentInstance(vm.inspector.selectedElement.val)
+      # Editor spec "Section catalogue" (Visibility column and the reading
+      # of its conditional entries below it): Typography when the element
+      # can hold text (with no selection the "when element" conditions are not
+      # applied), Selection colours when the selection has a colour,
+      # Component properties only for a component instance, State only
+      # when the selection has reactive state. An absent section is not
+      # brought back by a search.
+      let applicable =
+        case slug
+        of "typography":
+          not vm.inspector.hasElement.val or
+            canHoldText(vm.inspector.selectedElement.val.tag)
+        of "selection-colors":
+          collectSelectionColors(vm.inspector.properties.val).len > 0
+        of "component-properties":
+          isComponentInstance(vm.inspector.selectedElement.val)
+        of "state":
+          collectReactiveProperties(vm.inspector.properties.val).len > 0
+        else: true
       r.setStyle(row, "display",
         if matched and applicable: "flex" else: "none")
       r.setAttribute(row, "data-inspector-search-hidden",
@@ -3654,10 +3672,13 @@ proc renderInspectorPanel*[R, E](r: R; vm: EditorVM): E =
       # start matching), through the neutral setter: the user can still
       # collapse it, and clearing the query restores the pre-search state.
       # A section matched by name alone keeps its own open/closed state.
-      if rowsMatched and (query != lastQuery or not lastRowsMatched):
+      # An absent section is left as it is: a search that matches its rows
+      # does not change whether it is open (editor spec "Section catalogue").
+      if applicable and rowsMatched and
+          (query != lastQuery or not lastRowsMatched):
         untrack(proc() = vm.inspector.setSectionExpanded(section, true))
       lastQuery = query
-      lastRowsMatched = rowsMatched
+      lastRowsMatched = rowsMatched and applicable
 
   for (slug, displayName) in inspectorPlaceholderSections:
     mountSection(slug, displayName)

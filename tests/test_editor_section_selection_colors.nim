@@ -8,6 +8,7 @@ import std/[options, tables, unittest]
 
 import isonim/core/[signals, computation, owner]
 import isonim/editor/types
+import isonim/editor/css_color_literal
 import isonim/editor/style_provenance_decode
 import isonim/editor/viewmodels
 import isonim/editor/views/widgets/section_selection_colors
@@ -36,7 +37,9 @@ suite "Phase G section_selection_colors":
     check looksLikeColor("rgb(10, 20, 30)")
     check looksLikeColor("rgba(0, 0, 0, 0.4)")
     check not looksLikeColor("none")
-    check not looksLikeColor("transparent")
+    # `transparent` is a CSS <color> (editor spec "Section catalogue", "When
+    # colours present"; CSS Color 4 §6.3).
+    check looksLikeColor("transparent")
     check not looksLikeColor("")
     check not looksLikeColor("auto")
 
@@ -47,7 +50,7 @@ suite "Phase G section_selection_colors":
       PropertyInfo(name: "border-color", value: "#0F172A"),
       PropertyInfo(name: "outline-color", value: "transparent")]
     let colors = collectSelectionColors(props)
-    check colors == @["#0F172A", "#FFFFFF"]
+    check colors == @["#0F172A", "#FFFFFF", "transparent"]
 
   test "section mount renders list + empty-state":
     createRoot do (dispose: proc()):
@@ -148,3 +151,64 @@ suite "Phase G section_selection_colors":
       dispose()
       fireEvent(oldBind, "click")
       check admitted.len == 1
+
+suite "CSS colour syntax (CSS Color 4 and 5)":
+  ## Editor spec "Section catalogue", "When colours present": any CSS
+  ## <color>, each function by its grammar; a value holding a reference is a
+  ## colour only by its resolved value, so the unresolved text is not one.
+  test "colour functions follow their grammar, relative syntax included":
+    for value in ["lab(50% 40 59.5)", "lab(50% 40 59.5 / 0.5)",
+        "lch(52% 72 50deg)", "oklab(0.6 0.1 -0.1)", "oklch(60% 0.15 50 / 50%)",
+        "hwb(120deg 10% 20%)", "rgb(none 0 0)", "rgb(calc(255 / 2) 0 0)",
+        "rgb(1e2 0 0)", "rgb(from red r g b)", "hsl(from #ff0000 h s l / alpha)",
+        "oklch(from red l c h)", "lab(from oklch(60% 0.1 20) l a b)",
+        "color(display-p3 1 0.5 0)", "color(xyz-d65 0.4 0.2 0.1 / 0.5)",
+        "color(from red srgb r g b)", "color(--brand 1 0 0)",
+        "color-mix(in srgb, red 40%, blue)",
+        "color-mix(in oklch longer hue, red, blue 30%)",
+        "light-dark(white, black)", "rgba(10, 20, 30, 0.5)",
+        "hsla(120, 50%, 50%, 0.3)"]:
+      check isCssColorValue(value)
+    for value in ["lab()", "oklch()", "rgb()", "lab(50%)", "lab(50% 40)",
+        "lab(50% 40 59.5 0.5)", "lab(50% 40 59.5 /)", "hwb(10% 10deg 20%)",
+        "lch(52% 72% 50deg 1)", "rgb(var(--r) 2 3)", "oklch(var(--l) 0.1 20)",
+        "var(--brand)", "color(foo 1 0 0)", "color(srgb 1 0)",
+        "rgb(from notacolor r g b)", "rgb(from red)", "rgb(from red q g b)",
+        "color-mix(in srgb, red)", "color-mix(srgb, red, blue)",
+        "light-dark(white)", "rgb(255, 0 0)", "rgb(10, 20, 30, 40, 50)",
+        "rgb(10px 20 30)", "lab(50% 40 59.5", "lab(50% 40 59.5))"]:
+      check not isCssColorValue(value)
+
+  test "one colour written several ways is listed once":
+    check cssColorKey("red") == cssColorKey("#ff0000")
+    check cssColorKey("RED") == cssColorKey("rgb(255, 0, 0)")
+    check cssColorKey("hsl(0 100% 50%)") == cssColorKey("red")
+    check cssColorKey("transparent") == cssColorKey("rgba(0, 0, 0, 0)")
+    check cssColorKey("navy") != cssColorKey("blue")
+    check collectSelectionColors(@[
+      PropertyInfo(name: "color", value: "red"),
+      PropertyInfo(name: "background-color", value: "#ff0000"),
+      PropertyInfo(name: "border-color", value: "rgb(255 0 0)")]) == @["red"]
+    check namedColorHex("RebeccaPurple") == "#663399"
+    check namedCssColorHex.len == 148
+    check decodedColorChannels("red").valid
+    check not decodedColorChannels("oklch(60% 0.15 50)").valid
+
+  test "legacy syntax and color-mix() follow CSS Color 4 and 5 exactly":
+    # Legacy rgb(): all numbers or all percentages; legacy hsl(): a hue and
+    # two percentages; no `none` in legacy syntax.
+    for value in ["rgb(10%, 20%, 30%)", "rgb(10, 20, 30, 50%)",
+        "rgb(calc(10), 20, 30)", "hsl(120deg, 50%, 50%)", "hsl(120, 50%, 50%, 0.5)",
+        "color-mix(in srgb, red 0%, blue)", "color-mix(in hsl shorter hue, red, blue)",
+        "color-mix(in --mine, red, blue)", "color-mix(in lab, red 100%, blue)",
+        "color-mix(in xyz-d50, red 30%, blue 70%)", "color-mix(in oklab, red calc(20%), blue)"]:
+      check isCssColorValue(value)
+    for value in ["rgb(1,2%,3)", "rgb(1%, 2, 3%)", "hsl(10, 20, 30)",
+        "hsl(10, 20%, 30)", "rgb(none, 0, 0)", "hsl(10%, 20%, 30%)",
+        "color-mix(in foo, red, blue)", "color-mix(in srgb, red 150%, blue)",
+        "color-mix(in srgb, red -10%, blue)", "color-mix(in srgb, red 0%, blue 0%)",
+        "color-mix(in srgb longer hue, red, blue)",
+        "color-mix(in oklch sideways hue, red, blue)",
+        "color-mix(in oklch longer, red, blue)",
+        "color-mix(in srgb, red, blue, green)", "color-mix(in srgb, red 10px, blue)"]:
+      check not isCssColorValue(value)

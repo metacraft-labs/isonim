@@ -432,3 +432,143 @@ suite "colour picker typed fields":
       check vm.inspector.propertyClipboard.val == PropertyClipboardEntry(
         property: "background-color", value: "#112233")
       dispose()
+
+suite "inspector section applicability":
+  ## Editor spec "Section catalogue": State's visibility is "When reactive
+  ## state present". isonim-pm issue
+  ## 2026-10-13-state-section-shown-without-reactive-state.
+  test "State is present only while the selection has reactive state":
+    createRoot proc(dispose: proc()) =
+      let r = MockRenderer()
+      let vm = createEditorVM()
+      let plain = ElementRef(id: "action", tag: "button",
+        schemaKey: "dom.button", properties: @[
+          PropertyInfo(name: "width", value: "120px", authoredValue: "120px",
+            origin: poConstant, schemaKey: "dom.button.width")])
+      vm.inspector.selectedElement.val = plain
+      let panel = renderInspectorPanel[MockRenderer, MockNode](r, vm)
+      need(sectionRow(panel, "state"))
+      # An ordinary element: no State header, body or rows.
+      check not panel.shown("state")
+      check panel.shown("layout")
+      # Searching for the section by name does not bring back an absent one.
+      let field = findByAttr(panel, "data-isonim-focus-id", "section-search")
+      need(field)
+      r.typeInto(field, "State")
+      check not panel.shown("state")
+      r.typeInto(field, "")
+      # A Signal-backed property makes the section present, with its row.
+      var reactive = plain
+      reactive.properties.add PropertyInfo(name: "count", value: "3",
+        origin: poInherited, originDetail: "signal:count")
+      vm.inspector.selectedElement.val = reactive
+      check panel.shown("state")
+      check findByAttr(sectionRow(panel, "state"), "data-property-row",
+        "count") != nil
+      # A direct setStyle on the live element is reactive state as well.
+      vm.inspector.selectedElement.val = ElementRef(id: "styled", tag: "div",
+        properties: @[PropertyInfo(name: "width", value: "44px",
+          origin: poSetStyle)])
+      check panel.shown("state")
+      # Back to an ordinary selection: absent again.
+      vm.inspector.selectedElement.val = plain
+      check not panel.shown("state")
+      dispose()
+
+  test "Typography is present when the element can hold text":
+    # Editor spec "Section catalogue": "When element can hold text".
+    # Containers keep it (their text children inherit the font).
+    createRoot proc(dispose: proc()) =
+      let r = MockRenderer()
+      let vm = createEditorVM()
+      let panel = renderInspectorPanel[MockRenderer, MockNode](r, vm)
+      need(sectionRow(panel, "typography"))
+      # No selection: the "when element" conditions are not applied.
+      check panel.shown("typography")
+      for (tag, present) in [("p", true), ("button", true), ("a", true),
+          ("input", true), ("div", true), ("header", true), ("ul", true),
+          ("my-widget", true), ("img", false), ("svg", true), ("rect", false),
+          ("path", false), ("iframe", false), ("video", false),
+          ("canvas", false), ("hr", false), ("h2", true)]:
+        vm.inspector.selectedElement.val = ElementRef(id: tag & "-el", tag: tag)
+        check panel.shown("typography") == present
+        check panel.shown("layout")
+      # A search for the section by name does not bring back an absent one.
+      vm.inspector.selectedElement.val = ElementRef(id: "picture", tag: "img")
+      let field = findByAttr(panel, "data-isonim-focus-id", "section-search")
+      need(field)
+      r.typeInto(field, "Typography")
+      check not panel.shown("typography")
+      r.typeInto(field, "")
+      dispose()
+
+  test "Selection colours are present only while the selection has a colour":
+    createRoot proc(dispose: proc()) =
+      let r = MockRenderer()
+      let vm = createEditorVM()
+      let panel = renderInspectorPanel[MockRenderer, MockNode](r, vm)
+      need(sectionRow(panel, "selection-colors"))
+      check not panel.shown("selection-colors")
+      vm.inspector.selectedElement.val = ElementRef(id: "box", tag: "div",
+        properties: @[PropertyInfo(name: "width", value: "120px")])
+      check not panel.shown("selection-colors")
+      # A colour property holding a keyword that is not a colour: still none.
+      vm.inspector.selectedElement.val = ElementRef(id: "box", tag: "div",
+        properties: @[PropertyInfo(name: "background-color",
+          value: "var(--panel)")])
+      check not panel.shown("selection-colors")
+      vm.inspector.selectedElement.val = ElementRef(id: "box", tag: "div",
+        properties: @[PropertyInfo(name: "background-color", value: "#112233")])
+      check panel.shown("selection-colors")
+      check findByAttr(sectionRow(panel, "selection-colors"),
+        "data-selection-colors-list", "true") != nil
+      vm.inspector.selectedElement.val = ElementRef(id: "text", tag: "p",
+        properties: @[PropertyInfo(name: "color", value: "rgb(1, 2, 3)")])
+      check panel.shown("selection-colors")
+      # Every CSS <color> syntax counts (CSS Color 4 and 5).
+      for value in ["red", "RebeccaPurple", "transparent", "currentColor",
+          "Canvas", "hwb(120 10% 20%)", "lab(50% 40 59.5)", "lch(52% 72 50)",
+          "oklab(0.6 0.1 0.1)", "oklch(60% 0.15 50)",
+          "color(display-p3 1 0.5 0)", "color-mix(in srgb, red 40%, blue)",
+          "light-dark(white, black)", "#abc", "hsl(0 100% 50% / 0.5)"]:
+        vm.inspector.selectedElement.val = ElementRef(id: "box", tag: "div",
+          properties: @[PropertyInfo(name: "color", value: value)])
+        check panel.shown("selection-colors")
+        let hex = findByAttr(sectionRow(panel, "selection-colors"),
+          "data-selection-color-hex", "0")
+        check hex != nil
+      # Not colours: a CSS-wide keyword, an unresolved reference, a broken
+      # function, a non-colour function.
+      for value in ["inherit", "unset", "var(--brand)", "token(brand)",
+          "oklch(60% 0.15", "calc(1px + 2px)", "rgb(1, 2, 3)) x", "none"]:
+        vm.inspector.selectedElement.val = ElementRef(id: "box", tag: "div",
+          properties: @[PropertyInfo(name: "color", value: value)])
+        check not panel.shown("selection-colors")
+      vm.inspector.selectedElement.val = ElementRef(id: "box", tag: "div")
+      check not panel.shown("selection-colors")
+      dispose()
+
+  test "a search does not change an absent section's open state":
+    createRoot proc(dispose: proc()) =
+      let r = MockRenderer()
+      let vm = createEditorVM()
+      let panel = renderInspectorPanel[MockRenderer, MockNode](r, vm)
+      vm.inspector.selectedElement.val = ElementRef(id: "badge", tag: "img")
+      check not panel.shown("typography")
+      if isTypography in vm.inspector.expandedSections.val:
+        vm.inspector.toggleSectionExpanded(isTypography)
+      check isTypography notin vm.inspector.expandedSections.val
+      let field = findByAttr(panel, "data-isonim-focus-id", "section-search")
+      need(field)
+      # "font size" matches Typography's rows, but Typography is absent.
+      r.typeInto(field, "font size")
+      check not panel.shown("typography")
+      check isTypography notin vm.inspector.expandedSections.val
+      r.typeInto(field, "")
+      check isTypography notin vm.inspector.expandedSections.val
+      # Once present, a matching search opens it as usual.
+      vm.inspector.selectedElement.val = ElementRef(id: "copy", tag: "p")
+      r.typeInto(field, "font size")
+      check panel.shown("typography")
+      check isTypography in vm.inspector.expandedSections.val
+      dispose()

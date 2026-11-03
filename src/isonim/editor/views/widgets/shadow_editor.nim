@@ -37,6 +37,7 @@ from isonim/core/batch import untrack
 import isonim/dsl/ui
 import isonim/editor/viewmodels
 import isonim/editor/css_compound_values
+import isonim/editor/numeric_precision
 import isonim/editor/views/view_lifecycle
 import ./advanced_controls
 import ./color_popover
@@ -329,7 +330,8 @@ proc mountShadowContents*[R, E](r: R; panel: E; vm: EditorVM;
       padDragging = true
     let layer = untrack(layerNow)
     draft.val = some(withLayer(layer.shadowLayerWithOffset(
-      padOffsetX + (x - padStartX), padOffsetY + (y - padStartY)))))
+      padOffsetX.steppedNumber(round(x - padStartX)),
+      padOffsetY.steppedNumber(round(y - padStartY))))))
   r.addPointerListener(pad, "pointerup", proc(x, y: float; shift, alt: bool) =
     if not padPressed: return
     padPressed = false
@@ -343,8 +345,10 @@ proc mountShadowContents*[R, E](r: R; panel: E; vm: EditorVM;
       # nothing left to move.
       draft.val = none(seq[CssShadowLayer])
       return
+    # A pixel of offset per pixel of drag, from the authored offset.
     let next = withLayer(layers[i].shadowLayerWithOffset(
-      padOffsetX + (x - padStartX), padOffsetY + (y - padStartY)))
+      padOffsetX.steppedNumber(round(x - padStartX)),
+      padOffsetY.steppedNumber(round(y - padStartY))))
     if serializeCssShadowList(next) == serializeCssShadowList(layers):
       draft.val = none(seq[CssShadowLayer])
       return
@@ -369,10 +373,10 @@ proc mountShadowContents*[R, E](r: R; panel: E; vm: EditorVM;
     var x = shadowLengthPixels(layer.x)
     var y = shadowLengthPixels(layer.y)
     case key
-    of "ArrowLeft": x -= size
-    of "ArrowRight": x += size
-    of "ArrowUp": y -= size
-    else: y += size
+    of "ArrowLeft": x = x.steppedNumber(-size)
+    of "ArrowRight": x = x.steppedNumber(size)
+    of "ArrowUp": y = y.steppedNumber(-size)
+    else: y = y.steppedNumber(size)
     commitLayers(withLayer(layer.shadowLayerWithOffset(x, y)), "Offset"))
   onCleanup(proc() = padCancel())
 

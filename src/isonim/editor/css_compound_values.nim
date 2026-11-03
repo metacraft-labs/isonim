@@ -29,11 +29,15 @@
 ## The text written is canonical (`linear-gradient(135deg, #3B82F6 0%, ...)`,
 ## `0px 8px 24px 0px rgba(...)`, `cubic-bezier(0.42, 0, 0.58, 1)`): an editor
 ## writes only when the user changes the value, and then writes all of it.
-## Numbers are written the same way natively and under JS (`compoundNumber`).
+## Numbers are written the same way natively and under JS. A number the edit
+## did not change keeps its authored digits; binary residue of a computation
+## is rounded to the value's resolution (`numberText`, editor spec "Numeric
+## Inputs"). `compoundNumber` is for display only (positions in pixels).
 
 import std/[math, strutils]
 
 import isonim/editor/css_color_literal
+import isonim/editor/numeric_precision
 
 # --------------------------------------------------------------------------- #
 #  Shared text helpers.
@@ -92,6 +96,14 @@ func splitTopLevelWhitespace*(text: string): seq[string] =
       current.add ch
   if current.len > 0: result.add current
 
+const
+  angleResolution* = 3
+    ## Decimal places of a computed gradient angle's residue.
+  stopResolution* = 2
+    ## Decimal places of a stop position a pointer places along the bar.
+  curveResolution* = 3
+    ## Decimal places of a curve control point a pointer places.
+
 func compoundNumber*(value: float; decimals = 3): string =
   ## ``value`` rounded to ``decimals`` places, without trailing zeros and
   ## without a negative zero: `135.0` -> `135`, `0.4200001` -> `0.42`. The
@@ -122,8 +134,17 @@ func splitDimension*(text: string; number: var float; unit: var string): bool =
   ## A CSS dimension or percentage: `24px` -> (24, "px"), `-2.5rem`,
   ## `50%`, `0` -> (0, ""). False for anything else (`auto`, `calc(...)`).
   let raw = text.strip().toLowerAscii()
+  # A CSS number token (https://www.w3.org/TR/css-syntax-3/#consume-number):
+  # sign, digits, a fraction, and an exponent only when `e` is followed by a
+  # digit (or a sign and a digit), so `1e-7deg` is 1e-7 deg and `2em` is 2 em.
   var at = 0
   while at < raw.len and raw[at] in {'0'..'9', '.', '-', '+'}: inc at
+  if at > 0 and at + 1 < raw.len and raw[at] == 'e':
+    var next = at + 1
+    if raw[next] in {'+', '-'}: inc next
+    if next < raw.len and raw[next] in {'0'..'9'}:
+      at = next
+      while at < raw.len and raw[at] in {'0'..'9'}: inc at
   if at == 0: return false
   if not parseCssNumber(raw[0 ..< at], number): return false
   unit = raw[at .. ^1]
@@ -177,10 +198,12 @@ func hasComment(text: string): bool =
   "/*" in text
 
 func normalizedDegrees*(degrees: float): float =
-  ## ``degrees`` in [0, 360).
+  ## ``degrees`` in [0, 360), at the precision of ``degrees``: wrapping
+  ## `-26.66667` gives `333.33333`, not the binary sum.
   result = degrees mod 360.0
   if result < 0.0: result += 360.0
   if result >= 360.0: result -= 360.0
+  result = roundToDecimals(result, decimalPlaces(degrees))
 
 # --------------------------------------------------------------------------- #
 #  Gradients.
@@ -210,6 +233,14 @@ type
     angleWritten*: bool
       ## The source states the angle (or the user set it); otherwise the
       ## default is left implicit when the gradient is written.
+    angleText*: string
+      ## The angle (or linear direction) as authored (`0.25turn`, `1e1deg`,
+      ## `to right`), written back unchanged while the angle is not edited --
+      ## in the lower case the written value uses for every CSS identifier
+      ## (units, keywords, the function name), since CSS reads them
+      ## case-insensitively;
+      ## "" once it is, or when the source states none (editor spec "Numeric
+      ## Inputs": a number the edit did not change is kept as authored).
     prelude*: string
       ## A radial gradient's shape, size and position (`circle at top`),
       ## or a conic gradient's `at <position>`, as written; "" for none.
@@ -228,6 +259,38 @@ const
 
 func gradientFunctionName*(gradient: CssGradient): string =
   (if gradient.repeating: "repeating-" else: "") & $gradient.kind & "-gradient"
+
+func lowerNumberText(token: string): string =
+  ## A number token as the editor writes it back: its digits as authored and
+  ## its unit and exponent marker in lower case (`1E1%` -> `1e1%`, `2PX` ->
+  ## `2px`), since CSS reads them case-insensitively (editor spec "Numeric
+  ## Inputs"). Anything that is not a plain number with a unit is returned
+  ## unchanged.
+  var number = 0.0
+  var unit = ""
+  if splitDimension(token, number, unit): token.strip().toLowerAscii()
+  else: token
+
+func lowerPrelude(text: string): string =
+  ## A radial gradient's shape and position (`circle 10PX AT 50% 50%`) or a
+  ## conic gradient's `at` position, as the editor writes it back: each
+  ## number keeps its digits with its unit and exponent marker in lower case
+  ## (`lowerNumberText`), and each keyword (`circle`, `closest-side`, `at`,
+  ## `left`) is in lower case, as the writer's other keywords are (editor
+  ## spec "Numeric Inputs"; CSS reads both case-insensitively). A function
+  ## (`var(--x)`) and a custom identifier (`--x`) are kept as authored.
+  var parts: seq[string]
+  for token in splitTopLevelWhitespace(text):
+    var number = 0.0
+    var unit = ""
+    if splitDimension(token, number, unit):
+      parts.add lowerNumberText(token)
+    elif token.len > 0 and not token.startsWith("--") and
+        token.allCharsInSet({'a'..'z', 'A'..'Z', '-'}):
+      parts.add token.toLowerAscii()
+    else:
+      parts.add token
+  parts.join(" ")
 
 func parseColorStop(text: string; stop: var CssGradientStop): string =
   ## One `<color-stop>`: a colour followed by up to two positions. Returns
@@ -250,8 +313,9 @@ func parseColorStop(text: string; stop: var CssGradientStop): string =
   # would place the stop wrongly and write a position after it.
   if colorEnd > 1 or isComputed(parts[0]):
     return "a colour stop it cannot read (" & text & ")"
+  # The colour is kept as authored (`#FFF`, `RED`); the position is a number.
   stop.color = parts[0]
-  stop.position = if positions.len > 0: positions[0] else: ""
+  stop.position = if positions.len > 0: lowerNumberText(positions[0]) else: ""
   ""
 
 func parseCssGradient*(text: string): CssGradientParse =
@@ -299,6 +363,7 @@ func parseCssGradient*(text: string): CssGradientParse =
     if cssAngleDegrees(head, degrees):
       gradient.angle = degrees
       gradient.angleWritten = true
+      gradient.angleText = head.strip().toLowerAscii()
       first = 1
     elif headLower.startsWith("to "):
       var known = false
@@ -307,6 +372,7 @@ func parseCssGradient*(text: string): CssGradientParse =
         if side == keyword:
           gradient.angle = degrees
           gradient.angleWritten = degrees != 180.0
+          gradient.angleText = side
           known = true
       if not known:
         return CssGradientParse(reason: "its direction (" & head &
@@ -318,7 +384,7 @@ func parseCssGradient*(text: string): CssGradientParse =
         headLower.splitWhitespace()[0] in ["circle", "ellipse", "closest-side",
           "closest-corner", "farthest-side", "farthest-corner", "at"] or
         isCssLength(splitTopLevelWhitespace(head)[0]):
-      gradient.prelude = head
+      gradient.prelude = lowerPrelude(head)
       first = 1
   of cgkConic:
     if headLower.startsWith("from ") or headLower.startsWith("at "):
@@ -331,8 +397,9 @@ func parseCssGradient*(text: string): CssGradientParse =
             ") is not an angle")
         gradient.angle = degrees
         gradient.angleWritten = true
+        gradient.angleText = words[1].toLowerAscii()
         rest = words[2 .. ^1].join(" ")
-      gradient.prelude = rest.strip()
+      gradient.prelude = lowerPrelude(rest.strip())
       first = 1
   if first == 1 and
       (" " & headLower & " ").contains(" in "):
@@ -355,13 +422,15 @@ func serializeCssGradient*(gradient: CssGradient): string =
   case gradient.kind
   of cgkLinear:
     if gradient.angleWritten or normalizedDegrees(gradient.angle) != 180.0:
-      args.add compoundNumber(gradient.angle) & "deg"
+      args.add(if gradient.angleText.len > 0: gradient.angleText
+               else: numberText(gradient.angle, angleResolution) & "deg")
   of cgkRadial:
     if gradient.prelude.len > 0: args.add gradient.prelude
   of cgkConic:
     var head = ""
     if gradient.angleWritten or normalizedDegrees(gradient.angle) != 0.0:
-      head = "from " & compoundNumber(gradient.angle) & "deg"
+      head = "from " & (if gradient.angleText.len > 0: gradient.angleText
+        else: numberText(gradient.angle, angleResolution) & "deg")
     if gradient.prelude.len > 0:
       head = (if head.len > 0: head & " " else: "") & gradient.prelude
     if head.len > 0: args.add head
@@ -447,10 +516,14 @@ func gradientWithKind*(gradient: CssGradient; kind: CssGradientKind): CssGradien
   result = gradient
   if gradient.kind == kind: return
   result.kind = kind
+  # A side keyword (`to right`) is a linear direction only; a conic `from`
+  # takes an angle, so the converted gradient writes the angle it computes.
+  if result.angleText.toLowerAscii().startsWith("to "): result.angleText = ""
   case kind
   of cgkRadial:
     result.prelude = ""
     result.angleWritten = false
+    result.angleText = ""
   of cgkLinear:
     result.prelude = ""
     if gradient.kind == cgkRadial: result.angle = 180.0
@@ -465,11 +538,19 @@ func gradientWithAngle*(gradient: CssGradient; degrees: float): CssGradient =
   ## gradient has no angle and is returned unchanged.
   result = gradient
   if gradient.kind == cgkRadial: return
-  result.angle = normalizedDegrees(degrees)
   result.angleWritten = true
+  # Setting the angle it already points at is no edit: the authored angle
+  # and its text (`-45deg`, `0.25turn`) stay as they are. The comparison is
+  # between normalised angles, so -45 and 315 are the same direction.
+  if normalizedDegrees(degrees) == normalizedDegrees(gradient.angle): return
+  # The edited angle is written as the editor computes it (plain degrees).
+  result.angle = normalizedDegrees(degrees)
+  result.angleText = ""
 
 func stopPositionText*(percent: float): string =
-  compoundNumber(clamp(percent, 0.0, 100.0), 2) & "%"
+  ## A stop position as written: an authored or stepped percentage exactly,
+  ## residue at ``stopResolution`` places.
+  numberText(clamp(percent, 0.0, 100.0), stopResolution) & "%"
 
 func mixedColor(a, b: string; weight: float): string =
   ## ``a`` and ``b`` mixed at ``weight`` (0 = ``a``), as hex, when both are
@@ -604,10 +685,12 @@ func parseCssShadowLayer(text: string; layer: var CssShadowLayer): string =
     return "a shadow needs two to four lengths (" & text & ")"
   if colorParts.len > 1:
     return "it is not a shadow (" & text & ")"
-  layer.x = lengths[0]
-  layer.y = lengths[1]
-  layer.blur = if lengths.len > 2: lengths[2] else: ""
-  layer.spread = if lengths.len > 3: lengths[3] else: ""
+  # Lengths are numbers (lower-cased unit and exponent marker, digits as
+  # authored); the colour is kept as authored.
+  layer.x = lowerNumberText(lengths[0])
+  layer.y = lowerNumberText(lengths[1])
+  layer.blur = if lengths.len > 2: lowerNumberText(lengths[2]) else: ""
+  layer.spread = if lengths.len > 3: lowerNumberText(lengths[3]) else: ""
   var blur = 0.0
   var unit = ""
   if layer.blur.len > 0 and splitDimension(layer.blur, blur, unit) and blur < 0:
@@ -670,10 +753,13 @@ func shadowLengthPixels*(text: string): float =
   else: NaN
 
 func shadowLayerWithOffset*(layer: CssShadowLayer; x, y: float): CssShadowLayer =
-  ## The layer offset by (``x``, ``y``) pixels, whole pixels.
+  ## The layer offset to (``x``, ``y``) pixels, each written as given: a
+  ## caller moves an authored offset by whole pixels (`steppedNumber`), so
+  ## `1.5px` dragged 3px is `4.5px`. Binary residue is written as whole
+  ## pixels.
   result = layer
-  result.x = compoundNumber(round(x), 0) & "px"
-  result.y = compoundNumber(round(y), 0) & "px"
+  result.x = numberText(x, 0) & "px"
+  result.y = numberText(y, 0) & "px"
 
 # --------------------------------------------------------------------------- #
 #  Timing functions.
@@ -682,6 +768,13 @@ func shadowLayerWithOffset*(layer: CssShadowLayer; x, y: float): CssShadowLayer 
 type
   CubicBezier* = object
     x1*, y1*, x2*, y2*: float
+    texts*: array[4, string]
+      ## x1, y1, x2, y2 as authored (`1e-1`), written back while the number
+      ## is unchanged (lower-cased, so `1E0` is written `1e0`, as the module
+      ## writes every CSS identifier); "" for a number the editor computed. A text whose
+      ## number no longer matches its field is ignored, so a caller that sets
+      ## a field need not clear it (editor spec "Numeric Inputs": a number
+      ## the edit did not change is kept as authored).
 
   TimingParse* = object
     ok*: bool
@@ -733,19 +826,43 @@ func parseTimingFunction*(text: string): TimingParse =
       return TimingParse(reason: "cubic-bezier() takes four numbers (" & raw & ")")
   if numbers[0] < 0.0 or numbers[0] > 1.0 or numbers[2] < 0.0 or numbers[2] > 1.0:
     return TimingParse(reason: "a cubic-bezier()'s x values must be from 0 to 1")
+  var texts: array[4, string]
+  for i in 0 ..< 4: texts[i] = args[i].strip().toLowerAscii()
   TimingParse(ok: true, curve: CubicBezier(x1: numbers[0], y1: numbers[1],
-    x2: numbers[2], y2: numbers[3]))
+    x2: numbers[2], y2: numbers[3], texts: texts))
+
+func curveWithPoint*(curve: CubicBezier; index: int; x, y: float): CubicBezier =
+  ## ``curve`` with control point ``index`` (1 or 2) at (``x``, ``y``). A
+  ## number that changes is written as the editor computes it; a number set
+  ## to the value it already has keeps its authored text (`1e-1`), as does
+  ## the other point (editor spec "Numeric Inputs").
+  result = curve
+  let first = if index == 1: 0 else: 2
+  if index == 1:
+    result.x1 = x
+    result.y1 = y
+  else:
+    result.x2 = x
+    result.y2 = y
+  let before = if index == 1: [curve.x1, curve.y1] else: [curve.x2, curve.y2]
+  if x != before[0]: result.texts[first] = ""
+  if y != before[1]: result.texts[first + 1] = ""
 
 func clampedCurve*(curve: CubicBezier): CubicBezier =
   ## The control points as the editor allows them: x within 0..1 (CSS
   ## requires it) and y within -1..2 (CSS allows any y; the editor's square
   ## draws -0.5..1.5).
   CubicBezier(x1: clamp(curve.x1, 0.0, 1.0), y1: clamp(curve.y1, -1.0, 2.0),
-    x2: clamp(curve.x2, 0.0, 1.0), y2: clamp(curve.y2, -1.0, 2.0))
+    x2: clamp(curve.x2, 0.0, 1.0), y2: clamp(curve.y2, -1.0, 2.0),
+    texts: curve.texts)
 
 func sameCurve(a, b: CubicBezier): bool =
-  abs(a.x1 - b.x1) < 5e-4 and abs(a.y1 - b.y1) < 5e-4 and
-    abs(a.x2 - b.x2) < 5e-4 and abs(a.y2 - b.y2) < 5e-4
+  ## The curves write the same four numbers: an authored
+  ## `cubic-bezier(0.4201, 0, 0.58, 1)` is not `ease-in`.
+  numberText(a.x1, curveResolution) == numberText(b.x1, curveResolution) and
+    numberText(a.y1, curveResolution) == numberText(b.y1, curveResolution) and
+    numberText(a.x2, curveResolution) == numberText(b.x2, curveResolution) and
+    numberText(a.y2, curveResolution) == numberText(b.y2, curveResolution)
 
 func timingPresetFor*(curve: CubicBezier): string =
   ## The keyword that names ``curve``, or "".
@@ -755,11 +872,20 @@ func timingPresetFor*(curve: CubicBezier): string =
 
 func serializeTimingFunction*(curve: CubicBezier): string =
   ## ``curve`` as CSS: its keyword when one names it, otherwise
-  ## `cubic-bezier(x1, y1, x2, y2)` to three decimals.
+  ## `cubic-bezier(x1, y1, x2, y2)` with each number as authored (residue
+  ## of a drag at ``curveResolution`` places).
   let keyword = timingPresetFor(curve)
   if keyword.len > 0: return keyword
-  "cubic-bezier(" & compoundNumber(curve.x1) & ", " & compoundNumber(curve.y1) &
-    ", " & compoundNumber(curve.x2) & ", " & compoundNumber(curve.y2) & ")"
+  proc written(i: int; value: float): string =
+    # The authored text while it still spells this number; otherwise the
+    # computed number in plain decimal.
+    var authored = 0.0
+    if curve.texts[i].len > 0 and parseCssNumber(curve.texts[i], authored) and
+        authored == value:
+      curve.texts[i]
+    else: numberText(value, curveResolution)
+  "cubic-bezier(" & written(0, curve.x1) & ", " & written(1, curve.y1) & ", " &
+    written(2, curve.x2) & ", " & written(3, curve.y2) & ")"
 
 func bezierPoint*(curve: CubicBezier; t: float): tuple[x, y: float] =
   ## The point of the curve at parameter ``t`` (0..1), from (0, 0) to (1, 1).

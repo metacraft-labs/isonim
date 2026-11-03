@@ -20,6 +20,7 @@ import isonim/core/signals
 import isonim/core/computation
 import isonim/dsl/ui
 import isonim/editor/types
+import isonim/editor/element_semantics
 import isonim/editor/viewmodels
 import isonim/editor/views/widgets/property_commit
 import isonim/editor/views/widgets/property_row
@@ -30,14 +31,6 @@ const
   unitless = PropertyUnitOption(label: "", code: "")
 
 const textMuted = "#6B6F80"
-
-func isTextLikeTag*(tag: string): bool =
-  ## True when the selection is a "text-bearing" tag. The Typography
-  ## section is hidden for non-text selections per the spec.
-  let lower = tag.toLowerAscii()
-  lower in ["p", "h1", "h2", "h3", "h4", "h5", "h6",
-            "span", "label", "a", "li", "small", "strong",
-            "em", "blockquote", "code", "pre"]
 
 proc mountSectionTypography*[R, E](r: R; parent: E; vm: EditorVM) =
   let fontFamily = createSignal("Inter")
@@ -81,20 +74,22 @@ proc mountSectionTypography*[R, E](r: R; parent: E; vm: EditorVM) =
     textTransform.val = findPropertyValue(props, "text-transform", "none")
     listStyle.val = findPropertyValue(props, "list-style-type", "none")
 
-  # Optional empty-state host for non-text selections. The data
-  # attribute is the test hook; the property rows mount unconditionally
-  # so test seeding works either way.
+  # Empty-state host for a selection that cannot hold text (``canHoldText``,
+  # an image, vector, frame, ...). In the
+  # inspector panel the whole section is absent for one (editor spec
+  # "Section catalogue"); the notice covers a body mounted on its own. The
+  # property rows mount unconditionally so test seeding works either way.
   var headerHostEl: E
   let headerHost = ui(r):
     tdiv(ref = headerHostEl,
          `data-typography-empty` = "true",
          padding = "4px 0", font_size = "11px", color = textMuted,
          display = "none"):
-      text "Selected element is not text-bearing."
+      text "Selected element renders no text."
   r.appendChild(parent, headerHost)
   createRenderEffect proc() =
     let tag = vm.inspector.selectedElement.val.tag
-    let hide = vm.inspector.hasElement.val and not isTextLikeTag(tag)
+    let hide = vm.inspector.hasElement.val and not canHoldText(tag)
     r.setStyle(headerHostEl, "display", if hide: "block" else: "none")
 
   discard r.mountPropertyRow(parent, propertyRowText(

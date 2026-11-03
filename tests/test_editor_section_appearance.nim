@@ -154,3 +154,37 @@ suite "Phase G section_appearance":
         check submitted == @["80.0126%"]
         check r.inputValue(input) == expected
         dispose()
+
+  test "opacity percent and ratio convert exactly to the authored precision":
+    # A typed percent becomes the ratio with two more decimals, not the
+    # binary64 quotient (`80.0126 / 100` is `0.8001260000000001`).
+    for (typed, ratio) in [("80.0126%", "0.800126"), ("0.35%", "0.0035"),
+        ("0.07%", "0.0007"), ("7.1%", "0.071"), ("12.5125%", "0.125125"),
+        ("29%", "0.29"), ("1e-20%", "1e-22")]:
+      check parseCssPropertyValue("opacity", typed).canonical == ratio
+    # An authored ratio shows the percent with two fewer decimals, not the
+    # binary64 product (`0.0035 * 100` is `0.35000000000000003`), and that
+    # percent converts back to the same ratio, so re-entering it is a no-op.
+    for (authored, expected) in [("0.0035", "0.35"), ("0.0145", "1.45"),
+        ("0.800126", "80.0126"), ("0.8001260000000001", "80.0126"),
+        ("0.0007", "0.07")]:
+      createRoot do (dispose: proc()):
+        let r = MockRenderer()
+        let root = r.createElement("div")
+        let vm = createEditorVM()
+        vm.workspacePermissions.val = EditorWorkspacePermissions(readSource:true,writeSource:true)
+        vm.inspector.selectedElement.val = ElementRef(id:"precise-opacity",properties: @[
+          PropertyInfo(name:"opacity",value:authored,authoredValue:authored,directStyleAllowed:true)])
+        var submitted: seq[string]
+        vm.inspectorSourceCommit = proc(element: ElementRef; property,value: string;
+            scope: SourceScopeChoiceKind; done: proc(ok: bool; diagnostic: string)) =
+          submitted.add value
+          done(false,"admission-only refusal")
+        mountSectionAppearance[MockRenderer,MockNode](r,root,vm)
+        let input = findByAttr(findByAttr(root,"data-property-row","opacity"),"data-property-row-input","true")
+        check r.inputValue(input) == expected
+        if authored != "0.8001260000000001":
+          check parseCssPropertyValue("opacity", expected & "%").canonical == authored
+        fireEvent(input,"blur")
+        check submitted.len == 0
+        dispose()

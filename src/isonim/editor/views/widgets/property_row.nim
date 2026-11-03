@@ -59,6 +59,7 @@ import isonim/core/owner
 import isonim/core/batch
 import isonim/dsl/ui
 import isonim/editor/types
+import isonim/editor/numeric_precision
 import isonim/editor/viewmodels
 import isonim/editor/views/choice_row
 import isonim/editor/views/widgets/choice_group
@@ -312,43 +313,80 @@ proc propertyRowSlug*(name: string): string =
     if ch == ' ': result.add '-'
     else: result.add toLowerAscii(ch)
 
-proc formatNumber*(value: float): string =
-  ## Pretty-print a float for the value input. Integers come back
-  ## without a trailing ``.0`` (so the user sees ``150`` not
-  ## ``150.0``); otherwise we round to 2 decimal places to keep the
-  ## input box compact.
-  if abs(value) > 9.0e15:
-    return $value
-  if abs(value - float(int(value))) < 1e-6:
-    return $int(value)
-  let rounded = round(value * 100.0) / 100.0
-  result = $rounded
-
 proc formatExactNumber*(value: float): string =
-  ## Roundtrip representation for numeric rows whose precision is authored data.
-  ## Nim's native/JS float conversion retains every significant binary64 digit.
-  result = $value
-  if result.endsWith(".0"): result.setLen(result.len - 2)
+  ## Roundtrip representation for numeric rows whose precision is authored
+  ## data: every significant binary64 digit, spelled the same natively and
+  ## under JS (`numberTokenText`).
+  numberTokenText(value)
 
 proc formatNumeric(cfg: PropertyRowConfig; value: float): string =
   if cfg.numericFormat != nil: cfg.numericFormat(value) else: formatExactNumber(value)
 
 # ----- Tiny math expression evaluator ------------------------------------ #
 #
-# Supports ``+ - * /`` with the usual precedence and parenthesised
-# sub-expressions. Returns ``some(value)`` on success. The parser
-# tolerates leading / trailing whitespace and a trailing unit suffix
-# (``"100+50px"`` parses to 150 — the unit is dropped on the floor;
-# the caller already tracks the active unit via the signal).
+# Supports ``+ - * / ^`` with the usual precedence and parenthesised
+# sub-expressions. ``parseNumericInput`` returns the value and the explicit
+# CSS unit, if any.
+#
+# Every intermediate result carries the decimal precision it is exact to, so
+# the binary64 residue of the arithmetic never reaches the field or the
+# source (editor spec "Numeric Inputs"): a sum or difference is exact to the
+# finest precision among its operands (`0.1+0.2` is `0.3`), a product to the
+# sum of its operands' places (`1.1*3` is `3.3`), and a whole-number power
+# to its base's places times the exponent. A quotient, and a power with a
+# negative or fractional exponent, is kept exactly when its decimal
+# terminates within 15 significant digits (`1/8` is `0.125`, `1/1024` is
+# `0.0009765625`). Otherwise it has no exact decimal: it is marked inexact,
+# the rest of the expression is computed with its unrounded value, and the
+# result is rounded once, at the end (`roundInexact`): `(1/3)*3` is `1` and
+# `100/3*2` is `66.6667`, where rounding each step would give `0.9999` and
+# `66.6666`.
 #
 # Implementation is intentionally small (recursive descent) — the
 # inspector only ever sees short expressions so we don't need a full
 # tokenizer.
 
+const inexactPlaces* = 4
+  ## The decimal places an inexact result is rounded to when its operands
+  ## are not finer (and four significant digits when that keeps more):
+  ## far below a rendered pixel in every CSS unit the rows accept, and short
+  ## enough to read in the field.
+
 type
   MathParser = object
     src: string
     pos: int
+  ExactNumber = tuple[value: float, places: int, inexact: bool]
+    ## A value and the decimal places it is exact to. An ``inexact`` value
+    ## holds a non-terminating part, unrounded; ``places`` is then the finest
+    ## precision among the literals it was computed from.
+
+func exact(value: float; places: int): Option[ExactNumber] =
+  some((roundToDecimals(value, places), places, false))
+
+func combined(a, b: ExactNumber; value: float; exactPlaces: int): Option[ExactNumber] =
+  ## The result of an exact operation on ``a`` and ``b``: rounded to
+  ## ``exactPlaces`` when both are exact, carried unrounded when either is
+  ## inexact.
+  if a.inexact or b.inexact:
+    some((value, max(a.places, b.places), true))
+  else:
+    exact(value, exactPlaces)
+
+func quotientLike(a, b: ExactNumber; value: float): Option[ExactNumber] =
+  ## A quotient or fractional power: exact when both operands are and its
+  ## decimal terminates within `maxExactSignificantDigits` (`1/1024` is
+  ## `0.0009765625`); otherwise inexact, unrounded.
+  if not a.inexact and not b.inexact and
+      significantDigits(value) <= maxExactSignificantDigits:
+    some((value, decimalPlaces(value), false))
+  else:
+    some((value, max(a.places, b.places), true))
+
+func finalValue(n: ExactNumber): float =
+  ## The expression's value: an inexact one rounded once (`roundInexact`).
+  if n.inexact: roundInexact(n.value, max(n.places, inexactPlaces))
+  else: n.value
 
 proc peek(p: MathParser): char =
   if p.pos < p.src.len: p.src[p.pos] else: '\0'
@@ -357,14 +395,14 @@ proc skipSpaces(p: var MathParser) =
   while p.pos < p.src.len and p.src[p.pos] in {' ', '\t'}:
     inc p.pos
 
-proc parseExpr(p: var MathParser): Option[float]
-proc parsePower(p: var MathParser): Option[float]
+proc parseExpr(p: var MathParser): Option[ExactNumber]
+proc parsePower(p: var MathParser): Option[ExactNumber]
+proc parseSigned(p: var MathParser): Option[ExactNumber]
 
-proc parseNumber(p: var MathParser): Option[float] =
+proc parseNumber(p: var MathParser): Option[ExactNumber] =
+  ## An unsigned number; a sign before it is an operator (``parseSigned``).
   skipSpaces(p)
   let start = p.pos
-  if p.peek == '+' or p.peek == '-':
-    inc p.pos
   var sawDigit = false
   while p.pos < p.src.len and p.src[p.pos].isDigit:
     inc p.pos
@@ -375,31 +413,33 @@ proc parseNumber(p: var MathParser): Option[float] =
       inc p.pos
       sawDigit = true
   if not sawDigit:
-    return none(float)
+    return none(ExactNumber)
   if p.peek in {'e', 'E'} and p.pos + 1 < p.src.len and
       p.src[p.pos + 1] in {'0'..'9', '+', '-'}:
     inc p.pos
     if p.peek in {'+', '-'}: inc p.pos
     let exponentStart = p.pos
     while p.peek in {'0'..'9'}: inc p.pos
-    if exponentStart == p.pos: return none(float)
+    if exponentStart == p.pos: return none(ExactNumber)
   try:
-    return some(parseFloat(p.src[start ..< p.pos]))
+    # A literal is exact as authored: its places are its own.
+    let value = parseFloat(p.src[start ..< p.pos])
+    return some((value, decimalPlaces(value), false))
   except ValueError:
-    return none(float)
+    return none(ExactNumber)
 
-proc parsePrimary(p: var MathParser): Option[float] =
+proc parsePrimary(p: var MathParser): Option[ExactNumber] =
   skipSpaces(p)
   if p.peek == '(':
     inc p.pos
     let inner = parseExpr(p)
     skipSpaces(p)
-    if p.peek != ')': return none(float)
+    if p.peek != ')': return none(ExactNumber)
     inc p.pos
     return inner
   parseNumber(p)
 
-proc parsePower(p: var MathParser): Option[float] =
+proc parsePower(p: var MathParser): Option[ExactNumber] =
   ## `^`, right-associative, binding tighter than `*` and `/`.
   ##
   ## Figma's fields accept it (help.figma.com, "Adjust alignment, rotation,
@@ -413,34 +453,67 @@ proc parsePower(p: var MathParser): Option[float] =
   inc p.pos
   # Right-associative: `2^3^2` is 2^(3^2), which is what every other
   # calculator does.
-  let exponent = parsePower(p)
-  if exponent.isNone: return none(float)
+  # The exponent may be signed: `2^-1` and `2^-(1)` are 0.5.
+  let exponent = parseSigned(p)
+  if exponent.isNone: return none(ExactNumber)
   try:
-    let value = pow(base.get, exponent.get)
-    if value != value: return none(float)  # NaN, e.g. (-8) ^ 0.5
-    some(value)
+    let value = pow(base.get.value, exponent.get.value)
+    if value != value: return none(ExactNumber)  # NaN, e.g. (-8) ^ 0.5
+    let n = exponent.get.value
+    if not exponent.get.inexact and n >= 0.0 and n == floor(n) and n <= 22.0:
+      # A whole-number power of a decimal terminates.
+      combined(base.get, exponent.get, value, base.get.places * int(n))
+    else:
+      quotientLike(base.get, exponent.get, value)
   except CatchableError:
-    none(float)
+    none(ExactNumber)
 
-proc parseMulDiv(p: var MathParser): Option[float] =
-  var left = parsePower(p)
+proc parseSigned(p: var MathParser): Option[ExactNumber] =
+  ## A sign before an operand negates (or keeps) it, whether the operand is
+  ## a number or a parenthesised group (editor spec "Numeric Inputs"):
+  ## `-(2+3)` is -5 and `-(-(1/3))*3` is 1. The sign applies after a power,
+  ## as in arithmetic, so `-2^2` and `-(2)^2` are -4, and it may follow
+  ## one: `2^-1` and `2^-(1)` are 0.5.
+  ##
+  ## One sign per operand. A chain (`--1`, `-+-1`) is refused, as CSS
+  ## refuses it in `calc()`: a `<calc-value>` is a number, a dimension, a
+  ## percentage or a parenthesised `<calc-sum>`, and a sign exists only as
+  ## part of a number token (https://www.w3.org/TR/css-values-4/#calc-syntax,
+  ## https://www.w3.org/TR/css-syntax-3/#consume-number). A binary operator
+  ## followed by a signed operand stays valid (`5 - -3` is 8).
+  skipSpaces(p)
+  if p.peek in {'+', '-'}:
+    let negative = p.peek == '-'
+    inc p.pos
+    skipSpaces(p)
+    if p.peek in {'+', '-'}: return none(ExactNumber)
+    let operand = parsePower(p)
+    if operand.isNone or not negative: return operand
+    let n = operand.get
+    # Negation is exact: the places and the inexact mark carry over.
+    return some((-n.value, n.places, n.inexact))
+  parsePower(p)
+
+proc parseMulDiv(p: var MathParser): Option[ExactNumber] =
+  var left = parseSigned(p)
   if left.isNone: return left
   while true:
     skipSpaces(p)
     let op = p.peek
     if op != '*' and op != '/': break
     inc p.pos
-    let right = parsePower(p)
-    if right.isNone: return none(float)
+    let right = parseSigned(p)
+    if right.isNone: return none(ExactNumber)
+    let (a, b) = (left.get, right.get)
     case op
-    of '*': left = some(left.get * right.get)
+    of '*': left = combined(a, b, a.value * b.value, a.places + b.places)
     of '/':
-      if right.get == 0.0: return none(float)
-      left = some(left.get / right.get)
+      if b.value == 0.0: return none(ExactNumber)
+      left = quotientLike(a, b, a.value / b.value)
     else: discard
   left
 
-proc parseExpr(p: var MathParser): Option[float] =
+proc parseExpr(p: var MathParser): Option[ExactNumber] =
   var left = parseMulDiv(p)
   if left.isNone: return left
   while true:
@@ -449,10 +522,12 @@ proc parseExpr(p: var MathParser): Option[float] =
     if op != '+' and op != '-': break
     inc p.pos
     let right = parseMulDiv(p)
-    if right.isNone: return none(float)
+    if right.isNone: return none(ExactNumber)
+    let (a, b) = (left.get, right.get)
+    let places = max(a.places, b.places)
     case op
-    of '+': left = some(left.get + right.get)
-    of '-': left = some(left.get - right.get)
+    of '+': left = combined(a, b, a.value + b.value, places)
+    of '-': left = combined(a, b, a.value - b.value, places)
     else: discard
   left
 
@@ -490,7 +565,10 @@ func scrubbedValue*(startValue, dx, dy, step: float; shift, alt: bool;
   # because the arrow keys already spell it that way.
   if shift: unit *= 10.0
   if alt: unit /= 10.0
-  result = startValue + dx * unit * scrubSpeed(dy)
+  # Exact to the precision of the start value and of the per-pixel movement
+  # (`numeric_precision`): 3px of 0.1 from 1.1 is 1.4, not the binary64 sum.
+  let perPixel = unit * scrubSpeed(dy)
+  result = steppedNumber(startValue, dx * perPixel, perPixel)
   if minValue.isSome and result < minValue.get: result = minValue.get
   if maxValue.isSome and result > maxValue.get: result = maxValue.get
 
@@ -498,14 +576,15 @@ proc parseNumericInput*(raw: string): tuple[value: Option[float], unit: string] 
   ## Parse the entire expression, retaining an explicit CSS unit for validation
   ## by the row. Arbitrary suffixes, unmatched syntax and infinities are refused.
   var p = MathParser(src: raw.strip(), pos: 0)
-  let value = parseExpr(p)
-  if value.isNone: return
+  let parsed = parseExpr(p)
+  if parsed.isNone: return
   skipSpaces(p)
   let suffix = p.src[p.pos ..< p.src.len]
   if suffix notin ["", "px", "em", "rem", "%", "vw", "vh", "vmin", "vmax", "deg", "rad", "grad", "turn", "s", "ms", "fr", "ch", "ex"]:
     return
-  if classify(value.get) in {fcNan, fcInf, fcNegInf}: return
-  result = (value, suffix)
+  let value = finalValue(parsed.get)
+  if classify(value) in {fcNan, fcInf, fcNegInf}: return
+  result = (some(value), suffix)
 
 proc evalMathExpr*(raw: string): Option[float] =
   parseNumericInput(raw).value
@@ -809,12 +888,17 @@ proc attachNumericKeySteps*[R, E](r: R; inputNode: E; step: float) =
   ## a ``change`` event — which the Nim-side commit handler above is
   ## already listening for. The parse, the clamp, the signal write and
   ## the source-edit commit all stay in Nim; only the key decoding is
-  ## in JS.
+  ## in JS. The arithmetic is Nim's too: the handler calls
+  ## ``steppedNumber`` (``numeric_precision``), so a step is exact to the
+  ## precision of the value and of the step (`1.1px` + 0.1 writes `1.2px`,
+  ## not the binary64 sum `1.2000000000000002px`), as a scrub is.
   ##
   ## Headless builds get nothing, which is correct: there is no key
   ## event to decode and the headless tests drive the value signal and
   ## the commit path directly.
   when defined(js):
+    let stepCallback = proc(value, delta: float): float =
+      steppedNumber(value, delta)
     {.emit: ["""
       (function () {
         const input = """, inputNode, """;
@@ -822,6 +906,7 @@ proc attachNumericKeySteps*[R, E](r: R; inputNode: E; step: float) =
         input.__isonimRowKeyStepsInstalled = true;
         input.addEventListener('focus', function () { if (typeof input.select === 'function') input.select(); });
         const baseStep = Number(""", step, """) || 1;
+        const stepped = """, stepCallback, """;
         function split(raw) {
           const text = String(raw || '').trim();
           const match = text.match(/^([+-]?(?:\d+\.?\d*|\.\d+)(?:[eE][+-]?\d+)?)(px|em|rem|%|vw|vh|vmin|vmax|deg|rad|grad|turn|s|ms|fr|ch|ex)?$/);
@@ -839,7 +924,7 @@ proc attachNumericKeySteps*[R, E](r: R; inputNode: E; step: float) =
           if (event.shiftKey) magnitude = baseStep * 10;
           else if (event.altKey) magnitude = baseStep / 10;
           const delta = event.key === 'ArrowUp' ? magnitude : -magnitude;
-          input.value = format(parsed.number + delta, parsed.unit);
+          input.value = format(stepped(parsed.number, delta), parsed.unit);
           input.dispatchEvent(new Event('input', { bubbles: true }));
           input.dispatchEvent(new Event('change', { bubbles: true }));
           event.preventDefault();

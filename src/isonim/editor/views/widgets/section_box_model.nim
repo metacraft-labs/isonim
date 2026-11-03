@@ -54,6 +54,7 @@ import isonim/core/[signals, computation, owner]
 from isonim/core/batch import untrack
 import isonim/dsl/ui
 import isonim/editor/types
+import isonim/editor/numeric_precision
 import isonim/editor/viewmodels
 import isonim/editor/views/choice_row
 import isonim/editor/views/view_lifecycle
@@ -94,16 +95,16 @@ const
 
 func boxNumber(value: float): string =
   ## A number as a field shows and commits it, at the precision it has: an
-  ## authored `0.125rem` stays `0.125rem` (`formatNumber`'s two-decimal
-  ## rounding is for a row's compact display, not for source values).
+  ## authored `0.125rem` stays `0.125rem`. A number a step or a scrub
+  ## produced is already exact to its precision (`steppedNumber`,
+  ## `scrubbedValue`): `0.2 + 0.1` is `0.3`, not `0.30000000000000004`.
   formatExactNumber(value)
 
-func boxSteppedNumber(value: float): string =
-  ## A number a step or a scrub produced. Steps of 0.1 accumulate binary
-  ## rounding error (`0.2 + 0.1` is `0.30000000000000004`); the smallest
-  ## movement either makes is 0.025, so four decimals keep every step and
-  ## drop the noise.
-  formatExactNumber(round(value * 10_000.0) / 10_000.0)
+const canvasDragMinPlaces = 4
+  ## A canvas drag of a side in another unit moves it by the pixels dragged
+  ## converted at the authored ratio (`1.5rem` used as 24px: 1/16rem, 0.0625,
+  ## per pixel). The ratio is rarely a short decimal, so the result keeps
+  ## four decimals or the authored value's own precision, whichever is finer.
 
 func boxModelFieldLabel*(property: string): string =
   ## The accessible name of the field that edits ``property``:
@@ -142,7 +143,7 @@ proc boxModelSteppedValue*(text: string; delta: float): string =
   ## it is not a number (a keyword cannot be stepped).
   let parsed = parseNumericInput(text.strip())
   if parsed.value.isNone: return ""
-  boxSteppedNumber(parsed.value.get + delta) &
+  boxNumber(steppedNumber(parsed.value.get, delta)) &
     (if parsed.unit.len == 0: "px" else: parsed.unit)
 
 func boxModelStep*(shift, alt: bool): float =
@@ -318,10 +319,11 @@ proc boxCanvasDragValue*(handle: string; startPx, dx, dy: float;
   if parsed.value.isSome and parsed.unit notin ["", "px"] and
       parsed.value.get != 0.0 and startPx != 0.0:
     let number = parsed.value.get
-    var next = number + round(delta) * number / startPx
+    var next = roundToDecimals(number + round(delta) * number / startPx,
+      max(decimalPlaces(number), canvasDragMinPlaces))
     if shorthand == "padding" and next < 0.0: next = 0.0
     if next == 0.0: next = 0.0 # no "-0rem"
-    return boxSteppedNumber(next) & parsed.unit
+    return boxNumber(next) & parsed.unit
   var value = round(startPx + delta)
   if shorthand == "padding" and value < 0.0: value = 0.0
   if value == 0.0: value = 0.0 # no "-0px"
@@ -879,7 +881,7 @@ proc mountSectionBoxModel*[R, E](r: R; parent: E; vm: EditorVM;
       let value = scrubbedValue(startValue, x - startX, y - startY, 1.0,
         shift, alt, minimum, none(float))
       let unit = parseNumericInput(startText).unit
-      r.setInputValue(field, boxModelDisplayValue(boxSteppedNumber(value) &
+      r.setInputValue(field, boxModelDisplayValue(boxNumber(value) &
         (if unit.len == 0: "px" else: unit)))
     proc scrubEnd(x, y: float; shift, alt: bool): bool =
       ## Whether the press was a scrub (and so committed); a press that did

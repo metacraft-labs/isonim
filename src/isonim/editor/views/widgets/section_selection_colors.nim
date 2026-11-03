@@ -35,7 +35,11 @@ const colorPropertyNames = [
   "border-bottom-color", "border-left-color"]
 
 func looksLikeColor*(value: string): bool =
-  literalColorChannels(value).valid
+  ## Any CSS <color> (editor spec "Section catalogue", "When colours
+  ## present"): literals, named and system colours, `transparent`,
+  ## `currentColor` and colour functions. The value is the one the editor
+  ## reads for the property, so a resolved reference counts by its colour.
+  isCssColorValue(value)
 
 proc collectSelectionColors*(properties: seq[PropertyInfo]): seq[string] =
   ## Walks ``properties`` and returns the de-duplicated colour values
@@ -48,8 +52,7 @@ proc collectSelectionColors*(properties: seq[PropertyInfo]): seq[string] =
     let v = prop.value.strip()
     if not looksLikeColor(v):
       continue
-    let channels = literalColorChannels(v)
-    let key = $channels
+    let key = cssColorKey(v)
     if key in seen: continue
     seen.incl key
     result.add v
@@ -82,7 +85,7 @@ proc mountSectionSelectionColors*[R, E](r: R; parent: E; vm: EditorVM) =
 
   proc mountRow(idx: int; value, property, reason: string;
       binding: Option[VariableBinding]) =
-    let channels = literalColorChannels(value)
+    let channels = decodedColorChannels(value)
     let target = vm.inspectorBindingKeyFor(property)
     let story = vm.selectedStory.val
     var active = true
@@ -106,10 +109,18 @@ proc mountSectionSelectionColors*[R, E](r: R; parent: E; vm: EditorVM) =
           span(`data-selection-color-hex` = $idx,
                 flex = "1", min_width = "0", color = textPrimary,
                 font_size = "11px", font_family = "monospace"):
-            text "#" & toHex(channels.red, 2) & toHex(channels.green, 2) & toHex(channels.blue, 2)
+            # A colour the editor decodes to sRGB (hex, rgb(), hsl(), a named
+            # colour, `transparent`) shows its hex; any other colour syntax
+            # (`oklch()`, `currentColor`) shows as written.
+            text(if channels.valid:
+                   "#" & toHex(channels.red, 2) & toHex(channels.green, 2) &
+                     toHex(channels.blue, 2)
+                 else: value.strip())
           span(`data-selection-color-opacity` = $idx,
                 color = textSecondary, font_size = "11px"):
-            text $int(round(channels.alpha.float * 100 / 255)) & "%"
+            text(if channels.valid:
+                   $int(round(channels.alpha.float * 100 / 255)) & "%"
+                 else: "")
           tdiv(ref = chipHost, `data-selection-color-chip-host` = $idx,
                 `aria-disabled` = (if reason.len > 0: "true" else: "false"),
                 title = reason)
@@ -157,7 +168,7 @@ proc mountSectionSelectionColors*[R, E](r: R; parent: E; vm: EditorVM) =
       var owners: seq[PropertyInfo]
       for prop in properties:
         if prop.name in colorPropertyNames and
-            literalColorChannels(prop.value) == literalColorChannels(value):
+            cssColorKey(prop.value) == cssColorKey(value):
           owners.add prop
       var property = ""
       var reason = ""

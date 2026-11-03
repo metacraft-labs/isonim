@@ -7,12 +7,13 @@
 ##   * Blend mode — choice (normal / multiply / screen / overlay / …).
 ##   * Individual corner radii toggle — when on, four numeric inputs.
 
-import std/[options, strutils, math]
+import std/[options, strutils]
 
 import isonim/core/signals
 import isonim/core/computation
 import isonim/dsl/ui
 import isonim/editor/types
+import isonim/editor/numeric_precision
 import isonim/editor/viewmodels
 import isonim/editor/views/widgets/property_commit
 import isonim/editor/views/widgets/property_row
@@ -23,11 +24,11 @@ const
   pxUnit = PropertyUnitOption(label: "px", code: "px")
 
 proc opacityPercent(ratio: float): float =
-  ## Prefer a whole percent only when converting it back preserves the exact
-  ## authored ratio. Keep distinct fractions and authored percent literals precise.
-  let projected = ratio * 100.0
-  let whole = round(projected)
-  if whole / 100.0 == ratio: whole else: projected
+  ## The percent shown for an authored ratio: the shortest one that converts
+  ## back to exactly that ratio (`ratioToPercent`), so `0.07` shows `7` and
+  ## `0.0035` shows `0.35`, and re-entering it is not an edit. Distinct
+  ## fractions and authored percent literals stay precise.
+  ratioToPercent(ratio)
 
 proc mountSectionAppearance*[R, E](r: R; parent: E; vm: EditorVM) =
   let opacity = createSignal(100.0)

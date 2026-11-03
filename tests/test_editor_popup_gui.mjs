@@ -560,8 +560,12 @@ try{
     const element=globalThis.__isonimEditorVm.inspector.selectedElement.value;
     const text=value=>typeof value==='string'?value:String.fromCharCode(...value);
     return {id:text(element.id),schema:text(element.schemaKey),
-      propertySchemas:element.properties.map(property=>text(property.schemaKey))};
+      propertySchemas:element.properties.map(property=>text(property.schemaKey)),
+      // PropertyOrigin ordinal 1 is poSetStyle; with a `signal:` origin detail
+      // these are the State section's reactive properties (section_state.nim).
+      reactiveProperties:element.properties.filter(property=>property.origin===1||text(property.originDetail||'').startsWith('signal:')).length};
   });
+  assert.equal(ordinarySelection.reactiveProperties,0);
   assert.equal(ordinarySelection.id,'action');assert.equal(ordinarySelection.schema,'dom.button');
   assert(ordinarySelection.propertySchemas.length>0);assert(ordinarySelection.propertySchemas.every(schema=>schema.startsWith('dom.button.')));
   const sections=page.locator('[data-inspector-section-body]');
@@ -574,13 +578,18 @@ try{
     if(slug==='component-properties'){
       assert.equal(await header.isVisible(),false,'Ordinary DOM ownership must not expose component-instance controls');
       assert.equal(await body.isVisible(),false);assert.equal(await body.locator('[data-component-prop-schema]').count(),0);
+    }else if(slug==='state'){
+      // Editor spec "Section catalogue": State is present "When reactive state present";
+      // this ordinary DOM button has no Signal-backed or setStyle property.
+      assert.equal(await header.isVisible(),false,'Ordinary DOM selection without reactive state must not expose State');
+      assert.equal(await body.isVisible(),false);assert.equal(await body.locator('[data-state-list] [data-property-row]').count(),0);
     }else{
       assert(await header.isVisible(),'Every applicable section header must be exposed: '+slug);
       if(!await body.isVisible())await header.click();
       assert(await body.isVisible(),'Every applicable section body must open: '+slug);applicableSections++;
     }
   }
-  assert.equal(applicableSections,11);proof.cases.push({width,name:'ordinary DOM selection exposes all11 applicable sections and excludes component-instance parameters',ordinarySelection});
+  assert.equal(applicableSections,10);proof.cases.push({width,name:'ordinary DOM selection exposes all10 applicable sections and excludes component-instance parameters and State',ordinarySelection});
   const choices=page.locator('[data-choice-group-trigger]');
   const choiceCount=await choices.count(); assert(choiceCount>0);
   for(let index=0;index<choiceCount;index++){

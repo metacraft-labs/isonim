@@ -20,7 +20,9 @@ cpSync(repo+'/tests/fixtures/editor_inspector_project',project,{recursive:true})
 // Real declared transform owners in this private Nim/SSR project. The matrix
 // owner is deliberately unsupported by numeric Rotation, while remaining valid CSS.
 const storyFile=project+'/stories.nim';
-writeFileSync(storyFile,readFileSync(storyFile,'utf8').replace('background-color:#112233; color:#FFFFFF; }','background-color:#112233; color:#FFFFFF; transform:translateX(8px) rotate(20deg) scale(1.2); }').replace('background-color:#334455; color:#FFFFFF; }','background-color:#334455; color:#FFFFFF; transform:matrix(1,0,0,1,0,0); }'));
+writeFileSync(storyFile,readFileSync(storyFile,'utf8').replace('background-color:#112233; color:#FFFFFF; }','background-color:#112233; color:#FFFFFF; transform:translateX(8px) rotate(20deg) scale(1.2); }').replace('background-color:#334455; color:#FFFFFF; }','background-color:#334455; color:#FFFFFF; transform:matrix(1,0,0,1,0,0); }').replace('          h1: text title\n','          h1: text title\n          img(id = "badge", `data-isonim-element-id` = "badge", alt = "", width = "8", height = "8")\n'));
+// An image renders no text and has no text children (editor spec "Section
+// catalogue": Typography "When element can hold text").
 const ownerFile=project+'/.isonim/source-project.json',owners=JSON.parse(readFileSync(ownerFile,'utf8'));
 for(const owner of owners.editableStyles)if(['action','secondary-action'].includes(owner.elementId))owner.properties.push('transform');
 writeFileSync(ownerFile,JSON.stringify(owners,null,2));
@@ -135,6 +137,34 @@ try {
  // The same DOM shim must recognize actual angle units rather than px-only text.
  await angle.fill('0.125turn');await angle.press('Enter');await waitApplied(++count);await angle.fill('0.125turn');await angle.press('Alt+ArrowUp');await waitApplied(++count);assert.equal(await angle.inputValue(),'0.225');assert(source().includes('rotate(0.225turn)'));
  record('Actual numeric DOM arrow shim handles tiny/large exponents and fractional turn literals without rounding or fake no-op history');
+ // A step is exact to the finer of the authored value's and the step's
+ // precision. Each case's binary64 sum carries noise (1.1+0.1 is
+ // 1.2000000000000002); the input, the source and the compiled preview get the
+ // decimal, and authored digits finer than the step are kept.
+ for(const [typed,key,expectedWidth] of [['1.1px','Alt+ArrowUp','1.2'],['0.7px','Alt+ArrowUp','0.8'],['0.3px','Alt+ArrowDown','0.2'],['10.1px','Shift+ArrowDown','0.1'],['1.23456px','ArrowUp','2.23456'],['1.23456px','Alt+ArrowUp','1.33456']]){
+  await input.fill(typed);await input.press('Enter');await waitApplied(++count);const before=proof.sourceRequests.length;
+  await input.press(key);await waitApplied(++count);assert.equal(await input.inputValue(),expectedWidth,typed+' '+key);assert(source().includes('#action { width:'+expectedWidth+'px;'),typed+' '+key+' source');assert.equal(proof.sourceRequests.length,before+1);
+ }
+ record('Arrow/Shift/Alt steps on noisy binary64 sums write exact decimals to input/source/compiler and keep finer authored digits');
+ await input.fill('1.1px');await input.press('Enter');await waitApplied(++count);
+ {const box=await handle.boundingBox(),x=box.x+box.width/2,y=box.y+box.height/2;await page.keyboard.down('Alt');await page.mouse.move(x,y);await page.mouse.down();await page.mouse.move(x+3,y);await page.mouse.up();await page.keyboard.up('Alt');await waitApplied(++count);assert.equal(await input.inputValue(),'1.7');assert(source().includes('#action { width:1.7px;'));}
+ record('Fine Alt scrub of a fraction writes the exact decimal, not the binary64 sum');
+ // Typed arithmetic is exact to its operands' precision; a quotient keeps four
+ // decimals. The unit typed (or the row's px) is kept.
+ for(const [typed,expectedWidth,unit] of [['0.1+0.2px','0.3','px'],['1.1*3','3.3','px'],['2.5-0.7px','1.8','px'],['10/3px','3.3333','px'],['10/3em','3.3333','em'],['2px','2','px']]){
+  const before=proof.sourceRequests.length;await input.fill(typed);await input.press('Enter');await waitApplied(++count);assert.equal(await input.inputValue(),expectedWidth,typed);assert(source().includes('#action { width:'+expectedWidth+unit+';'),typed+' source');assert.equal(proof.sourceRequests.length,before+1);
+ }
+ record('Typed arithmetic writes exact decimals with the typed unit to input/source/compiler');
+ await angle.fill('-0.7turn');await angle.press('Enter');await waitApplied(++count);await angle.press('Alt+ArrowDown');await waitApplied(++count);assert.equal(await angle.inputValue(),'-0.8');assert(source().includes('rotate(-0.8turn)'));
+ record('Negative angle with unit steps to the exact decimal through the shared arrow shim');
+ // Typography follows "When element can hold text": absent for the image and
+ // present for the button. (Containers and `svg` keep it; that is covered by
+ // test_editor_inspector_controls.nim and the consumer's `header` checks.)
+ const typographyHeader=page.locator('[data-inspector-section-header="typography"]');
+ await page.locator('[data-scene-graph-row="badge"]').click();await page.waitForFunction(()=>JSON.parse(window.__popupAcceptance.snapshot()).selected==='badge');
+ await typographyHeader.waitFor({state:'hidden'});assert.equal(await typographyHeader.isVisible(),false,'An image has no Typography');assert(await page.locator('[data-inspector-section-header="layout"]').isVisible());
+ await page.locator('[data-scene-graph-row="action"]').click();await typographyHeader.waitFor({state:'visible'});
+ record('Typography absent for an image and present for a button (catalogue "When element can hold text")');
  assert.deepEqual(proof.errors,[]);assert.deepEqual(proof.agentRequests,[]);writeFileSync(root+'/proof.json',JSON.stringify(proof,null,2));console.log('Inspector gesture GUI passed:',root,proof.cases.length);
 } finally {
  if(browser)await browser.close();if(browserServer)await browserServer.close();

@@ -189,7 +189,6 @@ suite "Rotation literal source adapter":
         encoded = formatExactNumber(parsed.value.get)
     check formatExactNumber(0.125) == "0.125"
     check formatExactNumber(20) == "20"
-    check formatNumber(0.125) == "0.13" # ordinary nil/default formatting is retained
     createRoot do (dispose: proc()):
       let r = MockRenderer()
       let root = r.createElement("div")

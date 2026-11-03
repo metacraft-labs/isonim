@@ -57,6 +57,23 @@ func elementKind*(tag: string): ElementKind =
   of "iframe": ekFrame
   else: ekUnknown
 
+const noTextTags = ["img", "picture", "video", "audio", "canvas", "iframe",
+  "frame", "embed", "object", "path", "rect", "circle", "ellipse",
+  "line", "polyline", "polygon", "image", "hr", "br", "wbr", "meter",
+  "progress"]
+  ## Elements that render no text and have no text children to pass a font
+  ## on to: images and media, embedded documents, SVG shapes, rules and
+  ## breaks, gauges. An `svg` itself is not listed: its `text` children
+  ## inherit the font it sets.
+
+func canHoldText*(tag: string): bool =
+  ## Whether the selection can show text or pass a font on to text children:
+  ## the editor spec's section catalogue gives Typography the Visibility
+  ## "When element can hold text". Containers can (a font on a `div` is
+  ## inherited by the text inside it), and so can a tag this module does not
+  ## know; only the elements in ``noTextTags`` cannot.
+  tag.toLowerAscii() notin noTextTags
+
 func selectionDisplayName*(tag: string): string =
   ## The selection-header label. Unknown tags fall through to a capitalised
   ## echo of the tag rather than a generic "Element", so a tag this module
@@ -96,8 +113,8 @@ func defaultExpandedSections*(tag: string; positioned: bool):
     seq[InspectorSection] =
   ## Which inspector sections open by default for this kind of element.
   ##
-  ## The catalogue mounts all twelve sections for everything, and before this
-  ## they all opened the same way regardless of what was selected. That is the
+  ## Before this, every present section opened the same way regardless of
+  ## what was selected. That is the
   ## opposite of adaptive: selecting a paragraph opened **Position** on a
   ## static-flow element -- three fields reading `0` that mean nothing and
   ## cannot be acted on -- while **Typography**, where that paragraph's font
@@ -107,10 +124,10 @@ func defaultExpandedSections*(tag: string; positioned: bool):
   ## themselves is never re-decided here; `applyKindDefaultExpansion` keeps
   ## that set and consults this only for sections the user has not touched.
   ##
-  ## Sections are not HIDDEN by kind, only closed. Typography genuinely
-  ## applies to a `div` -- its children inherit -- so hiding it would be
-  ## wrong, and a control nobody can find is a worse failure than a control
-  ## that starts collapsed.
+  ## Only the catalogue's Visibility column decides whether a section is
+  ## present (`canHoldText` for Typography); this decides which of the
+  ## present sections start open. Typography genuinely applies to a `div`
+  ## -- its children inherit -- so it is present there, only closed.
   result =
     case tag.elementKind()
     of ekText:

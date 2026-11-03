@@ -209,6 +209,17 @@ suite "box model values":
     check boxModelSteppedValue("0.125rem", 1.0) == "1.125rem"
     # A step does not carry binary rounding noise into the source.
     check boxModelSteppedValue("0.2", 0.1) == "0.3px"
+    # A step is exact to the finer of the value's and the step's precision:
+    # binary64 noise is dropped and authored digits finer than any fixed
+    # rounding are kept.
+    check boxModelSteppedValue("1.1", 0.1) == "1.2px"
+    check boxModelSteppedValue("0.7rem", 0.1) == "0.8rem"
+    check boxModelSteppedValue("0.3", -0.1) == "0.2px"
+    check boxModelSteppedValue("-0.7px", -0.1) == "-0.8px"
+    check boxModelSteppedValue("10.1", -10.0) == "0.1px"
+    check boxModelSteppedValue("-0.1rem", 0.1) == "0rem"
+    check boxModelSteppedValue("1.23456rem", 1.0) == "2.23456rem"
+    check boxModelSteppedValue("1.234567px", 0.1) == "1.334567px"
     check boxModelStep(false, false) == 1.0
     check boxModelStep(true, false) == 10.0
     check boxModelStep(false, true) == 0.1
@@ -899,6 +910,10 @@ suite "canvas margin and padding handles":
     check boxCanvasDragValue("padding-top", 18, 0, -40) == "0px"
     check boxCanvasDragValue("margin-top", 4, 0, 10) == "-6px"
     check boxCanvasDragValue("margin-top", 0, 0, 0.2) == "0px"
+    # Another unit keeps its authored digits: a drag that returns to the
+    # start gives back the authored value, however many decimals it has.
+    check boxCanvasDragValue("padding-top", 19.75296, 0, 0, "1.23456rem") == "1.23456rem"
+    check boxCanvasDragValue("padding-top", 16, 0, 1, "1.00001rem") == "1.06251rem"
     # Not a handle, or not a number: no value.
     check boxCanvasDragValue("border-top", 1, 0, 1) == ""
     check boxCanvasDragValue("padding-top", NaN, 0, 1) == ""
