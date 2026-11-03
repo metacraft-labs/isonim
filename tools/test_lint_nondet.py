@@ -1837,6 +1837,121 @@ process.stdout.write('class-field-timing-ok\n');
         self.syntax_privacy('function later(){const field=document.createElement("input");return (field.type="checkbox",field.value);}',[])
         self.syntax_privacy('function later(){const field=document.createElement("input");return\nfield.type="checkbox";field.value="seed";}',[(2,unresolved)])
 
+    def test_privacy_unpaired_function_abrupt_exact_finding(self):
+        # This is a lexical fragment, not a standalone JS program. The complete
+        # paired companion below is syntax checked separately.
+        self.assert_privacy('function later(){const field=document.createElement("input");return;field.type="checkbox";field.value="seed";',
+                            [(1, 'unresolved DOM privacy binding')])
+
+    def test_privacy_unpaired_function_abrupt_metadata_pairs(self):
+        raw, unresolved = 'free-text binding', 'unresolved DOM privacy binding'
+        for jump in ['return;', 'throw error;', 'if(flag)return;', 'if(flag)throw error;']:
+            for metadata in ['field.type="checkbox";',
+                             'field.setAttribute("type","checkbox");',
+                             'field.setAttribute("data-isonim-public","true");',
+                             'field.setAttribute("data-isonim-sensitive","true");']:
+                prefix = 'function later(){const field=document.createElement("input");'
+                source = prefix+jump+metadata+'field.value="seed";'
+                with self.subTest(jump=jump, metadata=metadata):
+                    # Existing conditional-control analysis invalidates all
+                    # visible DOM metadata at `if`; an unrelated data flag
+                    # cannot recover that certainty. Without the conditional,
+                    # such flags leave the original raw obligation unchanged.
+                    flagged = [(1, unresolved if jump.startswith('if(') or
+                                'data-isonim-' not in metadata else raw)]
+                    self.syntax_privacy(source+'}', flagged)
+                    self.assert_privacy(source, flagged)
+                    # Type metadata before a jump remains ordinary proof;
+                    # arbitrary data-public/sensitive flags never exempt a raw
+                    # lexical binding outside the DSL.
+                    expected = [(1, raw)] if 'data-isonim-' in metadata else []
+                    self.syntax_privacy(prefix+metadata+'field.value="control";'+jump+'}', expected)
+                    self.assert_privacy(prefix+metadata+'field.value="control";'+jump, expected)
+        for jump in ['return field.value;', 'throw field.value;']:
+            prefix = 'function later(){const field=document.createElement("input");'
+            self.syntax_privacy(prefix+jump+'}', [(1, raw)])
+            self.assert_privacy(prefix+jump, [(1, raw)])
+        for kind in ['text', 'password']:
+            source = ('function later(){const field=document.createElement("input");'
+                      'field.type="'+kind+'";field.value="seed";return;')
+            self.assert_privacy(source, [(1, raw)])
+        source = ('function later(){const field=document.createElement("input");'
+                  'field.type="password";field.setAttribute("data-isonim-public","true");'
+                  'field.value="seed";return;')
+        self.assert_privacy(source, [(1, raw)])
+
+    def test_privacy_unpaired_function_nested_and_closed_controls(self):
+        unresolved = 'unresolved DOM privacy binding'
+        prefix = 'function outer(){const field=document.createElement("input");'
+        # A complete inner routine's jump must not taint its caller, even when
+        # that caller's close is supplied by a later foreign literal.
+        for jump in ['return;', 'throw error;']:
+            source = prefix+'function inner(){'+jump+'}field.type="checkbox";field.value="control";'
+            self.syntax_privacy(source+'}', [])
+            self.assert_privacy(source, [])
+            source = prefix+'function inner(){'+jump+'}'+jump+'field.type="checkbox";field.value="seed";'
+            self.syntax_privacy(source+'}', [(1, unresolved)])
+            self.assert_privacy(source, [(1, unresolved)])
+            source = ('function outer(){function inner(){const field=document.createElement("input");'
+                      +jump+'field.type="checkbox";field.value="seed";')
+            self.syntax_privacy(source+'}}', [(1, unresolved)])
+            self.assert_privacy(source, [(1, unresolved)])
+        # Paired function ranges stop at the actual close. Their jumps cannot
+        # make a following independent routine's metadata merely optional.
+        self.syntax_privacy('function done(){return;}function next(){const field=document.createElement("input");field.type="checkbox";field.value="control";}', [])
+
+    def test_privacy_concatenated_emit_compiles_and_retains_raw_finding(self):
+        # No DOM simulation or JS execution: the stock Nim compiler and Node
+        # qualify the entire authored emission's syntax. The real source CLI
+        # separately analyzes the same literal prefix and physical Nim lines.
+        source = (PROJECT/'tests/fixtures/privacy_partial_emit.nim').read_text()
+        path = self.write('partial_emit.nim', source)
+        fragments = list(lint.foreign_fragments(source))
+        self.assertEqual(len(fragments), 1)
+        self.assertTrue(fragments[0][0].endswith('return {'))
+        self.assertEqual(fragments[0][2], [])
+        output = Path(self.temp.name)/'partial_emit.js'
+        command = ['nim', 'js', '--hints:off', '--nimcache:'+str(Path(self.temp.name)/'cache'),
+                   '--out:'+str(output), str(path)]
+        self.retain_inputs(command)
+        compiled = subprocess.run(command, capture_output=True, text=True)
+        self.assertEqual(compiled.returncode, 0, compiled.stdout+compiled.stderr)
+        self.assertIn('return {answer: 42}', output.read_text())
+        command = [shutil.which('node'), '--check', str(output)]
+        self.assertIsNotNone(command[0], 'Node is required; no syntax-check skip')
+        self.retain_inputs(command)
+        checked = subprocess.run(command, capture_output=True, text=True)
+        self.assertEqual(checked.returncode, 0, checked.stderr)
+        result = self.cli()
+        self.assertEqual(result.returncode, 1, result.stderr)
+        self.assertEqual(json.loads(result.stdout), [dict(path='site/src/partial_emit.nim',
+                         line=5, api='free-text binding', severity='error')])
+
+    def test_privacy_unpaired_function_semantic_production_inverse(self):
+        scanner=SCRIPT.read_text();helper=SCRIPT.with_name('lint_privacy.py').read_text()
+        anchor='                    end = n\n'
+        self.assertEqual(helper.count(anchor),1)
+        directory=Path(self.temp.name)/'unpaired-function-inverse'/'tools';directory.mkdir(parents=True)
+        (directory/'lint_nondet.py').write_text(scanner)
+        # Deliberately drop only the incomplete-body uncertainty range. The
+        # resulting missing finding must be an assertion failure, not KeyError.
+        (directory/'lint_privacy.py').write_text(helper.replace(anchor,'                    end = None\n'))
+        (directory/'test_lint_nondet.py').write_text(Path(__file__).read_text().replace('PROJECT = Path(__file__).resolve().parents[1]','PROJECT = Path('+repr(str(PROJECT))+')',1))
+        command=[sys.executable,str(directory/'test_lint_nondet.py'),
+                 'LintTests.test_privacy_unpaired_function_abrupt_exact_finding',
+                 'LintTests.test_privacy_nonfield_only_control',
+                 'LintTests.test_exact_seed_counts_in_js_and_foreign_pragmas']
+        self.retain_inputs(command);result=subprocess.run(command,capture_output=True,text=True)
+        (directory/'inverse.log').write_text(result.stdout+result.stderr);self.retain_inputs(command)
+        self.assertEqual(result.returncode,1,result.stdout+result.stderr)
+        self.assertIn('FAIL: test_privacy_unpaired_function_abrupt_exact_finding',result.stderr)
+        self.assertIn('AssertionError: Lists differ',result.stderr)
+        self.assertIn('site/src/privacy.js',result.stderr)
+        self.assertIn('unresolved DOM privacy binding',result.stderr)
+        self.assertIn('FAILED (failures=1)',result.stderr)
+        self.assertNotIn('ERROR:',result.stderr)
+        self.assertNotIn('KeyError',result.stderr)
+
     def test_privacy_abrupt_statement_caught_throw_recovery_controls(self):
         self.syntax_privacy("function f(){let field=document.createElement('input');try{throw 0;}catch{}field=document.createElement('input');field.type='checkbox';field.value='control';}",[])
         self.syntax_privacy("function f(){try{const field=document.createElement('input');throw field.value;}catch{}}",[(1,'free-text binding')])

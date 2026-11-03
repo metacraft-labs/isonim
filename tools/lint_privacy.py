@@ -866,7 +866,17 @@ def privacy_bindings(text, mask, literals, opaque):
             bodies = [body for body, role in brace_roles.items()
                       if role == 'function' and body < index < pairs.get(body, n) and
                       function_scope(opened[body]) is routine]
-            if bodies: end = pairs[max(bodies)]+1
+            if bodies:
+                body = max(bodies)
+                if body in pairs:
+                    end = pairs[body]+1
+                else:
+                    # A foreign string fragment can end inside a valid emitted
+                    # function. Its remaining tokens are still an uncertain
+                    # suffix after this jump. Bound analysis by the fragment,
+                    # without claiming that EOF closes the actual function or
+                    # letting later metadata certify a privacy exemption.
+                    end = n
             elif keyword == 'throw': end = n
             if keyword == 'throw':
                 # A throw caught in this lexical try does not exit the routine.
