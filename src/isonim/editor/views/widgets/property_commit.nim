@@ -456,6 +456,14 @@ proc commitInspectorValue*(vm: EditorVM; property, rawValue: string;
     else: selected.schemaKey
   if previewId.len > 0:
     applyPreviewStyle(previewId, selected.domPath, property, normalized, scope)
+    # A shorthand set through the CSSOM resets every longhand in its block,
+    # and a side set there wins in the CSSOM whatever the source's order: set
+    # the sides the edited rule decides to what the source renders, in order
+    # (`withRuleOrderedSides`).
+    let history = vm.inspector.undoStack.val
+    if history.len > 0 and history[^1].sourceEdit.property == property:
+      for (side, sideValue) in history[^1].sideFollowersAfter:
+        applyPreviewStyle(previewId, selected.domPath, side, sideValue, scope)
     # The write that follows must not reload the preview out from under this.
     vm.previewShowsPendingEdits.val = true
 

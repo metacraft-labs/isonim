@@ -1696,6 +1696,13 @@ __ISONIM_SCENE_GRAPH_WALK__
       }
     }
     var importance = priority(style);
+    // A value may name its own priority (a shorthand side the source
+    // declares `!important`, re-applied after its shorthand).
+    var stated = /\s*!important\s*$/i;
+    if (stated.test(value)) {
+      value = value.replace(stated, '');
+      importance = 'important';
+    }
     if (value === '') style.removeProperty(property);
     else style.setProperty(property, value, importance);
     return true;
@@ -2408,6 +2415,11 @@ proc renderComponentEditView*[R, E](r: R; vm: EditorVM): E =
       applyPreviewStyle(request.elementId, request.domPath,
                         request.property, request.value, request.sourceScope,
                         request.condition)
+      # The shorthand sides the restored rule decides, as its source renders
+      # them (`PreviewValueRequest.followers`).
+      for (side, sideValue) in request.followers:
+        applyPreviewStyle(request.elementId, request.domPath, side, sideValue,
+                          request.sourceScope, request.condition)
       # The write that follows must not reload the preview out from under it,
       # for the same reason a commit sets this.
       vm.previewShowsPendingEdits.val = true
