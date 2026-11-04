@@ -2337,3 +2337,14 @@ test-registered-handler:
 # Private actual-owner document loading; real parser/resource/upload boundaries.
 test-record-document-progress-owner:
     python3 tools/test_record_document_progress_owner.py
+
+# Pure frozen boot/experiment projection through the actual Recorder and codec.
+test-record-env-owner: build-tailwind
+    python3 tools/test_record_env_owner.py
+
+# Explicit infrastructure-only and correction scopes; the owner target stays full.
+test-record-env-native-provenance:
+    python3 tools/test_record_env_owner.py --native-provenance-control
+
+test-record-env-focused-corrections:
+    python3 tools/test_record_env_owner.py --focused-corrections
