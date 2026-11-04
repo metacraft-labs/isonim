@@ -2324,3 +2324,7 @@ test-client-routing-task-lifecycle: build-tailwind
 # Explicit private live target preparation; no automatic recording activation.
 test-client-target-resolver: build-tailwind
     python3 tools/test_client_target_resolver.py
+
+# Same production weak listener map; actual Chromium and compiler inverses.
+test-registered-handler:
+    python3 tools/test_registered_handler.py

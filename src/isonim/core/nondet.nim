@@ -614,7 +614,7 @@ when defined(js):
     registered(entry.dispose);
     return entry.dispose;
   }
-  return {listen: isonimListen, setHook: function(hook) { isonimListenerHook = hook; }};
+  return {""" & (when defined(isonimInternalRegisteredHandlers): """callRegistered: function(node, type, handler, capture, event) { const entries = isonimListeners.get(node); const entry = entries && entries.find(e => e.type === type && e.handler === handler && e.capture === capture); if (!entry) throw new Error('isonim registered handler is not active'); return entry.handler.call(node, event); }, """ else: "") & """listen: isonimListen, setHook: function(hook) { isonimListenerHook = hook; }};
   })();
   """.}
   proc setListenerHook*(hook: proc(record: JsObject)) =
@@ -655,3 +655,20 @@ when defined(js):
           int(selected.dispatchSequence), proc(): float64 = backend().now(),
           proc(dispose: ListenerDisposer) =
             if getOwner() != nil: onCleanup(dispose))
+
+# Keep the original listener emission and declaration line positions intact:
+# define-absent JS must match the genuine parent without normalization.
+when defined(js) and defined(isonimInternalRegisteredHandlers):
+  proc rawCallInternalRegisteredHandler(node: JsObject; eventType: cstring;
+      handler: JsObject; capture: bool; event: JsObject): JsObject
+      {.importjs: "isonimEventListeners.callRegistered(#,#,#,#,#)", tags: [RawNondet].}
+  proc callInternalRegisteredHandler*(node: JsObject; eventType: cstring;
+      handler: JsObject; capture: bool; event: JsObject): JsObject
+      {.tags: [RawNondet, DomEventEffect].} =
+    ## Trusted internal call using the exact JS identity registered by listen.
+    ## Calls the stored callable with node as receiver and the unchanged event;
+    ## returns or throws its exact value. A missing tuple throws a fresh Error
+    ## before callback effects. No backend or native delivery bookkeeping runs.
+    ## JsObject does not infer the callback's effects: the caller owns the later
+    ## Replay lifecycle, event reconstruction and callback effect contract.
+    rawCallInternalRegisteredHandler(node, eventType, handler, capture, event)
