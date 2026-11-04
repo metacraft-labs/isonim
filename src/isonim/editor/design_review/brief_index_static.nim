@@ -8,7 +8,17 @@ import isonim/editor/design_review/brief_format
 import isonim/editor/design_review/brief_index
 import isonim/editor/types
 
-const BUILT_IN_BRIEF_INDEX_JSON*: string = """{
+const isonimBriefIndexJson {.strdefine.} = ""
+  ## A consumer project's own baked brief index: the ABSOLUTE path of the JSON
+  ## document ``brief_index_build --json-out`` writes for the project's
+  ## ``briefs/`` tree. Set by the project's editor build
+  ## (``-d:isonimBriefIndexJson=<path>``) so its bundle carries its briefs
+  ## without regenerating this module in the isonim checkout. Unset, the
+  ## index baked below is used.
+
+const BUILT_IN_BRIEF_INDEX_JSON*: string =
+  when isonimBriefIndexJson.len > 0: staticRead(isonimBriefIndexJson)
+  else: """{
   "briefs": [
     {
       "briefId": "chrome.canvas-preview-edit-mode",

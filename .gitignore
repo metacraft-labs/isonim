@@ -153,6 +153,7 @@ tests/test_editor_section_export
 tests/e2e_design_review_pg_process_compose
 tests/test_design_review_brief_format
 tests/test_design_review_brief_index
+tests/test_design_review_consumer_brief_index
 tests/test_design_review_isonim_review_cli
 tests/test_design_review_cli_config
 tests/test_design_review_cli_init

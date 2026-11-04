@@ -8,6 +8,10 @@
 ##         --briefs path/to/briefs \
 ##         --out src/isonim/editor/design_review/brief_index_static.nim
 ##
+## A consumer project bakes its own briefs without touching this checkout:
+## ``--json-out:<path>`` writes the index as JSON, and the project's editor
+## build compiles it in with ``-d:isonimBriefIndexJson=<absolute path>``.
+##
 ## The default ``--briefs`` path is ``isonim-examples/briefs`` if
 ## present (relative to the repo root), otherwise an empty path that
 ## produces an empty index. The generator never raises on parse errors;
@@ -139,7 +143,17 @@ import isonim/editor/design_review/brief_format
 import isonim/editor/design_review/brief_index
 import isonim/editor/types
 
-const BUILT_IN_BRIEF_INDEX_JSON*: string = """ & "\"\"\"" & safe & "\"\"\"" & """
+const isonimBriefIndexJson {.strdefine.} = ""
+  ## A consumer project's own baked brief index: the ABSOLUTE path of the JSON
+  ## document ``brief_index_build --json-out`` writes for the project's
+  ## ``briefs/`` tree. Set by the project's editor build
+  ## (``-d:isonimBriefIndexJson=<path>``) so its bundle carries its briefs
+  ## without regenerating this module in the isonim checkout. Unset, the
+  ## index baked below is used.
+
+const BUILT_IN_BRIEF_INDEX_JSON*: string =
+  when isonimBriefIndexJson.len > 0: staticRead(isonimBriefIndexJson)
+  else: """ & "\"\"\"" & safe & "\"\"\"" & """
 
 proc storyKindFromName(s: string): StoryKind =
   case s
@@ -265,6 +279,7 @@ proc resolveBriefsDir(arg: string): string =
 when isMainModule:
   var briefsArg = ""
   var outPath = ""
+  var jsonOutPath = ""
   var p = initOptParser()
   while true:
     p.next()
@@ -274,6 +289,7 @@ when isMainModule:
       case p.key
       of "briefs": briefsArg = p.val
       of "out": outPath = p.val
+      of "json-out": jsonOutPath = p.val
       else:
         echo "unknown option: --", p.key
         quit(1)
@@ -281,8 +297,8 @@ when isMainModule:
       echo "unexpected positional argument: ", p.key
       quit(1)
 
-  if outPath.len == 0:
-    echo "missing --out"
+  if outPath.len == 0 and jsonOutPath.len == 0:
+    echo "missing --out or --json-out"
     quit(1)
 
   let briefsDir = resolveBriefsDir(briefsArg)
@@ -304,5 +320,12 @@ when isMainModule:
            " does not exist; emitting empty index"
 
   let payload = pretty(indexToJson(idx))
-  emitStaticModule(payload, outPath)
-  echo "brief_index_build: wrote ", outPath
+  if outPath.len > 0:
+    emitStaticModule(payload, outPath)
+    echo "brief_index_build: wrote ", outPath
+  if jsonOutPath.len > 0:
+    # A consumer project's editor build compiles this document into its
+    # bundle with ``-d:isonimBriefIndexJson=<absolute path>`` (see
+    # ``brief_index_static.isonimBriefIndexJson``).
+    writeFile(jsonOutPath, payload)
+    echo "brief_index_build: wrote ", jsonOutPath

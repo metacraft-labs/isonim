@@ -532,6 +532,7 @@ test-editor-source-metadata: isonim-review-build
 test-design-review: isonim-review-build
     nim c -r tests/test_design_review_brief_format.nim
     nim c -r tests/test_design_review_brief_index.nim
+    nim c -r tests/test_design_review_consumer_brief_index.nim
     nim c -r tests/test_design_review_isonim_review_cli.nim
 
 # REV-M4: run all CLI-layer tests (config loader, init, db-health,
