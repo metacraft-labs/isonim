@@ -16,10 +16,15 @@ function reject(path,mutate,command,args,diagnostic) {
   } finally {writeFileSync(path,before);}
 }
 reject(core,s=>{
-  const begin=s.indexOf('  static:\n',s.indexOf('proc useExperimentImpl'));
-  const end=s.indexOf('  result = low(E)',begin);
+  const generic=s.indexOf('proc useExperimentImpl');
+  const begin=s.indexOf('  static:\n',generic);
+  // Keep the runtime descriptor in the generic scope; only registration moves.
+  const end=s.indexOf('  const descriptor = ',begin);
+  assert(generic>=0 && begin>generic && end>begin,'registration block boundaries changed');
   const block=s.slice(begin,end);
+  assert(block.endsWith('    registerExperiment(key, arms, allocation, dates)\n'),'registration block end changed');
   const removed=s.slice(0,begin)+s.slice(end);
+  assert.equal(removed.split('  const site = instantiationInfo').length,2,'registration template anchor changed');
   return removed.replace('  const site = instantiationInfo', '  mixin weights, window\n  const key = experimentTypeKey[E]()\n'+block+'  const site = instantiationInfo');
 },'nim',['c','--hints:off','--out:build/experiments/mutant','tests/test_experiment_registration.nim'],/registrationCount/);
 reject(serializer,s=>s.replace('.replace("<", "\\\\u003c")',''),'bash',['tools/check_experiments.sh'],/script payload executed/);
