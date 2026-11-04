@@ -26,7 +26,10 @@ writeFileSync(project+'/.isonim/source-project.json',JSON.stringify(manifest));
 const env={...process.env,ISONIM_SOURCE_FRAMEWORK:repo};
 function checkedBuild(command,args,label,timeout=90000){const result=spawnSync(command,args,{cwd:repo,env,encoding:'utf8',timeout});writeFileSync(root+'/'+label+'.log',result.stdout+result.stderr);assert.equal(result.status,0,result.stdout+result.stderr);return result.stdout;}
 checkedBuild('python3',[repo+'/tools/build_source_catalog.py',project],'catalog-build');
-const described=JSON.parse(checkedBuild(repo+'/build/bin/isonim-review',['source-project',project,'--describe'],'describe',5000));
+// `source-project --describe` reads and catalogues the whole provider project: 6.4-19.2 s at
+// load 86-124 on the 24-core host (2026-11-04, isonim 15f6d922f), where the former 5 s cap
+// killed the run at load 85-192 before any GUI step. 60 s bounds a hang, not the host.
+const described=JSON.parse(checkedBuild(repo+'/build/bin/isonim-review',['source-project',project,'--describe'],'describe',60000));
 const target=described.editableStyles.find(row=>row.selector==='.panel'&&row.values['border-radius']==='4px');assert(target);assert(target.sharedCount>=2);
 checkedBuild('nim',['js','--path:src','--path:.','--path:../nim-everywhere/src','--path:../isonim-render-serve/src','--path:../nim-acp/src','--path:../nim-agent-harbor/src','--path:../nim-agents/src','--path:'+project+'/src','--path:'+project+'/src/editor','-o:'+pub+'/editor.js','tests/helpers/editor_source_style_workspace.nim'],'browser-build');
 for(const [from,to] of [['src/isonim/editor/index.html','index.html'],['node_modules/fabric/dist/index.min.js','fabric.min.js'],['node_modules/paper/dist/paper-core.min.js','paper-core.min.js'],['node_modules/svgo/dist/svgo.browser.js','svgo.browser.js']])copyFileSync(repo+'/'+from,pub+'/'+to);

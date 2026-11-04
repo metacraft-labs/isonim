@@ -1387,6 +1387,13 @@ type
     lastWriteApplied*: bool
       ## ``lastWrite`` applied this entry's edit (written while on the undo
       ## stack) rather than undoing it (written while on the redo stack).
+    sideFollowersBefore*, sideFollowersAfter*: seq[(string, string)]
+      ## For an edit of a simple shorthand or one of its sides whose writer
+      ## reports the rule's declarations (`ruleDeclarations`): each side that
+      ## rule decides and the value it renders, before and after the edit.
+      ## The preview sets them, in order, after the edited declaration, so a
+      ## CSSOM shorthand -- which resets every longhand in its block -- shows
+      ## what the source renders. Empty for every other edit.
     superseded*: bool
       ## A later edit to the same source slot replaced this entry's plan in
       ## the journal before it was written. Its effect is therefore not on
@@ -1668,6 +1675,27 @@ type
       ## with this reason instead of being offered and refused at the commit
       ## (editor spec "Saving"). It must therefore read no file and be cheap:
       ## a statement from what the adapter already holds.
+    ruleDeclarations*: proc(plan: SourceEditPlan; content: string;
+      schema: WorkspaceEditableSchemaEntry): WorkspaceRuleDeclarations {.closure.}
+      ## Optional: the declarations of the rule ``plan`` writes, as they stand
+      ## in ``content``, in source order. Asked at the act with the in-memory
+      ## draft of the write the edit joins (before it, and after it), never
+      ## with a written file. The editor reads which declaration decides each
+      ## side of a simple shorthand from it -- the CSS cascade within one
+      ## rule: an `!important` declaration over a normal one, otherwise the
+      ## later one (editor spec "Native project source capabilities": sides
+      ## "respect declaration order") -- and shows and previews that. A writer
+      ## that does not set it keeps the editor's earlier behaviour (an edited
+      ## shorthand's sides follow it).
+
+  WorkspaceRuleDeclaration* = object
+    property*: string
+    value*: string     ## Without the priority.
+    important*: bool
+
+  WorkspaceRuleDeclarations* = object
+    ok*: bool          ## False: the writer cannot say (no such rule, …).
+    declarations*: seq[WorkspaceRuleDeclaration]
 
   # --- Design-system schema and source ownership ---
   DesignSchemaNodeKind* = enum

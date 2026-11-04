@@ -464,6 +464,31 @@ func removeDemoDeclaration(plan: SourceEditPlan; content: string;
     affectedStory: schema.story,
     fullReload: true))
 
+func demoRuleDeclarations*(content: string;
+    schema: WorkspaceEditableSchemaEntry): WorkspaceRuleDeclarations =
+  ## The declarations of the class rule ``schema`` owns in ``content``, in
+  ## source order, as this writer reads and writes them (`demoRules`: the one
+  ## top-level rule for the selector; a rule inside `@media` is another rule).
+  ## Not ``ok`` for an entry that is not a class rule's, or a selector with
+  ## no rule or several.
+  let selector = demoRuleSelector(schema)
+  if selector.len == 0: return
+  let rules = content.demoRules(selector)
+  if rules.len != 1: return
+  result.ok = true
+  for part in content[rules[0].bodyStart ..< rules[0].bodyEnd].split(';'):
+    let colon = part.find(':')
+    if colon < 0: continue
+    let property = part[0 ..< colon].strip()
+    var value = part[colon + 1 .. ^1].strip()
+    if property.len == 0: continue
+    var important = false
+    if value.toLowerAscii().endsWith("!important"):
+      important = true
+      value = value[0 ..< value.len - "!important".len].strip()
+    result.declarations.add WorkspaceRuleDeclaration(property: property,
+      value: value, important: important)
+
 proc demoVectorEditAdapter*(vectorSource, foundationSource: ref string): WorkspaceEditAdapter =
   let vectorStory = StoryRef(group: "Foundations", name: "Vector Symbols",
     kind: skFoundation, index: 0)
@@ -561,6 +586,14 @@ proc demoVectorEditAdapter*(vectorSource, foundationSource: ref string): Workspa
     let rules = foundationSource[].demoRules(selector)
     if rules.len == 1 and ',' in rules[0].selector:
       return demoRuleRefusal(rules, schema.file, selector, plan.property)
+  # The rule's declarations in source order, so the editor can tell which
+  # declaration decides each side of a shorthand (`ruleDeclarations`).
+  # Responsive overrides live in another rule and are not reported.
+  result.ruleDeclarations = proc(plan: SourceEditPlan; content: string;
+      schema: WorkspaceEditableSchemaEntry): WorkspaceRuleDeclarations =
+    if plan.breakpointCondition.len > 0 or schema.file != DemoFoundationSource:
+      return
+    demoRuleDeclarations(content, schema)
   result.writeFile = proc(file, content: string): WorkspaceOperationResult =
     if file == DemoFoundationSource:
       foundationSource[] = content

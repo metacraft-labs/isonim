@@ -1478,9 +1478,13 @@ package isonim:
       extraInputs = @["src", "tests/test_editor_color_parity.mjs", "tests/helpers/editor_color_validation.nim",
         "config.nims", "tests/config.nims", "build/tailwind-styles.json"])
     var c4aGuiActions = @[c4aCompoundEdge, c4aGestureEdge, c4aColorEdge]
-    for name in ["test_editor_source_style_gui", "test_editor_source_style_values_gui"]:
+    # The values case runs a native catalog build, `--describe` and the GUI
+    # scrub: 285 s at load 79-94 on the 24-core host (2026-11-04, isonim
+    # 15f6d922f) against the former 180 s limit, so it declares 420 s.
+    for (name, limit) in [("test_editor_source_style_gui", "180s"),
+                          ("test_editor_source_style_values_gui", "420s")]:
       let gripEdge = sh.shell(
-        command = "timeout --signal=TERM --kill-after=15s 180s \"${ISONIM_SCENARIO_NODE:-node}\" tests/" & name & ".mjs",
+        command = "timeout --signal=TERM --kill-after=15s " & limit & " \"${ISONIM_SCENARIO_NODE:-node}\" tests/" & name & ".mjs",
         cacheable = false, actionId = "isonim.c4a_execute." & name,
         after = @[tailwindStylesEdge, reviewToolEdge.action],
         extraInputs = @["src", "tests/" & name & ".mjs", "tests/helpers/editor_source_style_workspace.nim",

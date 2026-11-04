@@ -1792,7 +1792,10 @@ test-editor-c4a-color: build-tailwind
 
 test-editor-c4a-grip: isonim-review-build build-tailwind
     timeout --signal=TERM --kill-after=15s 180s "${ISONIM_SCENARIO_NODE:-node}" tests/test_editor_source_style_gui.mjs
-    timeout --signal=TERM --kill-after=15s 180s "${ISONIM_SCENARIO_NODE:-node}" tests/test_editor_source_style_values_gui.mjs
+    # The values case runs a native catalog build, `--describe` and the GUI
+    # scrub: 285 s at load 79-94 on the 24-core host (2026-11-04, isonim
+    # 15f6d922f) against the former 180 s limit; the case declares 420 s.
+    timeout --signal=TERM --kill-after=15s 420s "${ISONIM_SCENARIO_NODE:-node}" tests/test_editor_source_style_values_gui.mjs
 
 # Undo/redo restores exactly the source lines each written inspector edit
 # wrote, refuses unsafe restorations, and never re-targets a sibling edit that

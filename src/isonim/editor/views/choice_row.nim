@@ -86,7 +86,7 @@ func compactChoiceVisibleIndexes(options: seq[CompactChoiceOption];
     else:
       result[^1] = selectedIndex
 
-proc callOwned(callback: sink proc()) =
+proc callOwned*(callback: sink proc()) =
   ## Call ``callback`` holding a reference of its own, so the closure stays
   ## alive while it runs even when it replaces the last other reference to
   ## itself (ARC/ORC free a closure's environment when its count reaches

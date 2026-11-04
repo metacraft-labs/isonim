@@ -115,6 +115,9 @@ type
     generation*: int
     elementId*, domPath*, property*, value*: string
     sourceScope*: SourceScopeChoiceKind
+    followers*: seq[(string, string)]
+      ## Declarations to set right after this one, in order: the shorthand
+      ## sides the edit's rule decides (`sideFollowersBefore/After`).
     condition*: string
       ## The `@media` prelude of a responsive override
       ## (`SourceEditPlan.breakpointCondition`): the value is shown in the
@@ -4752,6 +4755,68 @@ func withShorthandSides(element: ElementRef; property,
           prop.value = values[i]
     return
 
+func shorthandGroup(property: string): tuple[found: bool; shorthand: string;
+    sides: seq[string]] =
+  ## The simple shorthand ``property`` is, or is a side of, with its sides.
+  for (shorthand, sides) in shorthandSideProperties:
+    if property == shorthand or property in sides:
+      return (true, shorthand, @sides)
+
+func renderedRuleSides*(declarations: seq[WorkspaceRuleDeclaration];
+    shorthand: string; sides: openArray[string]): tuple[ok: bool;
+      values: seq[string]] =
+  ## What one rule renders for each side of ``shorthand``: the CSS cascade
+  ## within one declaration block -- an `!important` declaration over a
+  ## normal one, and among equals the later one
+  ## (https://www.w3.org/TR/css-cascade-4/#cascade-sort) -- with the winning
+  ## shorthand expanded to that side. A value carries ` !important` when its
+  ## declaration did. "" for a side the rule declares nothing for. Not ``ok``
+  ## when a winning shorthand is not a simple 1-4 value list (`var()`,
+  ## `calc()`, an elliptical radius): which side it gives what is unknown.
+  result.ok = true
+  result.values = newSeq[string](sides.len)
+  for i, side in sides:
+    var winner = -1
+    for j, declaration in declarations:
+      if declaration.property != side and declaration.property != shorthand:
+        continue
+      if winner < 0 or declaration.important or
+          not declarations[winner].important:
+        winner = j
+    if winner < 0:
+      continue
+    let declaration = declarations[winner]
+    let priority = if declaration.important: " !important" else: ""
+    if declaration.property == side:
+      result.values[i] = declaration.value.strip() & priority
+    else:
+      let parts = shorthandSideValues(declaration.value)
+      if parts.len != 4:
+        return (false, @[])
+      result.values[i] = parts[i] & priority
+
+func withoutPriority(value: string): string =
+  result = value.strip()
+  if result.toLowerAscii().endsWith("!important"):
+    result = result[0 ..< result.len - "!important".len].strip()
+
+func sameRenderedValue(captured, declared: string): bool =
+  ## Whether a captured (computed) side value can be the value ``declared``
+  ## gives it. Only two pixel lengths can be told apart; anything else
+  ## (another unit, a keyword) is taken to agree.
+  let a = captured.strip().toLowerAscii()
+  let b = declared.withoutPriority().toLowerAscii()
+  if a == b: return true
+  proc px(text: string): (bool, float) =
+    var number = text
+    if number.endsWith("px"): number = number[0 ..< number.len - 2]
+    elif number != "0": return (false, 0.0)
+    try: (true, parseFloat(number))
+    except ValueError: (false, 0.0)
+  let (aPx, aValue) = px(a)
+  let (bPx, bValue) = px(b)
+  not (aPx and bPx) or abs(aValue - bValue) < 1e-9
+
 type PreparedPropertyEdit* = object
   outcome*: PropertyEditResult
   transaction*: CSSPropertyEditTransaction
@@ -4983,6 +5048,8 @@ proc sourcePlanAdmissionRefusal(editor: EditorVM;
   ""
 
 proc removalWriteRefusal(editor: EditorVM; plan: SourceEditPlan): string
+proc withRuleOrderedSides(editor: EditorVM;
+    transaction: var CSSPropertyEditTransaction)
 
 proc writerEditRefusal(editor: EditorVM; plan: SourceEditPlan): string =
   ## The project writer's statement against changing ``plan``'s declaration
@@ -5019,6 +5086,8 @@ proc editInspectorProperty*(editor: EditorVM;
         diagnostics: @[PropertyEditDiagnostic(kind: pedSchemaViolation,
           message: refusal & " Nothing was changed.", file: plan.file, line: plan.line,
           property: plan.property)])
+    else:
+      editor.withRuleOrderedSides(prepared.transaction)
   result = prepared.outcome
   if result.status == pesAccepted:
     editor.inspector.acceptPreparedPropertyEdit(prepared)
@@ -5371,7 +5440,8 @@ proc supersedePendingBelow(inspector: InspectorVM; plan: SourceEditPlan) =
 
 proc requestPreviewValue(inspector: InspectorVM; element: ElementRef;
                          property, value: string;
-                         sourceScope = sskLocalInstance; condition = "") =
+                         sourceScope = sskLocalInstance; condition = "";
+                         followers: seq[(string, string)] = @[]) =
   ## Ask the preview view to show `value`. See `PreviewValueRequest`.
   let elementId =
     if element.id.len > 0: element.id
@@ -5382,7 +5452,7 @@ proc requestPreviewValue(inspector: InspectorVM; element: ElementRef;
     generation: inspector.previewValueRequest.val.generation + 1,
     elementId: elementId, domPath: element.domPath,
     property: property, value: value, sourceScope: sourceScope,
-    condition: condition)
+    followers: followers, condition: condition)
 
 proc refuseHistoryStep(inspector: InspectorVM; step: InspectorHistoryStep) =
   inspector.editDiagnostics.val = @[PropertyEditDiagnostic(
@@ -5438,7 +5508,8 @@ proc undoCssPropertyEdit*(inspector: InspectorVM): bool {.discardable.} =
   inspector.editDiagnostics.val = @[]
   inspector.requestPreviewValue(txn.beforeElement, txn.sourceEdit.property,
                                 txn.sourceEdit.oldValue, txn.sourceEdit.sourceScope,
-                                txn.sourceEdit.breakpointCondition)
+                                txn.sourceEdit.breakpointCondition,
+                                txn.sideFollowersBefore)
   true
 
 proc redoCssPropertyEdit*(inspector: InspectorVM): bool {.discardable.} =
@@ -5479,7 +5550,8 @@ proc redoCssPropertyEdit*(inspector: InspectorVM): bool {.discardable.} =
   inspector.editDiagnostics.val = @[]
   inspector.requestPreviewValue(txn.afterElement, txn.sourceEdit.property,
                                 txn.sourceEdit.newValue, txn.sourceEdit.sourceScope,
-                                txn.sourceEdit.breakpointCondition)
+                                txn.sourceEdit.breakpointCondition,
+                                txn.sideFollowersAfter)
   true
 
 proc nextWriteReceipt(inspector: InspectorVM;
@@ -7785,14 +7857,15 @@ proc editSharedDesignProperty*(editor: EditorVM; property, newValue: string;
     origin: poThemeToken, originDetail: plan.originDetail, scope: plan.scope,
     sourceScope: plan.sourceScope, isShared: plan.scope == pesShared,
     editOrigin: peoInspector, sourcePlanKind: plan.planKind)
-  editor.inspector.selectedElement.val = afterElement
+  var transaction = CSSPropertyEditTransaction(record: record,
+    sourceEdit: plan, beforeElement: beforeElement, afterElement: afterElement)
+  editor.withRuleOrderedSides(transaction)
+  editor.inspector.selectedElement.val = transaction.afterElement
   editor.inspector.journalSourceEdit(plan)
   editor.inspector.undoStack.update proc(prev: seq[CSSPropertyEditTransaction]): seq[
       CSSPropertyEditTransaction] =
     result = prev
-    result.add CSSPropertyEditTransaction(record: record,
-      sourceEdit: plan, beforeElement: beforeElement,
-      afterElement: afterElement)
+    result.add transaction
   editor.inspector.redoStack.val = @[]
   editor.inspector.editDiagnostics.val = @[]
   editor.workspaceEditStage.val = wesDirty
@@ -10356,6 +10429,107 @@ proc removalWriteRefusal(editor: EditorVM; plan: SourceEditPlan): string =
       if drafted.diagnostics.len > 0: drafted.diagnostics[0].message
       else: "The " & plan.property & " declaration cannot be removed."
     return reason
+
+proc withRuleOrderedSides(editor: EditorVM;
+    transaction: var CSSPropertyEditTransaction) =
+  ## Settle the sides of a simple shorthand after an edit of the shorthand or
+  ## of one of its sides, from the declaration order the writer produces.
+  ##
+  ## `withShorthandSides` makes every unauthored side follow an edited
+  ## shorthand. That is the cascade only when nothing after the shorthand in
+  ## its rule declares the side: after `padding: 20px; padding-top: 24px;`
+  ## the top is 24px, after `padding-top: 24px; padding: 20px;` it is 20px,
+  ## and a side edited in place before the shorthand still renders the
+  ## shorthand's value (isonim-pm issue 2026-10-23-a-shorthand-edit-is-
+  ## shown-on-sides-a-later-longhand-still-overrides). Which one it is is a
+  ## fact of the file the write will produce, so it is read from that file:
+  ## the journal this commit leaves is drafted in memory, exactly as the
+  ## write will apply it (`draftWorkspacePlan`; nothing is written), and the
+  ## writer reports the rule's declarations before and after
+  ## (`ruleDeclarations`). Nothing is remembered on the selection, so a
+  ## recaptured element is settled the same way.
+  ##
+  ## Only the sides this rule decides move. A side whose captured value is
+  ## not what the rule gave it before is decided elsewhere (another rule, an
+  ## `@media` override, an inline style), and this edit does not reach it.
+  ## The values each decided side renders before and after are kept on the
+  ## transaction for the preview (`sideFollowersBefore/After`).
+  ##
+  ## Left as `withShorthandSides` made it when the writer cannot say: no
+  ## `ruleDeclarations`, a native source project (its catalog reports each
+  ## side's owner), a responsive override, a shorthand that does not expand.
+  let plan = transaction.sourceEdit
+  let group = shorthandGroup(plan.property)
+  if not group.found or editor.hasAsyncSourceProject or
+      plan.breakpointCondition.len > 0:
+    return
+  let adapter = editor.workspaceEditAdapter
+  if adapter.isNil or adapter.ruleDeclarations.isNil or
+      adapter.patchFile.isNil or adapter.readFile.isNil:
+    return
+  let pending = editor.inspector.pendingSourceEdits.val
+  var current: seq[WorkspaceFileDraft] = @[]
+  for plan in pending:
+    if not adapter.draftWorkspacePlan(current, editor.stampedForWrite(plan)).ok:
+      return
+  var drafts: seq[WorkspaceFileDraft] = @[]
+  var drafted: DraftedWorkspacePlan
+  for plan in pending.journaledPlans(plan, replaceExisting = true).plans:
+    drafted = adapter.draftWorkspacePlan(drafts, editor.stampedForWrite(plan))
+    if not drafted.ok:
+      return
+  let file = drafted.patch.file
+  let afterContent = drafts[drafts.draftIndex(file)].currentContent
+  var beforeContent: string
+  let currentPos = current.draftIndex(file)
+  if currentPos >= 0:
+    beforeContent = current[currentPos].currentContent
+  else:
+    let read = adapter.readFile(file)
+    if not read.ok:
+      return
+    beforeContent = read.content
+  let beforeRule = adapter.ruleDeclarations(plan, beforeContent,
+    drafted.patch.schema)
+  let afterRule = adapter.ruleDeclarations(plan, afterContent,
+    drafted.patch.schema)
+  if not beforeRule.ok or not afterRule.ok:
+    return
+  let before = renderedRuleSides(beforeRule.declarations, group.shorthand,
+    group.sides)
+  let after = renderedRuleSides(afterRule.declarations, group.shorthand,
+    group.sides)
+  if not before.ok or not after.ok:
+    return
+  var followersBefore, followersAfter: seq[(string, string)] = @[]
+  for i, side in group.sides:
+    var captured = ""
+    var exposed = false
+    for prop in transaction.beforeElement.properties:
+      if prop.name == side:
+        captured = prop.value
+        exposed = true
+    let decidedBefore = before.values[i].len > 0 and
+      (not exposed or sameRenderedValue(captured, before.values[i]))
+    let decidedAfter = after.values[i].len > 0 and
+      (before.values[i].len == 0 or decidedBefore)
+    # A side's own declaration overlaps only itself in the CSSOM; a
+    # shorthand's overlaps every side.
+    let overlaps = plan.property == group.shorthand or side == plan.property
+    if decidedBefore and overlaps:
+      followersBefore.add (side, before.values[i])
+    if decidedAfter and overlaps:
+      followersAfter.add (side, after.values[i])
+    if not exposed:
+      continue
+    for prop in transaction.afterElement.properties.mitems:
+      if prop.name == side:
+        prop.value =
+          if decidedAfter: after.values[i].withoutPriority()
+          elif side == plan.property: prop.value
+          else: captured
+  transaction.sideFollowersBefore = followersBefore
+  transaction.sideFollowersAfter = followersAfter
 
 proc inspectorHistoryRefusal(editor: EditorVM; redo: bool): PropertyEditDiagnostic =
   ## Why the next undo/redo must be refused, or an empty message.
