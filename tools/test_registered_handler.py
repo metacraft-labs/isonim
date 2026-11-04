@@ -7,6 +7,9 @@ fresh genuine companions. Output, inputs and command refusals are retained.
 """
 from pathlib import Path
 import hashlib,itertools,json,os,re,shlex,shutil,subprocess,sys,tempfile,time
+from registered_handler_core import (OWNER, bodies, identities, authenticate, historical_graph,
+ conserve_common, phase, administrative_controls, processed_modules, reject_added_imports)
+expected_graphs={}
 ROOT=Path(__file__).resolve().parent.parent
 OUT_PARENT=Path(os.environ.get('REGISTERED_EVIDENCE',str(ROOT/'build/registered-handler-evidence')))
 OUT_PARENT.mkdir(parents=True,exist_ok=True)
@@ -35,17 +38,20 @@ def generated_files(scope):
 def run(name,argv,extra=None,split=False,cwd=None,produced=(),generated_scope=None):
  cwd=Path(cwd or ROOT)
  argv=list(argv)
- if len(argv)>1 and Path(argv[0]).name=='nim'and argv[1]in['js','c']and '--hint:Conf:on'not in argv:argv.insert(2,'--hint:Conf:on')
+ if len(argv)>1 and Path(argv[0]).name=='nim'and argv[1]in['js','c']:
+  for option in ['--hint:Conf:on','--processing:filenames','--filenames:abs']:
+   if option not in argv:argv.insert(2,option)
  executable=Path(shutil.which(argv[0])or argv[0])
  selected_executable=[executable,executable.resolve()]if executable.is_file()else[]
  selected=[]
+ core_phases={}
  core_roots=[Path(x.split(':',1)[1]) for x in argv if x.startswith('--path:') and (Path(x.split(':',1)[1])/'isonim/core/nondet.nim').is_file()]
  if core_roots:guard(name+'-actual-core-before-binding')
  for scope in core_roots:
   actual={str(p.relative_to(scope)):sha(p)for p in (scope/'isonim/core').rglob('*')if p.is_file()}
-  if 'source_before'in globals():
-   assert set(actual)==set(source_before),'actual original core inventory drift '
-   assert all(value==source_before[key]for key,value in actual.items()if key!='isonim/core/nondet.nim'),'nonowner core source drift before consumer'
+  assert str(scope.resolve()) in expected_graphs,'explicit expected core phase required'
+  authenticate(scope,expected_graphs[str(scope.resolve())])
+  core_phases[str(scope.resolve())]=expected_graphs[str(scope.resolve())]
   selected += [scope/key for key in actual]
  selected += [Path(x) for x in argv if Path(x).is_file() and Path(x).suffix in ['.nim','.mjs','.sh','.json']]
  selected += [Path(x)for x in known_configs] if 'known_configs'in globals() else []
@@ -61,7 +67,7 @@ def run(name,argv,extra=None,split=False,cwd=None,produced=(),generated_scope=No
  cached=[x for x in LEDGER if x['name']==name]
  if cached:
   assert len(cached)==1
-  row=cached[0];assert row['argv']==argv and row['env']==(extra or {}) and row['beforeInputs']==beforeInputs and row['cwd']==str(cwd)and row['declaredOutputs']==list(map(str,produced))and row['generatedScope']==(str(generated_scope)if generated_scope else None)and row['compilerMetadata']==compile_metadata,'frozen command/input drift on resume '+name
+  row=cached[0];assert row['argv']==argv and row['env']==(extra or {}) and row['beforeInputs']==beforeInputs and row['cwd']==str(cwd)and row['declaredOutputs']==list(map(str,produced))and row['generatedScope']==(str(generated_scope)if generated_scope else None)and row['compilerMetadata']==compile_metadata and row['corePhases']==core_phases,'frozen command/input drift on resume '+name
   assert sha(OUT/(name+'.log'))==row['logSha'],'retained command log drift '
   if split:assert sha(OUT/(name+'-STDERR.log'))==row['stderrSha256'],'retained metadata stderr drift '
   assert all(Path(p).is_file()and sha(Path(p))==h for p,h in row['outputs'].items()),'retained command artifact drift '
@@ -73,7 +79,7 @@ def run(name,argv,extra=None,split=False,cwd=None,produced=(),generated_scope=No
   return row['exit'],body
  assert not (OUT/(name+'-BEFORE.json')).exists(),'unreceipted command evidence: inspect process before resuming '+name
  guard(name)
- before=dict(argv=argv,env=extra or {},cwd=str(cwd),declaredOutputs=list(map(str,produced)),generatedScope=str(generated_scope)if generated_scope else None,time=time.time(),beforeInputs=beforeInputs,compilerMetadata=compile_metadata)
+ before=dict(corePhases=core_phases,argv=argv,env=extra or {},cwd=str(cwd),declaredOutputs=list(map(str,produced)),generatedScope=str(generated_scope)if generated_scope else None,time=time.time(),beforeInputs=beforeInputs,compilerMetadata=compile_metadata)
  with (OUT/(name+'-BEFORE.json')).open('x')as f:json.dump(before,f,indent=2)
  with (OUT/(name+'.log')).open('xb') as f:
   if split:
@@ -81,6 +87,12 @@ def run(name,argv,extra=None,split=False,cwd=None,produced=(),generated_scope=No
   else:p=subprocess.run(argv,cwd=cwd,env=os.environ|(extra or {}),stdout=f,stderr=subprocess.STDOUT)
  body=(OUT/(name+'.log')).read_text(errors='replace')
  validate_compile_configs(name,body,compile_metadata)
+ if p.returncode==0 and len(argv)>1 and Path(argv[0]).name=='nim'and argv[1]in['js','c']:
+  consumed=processed_modules(body)
+  for scope in core_roots:
+   assert (scope/'isonim/core/nondet.nim').resolve() in consumed,'known imported owner Processing positive control'
+   reject_added_imports(body,scope,additions)
+  (OUT/(name+'-PROCESSED-MODULES.json')).write_text(json.dumps(sorted(map(str,consumed)),indent=2))
  generated=generated_files(generated_scope)if generated_scope and p.returncode==0 else []
  if generated_scope and p.returncode==0:assert generated,'actual generated outputs required before receipt admission'
  outputs=[Path(x.split(':',1)[1])for x in argv if x.startswith('--out:')]+list(produced)+generated
@@ -123,6 +135,9 @@ if not (OUT/'source').exists():
  # Only the genuine core module scope imported by these fixtures is copied.
  # Renderer/site/Yoga corpora are not inputs to this private operation.
  shutil.copytree(ROOT/'src/isonim/core',OUT/'source/isonim/core')
+candidate_graph=bodies(ROOT/'src')
+expected_graphs[str((OUT/'source').resolve())]=identities(candidate_graph)
+authenticate(OUT/'source',identities(candidate_graph))
 FIX=OUT/'fixtures';FIX.mkdir(exist_ok=True)
 for name in ['registered_handler.nim','registered_handler_native.nim']:
  if (FIX/name).exists():assert (FIX/name).read_bytes()==(ROOT/'tests/fixtures'/name).read_bytes(),'fixture drift on resume'
@@ -139,6 +154,7 @@ inputs += [FIX/'registered_handler_native.nim',ROOT/'tests/fixtures/registered_h
 inputs += [Path(os.environ['PLAYWRIGHT_CHROMIUM_EXECUTABLE']).resolve(),Path(__file__).resolve(),ROOT/'tests/test_registered_handler.mjs',FIX/'registered_handler.nim']
 wrapper=Path(shutil.which('nim'));inputs.append(wrapper)
 inputs.append(engine)
+inputs.append(Path(__file__).with_name('registered_handler_core.py'))
 guard('finite-module-input-walk')
 inputs.extend(p for p in stdlib.rglob('*') if p.is_file())
 inputs.extend(p for p in (ROOT.parent/'nim-everywhere/src').rglob('*') if p.is_file())
@@ -300,16 +316,45 @@ for name,a,b,case,oracle in mutants:
  guard('prepare-'+name)
  src=OUT/('mutant-'+name)
  if not src.exists():shutil.copytree(OUT/'source',src)
- (src/'isonim/core/nondet.nim').write_text(text.replace(a,b,1))
+ replacement=text.replace(a,b,1)
+ expected_graphs[str(src.resolve())]=source_before | {OWNER:hashlib.sha256(replacement.encode()).hexdigest()}
+ (src/'isonim/core/nondet.nim').write_text(replacement)
 (OUT/'MUTANT-SITES.json').write_text(json.dumps([dict(name=n,before=a,after=b,case=c,oracle=o)for n,a,b,c,o in mutants],indent=2))
 
 # Genuine parent source comes from the owning Git object, never dirty worktree.
 parent='239e39febd3a5a2b9810cabb5915ce6c6b8ee291'
 guard('parent-source')
-original=subprocess.check_output(['git','show',parent+':src/isonim/core/nondet.nim'],cwd=ROOT)
+parent_graph=historical_graph(ROOT,parent)
+original=parent_graph[OWNER]
 (OUT/'GENUINE-PARENT-nondet.nim').write_bytes(original)
-# The entire consumed core graph must match; unrelated editor/site source is not imported.
-assert subprocess.check_output(['git','diff','--name-only',parent,'--','src/isonim/core'],cwd=ROOT).decode().splitlines()==['src/isonim/core/nondet.nim'],'genuine-parent consumed core differs only owning nondet module'
+conserve_common(parent_graph,candidate_graph)
+additions=set(candidate_graph)-set(parent_graph)
+(OUT/'CORE-PHASES.json').write_text(json.dumps(dict(parent=parent,parentGraph=identities(parent_graph),candidateGraph=identities(candidate_graph),additions=sorted(additions)),indent=2))
+controls=administrative_controls(parent_graph,candidate_graph,OUT)
+(OUT/'ADMINISTRATIVE-CONTROLS.json').write_text(json.dumps(controls,indent=2))
+# A real compiling new-leaf import must be observed and rejected. This is an
+# administrative provenance control, never a production semantic inverse.
+guard('provenance-control-source')
+probe_source=OUT/'provenance-source'
+if not probe_source.exists():shutil.copytree(OUT/'source',probe_source)
+probe_leaf='isonim/core/private/registered_provenance_probe.nim'
+probe_body=b'const registeredProvenanceWitness* = 7\n'
+expected_graphs[str(probe_source.resolve())]=source_before | {probe_leaf:hashlib.sha256(probe_body).hexdigest()}
+(probe_source/probe_leaf).parent.mkdir(parents=True,exist_ok=True)
+(probe_source/probe_leaf).write_bytes(probe_body)
+probe_fixture=FIX/'registered_provenance_import.nim'
+probe_fixture.write_text('import isonim/core/nondet\nimport isonim/core/private/registered_provenance_probe\ndoAssert registeredProvenanceWitness == 7\n')
+probe_flags=['--path:'+str(probe_source),'--path:'+str(ROOT.parent/'nim-everywhere/src'),'--nimcache:'+str(OUT/'cache/provenance-import'),'--out:'+str(OUT/'provenance-import.js')]
+probe_rc,probe_log=run('provenance-import-compile',['nim','js',*probe_flags,str(probe_fixture)])
+assert probe_rc==0,'new imported-leaf provenance control genuinely compiles'
+try:reject_added_imports(probe_log,probe_source,{probe_leaf})
+except AssertionError as error:assert str(error)=='added core leaf consumed by compiler'
+else:raise AssertionError('new imported leaf silently exempted')
+# An unchanged candidate companion actually compiles, positively names nondet,
+# and excludes all later-only leaves in the same supported compiler output.
+companion,_=compile('provenance-genuine-companion',[])
+(OUT/'PROVENANCE-CONTROLS.json').write_text(json.dumps(dict(actualNewLeafCompiled=True,intendedRejection='added core leaf consumed by compiler',genuineCompanionCompiled=True,knownOwnerImportRequired=True,administrativeOnly=True),indent=2))
+
 
 for release,recordable,direct in itertools.product([False,True],repeat=3):
  flags=(['-d:release']if release else [])+(['-d:isonimRecordable']if recordable else [])+(['-d:isonimDirectNondet']if direct else [])
@@ -326,9 +371,9 @@ for release,recordable,direct in itertools.product([False,True],repeat=3):
  # Nim includes absolute source paths in debug filenames and symbol names.
  # Compile exact genuine parent at the SAME isolated source path, then restore
  # the candidate before any further consumer. No output normalization occurs.
- BASE.write_bytes(original)
- try:old,_=compile(label+'-parent',flags)
- finally:BASE.write_text(text)
+ with phase(OUT/'source',parent_graph,expected_graphs):
+  old,_=compile(label+'-parent',flags)
+ authenticate(OUT/'source',source_before)
  assert ordinary.read_bytes()==old.read_bytes(),'raw byte identity '+label
  for marker in [b'callRegistered',b'rawCallInternalRegisteredHandler',b'callInternalRegisteredHandler',b'isonim registered handler is not active']:
   assert marker not in ordinary.read_bytes(),'define-absent marker omission '+label
@@ -352,6 +397,7 @@ for release,recordable,direct,strict in itertools.product([False,True],repeat=4)
   if not source.exists():shutil.copytree(OUT/'source',source)
   callee='callInternalRegisteredHandler'if binding=='wrapper'else'rawCallInternalRegisteredHandler'
   declaration='\nwhen defined(js):\n  proc registeredEffectCeiling(n,h,e: JsObject): JsObject {.tags: ['+tags+'].} =\n    '+callee+'(n, "click", h, false, e)\n'
+  expected_graphs[str(source.resolve())]=source_before | {OWNER:hashlib.sha256((text+declaration).encode()).hexdigest()}
   target=source/'isonim/core/nondet.nim';target.write_text(text+declaration)
   fixture=OUT/(name.replace('-','_')+'.nim');fixture.write_text('import isonim/core/nondet\n')
   rc,log=run(name+'-compile',['nim','js',*flags,'--path:'+str(source),'--path:'+str(ROOT.parent/'nim-everywhere/src'),'--nimcache:'+str(OUT/'cache'/name),'--out:'+str(OUT/(name+'.js')),str(fixture)])
@@ -366,6 +412,7 @@ for release,recordable,direct,strict in itertools.product([False,True],repeat=4)
     if binding=='wrapper':lost=lost.replace('{.tags: [RawNondet, DomEventEffect].} =','{.tags: [DomEventEffect].} =',1)
    else:lost=lost.replace('{.tags: [RawNondet, DomEventEffect].} =','{.tags: [RawNondet].} =',1)
    assert lost!=text,'actual annotation-loss site '
+   expected_graphs[str(source.resolve())]=source_before | {OWNER:hashlib.sha256((lost+declaration).encode()).hexdigest()}
    target.write_text(lost+declaration)
    loss,losslog=run(name+'-annotation-loss-compile',['nim','js',*flags,'--path:'+str(source),'--path:'+str(ROOT.parent/'nim-everywhere/src'),'--nimcache:'+str(OUT/'cache'/(name+'-loss')),'--out:'+str(OUT/(name+'-loss.js')),str(fixture)])
    assert loss==0,'annotation-loss inverse must really compile '+name+'\n'+losslog
