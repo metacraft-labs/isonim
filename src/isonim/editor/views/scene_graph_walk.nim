@@ -67,7 +67,17 @@ const sceneGraphWalkJs* = """
     // `meta`, `style` and `script` out of the tree without a tag blocklist,
     // and what keeps the thousands of tokens inside an inactive (display:
     // none) code pane from burying the page structure.
+    // One walk's memo (see `layerTree`). Null outside a walk: the bridge
+    // calls these one element at a time, between DOM changes, and must see
+    // the document as it is now.
+    var walkMemo = null;
     function isSelectable(el) {
+      if (walkMemo && walkMemo.selectable.has(el)) return walkMemo.selectable.get(el);
+      var result = isSelectableNow(el);
+      if (walkMemo) walkMemo.selectable.set(el, result);
+      return result;
+    }
+    function isSelectableNow(el) {
       if (!isElement(el)) return false;
       if (el === doc.documentElement || el === doc.body) return false;
       if (el.id && editorIds.has(el.id)) return false;
@@ -103,21 +113,47 @@ const sceneGraphWalkJs* = """
       var owned = testId ? 'testid:' + testId : (cls ? 'class:' + cls : 'tag:' + tag);
       return source.file + ':' + source.line + ':' + owned;
     }
-    function cssPath(el) {
-      var parts = [];
-      var node = el;
-      while (isSelectable(node)) {
-        var part = stableSelector(node);
-        var index = 1;
-        var sibling = node;
-        while ((sibling = sibling.previousElementSibling)) {
-          if (sibling.tagName === node.tagName) index += 1;
+    // The 1-based position of `el` among its parent's children of the same
+    // tag, as `:nth-of-type` counts it.
+    function nthOfType(el) {
+      if (walkMemo && el.parentElement) {
+        var counted = walkMemo.siblings.get(el.parentElement);
+        if (!counted) {
+          // Every child of this parent at once: a list of n siblings costs n,
+          // not n * n / 2, however many of them the walk visits.
+          counted = new Map();
+          var perTag = new Map();
+          for (var child = el.parentElement.firstElementChild; child;
+               child = child.nextElementSibling) {
+            var n = (perTag.get(child.tagName) || 0) + 1;
+            perTag.set(child.tagName, n);
+            counted.set(child, n);
+          }
+          walkMemo.siblings.set(el.parentElement, counted);
         }
-        part += ':nth-of-type(' + index + ')';
-        parts.unshift(part);
-        node = node.parentElement;
+        if (counted.has(el)) return counted.get(el);
       }
-      return parts.join(' > ');
+      var index = 1;
+      var sibling = el;
+      while ((sibling = sibling.previousElementSibling)) {
+        if (sibling.tagName === el.tagName) index += 1;
+      }
+      return index;
+    }
+    // The selector path from the outermost selectable ancestor down to `el`.
+    // Within a walk each element's path is computed once and its children
+    // extend it, instead of every element re-walking (and re-measuring) all
+    // of its ancestors: that made one walk of a 6,000-element preview cost
+    // 110,000 layout reads and 1.6 million sibling steps, and the reader
+    // repeats the walk every 700 ms.
+    function cssPath(el) {
+      if (!isSelectable(el)) return '';
+      if (walkMemo && walkMemo.path.has(el)) return walkMemo.path.get(el);
+      var part = stableSelector(el) + ':nth-of-type(' + nthOfType(el) + ')';
+      var above = cssPath(el.parentElement);
+      var path = above ? above + ' > ' + part : part;
+      if (walkMemo) walkMemo.path.set(el, path);
+      return path;
     }
     // The id is STAMPED as well as returned. The panel selects an element in
     // the preview by querying `[data-isonim-element-id]`, so whichever side
@@ -175,6 +211,18 @@ const sceneGraphWalkJs* = """
       return base;
     }
     function layerTree(selected) {
+      // The memo lives for this one synchronous walk. Nothing the walk does
+      // changes what it memoises: it stamps only `data-isonim-element-id`,
+      // which neither layout nor `stableSelector` reads.
+      var outer = walkMemo;
+      walkMemo = {selectable: new Map(), path: new Map(), siblings: new Map()};
+      try {
+        return layerTreeNow(selected);
+      } finally {
+        walkMemo = outer;
+      }
+    }
+    function layerTreeNow(selected) {
       var nodes = Array.prototype.slice.call(
         doc.querySelectorAll('body *')).filter(isSelectable);
       var nodeSet = new Set(nodes);
