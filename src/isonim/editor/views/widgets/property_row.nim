@@ -2128,7 +2128,15 @@ proc mountPropertyRow*[R, E](r: R; parent: E;
         white_space = "nowrap"):
         text "Detach"
     proc detach() =
-      if detachAction != nil: detachAction()
+      # Run a reference of our own. The action chooses the local scope, and
+      # the selection change that follows rebuilds the scope options, which
+      # reassigns `detachAction`: called through the variable, the running
+      # closure's environment was freed under it (ARC/ORC) and the commit it
+      # makes next read a freed row config. A `sink` parameter is a counted
+      # reference (a plain `let` copy may be inferred a cursor and is not);
+      # `callOwned` in choice_row.nim guards the chips' handlers the same way.
+      proc runOwned(action: sink proc()) = action()
+      if detachAction != nil: runOwned(detachAction)
     r.addEventListener(detachNode, "click", proc() = detach())
     bindChoiceKeyboard(r, detachNode, true, proc() = detach())
     proc scopeAttr(option: CompactChoiceOption; name: string): string =

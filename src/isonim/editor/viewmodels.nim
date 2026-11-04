@@ -10496,10 +10496,20 @@ proc noteCommitForAutoSave*(editor: EditorVM) =
   ## not grow one, and a commit that wrote immediately would write once per
   ## keystroke in a numeric field.
   ##
-  ## Nothing gates this but "did anything stage". A commit that was REFUSED
-  ## stages nothing and so schedules nothing, which is the only condition
-  ## that ever mattered.
-  if editor.inspector.pendingSourceEdits.val.len > 0:
+  ## A commit that was REFUSED stages nothing and so schedules nothing.
+  ##
+  ## Nor does a commit in a composition that has no workspace edit adapter
+  ## to write with -- a catalog-only host that keeps preview-only edits
+  ## (editor spec "Native project source capabilities"). Its catalog makes
+  ## `sourceAdapterReady` true, so the edit is admitted, but every write
+  ## the debounce could start is refused by `requireWorkspaceAdapter`: the
+  ## stage would flip to `wesFailed` ~900ms after the edit and the status
+  ## bar would report "Not saved" for edits that never claimed
+  ## persistence -- a refusal the editor knew at the act, made by the
+  ## write afterwards (spec "Saving"). An explicit `Mod+S` still runs and
+  ## still reports.
+  if editor.inspector.pendingSourceEdits.val.len > 0 and
+      not editor.workspaceEditAdapter.isNil:
     editor.autoSaveGeneration.val = editor.autoSaveGeneration.val + 1
 
 proc applyWorkspaceFileEdits*(editor: EditorVM): WorkspaceEditResult {.discardable.} =

@@ -3,7 +3,11 @@
 ##
 ## isonim-pm issues 2026-10-14-only-inspector-row-commits-schedule-automatic-
 ## saving and 2026-10-14-a-successful-save-clears-component-foundation-and-
-## vector-undo-history; editor spec "Saving" and "Universal Patterns".
+## vector-undo-history; editor spec "Saving" and "Universal Patterns". A
+## catalog-only composition with no edit adapter schedules no write
+## (2026-10-11-catalog-only-inline-edits-miss-the-winning-preview-declaration,
+## spec "Native project source capabilities"); that case uses no adapter at
+## all, and its browser half is `tests/test_editor_inline_preview_gui.mjs`.
 ##
 ## Mock justification: the workspace adapter below keeps the project files in
 ## memory instead of on disk. IsoNim cannot depend on the consumer that owns
@@ -27,6 +31,7 @@ import isonim/core/[computation, owner, signals]
 import isonim/editor/types
 import isonim/editor/viewmodels
 import isonim/editor/workspace
+import isonim/editor/views/widgets/property_commit
 
 const ComponentFile = "components.schema"
 const TokenFile = "tokens.schema"
@@ -243,6 +248,59 @@ suite "Every commit path schedules the automatic write":
         "success").status == pesAccepted
       check vm.inspector.pendingSourceEdits.val.len == 1
       check vm.autoSaveGeneration.val == 0
+      dispose()
+
+  test "a preview-only composition with no edit adapter schedules nothing":
+    ## A catalog-only host (spec "Native project source capabilities") keeps
+    ## preview-only edits and never claims persistence. Its catalog makes the
+    ## VM ready, but there is no adapter, so any write the debounce started
+    ## could only be refused -- and that refusal is knowable at the act.
+    ## Every commit path still admits and stages the edit; none schedules.
+    createRoot proc(dispose: proc()) =
+      let vm = createEditorVM(newEditorWorkspace(
+        title = "catalog only",
+        storyGroups = @[StoryGroup(name: badgeStory.group,
+          kind: badgeStory.kind, expanded: true, items: @[StoryItem(
+            name: badgeStory.name, kind: badgeStory.kind,
+            group: badgeStory.group)])],
+        permissions = EditorWorkspacePermissions(readSource: true,
+          writeSource: true),
+        initialStory = some(badgeStory)))
+      check vm.workspaceEditAdapter.isNil
+      # What `source_browser`'s catalog reply sets for this composition.
+      vm.sourceAdapterReady.val = true
+      vm.selectBadge()
+      let outcome = vm.commitInspectorValue("gap", "8px", sskLocalInstance)
+      check outcome.ok
+      check vm.gap() == "8px"
+      check vm.inspector.pendingSourceEdits.val.len == 1
+      check vm.inspector.undoStack.val.len == 1
+      check vm.autoSaveGeneration.val == 0
+      # The other funnel (`scheduleStagedWrite`) gates the same way.
+      check vm.selectInspectorElement(ElementRef(id: "topbar", tag: "header",
+        sourceKey: "dom.topbar", schemaKey: "dom.topbar",
+        sourceFile: ComponentFile, sourceLine: 1,
+        properties: @[topbarPad("0px")]))
+      check vm.applyDirectCanvasSpacing("padding-top", "8px").ok
+      check vm.inspector.pendingSourceEdits.val.len == 2
+      check vm.autoSaveGeneration.val == 0
+      # Nothing ran, so nothing failed: the stage still says "dirty".
+      check vm.workspaceEditStage.val != wesFailed
+      check vm.workspaceEditDiagnostics.val.len == 0
+      check vm.saveIndicator().state != sisFailed
+      dispose()
+
+  test "the same commit with an adapter installed schedules its write":
+    ## Positive twin of the case above, so it cannot pass by never
+    ## scheduling anything.
+    createRoot proc(dispose: proc()) =
+      let project = MemoryProject()
+      let vm = newEditor(project)
+      vm.selectBadge()
+      check vm.commitInspectorValue("gap", "8px", sskLocalInstance).ok
+      check vm.autoSaveGeneration.val == 1
+      vm.save()
+      check project.files[ComponentFile].contains("badge.gap=8px")
       dispose()
 
 suite "A write keeps component, foundation and vector history":
