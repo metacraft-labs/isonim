@@ -2330,3 +2330,7 @@ test-client-target-resolver: build-tailwind
 # Same production weak listener map; actual Chromium and compiler inverses.
 test-registered-handler:
     python3 tools/test_registered_handler.py
+
+# Private actual-owner document loading; real parser/resource/upload boundaries.
+test-record-document-progress-owner:
+    python3 tools/test_record_document_progress_owner.py
