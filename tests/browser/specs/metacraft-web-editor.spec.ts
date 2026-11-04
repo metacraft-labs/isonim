@@ -1,6 +1,6 @@
 import { readFileSync, realpathSync, writeFileSync } from "node:fs";
 import { resolve } from "node:path";
-import { test, expect } from "@playwright/test";
+import { test as base, expect } from "@playwright/test";
 
 const devBridgeSourceFile = resolve(
   "../../../metacraft-web/dist/editor-dev-workspace/apps/back-office/src/backoffice_ui/components.nim",
@@ -164,45 +164,179 @@ function propertyRowInput(page, row: string) {
   return page.locator(`[data-property-row="${row}"] input[data-property-row-input]`);
 }
 
-// Restore a generated dev-workspace source after a case. If the page is gone
-// (e.g. a timeout closed it), write the copy directly so a failure here cannot
-// leak into later cases -- the same fallback as the sibling-undo case.
-async function restoreDevBridgeFile(page, file: string, path: string, beforeText: string) {
-  const current = readFileSync(path, "utf8");
-  if (current === beforeText) return;
+// --- Dev-workspace isolation ------------------------------------------------
+//
+// Every case shares one write bridge over four generated source copies in
+// metacraft-web's dist/editor-dev-workspace; the webServer copies them from
+// the metacraft-web checkout when it starts (playwright.config.ts). They are
+// the only state the cases share: each case gets its own browser context, so
+// localStorage, history and editor VM state are per case, and the bridge keeps
+// nothing else but a revision counter that its own file watcher advances for
+// direct writes too.
+//
+// A case that fails, and above all one that times out, must not leave those
+// copies dirty for a later case. Playwright abandons a timed-out test body,
+// closes its page during fixture teardown, and then stops the worker; the
+// body's own `finally` only runs when a pending page call rejects, so it races
+// worker shutdown and every bridge call in it fails. The restore therefore
+// (1) restores each file independently, through the bridge while the page is
+// alive and by a direct write otherwise, and verifies every file before it
+// reports one aggregated error; and (2) is backed by an automatic fixture that
+// does not depend on `page`, so Playwright tears it down after the page is
+// closed, when no editor can write any more, and that also checks the copies
+// before each case.
+const metacraftWebRoot = resolve("../../../metacraft-web");
+const devWorkspaceRoot = resolve(metacraftWebRoot, "dist/editor-dev-workspace");
+
+const devWorkspaceFiles: Array<[string, string]> = [
+  ["apps/back-office/src/backoffice_ui/components.nim", devBridgeSourceFile],
+  ["packages/metacraft-design/src/metacraft_design/tokens.nim", devBridgeTokenFile],
+  [componentSchemaBridgeFile, devBridgeComponentSchemaFile],
+  ["apps/back-office/src/backoffice_editor/story_fixtures.schema", resolve(
+    devWorkspaceRoot, "apps/back-office/src/backoffice_editor/story_fixtures.schema")],
+];
+
+function readOrNull(path: string): string | null {
   try {
-    await revertDevBridgeFiles(page, [{ file, beforeText, afterText: current }]);
-  } catch (error) {
-    writeFileSync(path, beforeText);
-    throw error;
+    return readFileSync(path, "utf8");
+  } catch {
+    return null;
   }
+}
+
+function messageOf(error: unknown): string {
+  return String((error as any)?.message ?? error).split("\n")[0];
+}
+
+// The copies as the webServer generated them: the metacraft-web checkout's
+// own files. A case's in-case snapshot can only ever equal this, because the
+// isolation fixture establishes it before the case starts.
+function pristineDevWorkspace(): string[] {
+  return devWorkspaceFiles.map(([file]) => readFileSync(resolve(metacraftWebRoot, file), "utf8"));
+}
+
+function snapshotDevWorkspace(): string[] {
+  return devWorkspaceFiles.map(([, path]) => readFileSync(path, "utf8"));
+}
+
+function dirtyDevWorkspaceFiles(expected: string[]): string[] {
+  return devWorkspaceFiles
+    .filter(([, path], i) => readOrNull(path) !== expected[i])
+    .map(([file]) => file);
+}
+
+function rejectAfter(ms: number, what: string): Promise<never> {
+  return new Promise((_, reject) => {
+    const timer = setTimeout(() => reject(new Error(`${what} did not settle in ${ms} ms`)), ms);
+    timer.unref?.();
+  });
+}
+
+// Restores one copy and never throws: returns what went wrong, or null. The
+// bridge revert runs first while a page is alive, so a live editor sees the
+// revert as its own bridge change; whatever the bridge did, the file is then
+// written directly unless it already holds `beforeText`. `page === null` asks
+// for the direct write alone (the isolation fixture, which has no page).
+async function restoreOneDevWorkspaceFile(page, file: string, path: string,
+                                          beforeText: string): Promise<string | null> {
+  const current = readOrNull(path);
+  if (current === beforeText) return null;
+  let bridgeError: string | null = null;
+  if (page && !page.isClosed() && current !== null) {
+    try {
+      await Promise.race([
+        revertDevBridgeFiles(page, [{ file, beforeText, afterText: current }]),
+        rejectAfter(15_000, "bridge revert"),
+      ]);
+    } catch (error) {
+      bridgeError = messageOf(error);
+    }
+  } else if (page) {
+    bridgeError = current === null ? "copy was unreadable" : "page closed";
+  }
+  if (readOrNull(path) !== beforeText) {
+    try {
+      writeFileSync(path, beforeText);
+    } catch (error) {
+      return `${file}: direct write failed: ${messageOf(error)}`;
+    }
+  }
+  return bridgeError === null ? null
+    : `${file}: bridge revert failed (${bridgeError}); restored by direct write`;
+}
+
+// Restores every listed copy independently, then verifies each one against
+// its baseline, and only then raises a single error naming every problem.
+async function restoreDevWorkspaceFiles(page, entries: Array<[string, string, string]>) {
+  const problems: string[] = [];
+  for (const [file, path, beforeText] of entries) {
+    const problem = await restoreOneDevWorkspaceFile(page, file, path, beforeText);
+    if (problem !== null) problems.push(problem);
+  }
+  for (const [file, path, beforeText] of entries) {
+    if (readOrNull(path) !== beforeText) problems.push(`${file}: still differs from its baseline`);
+  }
+  if (problems.length > 0) {
+    throw new Error("dev-workspace restore: " + problems.join("; "));
+  }
+}
+
+// Restore a generated dev-workspace source after a case.
+async function restoreDevBridgeFile(page, file: string, path: string, beforeText: string) {
+  await restoreDevWorkspaceFiles(page, [[file, path, beforeText]]);
 }
 
 // The consumer bridge is engaged unless `?writeBridge=0`, so a case at "/"
 // writes the generated dev-workspace copies too. Cases that can write take a
 // snapshot of all four owned copies and restore them exactly afterwards,
 // whatever happened, so no marker leaks into a later case.
-const devWorkspaceFiles: Array<[string, string]> = [
-  ["apps/back-office/src/backoffice_ui/components.nim", devBridgeSourceFile],
-  ["packages/metacraft-design/src/metacraft_design/tokens.nim", devBridgeTokenFile],
-  [componentSchemaBridgeFile, devBridgeComponentSchemaFile],
-  ["apps/back-office/src/backoffice_editor/story_fixtures.schema", resolve(
-    "../../../metacraft-web/dist/editor-dev-workspace/apps/back-office/src/backoffice_editor/story_fixtures.schema")],
-];
-
-function snapshotDevWorkspace(): string[] {
-  return devWorkspaceFiles.map(([, path]) => readFileSync(path, "utf8"));
-}
-
 async function restoreDevWorkspace(page, before: string[]) {
-  for (let i = 0; i < devWorkspaceFiles.length; i += 1) {
-    const [file, path] = devWorkspaceFiles[i];
-    await restoreDevBridgeFile(page, file, path, before[i]);
-  }
-  for (let i = 0; i < devWorkspaceFiles.length; i += 1) {
-    expect(readFileSync(devWorkspaceFiles[i][1], "utf8")).toBe(before[i]);
-  }
+  await restoreDevWorkspaceFiles(page, devWorkspaceFiles.map(
+    ([file, path], i): [string, string, string] => [file, path, before[i]]));
 }
+
+// Direct restore to the pristine copies, re-checked after a short settle so
+// a bridge write already received when the page closed cannot land after it.
+async function enforcePristineDevWorkspace(pristine: string[]): Promise<string[]> {
+  const restored = new Set<string>();
+  for (let round = 0; round < 3; round += 1) {
+    const dirty = dirtyDevWorkspaceFiles(pristine);
+    if (dirty.length === 0) return [...restored];
+    dirty.forEach((file) => restored.add(file));
+    await restoreDevWorkspace(null, pristine);
+    await new Promise((settle) => setTimeout(settle, 250));
+  }
+  const dirty = dirtyDevWorkspaceFiles(pristine);
+  if (dirty.length > 0) {
+    throw new Error("dev-workspace copies keep changing after restore: " + dirty.join(", "));
+  }
+  return [...restored];
+}
+
+const test = base.extend<{ devWorkspaceIsolation: void }>({
+  devWorkspaceIsolation: [async ({}, use, testInfo) => {
+    const pristine = pristineDevWorkspace();
+    // A case never starts from another case's leftovers, even when that
+    // case's teardown never ran (a worker killed mid-teardown).
+    const atStart = await enforcePristineDevWorkspace(pristine);
+    if (atStart.length > 0) {
+      testInfo.annotations.push({ type: "dev-workspace restored before the case",
+                                  description: atStart.join(", ") });
+    }
+    await use();
+    // `page` is closed by now: this fixture was set up before it.
+    const leaked = await enforcePristineDevWorkspace(pristine);
+    if (leaked.length > 0) {
+      testInfo.annotations.push({ type: "dev-workspace restored after the case",
+                                  description: leaked.join(", ") });
+      // A case that passed and still left its copies dirty has a restore gap
+      // of its own; a case that already failed is reported by its own error.
+      if (testInfo.status === testInfo.expectedStatus) {
+        throw new Error("the case left dev-workspace copies dirty: " + leaked.join(", "));
+      }
+    }
+  }, { auto: true }],
+});
 
 async function revertDevBridgeFiles(page, files) {
   const response = await page.evaluate(async (changes) => {
@@ -322,13 +456,8 @@ test.describe("metacraft-web IsoNim editor consumer", () => {
       expect(readFileSync(devBridgeSourceFile, "utf8")).not.toBe(beforeText);
       expect(errors).toEqual([]);
     } finally {
-      const afterText = readFileSync(devBridgeSourceFile, "utf8");
-      if (afterText !== beforeText) {
-        await revertDevBridgeFiles(page, [{
-          file: "apps/back-office/src/backoffice_ui/components.nim", beforeText, afterText,
-        }]);
-      }
-      expect(readFileSync(devBridgeSourceFile, "utf8")).toBe(beforeText);
+      await restoreDevBridgeFile(page, "apps/back-office/src/backoffice_ui/components.nim",
+        devBridgeSourceFile, beforeText);
     }
     await page.goto("/?writeBridge=1");
     await page.getByRole("button", { name: "Select story Operational components / Topbar", exact: true }).click();
@@ -388,14 +517,8 @@ test.describe("metacraft-web IsoNim editor consumer", () => {
       const revertedText = readFileSync(devBridgeTokenFile, "utf8");
       expect(revertedText.trimEnd()).toBe(beforeText.trimEnd());
     } finally {
-      const afterText = readFileSync(devBridgeTokenFile, "utf8");
-      if (afterText !== beforeText) {
-        await revertDevBridgeFiles(page, [{
-          file: "packages/metacraft-design/src/metacraft_design/tokens.nim",
-          beforeText, afterText,
-        }]);
-      }
-      expect(readFileSync(devBridgeTokenFile, "utf8")).toBe(beforeText);
+      await restoreDevBridgeFile(page, "packages/metacraft-design/src/metacraft_design/tokens.nim",
+        devBridgeTokenFile, beforeText);
     }
   });
 
@@ -2831,6 +2954,12 @@ test.describe("metacraft-web IsoNim editor consumer", () => {
   test("e2e_figma_grade_numeric_color_shadow_typography_controls", async ({
     page,
   }) => {
+    // Every Specialized Editor round-trips real bridge writes: 32.4-33.3 s at
+    // load 30-63, 49.4 s at load 76-180 and 51-76 s at load 81-132 on the
+    // 24-core host (2026-11-04, isonim 15f6d922f). It is over the shared 30 s
+    // default even at the lowest load measured, so that default measured the
+    // host, not the editor; the case declares its own budget.
+    test.setTimeout(120_000);
     await page.goto("/");
     const workspaceBefore = snapshotDevWorkspace();
     try {
@@ -4144,18 +4273,9 @@ test("metacraft_topbar_sibling_padding_undo_restores_only_its_own_marker", async
     await settled(afterBottom, { undo: r0.undo + 1, redo: r0.redo }, topBottom, topbar);
     expect(errors).toEqual([]);
   } finally {
-    const afterText = read();
-    if (afterText !== original) {
-      try {
-        await revertDevBridgeFiles(page, [{ file: sourceFile, beforeText: original, afterText }]);
-      } catch (error) {
-        // The page is gone (e.g. a timeout): restore the generated copy
-        // directly so a failure here cannot leak into later cases.
-        writeFileSync(devBridgeSourceFile, original);
-        throw error;
-      }
-    }
-    expect(read()).toBe(original);
+    // Through the bridge while the page is alive, else written directly, so
+    // a timeout cannot leak the markers into later cases.
+    await restoreDevBridgeFile(page, sourceFile, devBridgeSourceFile, original);
   }
   await page.reload();
   const restoredTopbar = await selectTopbar();
