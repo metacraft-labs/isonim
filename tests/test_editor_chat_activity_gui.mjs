@@ -488,7 +488,16 @@ try{
         await pinned.locator(`[data-choice-group-label="${slug[0].toUpperCase()+slug.slice(1)}"]`).click();
       }
       assert.equal(JSON.parse(await toolbarPage.evaluate(()=>window.__chatTest.controlState())).viewport,slug);
-      if(compact) assert.equal(await bar.locator('[data-preview-viewport-current]').innerText(),slug[0].toUpperCase()+slug.slice(1));
+      if(compact) {
+        const selectedLabel=await bar.locator('[data-preview-viewport-current]').innerText();
+        assert.equal(selectedLabel,slug[0].toUpperCase()+slug.slice(1));
+        // The hidden size chips leave the trigger as the only name of the size.
+        assert.equal(await overflow.getAttribute('title'),`Current viewport: ${selectedLabel}; choose another size`);
+        assert.equal(await overflow.getAttribute('aria-description'),`Current viewport: ${selectedLabel}`);
+        assert((await overflow.boundingBox()).width>=44);
+        const visibleLabel=await bar.locator('[data-preview-viewport-current]').boundingBox();
+        assert(visibleLabel&&visibleLabel.width>=20&&visibleLabel.height>0);
+      }
     }
     await overflow.click();
     const options=bar.locator('[data-preview-viewport-dropdown-option]:visible');
