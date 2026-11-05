@@ -246,7 +246,8 @@ const inspectorEditableCssProperties* = [
   "border-color", "outline-color", "border-top-color", "border-right-color",
   "border-bottom-color", "border-left-color", "border-width", "border-style",
   "background-image", "background-size", "outline-offset", "filter",
-  "transition-duration",
+  "backdrop-filter", "transition-property", "transition-duration",
+  "transition-delay",
   # Fill's advanced background-image controls and the Effects section's
   # shadow and timing curve editors ("Specialized Editors")
   "background-position", "background-repeat", "transition-timing-function",

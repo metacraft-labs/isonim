@@ -3314,7 +3314,9 @@ proc mountInspectorSectionBody[R, E](r: R; vm: EditorVM;
     mountSectionLayout[R, E](r, body, vm)
     # flex-wrap is the Layout section's own Wrap row and `Enable flex wrap`
     # (`section_layout_controls`).
-    mountExposedCssRows[R, E](r, body, vm, ["aspect-ratio"])
+    # The shorthand row keeps a multi-value padding (`8px 16px`) editable as
+    # written; the per-side rows above edit one side at a time.
+    mountExposedCssRows[R, E](r, body, vm, ["padding", "aspect-ratio"])
   of "appearance":
     mountSectionAppearance[R, E](r, body, vm)
   of "fill":
@@ -3335,7 +3337,9 @@ proc mountInspectorSectionBody[R, E](r: R; vm: EditorVM;
     let shadowWiring = vm.inspectorRowWiring(shadowProperty)
     mountExposedCssRow[R, E](r, body, vm, shadowProperty, shadowWiring)
     mountShadowEditor[R, E](r, body, vm, shadowWiring)
-    mountExposedCssRows[R, E](r, body, vm, ["filter", "transform", "transition-duration"])
+    mountExposedCssRows[R, E](r, body, vm, ["filter", "backdrop-filter",
+      "transform", "transition-property", "transition-duration",
+      "transition-delay"])
     let timingWiring = vm.inspectorRowWiring(timingProperty)
     mountExposedCssRow[R, E](r, body, vm, timingProperty, timingWiring)
     mountTimingEditor[R, E](r, body, vm, timingWiring)

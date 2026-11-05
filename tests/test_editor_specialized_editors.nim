@@ -48,6 +48,7 @@ import isonim/editor
 import isonim/editor/css_compound_values
 import isonim/editor/numeric_precision
 import isonim/editor/demo_workspace
+import isonim/editor/style_provenance_decode
 import isonim/editor/views/shell
 import isonim/editor/views/widgets/advanced_controls
 import isonim/editor/views/widgets/gradient_editor
@@ -1142,3 +1143,41 @@ suite "compound number field precision":
     check p.x == roundToDecimals(0.1234 + 7.0 / curveSize, curveResolution)
     check decimalPlaces(p.x) <= curveResolution
     check decimalPlaces(p.y) <= curveResolution
+
+suite "exposed CSS parameters":
+  test "backdrop filter, transition parameters and the padding shorthand are editable rows":
+    # The preview bridge only reports properties in this list, and only a
+    # reported property can reach an inspector row.
+    for property in ["backdrop-filter", "transition-property",
+        "transition-delay", "padding"]:
+      check property in inspectorEditableCssProperties
+    createRoot proc(dispose: proc()) =
+      let r = MockRenderer()
+      let foundation = new(string)
+      foundation[] = DemoFoundationInitialSource
+      let vm = editorVm(foundation)
+      let panel = renderInspectorPanel[MockRenderer, MockNode](r, vm)
+      let effects = findByAttr(panel, "data-inspector-section-body", "effects")
+      let layout = findByAttr(panel, "data-inspector-section-body", "layout")
+      need(effects)
+      need(layout)
+      var element = demoInspectorElement()
+      for (property, value) in [("backdrop-filter", "blur(4px)"),
+          ("transition-property", "opacity"), ("transition-delay", "40ms"),
+          ("padding", "18px")]:
+        element.properties.add PropertyInfo(name: property, value: value,
+          origin: poTailwindClass, originDetail: "class:destination-card",
+          sourceFile: DemoFoundationSource, sourceLine: 10,
+          schemaKey: "classes.destination-card." & property,
+          sharedCount: 4, directStyleAllowed: true)
+      check vm.selectInspectorElement(element)
+      for property in ["backdrop-filter", "transition-property", "transition-delay"]:
+        check display(findByAttr(effects, "data-exposed-css-property", property)) == "flex"
+      check display(findByAttr(layout, "data-exposed-css-property", "padding")) == "flex"
+      # A selection without them hides the rows again.
+      check vm.selectInspectorElement(ElementRef(id: "plain", tag: "div",
+        properties: @[PropertyInfo(name: "color", value: "red")]))
+      for property in ["backdrop-filter", "transition-property", "transition-delay"]:
+        check display(findByAttr(effects, "data-exposed-css-property", property)) == "none"
+      check display(findByAttr(layout, "data-exposed-css-property", "padding")) == "none"
+      dispose()

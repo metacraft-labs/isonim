@@ -1685,7 +1685,8 @@ test.describe("IsoNim packaged editor example", () => {
     await expect(rows).toBeHidden();
     await expect(field).toHaveValue(
       "box-shadow: rgba(15, 23, 42, 0.12) 0px 8px 24px 0px;\n" +
-      "filter: none;\ntransform: none;\ntransition-duration: 0s;\ntransition-timing-function: ease;\n");
+      "filter: none;\nbackdrop-filter: none;\ntransform: none;\ntransition-property: all;\n" +
+      "transition-duration: 0s;\ntransition-delay: 0s;\ntransition-timing-function: ease;\n");
 
     // Edit the text: two changed declarations, one unchanged. Enter commits;
     // both are written inside the rule that owns them, and each is an edit.
@@ -1707,7 +1708,8 @@ test.describe("IsoNim packaged editor example", () => {
       .toBe("0.18s");
     await expect(field).toHaveValue(
       "box-shadow: rgba(15, 23, 42, 0.12) 0px 8px 24px 0px;\n" +
-      "filter: none;\ntransform: translateX(8px) scale(1.02);\ntransition-duration: 180ms;\ntransition-timing-function: ease;\n");
+      "filter: none;\nbackdrop-filter: none;\ntransform: translateX(8px) scale(1.02);\ntransition-property: all;\n" +
+      "transition-duration: 180ms;\ntransition-delay: 0s;\ntransition-timing-function: ease;\n");
     await expect(message).toBeHidden();
 
     // Invalid text is refused at the commit with the reason; nothing moves,
@@ -1727,7 +1729,8 @@ test.describe("IsoNim packaged editor example", () => {
     await expect(message).toBeHidden();
     await expect(field).toHaveValue(
       "box-shadow: rgba(15, 23, 42, 0.12) 0px 8px 24px 0px;\n" +
-      "filter: none;\ntransform: translateX(8px) scale(1.02);\ntransition-duration: 180ms;\ntransition-timing-function: ease;\n");
+      "filter: none;\nbackdrop-filter: none;\ntransform: translateX(8px) scale(1.02);\ntransition-property: all;\n" +
+      "transition-duration: 180ms;\ntransition-delay: 0s;\ntransition-timing-function: ease;\n");
 
     // A scope no project schema entry can write is refused at the act: the
     // card's heading is captured off the preview, and no rule of the
@@ -1766,7 +1769,8 @@ test.describe("IsoNim packaged editor example", () => {
       .toBe("none");
     await expect(field).toHaveValue(
       "box-shadow: rgba(15, 23, 42, 0.12) 0px 8px 24px 0px;\n" +
-      "filter: none;\ntransform: none;\ntransition-duration: 0s;\ntransition-timing-function: ease;\n");
+      "filter: none;\nbackdrop-filter: none;\ntransform: none;\ntransition-property: all;\n" +
+      "transition-duration: 0s;\ntransition-delay: 0s;\ntransition-timing-function: ease;\n");
 
     // Toggling back shows the rows and the empty entry again.
     await toggle.click();
