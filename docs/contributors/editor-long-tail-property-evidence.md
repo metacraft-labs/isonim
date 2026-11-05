@@ -19,4 +19,4 @@ chain stay marked as limited or read-only.
 | container_queries            | `container-type`, `container-name`, `@container`                     | read_only            | none            | not covered        | Container-query controls remain read-only until ownership and browser editing are implemented.                                                                                                                |
 
 Evidence is enforced by `tests/test_editor_release_gate.nim` and the
-machine-readable rows in `docs/editor-feature-matrix.json`.
+machine-readable rows in `docs/contributors/editor-feature-matrix.json`.

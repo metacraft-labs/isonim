@@ -411,7 +411,7 @@
         "src/isonim/editor/views/widgets/timing_editor.nim",
         "tests/test_editor_compound_values.nim",
         "tests/test_editor_specialized_editors.nim",
-        "docs/editor-long-tail-property-evidence.md",
+        "docs/contributors/editor-long-tail-property-evidence.md",
         "tests/test_editor_viewmodels.nim",
         "tests/browser/specs/metacraft-web-editor.spec.ts"
       ]
@@ -1144,7 +1144,7 @@
       "implementationReferences": [
         "src/isonim/editor/workspace.nim",
         "src/isonim/editor/viewmodels.nim",
-        "docs/editor-write-bridge-protocol.md",
+        "docs/contributors/editor-write-bridge-protocol.md",
         "../metacraft-web/apps/back-office/src/backoffice_editor/workspace.nim",
         "tests/test_editor_viewmodels.nim",
         "../metacraft-web/apps/back-office/tests/test_editor_dev_bridge.mjs",
@@ -2040,7 +2040,7 @@
         "src/isonim/editor/types.nim",
         "src/isonim/editor/viewmodels.nim",
         "src/isonim/editor/views/component_edit.nim",
-        "docs/editor-long-tail-property-evidence.md",
+        "docs/contributors/editor-long-tail-property-evidence.md",
         "tests/test_editor_viewmodels.nim",
         "tests/browser/specs/editor-example.spec.ts",
         "../metacraft-web/apps/back-office/src/backoffice_editor/workspace.nim",
@@ -2211,7 +2211,7 @@
       "metacraftEvidence": "not_covered",
       "limitations": "Container-query metadata is represented as read-only until source ownership and browser controls are implemented.",
       "implementationReferences": [
-        "docs/editor-long-tail-property-evidence.md",
+        "docs/contributors/editor-long-tail-property-evidence.md",
         "tests/test_editor_release_gate.nim"
       ]
     }
