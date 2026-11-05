@@ -157,6 +157,9 @@
           packages =
             (with pkgs; [
               nimble
+              # RS-M7 real render bridge uses the pinned in-process WebP ABI.
+              libwebp
+              pkg-config
               nodejs
               # TBAR-M5b: yarn 1 manages the editor's runtime JS deps
               # (``@tiptap/core``, ``@tiptap/starter-kit``, ``tiptap-markdown``,
@@ -210,6 +213,12 @@
             );
 
           shellHook = ''
+            ${pkgs.lib.optionalString pkgs.stdenv.isLinux ''
+              export LD_LIBRARY_PATH="${pkgs.libwebp}/lib''${LD_LIBRARY_PATH:+:$LD_LIBRARY_PATH}"
+            ''}
+            ${pkgs.lib.optionalString pkgs.stdenv.isDarwin ''
+              export DYLD_FALLBACK_LIBRARY_PATH="${pkgs.libwebp}/lib''${DYLD_FALLBACK_LIBRARY_PATH:+:$DYLD_FALLBACK_LIBRARY_PATH}"
+            ''}
             ${ownRepoOnly installGitHooks}
             echo "IsoNim dev shell — nim $(nim --version 2>&1 | head -1), node $(node --version)"
             # REV-M3 dev-cluster defaults; users may override in their own
