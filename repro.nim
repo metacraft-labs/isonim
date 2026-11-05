@@ -1311,7 +1311,8 @@ package isonim:
       source = "tests/test_editor_server.py",
       actionId = "isonim.chat_execute.editor_server",
       after = @[reviewToolEdge.action],
-      extraInputs = @["tests/test_editor_server.py", "tools/editor_server.py", "tools/editor_shutdown.json", drReviewBin]))
+      extraInputs = @["tests/test_editor_server.py", "tools/editor_server.py", "tools/editor_shutdown.json", drReviewBin,
+        "examples/source_project", "tools/build_source_catalog.py", "tests/helpers/editor_control_peer.py", "src"]))
     testExecuteActions.add(pythonUnittest.run(
       source = "tests/test_agent_session_launcher.py",
       actionId = "isonim.chat_execute.launcher",
@@ -1479,8 +1480,9 @@ package isonim:
         "config.nims", "tests/config.nims", "build/tailwind-styles.json"])
     var c4aGuiActions = @[c4aCompoundEdge, c4aGestureEdge, c4aColorEdge]
     # The values case runs a native catalog build, `--describe` and the GUI
-    # scrub: 285 s at load 79-94 on the 24-core host (2026-11-04, isonim
-    # 15f6d922f) against the former 180 s limit, so it declares 420 s.
+    # scrub. The editor-stabilisation run `source-style-values-gui-t600`
+    # (2026-11-04, isonim 15f6d922f, 24-core host, load 75-94) passed in
+    # 285 s against the former 180 s limit, so it declares 420 s.
     for (name, limit) in [("test_editor_source_style_gui", "180s"),
                           ("test_editor_source_style_values_gui", "420s")]:
       let gripEdge = sh.shell(

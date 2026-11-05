@@ -633,6 +633,10 @@ proc cmdSourceProject*(args: seq[string]): int =
         echo $response
       dispose()
     return exitCode
+  except SourceProjectBusy as error:
+    # Transient: the editor server reports it as busy, never as an invalid contract.
+    echo $(%* {"ok": false, "code": "source-project-busy", "diagnostic": error.msg})
+    return 4
   except CatchableError as error:
     echo $(%* {"ok": false, "diagnostic": error.msg})
     return 4

@@ -19,6 +19,9 @@ import unittest
 from helpers.native_literal_fixture import acquire
 
 REPO = Path(__file__).resolve().parent.parent
+# `source-project --describe` over the real GRIP provider: 6.4-19.2 s at load 86-124 on the
+# 24-core host (2026-11-04, isonim 15f6d922f). 60 s bounds a hang, not the host.
+DESCRIBE_SECONDS = 60
 
 class SourceStyleProviderTests(unittest.TestCase):
     def test_real_grip_compiled_targets_shared_scope_and_follow_up_source_edit(self):
@@ -42,7 +45,7 @@ class SourceStyleProviderTests(unittest.TestCase):
         (project / manifest["catalog"]).write_text(json.dumps(catalog))
         binary = REPO / "build/bin/isonim-review"
         described = subprocess.run([str(binary), "source-project", str(project), "--describe"],
-            env=env, capture_output=True, text=True, timeout=5)
+            env=env, capture_output=True, text=True, timeout=DESCRIBE_SECONDS)
         (directory / "describe.log").write_text(described.stdout + described.stderr)
         self.assertEqual(described.returncode, 0, described.stdout + described.stderr)
         bindings = json.loads(described.stdout)["editableStyles"]
@@ -102,7 +105,7 @@ class SourceStyleProviderTests(unittest.TestCase):
         build = subprocess.run(["python3", str(REPO / "tools/build_source_catalog.py"), str(project)], env=env, capture_output=True, text=True, timeout=90)
         (directory / "catalog-build.log").write_text(build.stdout + build.stderr)
         self.assertEqual(build.returncode, 0, build.stdout + build.stderr)
-        described = subprocess.run([str(binary), "source-project", str(project), "--describe"], env=env, capture_output=True, text=True, timeout=5)
+        described = subprocess.run([str(binary), "source-project", str(project), "--describe"], env=env, capture_output=True, text=True, timeout=DESCRIBE_SECONDS)
         self.assertEqual(described.returncode, 0, described.stdout + described.stderr)
         bindings = json.loads(described.stdout)["editableStyles"]
         panel = next(row for row in bindings if row["selector"] == ".panel" and row["storyId"] == "Pages / Home")

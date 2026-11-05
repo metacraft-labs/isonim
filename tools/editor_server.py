@@ -46,6 +46,23 @@ SHUTDOWN_POLICY = json.loads((REPO / "tools/editor_shutdown.json").read_text())
 DAEMON_SHUTDOWN_SECONDS = (2 * SHUTDOWN_POLICY["http_request_seconds"] +
     SHUTDOWN_POLICY["harbor_teardown_seconds"] + SHUTDOWN_POLICY["supervisor_margin_seconds"])
 
+# A source metadata read (`source-project --snapshot`) describes every editable
+# style and parses the whole compiled catalog. On a 24-core host it took 4.2-16.7 s
+# at load 86-102 for the GRIP provider project (2.3 MB reply, 2026-11-04), so the
+# former 5 s limit failed healthy reads under load; 60 s matches the `--describe`
+# limit of the source-style tests. ISONIM_SOURCE_READ_TIMEOUT_SECONDS overrides it.
+# The read runs under the per-instance source lock, so an operation of this
+# editor instance would queue behind a slow read. None can: this read is the
+# editor's initial one, and until it lands the source adapter is not ready, so an
+# edit staged meanwhile "schedules nothing" (editor spec "Saving").
+SOURCE_READ_TIMEOUT_SECONDS = float(os.environ.get("ISONIM_SOURCE_READ_TIMEOUT_SECONDS", "60"))
+# Editor spec "Native project source capabilities": "Reads wait for the editor's
+# active transaction or report that the project is busy". A busy project and a
+# read that outlived its limit are transient and carry their own codes (HTTP 503
+# with Retry-After); only a malformed project is "Source project contract is invalid".
+SOURCE_PROJECT_BUSY = "source-project-busy"
+SOURCE_READ_TIMEOUT = "source-read-timeout"
+
 
 def install_vendor_assets(destination: Path) -> None:
     source = os.environ.get("ISONIM_EDITOR_VENDOR")
@@ -201,6 +218,13 @@ def inject_origin_meta(html, browser_bootstrap=""):
     return re.sub(r'</head>', meta + '</head>', html, count=1, flags=re.IGNORECASE).encode()
 
 
+class SourceReadTransient(Exception):
+    """A source metadata read that may succeed if repeated: the project is busy."""
+    def __init__(self, code: str, message: str):
+        super().__init__(message)
+        self.code = code
+
+
 class EditorHTTPServer(http.server.ThreadingHTTPServer):
     daemon_threads = True
 
@@ -292,11 +316,14 @@ class EditorHandler(http.server.SimpleHTTPRequestHandler):
             # only the later describe call. Native snapshot also owns the OS
             # project lock, so another native worker cannot publish mid-read.
             with self.source_lock:
+                retry_after = None
                 try:
                     if self.source_binary:
                         described = subprocess.run([str(self.source_binary), "source-project", str(self.source_root), "--snapshot"],
-                            cwd=self.source_root, capture_output=True, text=True, timeout=5)
+                            cwd=self.source_root, capture_output=True, text=True, timeout=SOURCE_READ_TIMEOUT_SECONDS)
                         snapshot = json.loads(described.stdout)
+                        if snapshot.get("code") == SOURCE_PROJECT_BUSY:
+                            raise SourceReadTransient(SOURCE_PROJECT_BUSY, snapshot.get("diagnostic", "Source project transaction is busy."))
                         if described.returncode or not snapshot.get("ok"):
                             raise ValueError(snapshot.get("diagnostic", "Invalid editable source metadata"))
                         manifest = snapshot["manifest"]
@@ -316,11 +343,19 @@ class EditorHandler(http.server.SimpleHTTPRequestHandler):
                             raise ValueError("Catalog path escapes workspace")
                         output = {"catalog": json.loads(catalog_path.read_text()), "manifest": public_source_manifest(manifest)}
                     status = 200
+                except subprocess.TimeoutExpired:
+                    output = {"ok": False, "code": SOURCE_READ_TIMEOUT,
+                              "diagnostic": f"Source project read did not finish within {SOURCE_READ_TIMEOUT_SECONDS:g} s; the project may be busy."}
+                    status, retry_after = 503, "1"
+                except SourceReadTransient as busy:
+                    output = {"ok": False, "code": busy.code, "diagnostic": str(busy)}
+                    status, retry_after = 503, "1"
                 except (OSError, ValueError, KeyError, TypeError, subprocess.SubprocessError) as error:
                     output = {"ok": False, "diagnostic": "Source project contract is invalid: " + str(error)}
                     status = 400
                 data = json.dumps(output).encode()
             self.send_response(status)
+            if retry_after: self.send_header("Retry-After", retry_after)
             self.send_header("Content-Type", "application/json")
             self.send_header("Content-Length", str(len(data)))
             self.send_header("Cache-Control", "no-store")

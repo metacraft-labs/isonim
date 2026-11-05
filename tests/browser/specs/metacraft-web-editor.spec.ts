@@ -232,27 +232,40 @@ function rejectAfter(ms: number, what: string): Promise<never> {
   });
 }
 
-// Restores one copy and never throws: returns what went wrong, or null. The
-// bridge revert runs first while a page is alive, so a live editor sees the
-// revert as its own bridge change; whatever the bridge did, the file is then
-// written directly unless it already holds `beforeText`. `page === null` asks
-// for the direct write alone (the isolation fixture, which has no page).
+// A page that closed is a case that already ended -- a timeout closed it, or
+// teardown is under way. Its in-case restore steps aside quietly: the
+// isolation fixture restores the copies once the page is gone, so a closed
+// page adds no second error next to the case's own.
+const pageClosed = Symbol("page closed");
+
+function isClosed(page): boolean {
+  return Boolean(page) && page.isClosed();
+}
+
+// Restores one copy and never throws: returns what went wrong, null, or
+// `pageClosed`. The bridge revert runs first while a page is alive, so a live
+// editor sees the revert as its own bridge change; whatever the bridge did,
+// the file is then written directly unless it already holds `beforeText`.
+// `page === null` asks for the direct write alone (the isolation fixture,
+// which has no page).
 async function restoreOneDevWorkspaceFile(page, file: string, path: string,
-                                          beforeText: string): Promise<string | null> {
+                                          beforeText: string): Promise<string | null | typeof pageClosed> {
   const current = readOrNull(path);
   if (current === beforeText) return null;
+  if (isClosed(page)) return pageClosed;
   let bridgeError: string | null = null;
-  if (page && !page.isClosed() && current !== null) {
+  if (page && current !== null) {
     try {
       await Promise.race([
         revertDevBridgeFiles(page, [{ file, beforeText, afterText: current }]),
         rejectAfter(15_000, "bridge revert"),
       ]);
     } catch (error) {
+      if (isClosed(page)) return pageClosed;
       bridgeError = messageOf(error);
     }
   } else if (page) {
-    bridgeError = current === null ? "copy was unreadable" : "page closed";
+    bridgeError = "copy was unreadable";
   }
   if (readOrNull(path) !== beforeText) {
     try {
@@ -265,20 +278,41 @@ async function restoreOneDevWorkspaceFile(page, file: string, path: string,
     : `${file}: bridge revert failed (${bridgeError}); restored by direct write`;
 }
 
+// Cleanup problems of the in-case restores, per case. They are never thrown
+// from the restore: the restore runs in the case's `finally`, where a throw
+// would replace the case's own failure. Each is recorded as an annotation
+// at once, and the isolation fixture raises them as a secondary error only
+// when the case otherwise passed.
+const inCaseCleanupProblems = new WeakMap<object, string[]>();
+
+function recordInCaseCleanupProblems(problems: string[]) {
+  let info;
+  try {
+    info = base.info();
+  } catch {
+    return; // no case is running any more; the fixture has already restored
+  }
+  info.annotations.push({ type: "dev-workspace cleanup problem", description: problems.join("; ") });
+  inCaseCleanupProblems.set(info, [...(inCaseCleanupProblems.get(info) ?? []), ...problems]);
+}
+
 // Restores every listed copy independently, then verifies each one against
-// its baseline, and only then raises a single error naming every problem.
+// its baseline. With a page (a case's own cleanup) the problems are recorded,
+// not thrown; without one (the isolation fixture) they raise one error.
 async function restoreDevWorkspaceFiles(page, entries: Array<[string, string, string]>) {
   const problems: string[] = [];
   for (const [file, path, beforeText] of entries) {
     const problem = await restoreOneDevWorkspaceFile(page, file, path, beforeText);
+    if (problem === pageClosed) return;
     if (problem !== null) problems.push(problem);
   }
+  if (isClosed(page)) return;
   for (const [file, path, beforeText] of entries) {
     if (readOrNull(path) !== beforeText) problems.push(`${file}: still differs from its baseline`);
   }
-  if (problems.length > 0) {
-    throw new Error("dev-workspace restore: " + problems.join("; "));
-  }
+  if (problems.length === 0) return;
+  if (page === null) throw new Error("dev-workspace restore: " + problems.join("; "));
+  recordInCaseCleanupProblems(problems);
 }
 
 // Restore a generated dev-workspace source after a case.
@@ -326,14 +360,18 @@ const test = base.extend<{ devWorkspaceIsolation: void }>({
     await use();
     // `page` is closed by now: this fixture was set up before it.
     const leaked = await enforcePristineDevWorkspace(pristine);
+    const secondary: string[] = [];
     if (leaked.length > 0) {
       testInfo.annotations.push({ type: "dev-workspace restored after the case",
                                   description: leaked.join(", ") });
-      // A case that passed and still left its copies dirty has a restore gap
-      // of its own; a case that already failed is reported by its own error.
-      if (testInfo.status === testInfo.expectedStatus) {
-        throw new Error("the case left dev-workspace copies dirty: " + leaked.join(", "));
-      }
+      secondary.push("the case left dev-workspace copies dirty: " + leaked.join(", "));
+    }
+    secondary.push(...(inCaseCleanupProblems.get(testInfo) ?? [])
+      .map((problem) => "in-case dev-workspace cleanup failed: " + problem));
+    // Only a case that otherwise passed fails on these: a case that already
+    // failed keeps its own error, and the annotations above carry the rest.
+    if (secondary.length > 0 && testInfo.status === testInfo.expectedStatus) {
+      throw new Error(secondary.join("; "));
     }
   }, { auto: true }],
 });
@@ -1170,6 +1208,11 @@ test.describe("metacraft-web IsoNim editor consumer", () => {
   test("e2e_style_manager_scope_choices_update_real_preview", async ({
     page,
   }) => {
+    // Four scope changes, each written after the ~900 ms debounce, plus the
+    // wait for the scope commit's own write before typing: 19.3-27.5 s at
+    // load 21-57, and a 31.4 s timeout in a full matrix, on the 24-core host
+    // (2026-11-04). The shared 30 s default measured the host, not the editor.
+    test.setTimeout(60_000);
     await page.goto("/");
     const workspaceBefore = snapshotDevWorkspace();
     const tokensBefore = readFileSync(devBridgeTokenFile, "utf8");
@@ -1211,20 +1254,31 @@ test.describe("metacraft-web IsoNim editor consumer", () => {
       const history = () => page.evaluate(() =>
         (window as any).__isonimEditorVm.inspector.undoStack.value.length);
       const startHistory = await history();
+      const scopeValue = await topbar.evaluate((node) => getComputedStyle(node).paddingTop);
       await row.getByRole("button", {
         name: "Apply local instance scope for padding-top", exact: true,
       }).first().click();
+      // "Choosing a scope commits the row's current value there" (editor spec
+      // "Saving", "Which scope a row commits at by default"), and that commit
+      // is written after the ~900 ms debounce. A user who types within the
+      // debounce replaces the staged edit (one marker); one who pauses longer
+      // gets the scope commit written first and the typed value appended as a
+      // second marker. Waiting for the scope write makes the case take the
+      // second path every time instead of depending on its own timing.
+      const afterScope = appendMarker(componentsBefore, scopeValue);
+      await expect.poll(() => readFileSync(devBridgeSourceFile, "utf8")).toBe(afterScope);
+      await expect.poll(history).toBeGreaterThan(startHistory);
+      await expectNoPendingSourceEdits(page);
+      const scopeHistory = await history();
       await padTop.click();
       await padTop.fill("20");
       await padTop.press("Enter");
       await expect
         .poll(() => topbar.evaluate((node) => getComputedStyle(node).paddingTop))
         .toBe("20px");
-      // Choosing a scope re-commits the row's current value into it, so the
-      // count is relative rather than exactly one edit.
-      await expect.poll(history).toBeGreaterThan(startHistory);
+      await expect.poll(history).toBeGreaterThan(scopeHistory);
       await expectNoPendingSourceEdits(page);
-      const afterLocal = appendMarker(componentsBefore, "20px");
+      const afterLocal = appendMarker(afterScope, "20px");
       expect(readFileSync(devBridgeSourceFile, "utf8")).toBe(afterLocal);
       expect(readFileSync(devBridgeTokenFile, "utf8")).toBe(tokensBefore);
       const localHistory = await history();
@@ -4081,13 +4135,13 @@ test("metacraft_topbar_padding_edges_survive_actual_save_and_reload", async ({ p
     expect(readFileSync(devBridgeSourceFile, "utf8")).toBe(fontUnits);
     expect(errors).toEqual([]);
   } finally {
-    // Through the bridge while the page is alive, else written directly: a
-    // timeout closes the page, and a revert that needed it left the markers
-    // in the dev workspace for the next case to start from.
+    // Through the bridge while the page is alive. A closed page (a timeout)
+    // is left to the isolation fixture, which restores the copy after the
+    // page is gone; the restore verifies itself and records any problem, so
+    // no assertion here can replace the case's own failure.
     await restoreDevBridgeFile(page,
       "apps/back-office/src/backoffice_ui/components.nim",
       devBridgeSourceFile, original);
-    expect(readFileSync(devBridgeSourceFile, "utf8")).toBe(original);
   }
   await page.reload();
   const restoredTopbar = await selectTopbar();
@@ -4273,8 +4327,8 @@ test("metacraft_topbar_sibling_padding_undo_restores_only_its_own_marker", async
     await settled(afterBottom, { undo: r0.undo + 1, redo: r0.redo }, topBottom, topbar);
     expect(errors).toEqual([]);
   } finally {
-    // Through the bridge while the page is alive, else written directly, so
-    // a timeout cannot leak the markers into later cases.
+    // Through the bridge while the page is alive; a closed page (a timeout)
+    // is left to the isolation fixture, so the markers cannot leak either way.
     await restoreDevBridgeFile(page, sourceFile, devBridgeSourceFile, original);
   }
   await page.reload();

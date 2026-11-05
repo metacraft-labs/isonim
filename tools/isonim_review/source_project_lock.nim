@@ -14,11 +14,17 @@ else:
   import std/posix
   proc flock(fd, operation: cint): cint {.importc: "flock", header: "<sys/file.h>".}
 
-type SourceProjectLock* = object
-  when defined(windows):
-    handle: Handle
-  else:
-    fd: cint
+type
+  SourceProjectBusy* = object of IOError
+    ## Another editor instance or native client owns the project transaction.
+    ## Editor spec "Native project source capabilities": a read reports that
+    ## the project is busy -- a transient state, not an invalid contract.
+
+  SourceProjectLock* = object
+    when defined(windows):
+      handle: Handle
+    else:
+      fd: cint
 
 proc acquireSourceProjectLock*(root: string): SourceProjectLock =
   when defined(windows):
@@ -35,7 +41,7 @@ proc acquireSourceProjectLock*(root: string): SourceProjectLock =
     let acquired = waitForSingleObject(result.handle, 0)
     if acquired notin [0'i32, 0x80'i32]:
       discard closeHandle(result.handle)
-      raise newException(IOError, "Source project transaction is busy.")
+      raise newException(SourceProjectBusy, "Source project transaction is busy.")
   else:
     result.fd = posix.open(root.cstring, O_RDONLY)
     if result.fd < 0: raiseOSError(osLastError())
@@ -44,7 +50,7 @@ proc acquireSourceProjectLock*(root: string): SourceProjectLock =
       raiseOSError(osLastError())
     if flock(result.fd, 2.cint or 4.cint) != 0:
       discard posix.close(result.fd)
-      raise newException(IOError, "Source project transaction is busy.")
+      raise newException(SourceProjectBusy, "Source project transaction is busy.")
 
 proc release*(lock: SourceProjectLock) =
   when defined(windows):

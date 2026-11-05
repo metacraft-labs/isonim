@@ -11,6 +11,16 @@ preflight and cleanup failure at real process/filesystem boundaries. The delayed
 REST peer proves ownership and shutdown budgets, not provider behavior. A cache
 fixture uses real foreign process identities to represent stale numeric IDs
 without forcing kernel PID reuse; all ownership checks remain real.
+
+Source catalog reads run the real `isonim-review source-project --snapshot`
+against a real built copy of examples/source_project. A busy project is real
+lock contention: the test holds the project directory's flock, as another
+editor instance or native client would. The one substitute is the read-timeout
+case: a wrapper around the real binary sleeps before running it, because a
+real metadata read cannot be made to outlive the server's limit on demand; it
+changes timing only, and the server's read limit is shortened through its own
+ISONIM_SOURCE_READ_TIMEOUT_SECONDS setting so the case takes seconds, not a
+minute.
 """
 import importlib.util
 import contextlib
@@ -494,6 +504,112 @@ server.serve_forever()
                                     capture_output=True, text=True)
             self.assertEqual(result.returncode, 2, result.stderr)
             self.assertIn('--port', result.stderr)
+
+
+
+class SourceCatalogReadTests(unittest.TestCase):
+    """Editor spec "Native project source capabilities": reads "wait for the
+    editor's active transaction or report that the project is busy". A busy
+    project and a read that outlived its limit are transient, with their own
+    codes; neither is reported as an invalid source contract."""
+
+    @classmethod
+    def setUpClass(cls):
+        cls.temp = tempfile.TemporaryDirectory()
+        base = Path(cls.temp.name)
+        cls.project = base / 'project'
+        shutil.copytree(ROOT / 'examples/source_project', cls.project,
+                        ignore=shutil.ignore_patterns('catalog-producer', 'catalog.json'))
+        build = subprocess.run([sys.executable, str(ROOT / 'tools/build_source_catalog.py'), str(cls.project)],
+                               env=dict(os.environ, ISONIM_SOURCE_FRAMEWORK=str(ROOT)),
+                               capture_output=True, text=True, timeout=180)
+        assert build.returncode == 0, build.stdout + build.stderr
+        cls.static = base / 'static'
+        cls.static.mkdir()
+        (cls.static / 'index.html').write_text('<html><head></head><body>Editor</body></html>')
+        cls.config = base / 'agent.toml'
+        cls.config.write_text('[agent]\nbackend="custom"\ncommand="python3"\nargs=' +
+                              json.dumps([str(ROOT / 'tests/helpers/editor_control_peer.py')]) +
+                              '\nprimer_enabled=false\n')
+        # Changes timing only: sleeps, then runs the real binary with the same arguments.
+        cls.slow = base / 'slow-isonim-review'
+        cls.slow.write_text('#!/bin/sh\ncase "$*" in *source-project*--snapshot*) sleep 4;; esac\n'
+                            'exec ' + str(ROOT / 'build/bin/isonim-review') + ' "$@"\n')
+        cls.slow.chmod(0o755)
+
+    @classmethod
+    def tearDownClass(cls):
+        cls.temp.cleanup()
+
+    def setUp(self):
+        self.children = []
+
+    def tearDown(self):
+        for child, output in reversed(self.children):
+            if child.poll() is None:
+                child.terminate()
+                try: child.wait(10)
+                except subprocess.TimeoutExpired:
+                    child.kill(); child.wait()
+            output.close()
+
+    def serve(self, binary, env=None):
+        port = free_port()
+        output = tempfile.TemporaryFile(mode='w+')
+        child = subprocess.Popen([sys.executable, str(LAUNCHER), '--directory', str(self.static),
+            '--project-root', str(self.project), '--port', str(port), '--bind', '127.0.0.1',
+            '--config', str(self.config), '--daemon-binary', str(binary)],
+            stdout=output, stderr=output, env=dict(os.environ, ISONIM_SOURCE_FRAMEWORK=str(ROOT), **(env or {})))
+        self.children.append((child, output))
+        for _ in range(600):
+            if child.poll() is not None:
+                output.seek(0); self.fail(output.read())
+            try:
+                if request(port)[0] == 200: return port
+            except OSError: pass
+            time.sleep(.05)
+        output.seek(0); self.fail('editor did not become ready: ' + output.read())
+
+    def catalog(self, port):
+        connection = http.client.HTTPConnection('127.0.0.1', port, timeout=120)
+        connection.request('GET', '/api/editor/source/catalog')
+        response = connection.getresponse()
+        body = json.loads(response.read())
+        retry_after = response.getheader('Retry-After')
+        connection.close()
+        return response.status, body, retry_after
+
+    def test_read_on_a_busy_project_reports_busy_then_serves_the_catalog(self):
+        port = self.serve(ROOT / 'build/bin/isonim-review')
+        holder = os.open(self.project, os.O_RDONLY)
+        try:
+            import fcntl
+            fcntl.flock(holder, fcntl.LOCK_EX)
+            status, body, retry_after = self.catalog(port)
+        finally:
+            os.close(holder)
+        self.assertEqual(status, 503, body)
+        self.assertEqual(body.get('code'), 'source-project-busy', body)
+        self.assertEqual(retry_after, '1')
+        self.assertNotIn('contract is invalid', body.get('diagnostic', ''))
+        # Transient: once the other owner is gone the same read succeeds.
+        status, body, _ = self.catalog(port)
+        self.assertEqual(status, 200, body)
+        self.assertIn('catalog', body)
+
+    def test_read_that_outlives_the_limit_reports_a_timeout_not_an_invalid_contract(self):
+        port = self.serve(self.slow, {'ISONIM_SOURCE_READ_TIMEOUT_SECONDS': '1'})
+        status, body, retry_after = self.catalog(port)
+        self.assertEqual(status, 503, body)
+        self.assertEqual(body.get('code'), 'source-read-timeout', body)
+        self.assertEqual(retry_after, '1')
+        self.assertNotIn('contract is invalid', body.get('diagnostic', ''))
+
+    def test_read_within_the_limit_serves_the_catalog(self):
+        port = self.serve(self.slow, {'ISONIM_SOURCE_READ_TIMEOUT_SECONDS': '30'})
+        status, body, _ = self.catalog(port)
+        self.assertEqual(status, 200, body)
+        self.assertIn('catalog', body)
 
 
 if __name__ == '__main__': unittest.main()
