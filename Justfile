@@ -2348,3 +2348,7 @@ test-record-env-native-provenance:
 
 test-record-env-focused-corrections:
     python3 tools/test_record_env_owner.py --focused-corrections
+
+# Owned existing scalar listener observation; real native events and lease lifetimes.
+test-listener-observer-owner:
+    python3 tools/test_listener_observer_owner.py

@@ -561,7 +561,7 @@ when defined(js):
   {.emit: """
   var isonimEventListeners = (function() {
   const isonimListeners = new WeakMap();
-  let isonimListenerHook = null;
+  let isonimListenerHook = null;""" & (when defined(isonimInternalListenerObserver): "let isonimListenerInstallation = null;" else: "\n") & """
   function isonimEventSnapshot(ev) {
     const el = ev.target;
     const p = {};
@@ -614,7 +614,7 @@ when defined(js):
     registered(entry.dispose);
     return entry.dispose;
   }
-  return {""" & (when defined(isonimInternalRegisteredHandlers): """callRegistered: function(node, type, handler, capture, event) { const entries = isonimListeners.get(node); const entry = entries && entries.find(e => e.type === type && e.handler === handler && e.capture === capture); if (!entry) throw new Error('isonim registered handler is not active'); return entry.handler.call(node, event); }, """ else: "") & """listen: isonimListen, setHook: function(hook) { isonimListenerHook = hook; }};
+  return {""" & (when defined(isonimInternalRegisteredHandlers): """callRegistered: function(node, type, handler, capture, event) { const entries = isonimListeners.get(node); const entry = entries && entries.find(e => e.type === type && e.handler === handler && e.capture === capture); if (!entry) throw new Error('isonim registered handler is not active'); return entry.handler.call(node, event); }, """ else: "") & """listen: isonimListen, """ & (when defined(isonimInternalListenerObserver): "observerFree: function() { return isonimListenerHook == null; }, claimObserver: function(token, hook) { isonimListenerHook = hook; isonimListenerInstallation = token; }, releaseObserver: function(token) { if (isonimListenerInstallation === token) { isonimListenerHook = null; isonimListenerInstallation = null; } }, setHook: function(hook) { isonimListenerInstallation = null; isonimListenerHook = hook; }" else: "setHook: function(hook) { isonimListenerHook = hook; }") & """};
   })();
   """.}
   proc setListenerHook*(hook: proc(record: JsObject)) =
@@ -672,3 +672,38 @@ when defined(js) and defined(isonimInternalRegisteredHandlers):
     ## JsObject does not infer the callback's effects: the caller owns the later
     ## Replay lifecycle, event reconstruction and callback effect contract.
     rawCallInternalRegisteredHandler(node, eventType, handler, capture, event)
+
+
+when defined(js) and defined(isonimInternalListenerObserver):
+  type InternalListenerObserverRelease* = proc() {.closure, tags: [RawNondet, DomEventEffect].}
+    ## Owned release of one exact scalar observer installation, never a listener.
+
+  proc rawObserverFree(): bool
+      {.importjs: "isonimEventListeners.observerFree()", tags: [RawNondet].}
+  proc rawClaimObserver(token: JsObject; hook: proc(record: JsObject))
+      {.importjs: "isonimEventListeners.claimObserver(#,#)", tags: [RawNondet].}
+  proc rawReleaseObserver(token: JsObject)
+      {.importjs: "isonimEventListeners.releaseObserver(#)", tags: [RawNondet].}
+
+  proc makeObserverRelease(token: JsObject): InternalListenerObserverRelease =
+    # Keep the callback out of this closure environment. A refused cleanup keeps
+    # its token, allowing the caller to switch away from private Replay and retry.
+    var owned = token
+    result = proc() {.tags: [RawNondet, DomEventEffect].} =
+      refuseReadReplay(currentClock, "releaseInternalListenerObserver")
+      if not owned.isNil:
+        rawReleaseObserver(owned)
+        owned = nil
+
+  proc claimInternalListenerObserver*(hook: proc(record: JsObject)):
+      InternalListenerObserverRelease {.tags: [RawNondet, DomEventEffect].} =
+    ## Claim the existing empty scalar slot without selecting a backend. Caller
+    ## owns later callback effects and explicit cleanup, including refusal retry.
+    refuseReadReplay(currentClock, "claimInternalListenerObserver")
+    if hook == nil:
+      raise newException(ValueError, "internal listener observer requires non-nil hook")
+    if not rawObserverFree():
+      raise newException(ValueError, "internal listener observer slot is occupied")
+    let token = newJsObject()
+    result = makeObserverRelease(token)
+    rawClaimObserver(token, hook)
