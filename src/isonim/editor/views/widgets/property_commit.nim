@@ -501,6 +501,8 @@ type
       ## eye slides past. A control that keeps a value the system rejected is
       ## lying about the document.
     scopeOptions*: proc(): seq[CompactChoiceOption]
+    sourceScopeChoices*: proc(): seq[SourceScopeChoice]
+      ## Read-only destinations; choosing one may immediately commit a value.
     selectedSourceScope*: proc(): Option[SourceScopeChoice]
       ## Optional read-only projection of the exact choice used by commit.
     commit*: proc(value: string)
@@ -691,6 +693,8 @@ proc inspectorRowWiring*(vm: EditorVM; property: string): InspectorRowWiring =
     commitMessage: message,
     commitRejected: rejected,
     scopeOptions: scopeOptions,
+    sourceScopeChoices: proc(): seq[SourceScopeChoice] =
+      currentChoices(vm.inspectorProperty(capturedProperty)),
     selectedSourceScope: proc(): Option[SourceScopeChoice] =
       let found = vm.inspectorProperty(capturedProperty)
       let choices = currentChoices(found)
