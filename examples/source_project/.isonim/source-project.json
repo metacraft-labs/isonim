@@ -2,10 +2,7 @@
   "workspace": "source-project",
   "title": "Source project",
   "catalog": ".isonim/catalog.json",
-  "build": [
-    "python3",
-    "build_catalog.py"
-  ],
+  "build": ["python3", "build_catalog.py"],
   "fixtures": [
     {
       "component": "Card",

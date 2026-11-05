@@ -119,8 +119,8 @@ class ScenarioCleanup(unittest.TestCase):
             'import time; print("UNKNOWN_HELPER_READY", flush=True); time.sleep(60)',
         ], 'unknown-live-helper')
         wait(lambda: self.runtime.lines.get_nowait() == 'UNKNOWN_HELPER_READY\n'
-             if not self.runtime.lines.empty() else False,
-             'real unknown-role default-signal helper ready', 5)
+              if not self.runtime.lines.empty() else False,
+              'real unknown-role default-signal helper ready', 5)
         self.identity = self.runtime.observer.snapshot()[self.child.pid][1]
         self.assertIsNone(self.child.poll())
         with self.assertRaisesRegex(AssertionError,'unknown-live-helper native exit -15; expected \\[0\\]'):
@@ -173,7 +173,7 @@ class ScenarioCleanup(unittest.TestCase):
 
     def test_actual_public_scan_rejects_each_known_mapping_and_nested_credential(self):
         for secret in [self.runtime.bootstrap, 'mapping-browser-secret', 'mapping-control-secret',
-                       'mapping-provider-secret', 'nested-array-control-secret', 'nested-mapping-secret']:
+                        'mapping-provider-secret', 'nested-array-control-secret', 'nested-mapping-secret']:
             with self.subTest(credential=secret):
                 (self.runtime.artifacts/'deliberate-leak.json').write_text(json.dumps({'leak':secret}))
                 with self.assertRaisesRegex(AssertionError, 'Credential leaked into public artifact: deliberate-leak.json'):

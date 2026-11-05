@@ -4,6 +4,7 @@ description: How to mount the IsoNim editor into a real DOM element.
 section: editor
 order: 3
 ---
+
 # Editor Browser Mount Contract
 
 The editor's browser entry point is `isonim/editor/browser`, a JS-target-only

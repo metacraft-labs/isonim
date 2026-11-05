@@ -28,11 +28,11 @@ fit together, and explore the IsoNim editor package.
 ## Start here
 
 :::cards
-:::card title="Getting Started" icon="/assets/img/icon__support.svg" href="/getting-started"
+:::card title="Getting Started" icon="/assets/img/icon**support.svg" href="/getting-started"
 Set up a sibling checkout inside the IsoNim dev shell and render your first page.
-:::card title="Guide" icon="/assets/img/icon__faq.svg" href="/guide/install-setup"
+:::card title="Guide" icon="/assets/img/icon**faq.svg" href="/guide/install-setup"
 Install & setup, signals & effects, the `ui` DSL, SSR basics, and the testing strategy.
-:::card title="Editor" icon="/assets/img/icon__github.svg" href="/editor/overview"
+:::card title="Editor" icon="/assets/img/icon\_\_github.svg" href="/editor/overview"
 The IsoNim editor package: its workspace model, browser-mount contract, and integration.
 :::
 

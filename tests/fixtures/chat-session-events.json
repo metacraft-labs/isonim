@@ -150,9 +150,7 @@
       "timestamp": 1,
       "kind": "fence_complete",
       "fenceId": "fence1",
-      "hosts": [
-        "host1"
-      ],
+      "hosts": ["host1"],
       "durationMs": 12
     },
     {

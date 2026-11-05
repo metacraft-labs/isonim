@@ -818,7 +818,7 @@ class LifecycleTests(unittest.TestCase):
         self.assertIn('p-4', encoded)
         followup = self.prompt()
         followup['context'] = {'themeTokens': [{'key': 'surface', 'value': '#abcdef'}],
-                               'renderedComponentTree': [{'id': 'changed', 'parentId': 'root'}]}
+                                'renderedComponentTree': [{'id': 'changed', 'parentId': 'root'}]}
         status, raw = self.post('/api/agent/prompts', followup)
         self.assertEqual(status, 200)
         self.assertIn('event: admitted', raw)

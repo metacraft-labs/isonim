@@ -18,7 +18,13 @@
 // counted separately from the main bundle that loads it.
 
 import { spawnSync } from "node:child_process";
-import { readFileSync, writeFileSync, existsSync, mkdirSync, statSync } from "node:fs";
+import {
+  readFileSync,
+  writeFileSync,
+  existsSync,
+  mkdirSync,
+  statSync,
+} from "node:fs";
 import { dirname, basename, resolve, relative } from "node:path";
 import { gzipSync } from "node:zlib";
 
@@ -46,7 +52,8 @@ async function build(args) {
   const kind = opt("--kind");
   const entry = opt("--entry");
   const out = opt("--out");
-  if (kind !== "main" && kind !== "worker") die("--kind must be main or worker");
+  if (kind !== "main" && kind !== "worker")
+    die("--kind must be main or worker");
   if (!entry || !out) die("build needs --entry and --out");
   const outDir = dirname(resolve(out));
   mkdirSync(outDir, { recursive: true });
@@ -72,17 +79,22 @@ async function build(args) {
   manifest.chunks = manifest.chunks.filter((c) => c.file !== file);
   manifest.chunks.push({ file, kind, entry: relative(outDir, resolve(entry)) });
   manifest.chunks.sort((a, b) => a.file.localeCompare(b.file));
-  writeFileSync(resolve(outDir, MANIFEST), JSON.stringify(manifest, null, 2) + "\n");
+  writeFileSync(
+    resolve(outDir, MANIFEST),
+    JSON.stringify(manifest, null, 2) + "\n",
+  );
 }
 
 function report(args) {
   const dir = args.find((a) => !a.startsWith("--"));
   if (!dir) die("report needs a directory");
   const manifest = readManifest(dir);
-  if (manifest.chunks.length === 0) die(`no chunks recorded in ${resolve(dir, MANIFEST)}`);
+  if (manifest.chunks.length === 0)
+    die(`no chunks recorded in ${resolve(dir, MANIFEST)}`);
   const rows = manifest.chunks.map((c) => {
     const path = resolve(dir, c.file);
-    if (!existsSync(path)) die(`chunk ${c.file} is in the manifest but not in ${dir}`);
+    if (!existsSync(path))
+      die(`chunk ${c.file} is in the manifest but not in ${dir}`);
     const bytes = statSync(path).size;
     const gzipBytes = gzipSync(readFileSync(path), { level: 9 }).length;
     return { ...c, bytes, gzipBytes };

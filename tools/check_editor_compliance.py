@@ -1,168 +1,169 @@
 #!/usr/bin/env python3
-"""Refuse an UNEXPLAINED editor-compliance exception in an IsoNim project.
-
-WHY THIS EXISTS
-===============
-
-An IsoNim project is not only a program that renders a page; it is the input
-to an editor. Whether that editor can do anything useful is decided by how the
-code is written, it fails silently, and nothing in the build warns you.
-``isonim-specs/Authoring-IsoNim-Projects.md`` is the guide; this is the part of
-it a machine can check.
-
-WHY THIS IS NOT A COVERAGE PERCENTAGE
-=====================================
-
-Because the obvious design would have made the reference project WORSE, and we
-can show it with its own numbers. Measured on ``web-site-prototypes/grip/isonim``
-at the commit this tool was calibrated against:
-
-    elements carrying data-isonim-src ............  1,211 of 4,138  (29.3%)
-    ...of the STRUCTURAL elements ................  1,211 of 1,218  (99.4%)
-
-Same page, same build. The difference is entirely the denominator: 2,920 of the
-4,138 elements are syntax-highlighter output (2,915 ``<i>`` tokens across 14
-distinct classes, every one of which is already a ``comp.code.*`` design token)
-and they are ``raw`` ON PURPOSE. A check reporting 29.3% would have told the
-agent to attribute the highlighter, which would take the editor's Layers panel
-from 1,211 rows to 4,126 -- 209 of them the word ``n`` -- and make it useless.
-
-So the design principle, and it is the whole tool:
-
-    ACCOUNT FOR THE RESIDUE; DO NOT COUNT IT.
-    Fail on an UNEXPLAINED exception, never on a ratio.
-
-This is house practice, not novelty. ``reprobuild/scripts/check_bare_skips.py``
-refuses a NEW bare ``skip()`` against a baseline of known sites, and
-``check_vacuous_test_cases.py`` pairs each row with a verdict and a written
-justification. This tool's population is ~15 rows, so it follows the second:
-EVERY ROW CARRIES A REASON AND THE TOOL REFUSES A ROW THAT DOES NOT.
-
-THE TYPED REASON, AND WHERE THE REASON SHOULD EVENTUALLY LIVE
-=============================================================
-
-A row's second column is not free text, it is a TYPED reason drawn from a fixed
-vocabulary (``generated-content``, ``contextual-selector``, ``runtime-computed``,
-``codegen-artifact``, ``non-visual``, ``behaviour-hook``). The free-text reason
-is required as well. A typed reason with no text is this feature's version of a
-bare ``skip()`` -- the exact defect the baseline pattern exists to prevent --
-and the tool rejects it.
-
-The types are here for two reasons. They let the tool AGGREGATE, so we can see
-which exception is common across projects rather than reading fifteen
-sentences. And they are the vocabulary an in-source annotation would use::
-
-    rawRegion(erGeneratedContent, "the highlighter emits <i> runs; the
-                                   editable unit is span.code-line"):
-      raw highlight(code)
-
-That is where these obligations SHOULD be discharged -- beside the decision,
-surviving a refactor, visible to a reviewer without opening a sidecar, and
-leaving a compliant project with an EMPTY check output rather than "47
-baselined exceptions". This file is deliberately written so that migration is a
-transport change and not a semantic one: the kinds are the same, the reasons
-are the same, and only the place they are read from moves. See
-``isonim-specs/Editor-Compliance-Check.md``.
-
-THE DIMENSIONS
-==============
-
-Each is a separate check that passes or fails on its own and names its own
-remedy. Deliberately not a single score: a score tells an agent it is at 73%
-without telling it what to do.
-
-  D1  Attribution      every STRUCTURAL element carries ``data-isonim-src``,
-                       so the editor can locate what it renders. An element is
-                       structural unless it is inside a declared raw region.
-  D2  Resolution       every class on the page reaches the compile-time class
-                       index, so the inspector can show provenance instead of
-                       an orphan value.
-  D4  Tier discipline  no component binds a ``ref`` primitive; no ``comp``
-                       token references a ``ref`` directly.
-  D5  Intended surface every agent-facing token carries ``usage``; every
-                       non-agent-facing one is marked as machinery.
-  D6  Reachability     everything handed to the workspace is reachable through
-                       some surface. (Needs ``--manifest``.)
-  D7  Edit contract    ``writeSource`` and the presence of a
-                       ``WorkspaceEditAdapter`` agree. (Needs ``--manifest``.)
-
-D3 (binding: "this value matches a token but is not bound to it") IS NOT
-SHIPPED. The spec leaves it open and the open question is the right one: a
-design system has coincidental matches, and a direction test that fires on them
-is a test an agent learns to ignore. It is not implemented rather than
-implemented badly.
-
-D4's ALIAS-ONLY TEST IS NOT SHIPPED EITHER, and this is a correction to the
-spec rather than an omission. "A ``sys`` token resolving straight to a ``ref``
-nothing else uses is a rename, not a role" fires on 21 of grip's 63 ``sys``
-tokens, including ``sys.color.surface.page -> ref.color.neutral.0``, which is
-plainly a role and not a rename. The reason is structural: grip's ``ref`` tier
-is a deliberate RAMP whose build fails if a step has no consumer, so 1:1 is the
-DESIGNED shape there and the test is ~100% false-positive on its only
-calibration target. The anti-pattern the spec was reaching for is real; the
-signal for it is not this one, and no test is better than a wrong test.
-
-WHAT THIS TOOL MUST NOT BE TRUSTED TO KNOW
-==========================================
-
-Stated so a green result is not read as approval:
-
-  * whether token NAMES mean anything -- ``sys.color.brand.primary`` and
-    ``sys.color.blue`` are equally well-formed;
-  * whether the component decomposition is sensible -- four components or
-    forty is a judgement;
-  * whether the intended surface is the RIGHT surface -- D5 checks it is
-    MARKED, not that it is well chosen;
-  * whether the design is good.
-
-HOW A SITE IS IDENTIFIED
-========================
-
-By its NEAREST ATTRIBUTED ANCESTOR'S FILE plus a description of the element
-(``tag.class``), never by line number. Line numbers are invalidated by any edit
-above the site, so a line-keyed baseline churns for reasons that have nothing
-to do with the population it pins -- the same reasoning
-``scripts/shell-command-strings-baseline.txt`` records.
-
-The nearest ATTRIBUTED ancestor is also what makes the diagnostic actionable.
-An unattributed element by definition has no source location of its own; its
-nearest attributed ancestor has one, and that is the file an author can open.
-
-COUNTS, AND WHY SOME OF THEM ARE ``*``
-======================================
-
-A row's count pins a population so it cannot grow. For content-shaped
-populations that is churn with no signal: pinning the 2,920 elements inside
-``span.code-line`` would fail the build every time the corpus gains an example,
-while telling nobody anything. Those rows record ``*``. What is under review
-for a raw region is THE SELECTOR -- "everything under this is content" is the
-claim a reviewer must agree with, and its size is not the claim.
-
-A row with a NUMBER ratchets one way, like its siblings: exceeding it fails by
-name, and falling below it rewrites the file smaller so that fixing a site does
-not also cost a manual baseline edit.
-
-USAGE
-=====
-
-  check_editor_compliance.py --project DIR
-      [--html FILE ...]      # editor-build (-d:isonimEditor) rendered pages
-      [--class-index FILE]   # the compile-time class index JSON
-      [--tokens FILE ...]    # DTCG token files (D4, D5)
-      [--manifest FILE]      # workspace manifest JSON (D6, D7)
-      [--baseline FILE]      # default <project>/compliance-baseline.tsv
-      [--dimensions D1,D2]   # default: every dimension its inputs support
-      [--mode gate|report]   # default gate
-      [--write-baseline]     # re-record accepted exceptions from this tree
-      [--json]               # machine-readable result
-      [--self-test]          # run the embedded fixtures and stop
-
-Exit codes:
-  0 -- compliant, or ``--mode report``.
-  1 -- at least one UNEXPLAINED exception, or the baseline is unusable, or the
-       scan came back below its anti-vacuity floor. stderr names each one.
-  2 -- an unusable combination of flags.
-"""
+(
+  'Refuse an UNEXPLAINED editor-compliance exception in an IsoNim project.\n'
+  '\n'
+  'WHY THIS EXISTS\n'
+  '===============\n'
+  '\n'
+  'An IsoNim project is not only a program that renders a page; it is the input\n'
+  'to an editor. Whether that editor can do anything useful is decided by how the\n'
+  'code is written, it fails silently, and nothing in the build warns you.\n'
+  '``isonim-specs/Authoring-IsoNim-Projects.md`` is the guide; this is the part of\n'
+  'it a machine can check.\n'
+  '\n'
+  'WHY THIS IS NOT A COVERAGE PERCENTAGE\n'
+  '=====================================\n'
+  '\n'
+  'Because the obvious design would have made the reference project WORSE, and we\n'
+  'can show it with its own numbers. Measured on ``web-site-prototypes/grip/isonim``\n'
+  'at the commit this tool was calibrated against:\n'
+  '\n'
+  '    elements carrying data-isonim-src ............  1,211 of 4,138  (29.3%)\n'
+  '    ...of the STRUCTURAL elements ................  1,211 of 1,218  (99.4%)\n'
+  '\n'
+  'Same page, same build. The difference is entirely the denominator: 2,920 of the\n'
+  '4,138 elements are syntax-highlighter output (2,915 ``<i>`` tokens across 14\n'
+  'distinct classes, every one of which is already a ``comp.code.*`` design token)\n'
+  'and they are ``raw`` ON PURPOSE. A check reporting 29.3% would have told the\n'
+  "agent to attribute the highlighter, which would take the editor's Layers panel\n"
+  'from 1,211 rows to 4,126 -- 209 of them the word ``n`` -- and make it useless.\n'
+  '\n'
+  'So the design principle, and it is the whole tool:\n'
+  '\n'
+  '    ACCOUNT FOR THE RESIDUE; DO NOT COUNT IT.\n'
+  '    Fail on an UNEXPLAINED exception, never on a ratio.\n'
+  '\n'
+  'This is house practice, not novelty. ``reprobuild/scripts/check_bare_skips.py``\n'
+  'refuses a NEW bare ``skip()`` against a baseline of known sites, and\n'
+  '``check_vacuous_test_cases.py`` pairs each row with a verdict and a written\n'
+  "justification. This tool's population is ~15 rows, so it follows the second:\n"
+  'EVERY ROW CARRIES A REASON AND THE TOOL REFUSES A ROW THAT DOES NOT.\n'
+  '\n'
+  'THE TYPED REASON, AND WHERE THE REASON SHOULD EVENTUALLY LIVE\n'
+  '=============================================================\n'
+  '\n'
+  "A row's second column is not free text, it is a TYPED reason drawn from a fixed\n"
+  'vocabulary (``generated-content``, ``contextual-selector``, ``runtime-computed``,\n'
+  '``codegen-artifact``, ``non-visual``, ``behaviour-hook``). The free-text reason\n'
+  "is required as well. A typed reason with no text is this feature's version of a\n"
+  'bare ``skip()`` -- the exact defect the baseline pattern exists to prevent --\n'
+  'and the tool rejects it.\n'
+  '\n'
+  'The types are here for two reasons. They let the tool AGGREGATE, so we can see\n'
+  'which exception is common across projects rather than reading fifteen\n'
+  'sentences. And they are the vocabulary an in-source annotation would use::\n'
+  '\n'
+  '    rawRegion(erGeneratedContent, "the highlighter emits <i> runs; the\n'
+  '                                   editable unit is span.code-line"):\n'
+  '      raw highlight(code)\n'
+  '\n'
+  'That is where these obligations SHOULD be discharged -- beside the decision,\n'
+  'surviving a refactor, visible to a reviewer without opening a sidecar, and\n'
+  'leaving a compliant project with an EMPTY check output rather than "47\n'
+  'baselined exceptions". This file is deliberately written so that migration is a\n'
+  'transport change and not a semantic one: the kinds are the same, the reasons\n'
+  'are the same, and only the place they are read from moves. See\n'
+  '``isonim-specs/Editor-Compliance-Check.md``.\n'
+  '\n'
+  'THE DIMENSIONS\n'
+  '==============\n'
+  '\n'
+  'Each is a separate check that passes or fails on its own and names its own\n'
+  'remedy. Deliberately not a single score: a score tells an agent it is at 73%\n'
+  'without telling it what to do.\n'
+  '\n'
+  '  D1  Attribution      every STRUCTURAL element carries ``data-isonim-src``,\n'
+  '                       so the editor can locate what it renders. An element is\n'
+  '                       structural unless it is inside a declared raw region.\n'
+  '  D2  Resolution       every class on the page reaches the compile-time class\n'
+  '                       index, so the inspector can show provenance instead of\n'
+  '                       an orphan value.\n'
+  '  D4  Tier discipline  no component binds a ``ref`` primitive; no ``comp``\n'
+  '                       token references a ``ref`` directly.\n'
+  '  D5  Intended surface every agent-facing token carries ``usage``; every\n'
+  '                       non-agent-facing one is marked as machinery.\n'
+  '  D6  Reachability     everything handed to the workspace is reachable through\n'
+  '                       some surface. (Needs ``--manifest``.)\n'
+  '  D7  Edit contract    ``writeSource`` and the presence of a\n'
+  '                       ``WorkspaceEditAdapter`` agree. (Needs ``--manifest``.)\n'
+  '\n'
+  'D3 (binding: "this value matches a token but is not bound to it") IS NOT\n'
+  'SHIPPED. The spec leaves it open and the open question is the right one: a\n'
+  'design system has coincidental matches, and a direction test that fires on them\n'
+  'is a test an agent learns to ignore. It is not implemented rather than\n'
+  'implemented badly.\n'
+  '\n'
+  "D4's ALIAS-ONLY TEST IS NOT SHIPPED EITHER, and this is a correction to the\n"
+  'spec rather than an omission. "A ``sys`` token resolving straight to a ``ref``\n'
+  'nothing else uses is a rename, not a role" fires on 21 of grip\'s 63 ``sys``\n'
+  'tokens, including ``sys.color.surface.page -> ref.color.neutral.0``, which is\n'
+  "plainly a role and not a rename. The reason is structural: grip's ``ref`` tier\n"
+  'is a deliberate RAMP whose build fails if a step has no consumer, so 1:1 is the\n'
+  'DESIGNED shape there and the test is ~100% false-positive on its only\n'
+  'calibration target. The anti-pattern the spec was reaching for is real; the\n'
+  'signal for it is not this one, and no test is better than a wrong test.\n'
+  '\n'
+  'WHAT THIS TOOL MUST NOT BE TRUSTED TO KNOW\n'
+  '==========================================\n'
+  '\n'
+  'Stated so a green result is not read as approval:\n'
+  '\n'
+  '  * whether token NAMES mean anything -- ``sys.color.brand.primary`` and\n'
+  '    ``sys.color.blue`` are equally well-formed;\n'
+  '  * whether the component decomposition is sensible -- four components or\n'
+  '    forty is a judgement;\n'
+  '  * whether the intended surface is the RIGHT surface -- D5 checks it is\n'
+  '    MARKED, not that it is well chosen;\n'
+  '  * whether the design is good.\n'
+  '\n'
+  'HOW A SITE IS IDENTIFIED\n'
+  '========================\n'
+  '\n'
+  "By its NEAREST ATTRIBUTED ANCESTOR'S FILE plus a description of the element\n"
+  '(``tag.class``), never by line number. Line numbers are invalidated by any edit\n'
+  'above the site, so a line-keyed baseline churns for reasons that have nothing\n'
+  'to do with the population it pins -- the same reasoning\n'
+  '``scripts/shell-command-strings-baseline.txt`` records.\n'
+  '\n'
+  'The nearest ATTRIBUTED ancestor is also what makes the diagnostic actionable.\n'
+  'An unattributed element by definition has no source location of its own; its\n'
+  'nearest attributed ancestor has one, and that is the file an author can open.\n'
+  '\n'
+  'COUNTS, AND WHY SOME OF THEM ARE ``*``\n'
+  '======================================\n'
+  '\n'
+  "A row's count pins a population so it cannot grow. For content-shaped\n"
+  'populations that is churn with no signal: pinning the 2,920 elements inside\n'
+  '``span.code-line`` would fail the build every time the corpus gains an example,\n'
+  'while telling nobody anything. Those rows record ``*``. What is under review\n'
+  'for a raw region is THE SELECTOR -- "everything under this is content" is the\n'
+  'claim a reviewer must agree with, and its size is not the claim.\n'
+  '\n'
+  'A row with a NUMBER ratchets one way, like its siblings: exceeding it fails by\n'
+  'name, and falling below it rewrites the file smaller so that fixing a site does\n'
+  'not also cost a manual baseline edit.\n'
+  '\n'
+  'USAGE\n'
+  '=====\n'
+  '\n'
+  '  check_editor_compliance.py --project DIR\n'
+  '      [--html FILE ...]      # editor-build (-d:isonimEditor) rendered pages\n'
+  '      [--class-index FILE]   # the compile-time class index JSON\n'
+  '      [--tokens FILE ...]    # DTCG token files (D4, D5)\n'
+  '      [--manifest FILE]      # workspace manifest JSON (D6, D7)\n'
+  '      [--baseline FILE]      # default <project>/compliance-baseline.tsv\n'
+  '      [--dimensions D1,D2]   # default: every dimension its inputs support\n'
+  '      [--mode gate|report]   # default gate\n'
+  '      [--write-baseline]     # re-record accepted exceptions from this tree\n'
+  '      [--json]               # machine-readable result\n'
+  '      [--self-test]          # run the embedded fixtures and stop\n'
+  '\n'
+  'Exit codes:\n'
+  '  0 -- compliant, or ``--mode report``.\n'
+  '  1 -- at least one UNEXPLAINED exception, or the baseline is unusable, or the\n'
+  '       scan came back below its anti-vacuity floor. stderr names each one.\n'
+  '  2 -- an unusable combination of flags.\n'
+)
 
 from __future__ import annotations
 
@@ -215,7 +216,7 @@ REASON_KINDS = {
 ROW_KINDS = {
     ("D1", "raw-region"): {"generated-content"},
     ("D1", "unattributed"): {"generated-content", "codegen-artifact",
-                             "non-visual"},
+                              "non-visual"},
     ("D2", "class"): {"contextual-selector", "behaviour-hook"},
     ("D2", "runtime-class"): {"runtime-computed"},
     ("D4", "comp-references-ref"): {"design-decision"},
@@ -549,7 +550,7 @@ def row_type_for(dimension: str, key: str) -> str:
         if key.startswith("role::"):
             return "missed-role-binding"
         return "component-references-ref" if "::" in key else \
-               "comp-references-ref"
+                "comp-references-ref"
     if dimension == "D5":
         return "token"
     if dimension == "D6":
@@ -651,7 +652,7 @@ def render_baseline(rows: list[BaselineRow]) -> str:
     for row in sorted(rows, key=lambda r: (r.dimension, r.key)):
         count = "*" if row.count is None else str(row.count)
         out.append(f"{row.dimension}\t{row.kind}\t{row.key}\t{count}"
-                   f"\t{row.reason}\n")
+                    f"\t{row.reason}\n")
     return "".join(out)
 
 
@@ -677,7 +678,7 @@ class Finding:
             lines.append(f"{indent}    {chunk}")
         if self.row:
             lines.append(f"{indent}    To accept it instead, add to the "
-                         f"baseline (tab-separated), with a real reason:")
+                          f"baseline (tab-separated), with a real reason:")
             lines.append(f"{indent}      {self.row}")
         return "\n".join(lines)
 
@@ -720,7 +721,7 @@ def check_d1(nodes, project, rows, observed):
     result.ran = True
 
     regions = [r for r in rows if r.dimension == "D1"
-               and row_type_for("D1", r.key) == "raw-region"]
+                and row_type_for("D1", r.key) == "raw-region"]
     accepted = {r.key: r for r in rows if r.dimension == "D1"
                 and row_type_for("D1", r.key) == "unattributed"}
 
@@ -955,7 +956,7 @@ def check_d2(nodes, project, rows, observed, class_index_path):
         node, _ = sites[0]
         source = source_for(nodes, node["index"], project)
         where = (f"{len(sites)} elements, the first"
-                 if len(sites) > 1 else "the element")
+                  if len(sites) > 1 else "the element")
         result.findings.append(Finding(
             "D2",
             f"`{describe(node)}` at `{source}` carries class `{name}`, which "
@@ -1196,7 +1197,7 @@ def check_d4(tiers, nodes, class_index, rows, observed):
         for key, reference in comp_to_ref:
             parts = key.split(".")
             by_group[".".join(parts[:2]) + ".*" if len(parts) > 2 else key
-                     ].append((key, reference))
+                      ].append((key, reference))
         for group in sorted(by_group):
             members = by_group[group]
             observed[("D4", group)] = len(members)
@@ -1248,7 +1249,7 @@ def check_d4(tiers, nodes, class_index, rows, observed):
         if not isinstance(token["value"], str):
             continue
         match = re.fullmatch(r"\{(ref\.[a-zA-Z0-9_.-]+)\}",
-                             token["value"].strip())
+                              token["value"].strip())
         if match:
             sys_by_ref[match.group(1)].append(token["key"])
 
@@ -1257,7 +1258,7 @@ def check_d4(tiers, nodes, class_index, rows, observed):
         if not isinstance(token["value"], str):
             continue
         match = re.fullmatch(r"\{(ref\.[a-zA-Z0-9_.-]+)\}",
-                             token["value"].strip())
+                              token["value"].strip())
         if not match:
             continue
         roles = sys_by_ref.get(match.group(1))
@@ -1557,7 +1558,7 @@ def check_d6(manifest, rows, observed):
 
     # --- a component variant whose story does not exist -------------------
     story_names = {(g.get("name"), i.get("name"))
-                   for g in groups for i in (g.get("items") or [])}
+                    for g in groups for i in (g.get("items") or [])}
     for variant in manifest.get("componentVariants", []) or []:
         story = variant.get("story") or {}
         if not story.get("name"):
@@ -1565,7 +1566,7 @@ def check_d6(manifest, rows, observed):
         if (story.get("group"), story.get("name")) in story_names:
             continue
         key = (f"variant::{variant.get('component')}."
-               f"{variant.get('variantKey')}")
+                f"{variant.get('variantKey')}")
         report(
             key,
             f"component variant `{variant.get('component')}."
@@ -1654,8 +1655,8 @@ def check_d7(manifest, rows, observed):
         result.observations.append(
             "read-only: `writeSource` is false"
             + (", and an edit adapter IS supplied, so the adapter is dormant "
-               "by permission rather than by absence"
-               if has_adapter else " and no edit adapter is supplied")
+                "by permission rather than by absence"
+                if has_adapter else " and no edit adapter is supplied")
             + ". An instance can look broken when it is behaving exactly as "
               "declared; check by hand that the editor REFUSES visibly rather "
               "than doing nothing.")
@@ -1682,19 +1683,21 @@ def check_d7(manifest, rows, observed):
 # workflow first. Without it, a scanner broken badly enough to parse nothing
 # would report a clean project.
 
-SELF_TEST_HTML = """<!doctype html>
-<html data-isonim-src="/p/src/pages/home.nim:1:1"><head data-isonim-src="/p/src/pages/home.nim:2:1">
-<title data-isonim-src="/p/src/pages/home.nim:3:1">t</title></head>
-<body data-isonim-src="/p/src/pages/home.nim:4:1">
-  <h1 data-isonim-src="/p/src/pages/home.nim:5:3"
-      data-isonim-props="font|var(--sys-type-display)|tok|class:tagline|sys-type-display|;margin|0 0 30px|cls|class:tagline||">ok</h1>
-  <span data-isonim-src="/p/src/components/pane.nim:10:5"
-        data-isonim-props="color|inherit|?|class:hl-kw||not in the compile-time class index"><i>raw</i><i>raw</i></span>
-  <div data-isonim-src="/p/src/components/pane.nim:20:5"><em>unattributed</em></div>
-  <svg data-isonim-src="/p/src/components/layout.nim:30:5"
-       data-isonim-props="||?|class||the class attribute is computed at runtime"><path d="M0"/></svg>
-  <script>void 0;</script>
-</body></html>"""
+SELF_TEST_HTML = (
+  '<!doctype html>\n'
+  '<html data-isonim-src="/p/src/pages/home.nim:1:1"><head data-isonim-src="/p/src/pages/home.nim:2:1">\n'
+  '<title data-isonim-src="/p/src/pages/home.nim:3:1">t</title></head>\n'
+  '<body data-isonim-src="/p/src/pages/home.nim:4:1">\n'
+  '  <h1 data-isonim-src="/p/src/pages/home.nim:5:3"\n'
+  '      data-isonim-props="font|var(--sys-type-display)|tok|class:tagline|sys-type-display|;margin|0 0 30px|cls|class:tagline||">ok</h1>\n'
+  '  <span data-isonim-src="/p/src/components/pane.nim:10:5"\n'
+  '        data-isonim-props="color|inherit|?|class:hl-kw||not in the compile-time class index"><i>raw</i><i>raw</i></span>\n'
+  '  <div data-isonim-src="/p/src/components/pane.nim:20:5"><em>unattributed</em></div>\n'
+  '  <svg data-isonim-src="/p/src/components/layout.nim:30:5"\n'
+  '       data-isonim-props="||?|class||the class attribute is computed at runtime"><path d="M0"/></svg>\n'
+  '  <script>void 0;</script>\n'
+  '</body></html>'
+)
 
 # What the scanner must say about the fixture, with NOTHING baselined.
 #   * <i> x2 inside span.code-line?  No: the fixture declares no raw region, so
@@ -1829,7 +1832,7 @@ def main(argv=None) -> int:
                         help="an editor-build (-d:isonimEditor) rendered page")
     parser.add_argument("--class-index",
                         help="the compile-time class index JSON, named in "
-                             "D2's remedy")
+                              "D2's remedy")
     parser.add_argument("--tokens", action="append", default=[],
                         help="a DTCG token file (D4, D5)")
     parser.add_argument("--manifest",
@@ -1898,11 +1901,11 @@ def main(argv=None) -> int:
     for name in wanted:
         if name == "D1":
             results.append(check_d1(nodes, project, rows, observed) if nodes
-                           else skipped("D1", "no --html given"))
+                            else skipped("D1", "no --html given"))
         elif name == "D2":
             results.append(
                 check_d2(nodes, project, rows, observed,
-                         args.class_index) if nodes
+                          args.class_index) if nodes
                 else skipped("D2", "no --html given"))
         elif name == "D4":
             results.append(
@@ -1910,15 +1913,15 @@ def main(argv=None) -> int:
                 else skipped("D4", "no --tokens given"))
         elif name == "D5":
             results.append(check_d5(tiers, rows, observed) if tiers
-                           else skipped("D5", "no --tokens given"))
+                            else skipped("D5", "no --tokens given"))
         elif name == "D6":
             results.append(check_d6(manifest, rows, observed)
-                           if manifest is not None
-                           else skipped("D6", "no --manifest given"))
+                            if manifest is not None
+                            else skipped("D6", "no --manifest given"))
         elif name == "D7":
             results.append(check_d7(manifest, rows, observed)
-                           if manifest is not None
-                           else skipped("D7", "no --manifest given"))
+                            if manifest is not None
+                            else skipped("D7", "no --manifest given"))
 
     if args.write_baseline:
         return write_baseline(baseline_path, rows, observed, results)
@@ -1949,7 +1952,7 @@ def write_baseline(path, rows, observed, results) -> int:
             out.append(previous)
             continue
         out.append(BaselineRow(dimension, placeholder_kind(dimension, key), key,
-                               count, "TODO: say why this cannot be fixed"))
+                                count, "TODO: say why this cannot be fixed"))
         added += 1
     # Rows for dimensions that did not run this time are preserved untouched:
     # a run without --tokens must not delete D4 and D5's reasons.
@@ -1976,7 +1979,7 @@ def placeholder_kind(dimension: str, key: str) -> str:
 
 
 def report(results, rows, observed, project, baseline_path, mode,
-           as_json) -> int:
+            as_json) -> int:
     failed = [r for r in results if r.failed]
 
     unused = [r for r in rows

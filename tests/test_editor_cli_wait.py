@@ -48,7 +48,7 @@ class CliWaitTests(unittest.TestCase):
                         return
                     if mode == 'rpc_failure' and number == 2:
                         reply = {'jsonrpc': '2.0', 'id': body['id'],
-                                 'error': {'code': -32000, 'message': 'fixture_rpc_failure'}}
+                                  'error': {'code': -32000, 'message': 'fixture_rpc_failure'}}
                     else:
                         snapshot = {'operationId': 'approve1', 'status':
                             'applied' if mode == 'completion' and number == 2 else 'pending',
@@ -69,11 +69,11 @@ class CliWaitTests(unittest.TestCase):
         try:
             env = dict(os.environ)
             env.update(ISONIM_EDITOR_ENDPOINT='http://127.0.0.1:' + str(server.server_port),
-                       ISONIM_EDITOR_WORKSPACE='fixture-workspace', ISONIM_EDITOR_INSTANCE='fixture-instance',
-                       ISONIM_EDITOR_EPOCH='fixture-epoch', ISONIM_EDITOR_TOKEN='fixture-scoped-authority')
+                        ISONIM_EDITOR_WORKSPACE='fixture-workspace', ISONIM_EDITOR_INSTANCE='fixture-instance',
+                        ISONIM_EDITOR_EPOCH='fixture-epoch', ISONIM_EDITOR_TOKEN='fixture-scoped-authority')
             child = subprocess.run([str(ROOT / 'build/bin/isonim'), 'editor', 'wait', 'approve1',
                                     '--timeout-ms', str(timeout)], env=env, text=True,
-                                   stdout=subprocess.PIPE, stderr=subprocess.PIPE, timeout=4)
+                                    stdout=subprocess.PIPE, stderr=subprocess.PIPE, timeout=4)
             if mode.endswith('timeout'):
                 self.assertTrue(disconnected.wait(3), 'Actual deadline must disconnect the held HTTP exchange')
         finally:

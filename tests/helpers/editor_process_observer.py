@@ -24,12 +24,12 @@ def capture_owned(table, roots, known=None):
     """
     result = dict(known or {})
     seeds = {pid for pid in roots if pid in table and
-             (pid not in result or table[pid][1] == result[pid][1])}
+              (pid not in result or table[pid][1] == result[pid][1])}
     seeds.update(pid for pid, row in result.items()
-                 if pid in table and table[pid][1] == row[1])
+                  if pid in table and table[pid][1] == row[1])
     while True:
         added = {pid for pid, row in table.items() if row[0] in seeds and
-                 (pid not in result or row[1] == result[pid][1])} - seeds
+                  (pid not in result or row[1] == result[pid][1])} - seeds
         if not added:
             break
         seeds.update(added)
@@ -76,7 +76,7 @@ def reap_owned(observer, identities, children=(), seconds=15):
     outstanding = remaining()
     if outstanding:
         raise AssertionError('Owned processes were not physically reaped: ' +
-                             repr({pid: row[1] for pid, row in outstanding.items()}))
+                              repr({pid: row[1] for pid, row in outstanding.items()}))
 
 
 def require_exit(process, allowed, role):
@@ -126,7 +126,7 @@ class DarwinIdentity:
         self.libproc.proc_pidpath.argtypes = [ctypes.c_int, ctypes.c_void_p, ctypes.c_uint]
         self.libproc.proc_pidpath.restype = ctypes.c_int
         self.libproc.proc_pidinfo.argtypes = [ctypes.c_int, ctypes.c_int, ctypes.c_uint64,
-                                             ctypes.c_void_p, ctypes.c_int]
+                                              ctypes.c_void_p, ctypes.c_int]
         self.libproc.proc_pidinfo.restype = ctypes.c_int
 
     def arguments(self, pid):
@@ -202,7 +202,7 @@ class PosixProcessObserver:
         self.ps = str(Path(self.ps).resolve())
         self.native = DarwinIdentity() if sys.platform == 'darwin' else None
         self.starttime_kind = ('darwin-native-start-microseconds-since-epoch' if self.native is not None
-                               else 'linux-kernel-start-ticks')
+                                else 'linux-kernel-start-ticks')
         if self.native is None and sys.platform != 'linux':
             raise OSError('Exact native argv observation is implemented for Linux and Darwin')
         self.known = {}

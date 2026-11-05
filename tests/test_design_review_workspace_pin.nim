@@ -80,6 +80,11 @@ unmaterialized_repos = [
     var shuffled = sampleLock()
     shuffled.repos.reverse()
     check renderCanonicalLock(shuffled) == renderCanonicalLock(sampleLock())
+    let baseline = pinOf(renderCanonicalLock(sampleLock()))
+    # Preserve the original stable-hash oracle across the record migration.
+    for _ in 0 ..< 100:
+      check pinOf(renderCanonicalLock(sampleLock())) == baseline
+      check pinOf(renderCanonicalLock(shuffled)) == baseline
     let toml = renderCanonicalLock(sampleLock())
     check renderCanonicalLock(parseCanonicalLock(toml)) == toml
     # Names that are not filename-shaped survive the round trip.
@@ -123,7 +128,7 @@ unmaterialized_repos = [
     let other = pinOf(renderCanonicalLock(flipped))
     check base != other
     check hammingHex(base[WorkspacePinPrefix.len .. ^1],
-                     other[WorkspacePinPrefix.len .. ^1]) >= 80
+                     other[WorkspacePinPrefix.len .. ^1]) >= 120
 
   test "test_resolve_pin_rejects_a_record_that_does_not_hash_to_it":
     let toml = renderCanonicalLock(sampleLock())

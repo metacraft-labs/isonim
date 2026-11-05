@@ -26,7 +26,7 @@ class InspectorSourceTransactionTests(unittest.TestCase):
         self.binary = REPO / "build/bin/isonim-review"
         self.env = {**os.environ, "ISONIM_SOURCE_FRAMEWORK": str(REPO)}
         build = subprocess.run(["python3", str(REPO / "tools/build_source_catalog.py"), str(self.project)],
-                               env=self.env, capture_output=True, text=True, timeout=70)
+                                env=self.env, capture_output=True, text=True, timeout=70)
         (self.directory / "initial-build.log").write_text(build.stdout + build.stderr)
         self.assertEqual(build.returncode, 0, build.stdout + build.stderr)
         self.source = self.project / "stories.nim"
@@ -90,8 +90,8 @@ class InspectorSourceTransactionTests(unittest.TestCase):
 
     def test_distinct_declared_targets_and_properties_compile_and_persist(self):
         for target, property, value in [("action", "width", "240px"),
-                                         ("secondary-action", "height", "64px"),
-                                         ("alternate-action", "background-color", "#abcdef80")]:
+                                          ("secondary-action", "height", "64px"),
+                                          ("alternate-action", "background-color", "#abcdef80")]:
             with self.subTest(target=target, property=property):
                 result = self.operate(self.request(target, property, value))
                 self.assertTrue(result["ok"])
@@ -123,7 +123,7 @@ class InspectorSourceTransactionTests(unittest.TestCase):
         other = self.directory / "other-project"
         shutil.copytree(REPO / "tests/fixtures/editor_inspector_project", other)
         build = subprocess.run(["python3", str(REPO / "tools/build_source_catalog.py"), str(other)],
-                               env=self.env, capture_output=True, text=True, timeout=70)
+                                env=self.env, capture_output=True, text=True, timeout=70)
         self.assertEqual(build.returncode, 0, build.stdout + build.stderr)
         self.assertIn("width:120px;", (other / ".isonim/catalog.json").read_text())
         first_cache, other_cache = self.project / ".isonim/native-cache", other / ".isonim/native-cache"
@@ -154,7 +154,7 @@ class InspectorSourceTransactionTests(unittest.TestCase):
 
     def test_unsupported_schema_target_story_and_property_are_refused(self):
         for key, value in [("schemaKey", "unsupported"), ("target", "secondary-action"),
-                           ("storyId", "Alternate / default ready"), ("property", "unknown-property")]:
+                            ("storyId", "Alternate / default ready"), ("property", "unknown-property")]:
             with self.subTest(key=key):
                 request = self.request()
                 request[key] = value
@@ -195,7 +195,7 @@ class InspectorSourceTransactionTests(unittest.TestCase):
 
     def test_unknown_paths_malformed_types_and_missing_fields_are_refused(self):
         for key, value in [("file", "../other.nim"), ("value", True), ("expectedSourceHash", 42),
-                           ("viewportWidth", "1440"), ("expectedRevision", None)]:
+                            ("viewportWidth", "1440"), ("expectedRevision", None)]:
             with self.subTest(key=key):
                 request = self.request()
                 request[key] = value
@@ -488,15 +488,15 @@ writeFileSync(process.argv[2],JSON.stringify(proof,null,2));console.log('Actual 
         # not overwrite the first tab's durable metadata with an empty set.
         before = sidecar.read_bytes()
         rejected = self.operate({"command": "bindings-save", "commandId": "second-tab",
-                                 "expectedBindingHash": initial["bindingHash"],
-                                 "bindingSidecar": json.dumps({"version": 1, "variableBindings": [],
+                                  "expectedBindingHash": initial["bindingHash"],
+                                  "bindingSidecar": json.dumps({"version": 1, "variableBindings": [],
                                                               "variableBindingHistory": []})}, expected=4)
         self.assertFalse(rejected["ok"])
         self.assertIn("Binding metadata changed", rejected["diagnostic"])
         self.assertEqual(sidecar.read_bytes(), before)
         self.unchanged()
         reloaded = subprocess.run([str(self.binary), "source-project", str(self.project), "--snapshot"],
-                                   env=self.env, capture_output=True, text=True, timeout=5)
+                                    env=self.env, capture_output=True, text=True, timeout=5)
         self.assertEqual(reloaded.returncode, 0)
         self.assertEqual(json.loads(json.loads(reloaded.stdout)["bindingSidecar"]), json.loads(raw))
 
@@ -506,8 +506,8 @@ writeFileSync(process.argv[2],JSON.stringify(proof,null,2));console.log('Actual 
         sidecar = self.project / ".isonim/bindings.json"
         sidecar.symlink_to(outside)
         request = {"command": "bindings-save", "commandId": "unsafe",
-                   "expectedBindingHash": hashlib.sha1(b"").hexdigest().upper(),
-                   "bindingSidecar": '{"version":1,"variableBindings":[],"variableBindingHistory":[]}'}
+                    "expectedBindingHash": hashlib.sha1(b"").hexdigest().upper(),
+                    "bindingSidecar": '{"version":1,"variableBindings":[],"variableBindingHistory":[]}'}
         refused = self.operate(request, expected=4)
         self.assertIn("symlinks", refused["diagnostic"])
         self.assertEqual(outside.read_text(), "do not overwrite")

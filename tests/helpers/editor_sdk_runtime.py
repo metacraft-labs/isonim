@@ -69,7 +69,7 @@ def resolve(provider=None):
     if 'promptToClaude' not in converter.read_text() or 'delete c.NODE_OPTIONS' not in sdk.read_text():
         raise AssertionError('Unsupported observer/converter runtime API')
     paths={'provider':provider,'node':node,'entry':entry,'converter':converter,'sdk':sdk,
-           'nativeCommand':native_command,'native':native}
+            'nativeCommand':native_command,'native':native}
     files=sorted(set(wrappers+[node,entry,converter,sdk,native_command,native,
         immutable(package/'package.json'),immutable(sdk.parent/'package.json')]))
     return {'schema':1,'paths':{key:str(value) for key,value in paths.items()},

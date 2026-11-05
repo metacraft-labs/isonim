@@ -93,7 +93,7 @@ BEGIN
       p_manifest_hash;
   END IF;
   IF NOT EXISTS (
-       SELECT 1 FROM design_review.workspace_pins WHERE pin = p_manifest_hash)
+        SELECT 1 FROM design_review.workspace_pins WHERE pin = p_manifest_hash)
   THEN
     RAISE EXCEPTION
       'start_campaign: workspace pin % is not recorded (call record_workspace_pin first)',
@@ -207,7 +207,7 @@ BEGIN
     RAISE EXCEPTION 'begin_campaign_round: campaign % does not exist', p_campaign_id;
   END IF;
   IF NOT EXISTS (
-       SELECT 1 FROM design_review.workspace_pins WHERE pin = p_workspace_pin)
+        SELECT 1 FROM design_review.workspace_pins WHERE pin = p_workspace_pin)
   THEN
     RAISE EXCEPTION
       'begin_campaign_round: workspace pin % is not recorded (call record_workspace_pin first)',
@@ -215,12 +215,12 @@ BEGIN
   END IF;
 
   SELECT GREATEST(
-           COALESCE((SELECT max(r.round) FROM design_review.campaign_rounds r
-                     WHERE r.campaign_id = p_campaign_id), 0),
-           (SELECT count(*) FROM design_review.campaign_events e
-             WHERE e.campaign_id = p_campaign_id
-               AND e.event_kind = 'round_complete')::INT
-         ) + 1
+            COALESCE((SELECT max(r.round) FROM design_review.campaign_rounds r
+                      WHERE r.campaign_id = p_campaign_id), 0),
+            (SELECT count(*) FROM design_review.campaign_events e
+              WHERE e.campaign_id = p_campaign_id
+                AND e.event_kind = 'round_complete')::INT
+          ) + 1
     INTO v_round;
 
   INSERT INTO design_review.campaign_rounds (
@@ -232,8 +232,8 @@ BEGIN
   VALUES (
     p_campaign_id, 'round_started',
     jsonb_build_object('round',         v_round,
-                       'workspace_pin', p_workspace_pin,
-                       'started_by',    p_started_by)
+                        'workspace_pin', p_workspace_pin,
+                        'started_by',    p_started_by)
   );
   RETURN v_round;
 END;

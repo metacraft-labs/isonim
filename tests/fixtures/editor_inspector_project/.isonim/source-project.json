@@ -2,10 +2,7 @@
   "workspace": "source-project",
   "title": "Inspector source acceptance",
   "catalog": ".isonim/catalog.json",
-  "build": [
-    "python3",
-    "build_catalog.py"
-  ],
+  "build": ["python3", "build_catalog.py"],
   "fixtures": [],
   "editableStyles": [
     {
@@ -71,11 +68,7 @@
       "file": "stories.nim",
       "const": "cardStyles",
       "selector": "#reused-card",
-      "properties": [
-        "width",
-        "height",
-        "background-color"
-      ]
+      "properties": ["width", "height", "background-color"]
     },
     {
       "key": "style.reused.alternate",
@@ -84,11 +77,7 @@
       "file": "stories.nim",
       "const": "alternateStyles",
       "selector": "#reused-alternate",
-      "properties": [
-        "width",
-        "height",
-        "background-color"
-      ]
+      "properties": ["width", "height", "background-color"]
     }
   ]
 }

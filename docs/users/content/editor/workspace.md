@@ -4,6 +4,7 @@ description: The EditorWorkspace data contract a consuming project supplies to t
 section: editor
 order: 2
 ---
+
 # Editor Workspace Model
 
 The IsoNim editor package owns the framework, view models, and

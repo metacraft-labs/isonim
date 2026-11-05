@@ -291,7 +291,7 @@ os.execv(os.environ['CACHE_TEST_NIM'], [os.environ['CACHE_TEST_NIM'], *args])
 
             with concurrent.futures.ThreadPoolExecutor(max_workers=2) as pool:
                 pending = {name: pool.submit(compile_project, name, project, True)
-                           for name, project in projects.items()}
+                            for name, project in projects.items()}
                 results = {name: future.result() for name, future in pending.items()}
             records = []
             for name, result in results.items():

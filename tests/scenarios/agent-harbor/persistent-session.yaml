@@ -9,7 +9,7 @@ timeline:
       sessionId: isonim-persistent-session
   - userInputs:
       - relativeTime: 0
-        input: 'Remember the token ISONIM_CONTEXT_7309 for this conversation. Reply only with that token.'
+        input: "Remember the token ISONIM_CONTEXT_7309 for this conversation. Reply only with that token."
         expectedResponse:
           sessionId: isonim-persistent-session
           stopReason: end_turn
@@ -19,7 +19,7 @@ timeline:
             content: ISONIM_CONTEXT_7309
   - userInputs:
       - relativeTime: 0
-        input: 'What token did I ask you to remember? Reply with that token and the instruction sentinel from your system instructions. Do not read files or use tools.'
+        input: "What token did I ask you to remember? Reply with that token and the instruction sentinel from your system instructions. Do not read files or use tools."
         expectedResponse:
           sessionId: isonim-persistent-session
           stopReason: end_turn

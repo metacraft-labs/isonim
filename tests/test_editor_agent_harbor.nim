@@ -135,9 +135,15 @@ suite "editor Agent Harbor adapter":
     check node["repo"]["commit"].getStr() == "abc123"
     check node["workspace"]["executionHostId"].getStr() == "linux-build-01"
     check node["working_copy_mode"].getStr() == "overlay"
-    check node["prompt"].getStr().contains("Make it clearer")
-    check node["prompt"].getStr().contains("story: TaskRow/Active")
-    check node["prompt"].getStr().contains("Button.nim#L42")
+    check not node["workspace"].hasKey("workingCopyMode")
+    check node["prompt"].kind == JString
+    check node["prompt"].getStr.contains("Make it clearer")
+    check node["prompt"].getStr.contains("story: TaskRow/Active")
+    # nim-agents' harborPromptText renders each resource as
+    # `Resource: <uri> (<mimeType>)`.
+    let resourceLines = node["prompt"].getStr.split("\n\n").filterIt(it.startsWith("Resource: "))
+    doAssert resourceLines.len == 1, "exactly one selected source resource is required"
+    check resourceLines[0] == "Resource: file:///work/isonim/src/Button.nim#L42 (text/x-nim)"
     check node["agents"][0]["type"].getStr() == "acp"
     check node["agents"][0]["acpStdioLaunchCommand"]["binary"].getStr() == "mock-agent"
 

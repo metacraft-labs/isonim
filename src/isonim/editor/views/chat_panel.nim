@@ -132,7 +132,6 @@ proc renderChatPanel*[R, E](r: R; vm: EditorVM): E =
   # header. The Assistant tab label in the sidebar is the canonical
   # identifier; status moves there. Offscreen affordances kept for
   # behaviour tests that key off them.
-  var inspectorToggleButton: E
   let header = ui(r):
     tdiv(
       position = "absolute", left = "-9999px",
@@ -147,11 +146,6 @@ proc renderChatPanel*[R, E](r: R; vm: EditorVM): E =
       tdiv(ref = widenButton, `role` = "button", tabindex = "0",
             `aria-label` = "Widen right panel"):
         text "+"
-      tdiv(ref = inspectorToggleButton, `role` = "button", tabindex = "0",
-            `aria-label` = "Toggle inspector panel",
-            onclick = proc() = vm.togglePanel(epInspector),
-            onkeydown = proc() = vm.togglePanel(epInspector)):
-        text "\xE2\x9C\x95"
       span(ref = statusTextNode):
         text chatStatusText(vm)
   r.appendChild(panel, header)
@@ -250,7 +244,6 @@ proc renderChatPanel*[R, E](r: R; vm: EditorVM): E =
   # Suppress unused-warning for statusColor — still computed for the
   # Assistant tab status indicator wired in shell.nim.
   discard statusColor
-  discard inspectorToggleButton
   r.setAttribute(narrowButton, "data-isonim-focus-id", "right-panel-narrow")
   r.setAttribute(resetButton, "data-isonim-focus-id", "right-panel-reset")
   r.setAttribute(widenButton, "data-isonim-focus-id", "right-panel-widen")

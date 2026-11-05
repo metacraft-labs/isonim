@@ -4,6 +4,7 @@ description: A tour of IsoNim's Karax-style ui(...) markup DSL.
 section: guide
 order: 3
 ---
+
 # The ui DSL
 
 IsoNim's `ui` macro compiles a nested, HTML-shaped block of Nim code into
@@ -53,7 +54,7 @@ ui(r):
 ```
 
 :::note
-A bare proc call as a loop body (instead of a literal DSL element) is *not*
+A bare proc call as a loop body (instead of a literal DSL element) is _not_
 rewired automatically -- build the child element yourself and append it with
 `r.appendChild` outside the `ui(...)` block instead.
 :::

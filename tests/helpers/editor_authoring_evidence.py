@@ -10,8 +10,8 @@ import shlex
 def correlated_responses(wire, request):
     # Provider requests share this stream and may reuse client request IDs.
     matches = [row['message'] for row in wire if row['direction'] == 'response'
-               and row['message'].get('id') == request['id']
-               and 'method' not in row['message']]
+                and row['message'].get('id') == request['id']
+                and 'method' not in row['message']]
     if any(('result' in message) == ('error' in message) for message in matches):
         raise AssertionError('Correlated JSON-RPC response must contain exactly one result or error')
     return matches
@@ -138,7 +138,7 @@ def _single_literal_result_read(command):
     tree = ast.parse(words[2])
     paths = []
     parents = {child: parent for parent in ast.walk(tree)
-               for child in ast.iter_child_nodes(parent)}
+                for child in ast.iter_child_nodes(parent)}
     pure_functions = {'print', 'len', 'min', 'max', 'sum', 'abs', 'all', 'any',
                       'round', 'str', 'int', 'float', 'bool', 'list', 'dict',
                       'tuple', 'set', 'sorted', 'reversed', 'enumerate', 'range',
@@ -154,7 +154,7 @@ def _single_literal_result_read(command):
                 raise AssertionError('Result reader cannot alias imported modules')
         if isinstance(node, ast.Attribute) and isinstance(node.ctx, ast.Load):
             constants = (isinstance(node.value, ast.Name) and
-                         (node.value.id == 'sys' and node.attr == 'stdin' or
+                          (node.value.id == 'sys' and node.attr == 'stdin' or
                           node.value.id == 're' and node.attr in (
                               'DOTALL', 'IGNORECASE', 'MULTILINE', 'ASCII', 'VERBOSE')))
             if not constants and not (isinstance(parent, ast.Call) and parent.func is node):
@@ -165,7 +165,7 @@ def _single_literal_result_read(command):
             if any(alias.name not in allowed_imports or alias.asname for alias in node.names):
                 raise AssertionError('Private result reader imports an unrelated capability')
         elif isinstance(node, (ast.ImportFrom, ast.FunctionDef, ast.AsyncFunctionDef,
-                               ast.ClassDef, ast.Lambda)):
+                                ast.ClassDef, ast.Lambda)):
             raise AssertionError('Private result reader cannot hide additional reads')
         elif isinstance(node, ast.Attribute) and node.attr.startswith('_'):
             raise AssertionError('Private result reader cannot access hidden capabilities')
@@ -203,8 +203,8 @@ def _single_literal_result_read(command):
         elif isinstance(node, (ast.Assign, ast.AnnAssign, ast.AugAssign)):
             targets = node.targets if isinstance(node, ast.Assign) else [node.target]
             if any(isinstance(target, ast.Attribute) or
-                   isinstance(target, ast.Name) and target.id in ('sys', 'json', 're')
-                   for target in targets):
+                    isinstance(target, ast.Name) and target.id in ('sys', 'json', 're')
+                    for target in targets):
                 raise AssertionError('Result reader cannot replace imported capabilities')
     if pipeline:
         if paths:
@@ -242,7 +242,7 @@ def verify_tool_inputs(wire, nonce, operations, provider_session):
         if value:
             text = json.dumps(value)
             if any(forbidden in text for forbidden in
-                   ('real-provider-wire', 'context-nonce', '.scenario/private', nonce)):
+                    ('real-provider-wire', 'context-nonce', '.scenario/private', nonce)):
                 raise AssertionError('Model tools accessed private history/nonce evidence')
             inputs[(turn, tool)] = value
             if '.claude/projects' in text:
@@ -304,8 +304,8 @@ def verify_tool_inputs(wire, nonce, operations, provider_session):
                     output.get('format') != 'text/html' or not output.get('documentHtml')):
                     raise AssertionError('SDK result does not contain a successful HTML capture')
                 verified.append({'turn': turn, 'originTool': origin_tool, 'readTool': tool,
-                                 'operationId': operation, 'command': command,
-                                 'fileSha256': hashlib.sha256(raw).hexdigest()})
+                                  'operationId': operation, 'command': command,
+                                  'fileSha256': hashlib.sha256(raw).hexdigest()})
         if update.get('status') == 'completed':
             for content in update.get('content', []):
                 text = content.get('content', {}).get('text', '')

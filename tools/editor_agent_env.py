@@ -38,7 +38,7 @@ def endpoint_for_routes(endpoint, route_text, platform):
             if len(fields) != 11:
                 return endpoint
             rows.append((fields[0], int(fields[1], 16), int(fields[2], 16),
-                         int(fields[3], 16), int(fields[7], 16)))
+                          int(fields[3], 16), int(fields[7], 16)))
         defaults = [row for row in rows if row[1] == 0]
         if (len(defaults) != 1 or defaults[0] != ("tap0", 0, 0x0202000A, 3, 0) or
             ("tap0", 0x0002000A, 0, 1, 0x00FFFFFF) not in rows):
@@ -95,7 +95,7 @@ def prepare_environment(filename, values):
             descriptor = child
         temporary = ".environment-" + secrets.token_hex(16)
         fd = os.open(temporary, os.O_WRONLY | os.O_CREAT | os.O_EXCL | os.O_NOFOLLOW,
-                     0o600, dir_fd=descriptor)
+                      0o600, dir_fd=descriptor)
         with os.fdopen(fd, "w", encoding="utf-8") as stream:
             json.dump(values, stream)
         os.replace(temporary, "environment.json", src_dir_fd=descriptor, dst_dir_fd=descriptor)

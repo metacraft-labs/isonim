@@ -33,7 +33,10 @@ async function open(page: Page) {
   await page.addInitScript(() => {
     window.__xhr = { opened: 0, sync: 0 };
     const xhrOpen = XMLHttpRequest.prototype.open;
-    XMLHttpRequest.prototype.open = function (this: XMLHttpRequest, ...args: any[]) {
+    XMLHttpRequest.prototype.open = function (
+      this: XMLHttpRequest,
+      ...args: any[]
+    ) {
       window.__xhr.opened++;
       if (args.length > 2 && args[2] === false) window.__xhr.sync++;
       return (xhrOpen as any).apply(this, args);
@@ -59,8 +62,12 @@ test.afterEach(async ({ page }) => {
   expect(xhr).toEqual({ opened: 0, sync: 0 });
 });
 
-test("async server functions return typed results over POST", async ({ page }) => {
-  const req = page.waitForRequest((r) => r.url().endsWith("/api/v1/rpc/fixture_rpc/sum"));
+test("async server functions return typed results over POST", async ({
+  page,
+}) => {
+  const req = page.waitForRequest((r) =>
+    r.url().endsWith("/api/v1/rpc/fixture_rpc/sum"),
+  );
   expect(await page.evaluate(() => window.fx.sum(2, 40))).toBe(42);
   const sent = await req;
   expect(sent.method()).toBe("POST");
@@ -81,8 +88,12 @@ test("a 1 MB argument arrives whole", async ({ page }) => {
   expect(r).toEqual({ ok: true, value: 1024 * 1024 });
 });
 
-test("a body over isonim_rpc_max_body_size is answered 413", async ({ page }) => {
-  const resp = page.waitForResponse((r) => r.url().endsWith("/fixture_rpc/bodySize"));
+test("a body over isonim_rpc_max_body_size is answered 413", async ({
+  page,
+}) => {
+  const resp = page.waitForResponse((r) =>
+    r.url().endsWith("/fixture_rpc/bodySize"),
+  );
   const r = await page.evaluate(() => window.fx.bodySize(1536 * 1024));
   expect(r).toEqual({ ok: false, status: 413 });
   expect((await resp).status()).toBe(413);
@@ -115,7 +126,15 @@ test("a concurrent request completes during the slow server function; the main t
     const slowValue = await slow;
     const ticksDuringSlow = ticks;
     clearInterval(timer);
-    return { pending, fast, fastDone, fastLatency, slowValue, slowDone, ticksDuringSlow };
+    return {
+      pending,
+      fast,
+      fastDone,
+      fastLatency,
+      slowValue,
+      slowDone,
+      ticksDuringSlow,
+    };
   });
   // The fast call finished while the slow one was still suspended on the
   // same worker, and quickly.
@@ -128,5 +147,7 @@ test("a concurrent request completes during the slow server function; the main t
   // The main thread ran its timer throughout (a blocked thread runs none).
   expect(r.ticksDuringSlow).toBeGreaterThan(1500 / 20 / 2);
   const fetches = await page.evaluate(() => window.__fetches);
-  expect(fetches.filter((u) => u.includes("/fixture_rpc/")).length).toBeGreaterThanOrEqual(3);
+  expect(
+    fetches.filter((u) => u.includes("/fixture_rpc/")).length,
+  ).toBeGreaterThanOrEqual(3);
 });

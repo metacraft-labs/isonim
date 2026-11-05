@@ -18,7 +18,7 @@ timeline:
   - agentToolUse:
       toolName: runCmd
       args:
-        cwd: '@PROJECT@'
+        cwd: "@PROJECT@"
         cmd: |
           set -eu
           phase=$(cat '@ARTIFACTS@/phase')
@@ -38,6 +38,6 @@ timeline:
   - llmResponse:
       - assistant:
           - relativeTime: 0
-            content: '@RESPONSE@'
+            content: "@RESPONSE@"
 expect:
   stopReason: end_turn

@@ -3,7 +3,8 @@
 ## Spawns the compiled binary via ``osproc.startProcess`` (the
 ## milestone's non-negotiable: no in-process function calls).
 
-import std/[unittest, os, osproc, strutils, streams]
+import std/[unittest, os, strutils]
+import helpers/owned_cli_test_capture
 
 const RepoRoot = currentSourcePath().parentDir().parentDir()
 const CliPath  = RepoRoot / "build" / "bin" / "isonim-review"
@@ -15,18 +16,9 @@ proc runCli(args: openArray[string]):
   ## — we feed it directly via ``args``). Captures stdout and stderr
   ## separately so the e2e_..._reports_errors test can assert on
   ## stderr only.
-  let p = startProcess(
-    command = CliPath,
-    args = @args,
-    options = {poUsePath}
-  )
-  defer: p.close()
-  let outStream = p.outputStream
-  let errStream = p.errorStream
-  let exitCode = p.waitForExit()
-  result.exitCode = exitCode
-  result.stdout = outStream.readAll()
-  result.stderr = errStream.readAll()
+  # The qualified retained split-stream helper drains stdout while stderr is
+  # captured completely in its exclusive regular log, then actually waits.
+  result = runOwnedSplitCapture(CliPath, @args)
 
 suite "REV-M1 isonim-review CLI":
   test "cli_binary_exists":

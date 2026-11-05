@@ -7,6 +7,7 @@ and is themed by the shared
 [CodeTracer docs design system](../../../codetracer-design-system/docs/codetracer-docs.tokens.json).
 
 > Two different "docs" live nearby — don't confuse them:
+>
 > - **this** (`isonim/docs/users/`) documents the **IsoNim UI framework** for its users;
 > - [`isonim-docs/site/`](../../../isonim-docs/site/README.md) documents the **isonim-docs SSG framework**;
 > - [`codetracer/docs/book-isonim/`](../../../codetracer/docs/book-isonim/README.md) is the **CodeTracer product** book.
@@ -14,7 +15,7 @@ and is themed by the shared
 ## Prerequisites
 
 Every task runs inside the **IsoNim Nix dev shell** — and because this docs set
-lives *inside* the IsoNim repo, that shell is IsoNim's own (`../..` is the
+lives _inside_ the IsoNim repo, that shell is IsoNim's own (`../..` is the
 repo root that holds the flake), not a foreign one. Enter it once…
 
 ```bash
@@ -52,14 +53,14 @@ just test          # the full user-docs test suite (build, links, references, la
 
 ## Where things live
 
-| Path | What |
-|------|------|
-| `content/index.md` | Landing page |
-| `content/getting-started.md`, `content/guide/`, `content/editor/`, `content/faq.md` | The guide sections |
-| `src/docs_config.nim` | Site config (title, chrome, section order, redirects) |
-| `src/{build,dev,ssr}.nim` | Build/serve entry points |
-| `assets/style.css` | Site-owned CSS |
-| `tests/` | Build, completeness, content-loader, references, redirects, theme-contract, landing, dev tests |
+| Path                                                                                | What                                                                                           |
+| ----------------------------------------------------------------------------------- | ---------------------------------------------------------------------------------------------- |
+| `content/index.md`                                                                  | Landing page                                                                                   |
+| `content/getting-started.md`, `content/guide/`, `content/editor/`, `content/faq.md` | The guide sections                                                                             |
+| `src/docs_config.nim`                                                               | Site config (title, chrome, section order, redirects)                                          |
+| `src/{build,dev,ssr}.nim`                                                           | Build/serve entry points                                                                       |
+| `assets/style.css`                                                                  | Site-owned CSS                                                                                 |
+| `tests/`                                                                            | Build, completeness, content-loader, references, redirects, theme-contract, landing, dev tests |
 
 Add a page by dropping a Markdown file with front matter (`title`, `section`,
 `order`) into `content/`.

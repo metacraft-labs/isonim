@@ -797,6 +797,9 @@ package isonim:
     # ``nim.js`` typed-tool comes from the already-declared ``nim`` above.
     "node >=20"
     "python3 >=3.9"
+    # Recipes run through `just`; CI admits the Windows binary for this role
+    # (ci/admit-native-windows-just-tool.ps1).
+    "just >=1"
 
     # The five landed sibling Nim-library producers (SC-11 develop-mode
     # from-source consumption). ``src/isonim/editor/*`` import each of these;

@@ -148,7 +148,7 @@ def main():
                 while b"\n" in pending:
                     line, pending = pending.split(b"\n", 1)
                     transformed = (inject_instructions((line + b"\n").decode("utf-8"), instructions)
-                                   if instructions else (line + b"\n").decode("utf-8"))
+                                    if instructions else (line + b"\n").decode("utf-8"))
                     transformed = models.request(transformed)
                     child.stdin.write(transformed.encode("utf-8"))
                     child.stdin.flush()

@@ -49,7 +49,7 @@ def snapshot(root):
     workspace.mkdir(mode=0o700)
     destination = workspace / root.name
     subprocess.run(['git', 'clone', '--no-hardlinks', '--no-checkout', str(root), str(destination)],
-                   check=True)
+                    check=True)
     head = git('rev-parse', 'HEAD', cwd=root).decode().strip()
     subprocess.run(['git', 'checkout', '--detach', head], cwd=destination, check=True)
     tracked = git('ls-files', '-z', cwd=root).decode().split('\0')
@@ -160,7 +160,7 @@ def main():
     if len(sys.argv) != 2:
         raise SystemExit('usage: editor_scenario_checkout.py <owning-internal-recipe>')
     recipes = {'_editor-scenarios-native', '_editor-scenarios-gui',
-               '_editor-scenarios-stress', '_editor-harbor-scenario', '_editor-harbor-output-modes'}
+                '_editor-scenarios-stress', '_editor-harbor-scenario', '_editor-harbor-output-modes'}
     recipe = sys.argv[1]
     if recipe not in recipes:
         raise SystemExit('Unknown Harbor acceptance recipe')

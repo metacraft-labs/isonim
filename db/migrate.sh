@@ -31,7 +31,11 @@ for f in "$MIG_DIR"/[0-9][0-9][0-9]_*.sql; do
     echo "[postgres-migrate] skip $base (version=$version already applied)"
     continue
   fi
-  sha=$(shasum -a 256 "$f" | cut -d ' ' -f 1)
+  if command -v sha256sum >/dev/null 2>&1; then
+    sha=$(sha256sum "$f" | cut -d ' ' -f 1)
+  else
+    sha=$(shasum -a 256 "$f" | cut -d ' ' -f 1)
+  fi
   echo "[postgres-migrate] apply $base (version=$version)"
   # Run psql with the migration file's directory as the working dir so
   # ``\i lib.sql`` in 002 resolves to db/migrations/lib.sql.

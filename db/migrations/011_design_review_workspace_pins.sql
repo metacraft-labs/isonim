@@ -44,7 +44,7 @@
 -- ==========================================================================
 CREATE TABLE design_review.workspace_pins (
   pin          TEXT PRIMARY KEY
-               CHECK (pin ~ '^wslock-v1:sha256:[0-9a-f]{64}$'),
+                CHECK (pin ~ '^wslock-v1:sha256:[0-9a-f]{64}$'),
   lock_toml    TEXT NOT NULL,
   lock_record  TEXT,
     -- ``<project>/<repo>@<sha>`` of a published reprobuild lock record in
@@ -54,7 +54,7 @@ CREATE TABLE design_review.workspace_pins (
   recorded_by  TEXT NOT NULL,
   recorded_at  TIMESTAMPTZ NOT NULL DEFAULT NOW(),
   CHECK ('wslock-v1:sha256:' ||
-         encode(sha256(convert_to(lock_toml, 'UTF8')), 'hex') = pin)
+          encode(sha256(convert_to(lock_toml, 'UTF8')), 'hex') = pin)
 );
 
 GRANT ALL PRIVILEGES ON TABLE design_review.workspace_pins TO design_review_migrator;
@@ -88,7 +88,7 @@ BEGIN
     RAISE EXCEPTION 'record_workspace_pin: p_recorded_by must be a non-empty string';
   END IF;
   IF 'wslock-v1:sha256:' ||
-     encode(sha256(convert_to(p_lock_toml, 'UTF8')), 'hex') <> p_pin THEN
+      encode(sha256(convert_to(p_lock_toml, 'UTF8')), 'hex') <> p_pin THEN
     RAISE EXCEPTION 'record_workspace_pin: record does not hash to %', p_pin;
   END IF;
 
@@ -101,11 +101,11 @@ BEGIN
     PERFORM design_review.audit_event_insert(
       p_recorded_by, 'workspace_pin.recorded', NULL, NULL, NULL,
       jsonb_build_object('pin', p_pin,
-                         'lock_record', NULLIF(p_lock_record, '')));
+                          'lock_record', NULLIF(p_lock_record, '')));
   ELSIF NULLIF(p_lock_record, '') IS NOT NULL THEN
     UPDATE design_review.workspace_pins
-       SET lock_record = p_lock_record
-     WHERE pin = p_pin AND lock_record IS NULL;
+        SET lock_record = p_lock_record
+      WHERE pin = p_pin AND lock_record IS NULL;
   END IF;
   RETURN p_pin;
 END;
@@ -170,7 +170,7 @@ BEGIN
     RAISE EXCEPTION 'start_run: p_started_by must be a non-empty string';
   END IF;
   IF p_manifest_hash LIKE 'wslock-v1:%' AND NOT EXISTS (
-       SELECT 1 FROM design_review.workspace_pins WHERE pin = p_manifest_hash)
+        SELECT 1 FROM design_review.workspace_pins WHERE pin = p_manifest_hash)
   THEN
     RAISE EXCEPTION
       'start_run: workspace pin % is not recorded (call record_workspace_pin first)',

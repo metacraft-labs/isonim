@@ -9,42 +9,42 @@ Official scenario integration remains `test-editor-scenarios-native`, stress and
 GUI over real Harbor REST and its Rust mock-agent (persistent sessions, source,
 compiler, mounted preview, CLI navigation/approval and close/reap).
 
-| Public discriminator | Named view | Deterministic boundary | Official REST scenario |
-|---|---|---|---|
-| agent_question | question | Full typed projection + mounted production GUI | DTO boundary only; no official infrastructure emission claim |
-| anti_halting_resume_confirmed | recovery | Full typed projection + mounted production GUI | DTO boundary only; no official infrastructure emission claim |
-| context_files | model-context | Full typed projection + mounted production GUI | DTO boundary only; no official infrastructure emission claim |
-| context_injection | model-context | Full typed projection + mounted production GUI | DTO boundary only; no official infrastructure emission claim |
-| delegation | delegation | Full typed projection + mounted production GUI | DTO boundary only; no official infrastructure emission claim |
-| diff | files | Full typed projection + mounted production GUI | DTO boundary only; no official infrastructure emission claim |
-| dispatcher_restarted | recovery | Full typed projection + mounted production GUI | DTO boundary only; no official infrastructure emission claim |
-| error | error | Full typed projection + mounted production GUI | DTO boundary only; no official infrastructure emission claim |
-| file_edit | files | Full typed projection + mounted production GUI | Existing persistent authoring scenario |
-| file_read | files | Full typed projection + mounted production GUI | DTO boundary only; no official infrastructure emission claim |
-| fleet_fence | workspace | Full typed projection + mounted production GUI | DTO boundary only; no official infrastructure emission claim |
-| fleet_host | workspace | Full typed projection + mounted production GUI | DTO boundary only; no official infrastructure emission claim |
-| link_spans | participants | Full typed projection + mounted production GUI | DTO boundary only; no official infrastructure emission claim |
-| llm_request | model-context | Full typed projection + mounted production GUI | DTO boundary only; no official infrastructure emission claim |
-| log | conversation, long-content, completed | Full typed projection + mounted production GUI | Existing persistent authoring scenario |
-| login_required | login | Full typed projection + mounted production GUI | DTO boundary only; no official infrastructure emission claim |
-| orchestration | delegation | Full typed projection + mounted production GUI | DTO boundary only; no official infrastructure emission claim |
-| participant | participants | Full typed projection + mounted production GUI | DTO boundary only; no official infrastructure emission claim |
-| plan | plan | Full typed projection + mounted production GUI | DTO boundary only; no official infrastructure emission claim |
-| proxy_credential_rotated | recovery | Full typed projection + mounted production GUI | DTO boundary only; no official infrastructure emission claim |
-| proxy_rate_limit_absorbed | recovery | Full typed projection + mounted production GUI | DTO boundary only; no official infrastructure emission claim |
-| session_awaiting_input | lifecycle, question, login | Full typed projection + mounted production GUI | DTO boundary only; no official infrastructure emission claim |
-| session_ended | lifecycle | Full typed projection + mounted production GUI | DTO boundary only; no official infrastructure emission claim |
-| session_leadership_migrated | recovery | Full typed projection + mounted production GUI | DTO boundary only; no official infrastructure emission claim |
-| session_resumed | lifecycle | Full typed projection + mounted production GUI | DTO boundary only; no official infrastructure emission claim |
-| session_started | lifecycle | Full typed projection + mounted production GUI | DTO boundary only; no official infrastructure emission claim |
-| status | error | Full typed projection + mounted production GUI | Existing persistent authoring scenario |
-| sub_agent | delegation | Full typed projection + mounted production GUI | DTO boundary only; no official infrastructure emission claim |
-| thought | conversation, completed | Full typed projection + mounted production GUI | Existing persistent authoring scenario |
-| tool_result | tools | Full typed projection + mounted production GUI | Existing persistent authoring scenario |
-| tool_use | tools, long-content | Full typed projection + mounted production GUI | Existing persistent authoring scenario |
-| turn_complete | plan, completed | Full typed projection + mounted production GUI | Existing persistent authoring scenario |
-| user_input | conversation | Full typed projection + mounted production GUI | Existing persistent authoring scenario |
-| workspace | workspace | Full typed projection + mounted production GUI | Existing persistent authoring scenario |
+| Public discriminator          | Named view                            | Deterministic boundary                         | Official REST scenario                                       |
+| ----------------------------- | ------------------------------------- | ---------------------------------------------- | ------------------------------------------------------------ |
+| agent_question                | question                              | Full typed projection + mounted production GUI | DTO boundary only; no official infrastructure emission claim |
+| anti_halting_resume_confirmed | recovery                              | Full typed projection + mounted production GUI | DTO boundary only; no official infrastructure emission claim |
+| context_files                 | model-context                         | Full typed projection + mounted production GUI | DTO boundary only; no official infrastructure emission claim |
+| context_injection             | model-context                         | Full typed projection + mounted production GUI | DTO boundary only; no official infrastructure emission claim |
+| delegation                    | delegation                            | Full typed projection + mounted production GUI | DTO boundary only; no official infrastructure emission claim |
+| diff                          | files                                 | Full typed projection + mounted production GUI | DTO boundary only; no official infrastructure emission claim |
+| dispatcher_restarted          | recovery                              | Full typed projection + mounted production GUI | DTO boundary only; no official infrastructure emission claim |
+| error                         | error                                 | Full typed projection + mounted production GUI | DTO boundary only; no official infrastructure emission claim |
+| file_edit                     | files                                 | Full typed projection + mounted production GUI | Existing persistent authoring scenario                       |
+| file_read                     | files                                 | Full typed projection + mounted production GUI | DTO boundary only; no official infrastructure emission claim |
+| fleet_fence                   | workspace                             | Full typed projection + mounted production GUI | DTO boundary only; no official infrastructure emission claim |
+| fleet_host                    | workspace                             | Full typed projection + mounted production GUI | DTO boundary only; no official infrastructure emission claim |
+| link_spans                    | participants                          | Full typed projection + mounted production GUI | DTO boundary only; no official infrastructure emission claim |
+| llm_request                   | model-context                         | Full typed projection + mounted production GUI | DTO boundary only; no official infrastructure emission claim |
+| log                           | conversation, long-content, completed | Full typed projection + mounted production GUI | Existing persistent authoring scenario                       |
+| login_required                | login                                 | Full typed projection + mounted production GUI | DTO boundary only; no official infrastructure emission claim |
+| orchestration                 | delegation                            | Full typed projection + mounted production GUI | DTO boundary only; no official infrastructure emission claim |
+| participant                   | participants                          | Full typed projection + mounted production GUI | DTO boundary only; no official infrastructure emission claim |
+| plan                          | plan                                  | Full typed projection + mounted production GUI | DTO boundary only; no official infrastructure emission claim |
+| proxy_credential_rotated      | recovery                              | Full typed projection + mounted production GUI | DTO boundary only; no official infrastructure emission claim |
+| proxy_rate_limit_absorbed     | recovery                              | Full typed projection + mounted production GUI | DTO boundary only; no official infrastructure emission claim |
+| session_awaiting_input        | lifecycle, question, login            | Full typed projection + mounted production GUI | DTO boundary only; no official infrastructure emission claim |
+| session_ended                 | lifecycle                             | Full typed projection + mounted production GUI | DTO boundary only; no official infrastructure emission claim |
+| session_leadership_migrated   | recovery                              | Full typed projection + mounted production GUI | DTO boundary only; no official infrastructure emission claim |
+| session_resumed               | lifecycle                             | Full typed projection + mounted production GUI | DTO boundary only; no official infrastructure emission claim |
+| session_started               | lifecycle                             | Full typed projection + mounted production GUI | DTO boundary only; no official infrastructure emission claim |
+| status                        | error                                 | Full typed projection + mounted production GUI | Existing persistent authoring scenario                       |
+| sub_agent                     | delegation                            | Full typed projection + mounted production GUI | DTO boundary only; no official infrastructure emission claim |
+| thought                       | conversation, completed               | Full typed projection + mounted production GUI | Existing persistent authoring scenario                       |
+| tool_result                   | tools                                 | Full typed projection + mounted production GUI | Existing persistent authoring scenario                       |
+| tool_use                      | tools, long-content                   | Full typed projection + mounted production GUI | Existing persistent authoring scenario                       |
+| turn_complete                 | plan, completed                       | Full typed projection + mounted production GUI | Existing persistent authoring scenario                       |
+| user_input                    | conversation                          | Full typed projection + mounted production GUI | Existing persistent authoring scenario                       |
+| workspace                     | workspace                             | Full typed projection + mounted production GUI | Existing persistent authoring scenario                       |
 
 ## Existing behavioral integration retained
 
@@ -86,13 +86,13 @@ no fabricated actions. Generic busy-prompt rejection remains intact. Native
 park/answer/resume is not claimed as supported or tested by these captures.
 
 Public REST tool status is started/completed/failed. Companion tool-waiting and
- tool-running views use normalized common AgentEvent data (not public REST DTOs).
+tool-running views use normalized common AgentEvent data (not public REST DTOs).
 Their production codec/reducer/rendering boundary is explicit. The thought-settled
 view verifies genuine typed completion settles an earlier streamed thought.
 
 ### Contract and visible-frame evidence
 
-The fixture is exported by actual b40 `SessionEvent` deserialize/serialize; every supplied field must survive the roundtrip identically, with required-field and enum negative controls. Separate injected unknown/private fields test safe editor projection and are not producer fixture data. Per-event captures assert their card heading lies inside the actual conversation viewport. The event-log-bottom companion exposes the end of the long code block; grouped views may need their named event-* companions to inspect earlier cards.
+The fixture is exported by actual b40 `SessionEvent` deserialize/serialize; every supplied field must survive the roundtrip identically, with required-field and enum negative controls. Separate injected unknown/private fields test safe editor projection and are not producer fixture data. Per-event captures assert their card heading lies inside the actual conversation viewport. The event-log-bottom companion exposes the end of the long code block; grouped views may need their named event-\* companions to inspect earlier cards.
 
 ## Behavioral scene matrix
 
@@ -103,14 +103,14 @@ rejected before any application. Shared command validation, revision checks, app
 resolution, DOM focus/highlight/selection and chat reducer remain real. Source
 authoring/compiler/CLI/REST execution remains in the original official suites.
 
-| Views (wide and narrow) | Production boundary | Original integration coverage |
-|---|---|---|
-| navigation-pending / approved / rejected / stale / auto | Shared admission, actual preference checkbox and approval buttons, real story selection; stale approval after a changed viewport | Native control plus genuine REST scenario/control GUI |
-| focus-auto / selection-highlight-auto / highlight-auto | Installed DOM focus/selection/highlight adapters, real preview document and inspector IDs | Genuine control GUI and official scenario GUI |
-| chat-first-send / send-failed / draft-streaming | Actual composer send, rejected admission, suggestion dismissal, retained draft, active-turn send guard | Native/executed-JS chat and original mounted GUI |
-| chat-independent-first / second | Actual new-chat/switch commands, independent drafts/transcripts and placeholder state | Original mounted GUI and official scenario GUI |
-| chat-scroll-back / latest / selection-streaming | Actual scroll handler/latest button and browser Range selection across production streamed updates | Original mounted GUI |
-| question-free-form / multi-choice / confirmation and question(single-choice) | Valid public DTO → safe projection → codec → reducer → real view; no unavailable response controls | Native/executed-JS all-mode assertion plus mounted capture; no park/resume infrastructure claim |
+| Views (wide and narrow)                                                      | Production boundary                                                                                                              | Original integration coverage                                                                   |
+| ---------------------------------------------------------------------------- | -------------------------------------------------------------------------------------------------------------------------------- | ----------------------------------------------------------------------------------------------- |
+| navigation-pending / approved / rejected / stale / auto                      | Shared admission, actual preference checkbox and approval buttons, real story selection; stale approval after a changed viewport | Native control plus genuine REST scenario/control GUI                                           |
+| focus-auto / selection-highlight-auto / highlight-auto                       | Installed DOM focus/selection/highlight adapters, real preview document and inspector IDs                                        | Genuine control GUI and official scenario GUI                                                   |
+| chat-first-send / send-failed / draft-streaming                              | Actual composer send, rejected admission, suggestion dismissal, retained draft, active-turn send guard                           | Native/executed-JS chat and original mounted GUI                                                |
+| chat-independent-first / second                                              | Actual new-chat/switch commands, independent drafts/transcripts and placeholder state                                            | Original mounted GUI and official scenario GUI                                                  |
+| chat-scroll-back / latest / selection-streaming                              | Actual scroll handler/latest button and browser Range selection across production streamed updates                               | Original mounted GUI                                                                            |
+| question-free-form / multi-choice / confirmation and question(single-choice) | Valid public DTO → safe projection → codec → reducer → real view; no unavailable response controls                               | Native/executed-JS all-mode assertion plus mounted capture; no park/resume infrastructure claim |
 
 The grouped recovery scene has a required recovery-top companion at both widths. Both views reuse the same five original events. The top frame demonstrates Provider access recovered and provider throttling; the original latest-activity frame retains restart, idle recovery and executor migration. The full inventory preserves all original 146 keys and adds these two full-frame keys (148 total). Both views use the same preview, published-scene, frame and composer guards; actual visible heading/fact bounds are recorded and checked.
 

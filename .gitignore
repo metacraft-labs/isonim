@@ -287,3 +287,15 @@ __pycache__/
 tests/test_choice_row_activation
 tests/test_loop_accessors
 tests/test_editor_loop_handlers
+
+# Native editor executables emitted beside their tracked Nim sources.
+/tests/test_editor_agent_launch_cleanup
+/tests/test_editor_control
+/tests/test_editor_control_routes
+/tests/test_editor_preview_toolbar
+/tests/test_editor_workspace_refresh
+/tests/test_editor_css_patch
+/tests/test_editor_css_shadow
+/tests/test_editor_edit_regime
+/tests/test_scene_graph_hooks
+/tests/test_style_provenance
