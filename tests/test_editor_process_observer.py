@@ -368,6 +368,11 @@ class ProcessObserverTests(unittest.TestCase):
             shutil.copyfile(source / 'helpers/editor_process_observer.py', tests / 'helpers/editor_process_observer.py')
             shutil.copyfile(source / 'helpers/editor_context_evidence.py', tests / 'helpers/editor_context_evidence.py')
             shutil.copyfile(source / 'helpers/harbor_consumer.py', tests / 'helpers/harbor_consumer.py')
+            # The scenario resolves its sibling roles through the production parser.
+            shutil.copyfile(source / 'helpers/editor_workspace_roles.py', tests / 'helpers/editor_workspace_roles.py')
+            roles = workspace / 'isonim/tools/isonim_review'
+            roles.mkdir(parents=True)
+            shutil.copyfile(source.parent / 'tools/isonim_review/workspace_roles.py', roles / 'workspace_roles.py')
             absent = subprocess.run([sys.executable, str(tests / 'test_editor_harbor_scenario.py'), '-v'],
                                     capture_output=True, text=True, timeout=10)
             self.assertEqual(absent.returncode, 0, absent.stderr)
