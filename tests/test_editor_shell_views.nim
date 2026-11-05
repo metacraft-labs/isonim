@@ -87,6 +87,28 @@ proc countInteractive(node: MockNode): int =
 
 suite "Editor Shell Views (M2)":
 
+  test "workspace foundation tokens remain reachable without a story":
+    createRoot do (dispose: proc()):
+      let r = MockRenderer()
+      let vm = createEditorVM()
+      check vm.selectedStory.val.name.len == 0
+      vm.setActiveView(evFoundationsPage)
+      let shell = renderEditorShell[MockRenderer, MockNode](r, vm)
+      let overlay = findByAttr(shell, "data-no-story-overlay", "true")
+      check overlay != nil
+      check overlay.styles.getOrDefault("display") == "none"
+      check findByAttr(shell, "data-foundations-page", "true") != nil
+      # Story-dependent preview views and the Spec surface stay guarded.
+      for view in [evComponentDetail, evComponentEdit, evPagePreview]:
+        vm.setActiveView(view)
+        check overlay.styles.getOrDefault("display") == "flex"
+      vm.setActiveView(evFoundationsPage)
+      check overlay.styles.getOrDefault("display") == "none"
+      vm.setEditMode(emSpec)
+      check overlay.styles.getOrDefault("display") == "flex"
+      dispose()
+
+
   test "test_editor_shell_three_panel_layout":
     ## Editor renders sidebar, center column (chrome bar + views), and
     ## inspector panels. The global title bar and the M57 left/right
@@ -1107,6 +1129,20 @@ suite "Editor Shell Views (M2)":
       let editChip = findByAttr(modeCluster, "data-choice-group-pill", "3")
       check editChip != nil
       check editChip.attributes["role"] == "button"
+      for mode in ["spec", "view", "comment", "edit"]:
+        check findByAttr(modeCluster, "data-preview-mode", mode) != nil
+      check editChip.attributes["data-preview-mode"] == "edit"
+      check editChip.attributes["data-preview-mode-disabled"] == "false"
+      let backend = findByAttr(shell, "data-toolbar-cluster", "backend")
+      check findByAttr(backend, "data-preview-backend", "web") != nil
+      let viewport = findByAttr(shell, "data-toolbar-cluster", "viewport")
+      check findByAttr(viewport, "data-preview-viewport", "desktop") != nil
+      let overflow = findByAttr(viewport, "data-preview-viewport-overflow", "true")
+      check overflow != nil
+      check overflow.attributes["title"] ==
+        "Current viewport: " & vm.viewport.val.label & "; choose another size"
+      check overflow.attributes["aria-description"] ==
+        "Current viewport: " & vm.viewport.val.label
 
       editChip.fireEvent("click")
       check vm.editMode.val == emEdit

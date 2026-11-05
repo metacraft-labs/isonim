@@ -4677,7 +4677,14 @@ proc renderPreviewChromeBar*[R, E](r: R; vm: EditorVM): E =
         text capturedVm.viewport.value.label
       text "\xE2\x96\xBE"  # ▾
   createRenderEffect proc() =
-    r.setTextContent(viewportCurrentLabel, capturedVm.viewport.val.label)
+    let currentLabel = capturedVm.viewport.val.label
+    r.setTextContent(viewportCurrentLabel, currentLabel)
+    # The narrow chrome hides the size chips and may truncate this label;
+    # the overflow trigger still names the current size.
+    r.setAttribute(viewportChevronBtn, "title",
+      "Current viewport: " & currentLabel & "; choose another size")
+    r.setAttribute(viewportChevronBtn, "aria-description",
+      "Current viewport: " & currentLabel)
   r.appendChild(viewportClusterWrapper, viewportChevronWrap)
 
   # The active breakpoint, immediately right of the screen-size chips.
@@ -5103,7 +5110,11 @@ proc renderPreviewChromeBar*[R, E](r: R; vm: EditorVM): E =
     onPillMounted = proc(pill: E; i: int) =
       let slug = modeLabels[i].toLowerAscii
       r.setAttribute(pill, "data-preview-mode", slug)
-      r.setAttribute(pill, "aria-label", "Switch to " & slug & " mode"))
+      r.setAttribute(pill, "aria-label", "Switch to " & slug & " mode")
+      let capturedIndex = i
+      createRenderEffect proc() =
+        r.setAttribute(pill, "data-preview-mode-disabled",
+          if modeVm.isDisabled(capturedIndex): "true" else: "false"))
 
   block:
     let syncVm = modeVm
