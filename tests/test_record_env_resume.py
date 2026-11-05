@@ -169,7 +169,9 @@ class RetainedCommandTests(unittest.TestCase):
         other.mkdir()
         self.cwd = other
         self.receipt.write_text('current-base output')
-        self.first()
+        row = self.first()
+        self.assertNotIn('receipt.json', row['beforeInputs'])
+        self.assertEqual(row['outputs'], {str(self.receipt): self.ns['sha'](self.receipt)})
         self.resume()
         self.assertTrue((other / 'receipt.json').is_file())
 
@@ -316,8 +318,8 @@ class RetainedCommandTests(unittest.TestCase):
         self.refusal('', 'assert len(old)==1')
 
     def test_old_generation_source_binding_refuses(self):
-        # An explicit source-generation file is retained even if declared as
-        # output; no ledger migration/relabel is permitted after code changes.
+        # An explicit source-generation input stays bound across code changes;
+        # no ledger migration or relabel is permitted for a new generation.
         source_copy = self.base / 'generation-source.py'
         source_copy.write_bytes(SOURCE_BYTES)
         self.ns['inputs'].append(source_copy)
