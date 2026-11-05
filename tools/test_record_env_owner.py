@@ -32,9 +32,15 @@ def run(name,argv,env=None,cwd=ROOT,expected=0,oracle=None,outputs=()):
  executable=Path(shutil.which(argv[0])or argv[0])
  if executable.is_file():
   before[str(executable)]=sha(executable);before[str(executable.resolve())]=sha(executable.resolve())
+ # Only heuristic argv/env discovery excludes declared outputs. Explicit
+ # inputs and selected/resolved executables above keep their input role even
+ # when also outputs (native binaries). Resolve with the same current-directory
+ # base as is_file/sha, including relative and symlink aliases, never by prefix.
+ outputs=tuple(outputs)
+ output_paths={Path(p).resolve()for p in outputs}
  # Bind the actual selected inverse body and compiled bundle, not only root.
  for p in [*argv,*env.values()]:
-  if isinstance(p,str)and len(p)<250 and '\n'not in p and Path(p).is_file():before[p]=sha(p)
+  if isinstance(p,str)and len(p)<250 and '\n'not in p and Path(p).is_file()and Path(p).resolve()not in output_paths:before[p]=sha(p)
  old=[r for r in LEDGER if r['name']==name]
  if old:
   assert len(old)==1;row=old[0]

@@ -2339,6 +2339,10 @@ test-registered-handler:
 test-record-document-progress-owner:
     python3 tools/test_record_document_progress_owner.py
 
+# Real helper/process bookkeeping coverage; no compiler/browser qualification.
+test-record-env-resume:
+    python3 -I -B tests/test_record_env_resume.py
+
 # Pure frozen boot/experiment projection through the actual Recorder and codec.
 test-record-env-owner: build-tailwind
     python3 tools/test_record_env_owner.py
