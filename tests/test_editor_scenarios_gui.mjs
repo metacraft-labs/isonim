@@ -172,7 +172,7 @@ async function selectChat(id){
 }
 try{
  const registered=page.waitForResponse(response=>response.url().endsWith('/api/editor/rpc')&&response.request().postDataJSON()?.method==='editor.register');
- await page.goto(origin);scope=(await(await registered).json()).result;
+ const [registrationResponse]=await Promise.all([registered,page.goto(origin)]);scope=(await registrationResponse.json()).result;
  writeFileSync(path.join(artifacts,'private/browser-registration.json'),JSON.stringify(scope),{mode:0o600});
  assert(scope);await composer.waitFor();await until(async()=> (await cli(['state'])).capabilities.includes('create-story'),'real source adapter ready');
  await page.getByText('Suggested prompts',{exact:true}).waitFor();
@@ -443,8 +443,8 @@ try{
  assert.equal((await cli(['wait','reconnect-focus'])).status,'applied');assert.equal(await composer.evaluate(node=>node===document.activeElement),true);
  // A separately disconnected instance remains revoked even with its exact old
  // browser/control credentials, and cannot renew or target our current editor.
- const other=await browserContext.newPage();const otherRegistration=other.waitForResponse(r=>r.url().endsWith('/api/editor/rpc')&&r.request().postDataJSON()?.method==='editor.register');await other.goto(origin);
- const stale=(await(await otherRegistration).json()).result;
+ const other=await browserContext.newPage();const otherRegistration=other.waitForResponse(r=>r.url().endsWith('/api/editor/rpc')&&r.request().postDataJSON()?.method==='editor.register');const [otherRegistrationResponse]=await Promise.all([otherRegistration,other.goto(origin)]);
+ const stale=(await otherRegistrationResponse.json()).result;
  const beforeStaleTarget=await cli(['state']);
  await rpc('editor.disconnect',{},stale.browserToken,stale);
  assert.equal((await rpc('editor.poll',{},stale.browserToken,stale)).error.message,'disconnected_instance');
@@ -472,7 +472,7 @@ try{
  const closed=await fetch(origin+'/api/agent/close',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({sessionId:session})});
  assert.equal(closed.status,200);
  const reloadRegistration=page.waitForResponse(r=>r.url().endsWith('/api/editor/rpc')&&r.request().postDataJSON()?.method==='editor.register');
- await page.reload();const previous=scope;scope=(await(await reloadRegistration).json()).result;
+ const [reloadRegistrationResponse]=await Promise.all([reloadRegistration,page.reload()]);const previous=scope;scope=(await reloadRegistrationResponse.json()).result;
  assert.notEqual(scope.instance,previous.instance);
  await until(async()=> (await cli(['state'])).stories.some(story=>story.id==='Card / default busy'),'persisted story after real browser reload');
  await cli(['open-story','Card / default busy','--command-id','open-reloaded','--wait']);await mounted('Followup card');
