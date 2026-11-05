@@ -21,6 +21,7 @@ import isonim/editor/agent_harbor
 # ``src/isonim/editor/agent_harbor.nim``.
 from isonim/editor/types as editor_types import nil
 import isonim/editor/viewmodels
+import isonim/editor/streaming_preview
 import isonim/editor/workspace
 import isonim/editor/views/page_preview
 import isonim/editor/views/component_detail
@@ -387,6 +388,45 @@ suite "Editor ViewModels (M18 headless contracts)":
       # contradicted the spec.
       check vm.activeView.val == evStoryboard
       dispose()
+
+  test "editor_vm_story_selection_notifies_only_coherent_final_view":
+    createRoot proc(dispose: proc()) =
+      let groups = wanderlust.buildWanderlustStoryboard()
+      let vm = createEditorVM()
+      vm.sidebar.groups.val = groups
+      let pageStory = refFrom(groups, 3, 0)
+      let componentStory = refFrom(groups, 4, 0)
+      check vm.selectStory(pageStory)
+      var observed: seq[(StoryRef, EditorView)] = @[]
+      createEffect proc() =
+        observed.add((vm.selectedStory.val, vm.activeView.val))
+      observed.setLen(0)
+      check vm.selectStory(componentStory)
+      check observed == @[(componentStory, evComponentDetail)]
+      dispose()
+
+  test "editor_vm_mode_transition_notifies_only_coherent_final_surface_and_view":
+    for backend in [pbWeb, pbGpui]:
+      for initialView in [evComponentDetail, evPagePreview]:
+        createRoot proc(dispose: proc()) =
+          let vm = createEditorVM()
+          vm.streamingPreview = newStreamingPreviewVM(
+            initial = backend, available = @[pbWeb, pbGpui])
+          vm.activeView.val = initialView
+          var observed: seq[(EditMode, Surface, EditorView)] = @[]
+          createEffect proc() =
+            observed.add((vm.editMode.val, vm.surfaceSig.val, vm.activeView.val))
+          var expectedView = initialView
+          for mode in [emSpec, emComment, emView, emEdit]:
+            observed.setLen(0)
+            if backend == pbWeb and expectedView == evComponentDetail and
+                mode in {emComment, emEdit}:
+              expectedView = evComponentEdit
+            vm.setEditMode(mode)
+            let expectedSurface = if mode == emSpec: sSpec else: sPreview
+            check observed == @[(mode, expectedSurface, expectedView)]
+            check vm.streamingPreview.selectedBackend.val == backend
+          dispose()
 
   test "editor_vm_canvas_selection_drives_story_and_flow_state":
     createRoot proc(dispose: proc()) =

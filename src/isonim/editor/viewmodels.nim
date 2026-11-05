@@ -3809,51 +3809,53 @@ proc refuseInspectorHistory(editor: EditorVM; kind: EditorCommandKind;
 proc sendAgentPrompt*(editor: EditorVM): bool {.discardable.}
 
 proc setEditMode*(editor: EditorVM; mode: EditMode) =
-  editor.editMode.val = mode
-  # Phase I/J/L (2026-05-28): the mode strip now carries Spec as a
-  # fourth option in front of View/Comment/Edit. Picking Spec couples
-  # ``surfaceSig`` to ``sSpec`` so the existing centre-column mounting
-  # logic flips to the spec pane; picking any of the other three modes
-  # restores the preview surface. This keeps ``surfaceSig`` as the
-  # authoritative signal driving the spec-pane mount + the display
-  # gating while the visible control is unified into the mode strip.
-  if mode == emSpec:
-    if editor.surfaceSig.val != sSpec:
-      editor.surfaceSig.val = sSpec
-  else:
-    if editor.surfaceSig.val != sPreview:
-      editor.surfaceSig.val = sPreview
-  # M-EVP-12 fix-cycle 2: when the canvas-preview path is active
-  # (Pattern A: any non-Web preview backend), the chrome bar Edit
-  # chip toggles the M-EVP-10 overlay handles *in place* on the
-  # component_detail / page_preview canvas — it must NOT swap the
-  # whole view to `evComponentEdit` (the source-edit screen), which
-  # would unmount the canvas + handles. The auto-switch only applies
-  # to the Web/iframe path where the canvas overlay is not painted.
-  let canvasActive =
-    editor.streamingPreview != nil and
-    editor.streamingPreview.selectedBackend.val != pbWeb
-  # Layout-invariance fix (preview layout identical across modes): a
-  # PAGE story (``evPagePreview``) must NOT swap to the source-edit
-  # canvas (``evComponentEdit``) when entering emComment/emEdit. That
-  # surface lays the composed page out at the fluid centre-column width
-  # (iframe ``width:100%`` inside a ``padding:24px`` scroll box) instead
-  # of the viewport-sized white device frame ``page_preview.nim`` uses,
-  # so the previewed page visibly re-wraps at a different width the
-  # instant the operator toggles the mode chip — and because nothing
-  # restored the surface on leaving Edit (emView left ``activeView`` on
-  # ``evComponentEdit``), View-after-Edit no longer matched
-  # View-before-Edit. Page stories now stay on ``evPagePreview`` across
-  # View/Comment/Edit; ``page_preview.nim`` overlays the editable
-  # selection bridge on the SAME device-frame render so element
-  # selection + the property inspector (the M1-M7 variable binding)
-  # still work. Keeping the surface constant also makes the round-trip
-  # emView→emEdit→emView invariant hold for free. Component stories keep
-  # their existing in-place-vs-source-edit split
-  # (``evComponentDetail`` → ``evComponentEdit``).
-  if mode in {emComment, emEdit} and
-      editor.activeView.val == evComponentDetail and not canvasActive:
-    editor.activeView.val = evComponentEdit
+  # Publish the mode, surface and owning view before dependent previews render.
+  batch proc() =
+    editor.editMode.val = mode
+    # Phase I/J/L (2026-05-28): the mode strip now carries Spec as a
+    # fourth option in front of View/Comment/Edit. Picking Spec couples
+    # ``surfaceSig`` to ``sSpec`` so the existing centre-column mounting
+    # logic flips to the spec pane; picking any of the other three modes
+    # restores the preview surface. This keeps ``surfaceSig`` as the
+    # authoritative signal driving the spec-pane mount + the display
+    # gating while the visible control is unified into the mode strip.
+    if mode == emSpec:
+      if editor.surfaceSig.val != sSpec:
+        editor.surfaceSig.val = sSpec
+    else:
+      if editor.surfaceSig.val != sPreview:
+        editor.surfaceSig.val = sPreview
+    # M-EVP-12 fix-cycle 2: when the canvas-preview path is active
+    # (Pattern A: any non-Web preview backend), the chrome bar Edit
+    # chip toggles the M-EVP-10 overlay handles *in place* on the
+    # component_detail / page_preview canvas — it must NOT swap the
+    # whole view to `evComponentEdit` (the source-edit screen), which
+    # would unmount the canvas + handles. The auto-switch only applies
+    # to the Web/iframe path where the canvas overlay is not painted.
+    let canvasActive =
+      editor.streamingPreview != nil and
+      editor.streamingPreview.selectedBackend.val != pbWeb
+    # Layout-invariance fix (preview layout identical across modes): a
+    # PAGE story (``evPagePreview``) must NOT swap to the source-edit
+    # canvas (``evComponentEdit``) when entering emComment/emEdit. That
+    # surface lays the composed page out at the fluid centre-column width
+    # (iframe ``width:100%`` inside a ``padding:24px`` scroll box) instead
+    # of the viewport-sized white device frame ``page_preview.nim`` uses,
+    # so the previewed page visibly re-wraps at a different width the
+    # instant the operator toggles the mode chip — and because nothing
+    # restored the surface on leaving Edit (emView left ``activeView`` on
+    # ``evComponentEdit``), View-after-Edit no longer matched
+    # View-before-Edit. Page stories now stay on ``evPagePreview`` across
+    # View/Comment/Edit; ``page_preview.nim`` overlays the editable
+    # selection bridge on the SAME device-frame render so element
+    # selection + the property inspector (the M1-M7 variable binding)
+    # still work. Keeping the surface constant also makes the round-trip
+    # emView→emEdit→emView invariant hold for free. Component stories keep
+    # their existing in-place-vs-source-edit split
+    # (``evComponentDetail`` → ``evComponentEdit``).
+    if mode in {emComment, emEdit} and
+        editor.activeView.val == evComponentDetail and not canvasActive:
+      editor.activeView.val = evComponentEdit
 
 proc setVectorTool*(editor: EditorVM; tool: VectorTool) =
   editor.vectorEditor.activeTool.val = tool
