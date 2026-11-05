@@ -1039,7 +1039,7 @@ test-editor-preview-generation: build-tailwind
     PLAYWRIGHT_CHROMIUM_EXECUTABLE="${PLAYWRIGHT_CHROMIUM_EXECUTABLE:-$(command -v chromium)}" python3 tools/test_editor_preview_generation_mutants.py
 
 # Run editor ViewModel tests
-test-editor: test-design-review-local-harbor test-design-review-harbor-build test-editor-control test-editor-source test-editor-chat-activity test-editor-story-navigation test-editor-preview-generation
+test-editor: test-design-review-local-harbor test-design-review-harbor-build test-editor-control test-editor-source test-editor-chat-activity test-editor-story-navigation test-editor-preview-generation test-editor-choice-group
     nim c -r tests/test_editor_workspace.nim
     nim c -r tests/test_editor_public_api.nim
     nim js --path:src -o:build/test_editor_public_browser_imports.js tests/test_editor_public_browser_imports.nim
@@ -1538,6 +1538,13 @@ test-editor-source: isonim-review-build source-editor-build
     python3 tests/test_editor_source_project.py
     python3 tests/test_editor_native_acp_shutdown.py
     node tests/test_editor_source_gui.mjs
+
+# Full native/JS ChoiceGroup ownership metadata and activation regressions.
+test-editor-choice-group:
+    mkdir -p build
+    nim c -r --out:build/test_editor_choice_group_vm tests/test_editor_choice_group_vm.nim
+    nim js -d:nodejs --out:build/test_editor_choice_group_vm.js tests/test_editor_choice_group_vm.nim
+    python3 tools/run_nim_js_test.py build/test_editor_choice_group_vm.js
 
 # Production mounted chat state/keyboard/layout verification, isolated assets.
 editor-chat-build:
