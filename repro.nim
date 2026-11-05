@@ -970,6 +970,14 @@ package isonim:
         "tools/build_source_catalog.py", "tools/editor_server.py", "tools/isonim_review/source_project_lock.nim", drReviewBin])
     testExecuteActions.add(sourceMetadataEdge)
 
+    # The frontend compiler reads the generated Tailwind input.
+    let tailwindStylesEdge = node(
+      args = @["tools/tailwind-extract.mjs"],
+      actionId = "isonim.tailwind_extract",
+      extraInputs = @["tools/tailwind-extract.mjs", "package.json", "src"],
+      extraOutputs = @["build/tailwind-styles.json", "build/tailwind.css"])
+    testBuildActions.add(tailwindStylesEdge)
+
     var inspectorNativeSourceActions: seq[BuildActionDef] = @[]
     for stem in ["test_editor_inspector_source", "test_editor_source_style_provider"]:
       let edge = sh.shell(
@@ -982,9 +990,10 @@ package isonim:
       testExecuteActions.add(edge)
     let sourceBindingsGuiEdge = sh.shell(
       command = "timeout --signal=TERM --kill-after=15s 180s node tests/test_editor_source_bindings_gui.mjs", cacheable = false,
-      actionId = "isonim.inspector_bindings_gui_execute", after = @[reviewToolEdge.action],
+      actionId = "isonim.inspector_bindings_gui_execute", after = @[reviewToolEdge.action, tailwindStylesEdge],
       extraInputs = @["tests/test_editor_source_bindings_gui.mjs", "tests/fixtures/editor_inspector_project",
-        "examples/source_project/editor.nim", "tools/editor_server.py", "tools/build_source_catalog.py", "src", drReviewBin])
+        "examples/source_project/editor.nim", "tools/editor_server.py", "tools/build_source_catalog.py", "src",
+        "build/tailwind-styles.json", drReviewBin])
     inspectorNativeSourceActions.add(sourceBindingsGuiEdge)
     testExecuteActions.add(sourceBindingsGuiEdge)
     discard collect("test-editor-inspector-native-source", inspectorNativeSourceActions)
@@ -1025,13 +1034,6 @@ package isonim:
       extraInputs = @["src", "tests/helpers/editor_popup_workspace.nim", "tests/helpers/core_owner_hmr.nim", "Justfile", "package.json"],
       extraOutputs = @["build/editor-popup"])
     testBuildActions.add(popupBrowserEdge)
-    # The frontend compiler reads the generated Tailwind input.
-    let tailwindStylesEdge = node(
-      args = @["tools/tailwind-extract.mjs"],
-      actionId = "isonim.tailwind_extract",
-      extraInputs = @["tools/tailwind-extract.mjs", "package.json", "src"],
-      extraOutputs = @["build/tailwind-styles.json", "build/tailwind.css"])
-    testBuildActions.add(tailwindStylesEdge)
 
     let inspectorBrowserEdge = sh.shell(
       command = "just editor-inspector-build", actionId = "isonim.c2_build.inspector",

@@ -2003,7 +2003,7 @@ test-editor-inspector: test-editor-shell-current test-editor-inspector-native-so
     python3 tools/run_nim_js_test.py build/test_editor_source_markup.js
 
 # Real native guarded-source transactions and disposable compiled GRIP provider.
-test-editor-inspector-native-source: isonim-review-build
+test-editor-inspector-native-source: isonim-review-build build-tailwind
     #!/usr/bin/env bash
     set -euo pipefail
     export PLAYWRIGHT_CHROMIUM_EXECUTABLE="${PLAYWRIGHT_CHROMIUM_EXECUTABLE:-$(command -v chromium)}"
