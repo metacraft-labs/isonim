@@ -13,6 +13,7 @@ import isonim/dsl/ui
 import isonim/viewmodel  # AsyncState (asIdle/asLoading/asReady/asError)
 import isonim/editor/viewmodels
 import isonim/editor/types
+import isonim/editor/preview_zoom
 import isonim/editor/element_semantics
 import isonim/editor/views/choice_row
 import isonim/editor/views/storyboard
@@ -4252,6 +4253,21 @@ proc renderEditorTitleBar[R, E](r: R; vm: EditorVM): E =
       span(font_size = "11px", color = textDim, font_family = "monospace"):
         text "v" & editorVersion
 
+proc chromeGlyphButton[R, E](r: R; label, glyph: string;
+    action: proc() {.closure.}): E =
+  ## A glyph control of the chrome bar. The flow controls and the PSZ-M1 preview
+  ## zoom cluster share it, so their hit area, type and icon style agree.
+  result = ui(r):
+    button(`type` = "button", tabindex = "0", `aria-label` = label,
+         title = label, min_width = "24px", min_height = "24px",
+         display = "inline-flex", align_items = "center",
+         justify_content = "center", color = textPrimary,
+         border = "0", background_color = "transparent",
+         padding = "2px", border_radius = "4px", cursor = "pointer"):
+      text glyph
+  r.makeButton(result, label)
+  r.addEventListener(result, "click", action)
+
 proc renderFlowControls[R, E](r: R; vm: EditorVM): E =
   ## Playback and navigation have one owner in the shared chrome bar.
   ## They operate on the same selection/zoom reducers as canvas gestures.
@@ -4259,16 +4275,7 @@ proc renderFlowControls[R, E](r: R; vm: EditorVM): E =
     tdiv(`data-flow-controls` = "true", display = "inline-flex",
          align_items = "center", gap = "4px", flex_shrink = "0")
   proc control(label, glyph: string; action: proc() {.closure.}): E =
-    result = ui(r):
-      button(`type` = "button", tabindex = "0", `aria-label` = label,
-           title = label, min_width = "24px", min_height = "24px",
-           display = "inline-flex", align_items = "center",
-           justify_content = "center", color = textPrimary,
-           border = "0", background_color = "transparent",
-           padding = "2px", border_radius = "4px", cursor = "pointer"):
-        text glyph
-    r.makeButton(result, label)
-    r.addEventListener(result, "click", action)
+    chromeGlyphButton[R, E](r, label, glyph, action)
   # Play enters step-through playback at the current step (its story is
   # selected); pressed while playing it pauses there.
   # The playback buttons are hidden when the workspace provides no flow
@@ -4314,11 +4321,91 @@ proc renderFlowControls[R, E](r: R; vm: EditorVM): E =
       if shown: "true" else: "false")
   createRenderEffect proc() =
     let zoom = vm.storyboard.zoom.val
-    r.setTextContent(zoomLevel, $int(round(zoom * 100)) & "%")
+    r.setTextContent(zoomLevel, percentLabel(zoom))
     r.setAttribute(zoomOut, "aria-disabled",
       if zoom <= storyboardMinZoom: "true" else: "false")
     r.setAttribute(zoomIn, "aria-disabled",
       if zoom >= storyboardMaxZoom: "true" else: "false")
+  group
+
+proc renderPreviewZoomCluster[R, E](r: R; vm: EditorVM): E =
+  ## PSZ-M1: the preview zoom cluster, beside the viewport strip. ``Fit`` and
+  ## ``100%`` pick the mode; ``−`` / readout / ``+`` step through the fixed
+  ## levels in ``previewZoomSteps``. The cluster shows only where the zoom
+  ## applies: the web page preview. The storyboard keeps its own cluster in the
+  ## flow controls, and the other views and streamed backends have no zoom yet.
+  let group = ui(r):
+    tdiv(`data-preview-zoom-cluster` = "true",
+         `data-toolbar-cluster` = "zoom",
+         `data-preview-edge-group` = "zoom",
+         display = "none", align_items = "center",
+         gap = "4px", flex_shrink = "0")
+  proc textControl(label, glyph: string; action: proc() {.closure.}): E =
+    result = ui(r):
+      button(`type` = "button", tabindex = "0", `aria-label` = label,
+           title = label, min_height = "22px", min_width = "30px",
+           display = "inline-flex", align_items = "center",
+           justify_content = "center", padding = "2px 6px",
+           font_size = "11px", line_height = "1",
+           font_family = "inherit", color = textSecondary,
+           background_color = "transparent",
+           border = "1px solid transparent", border_radius = "4px",
+           cursor = "pointer", user_select = "none"):
+        text glyph
+    r.makeButton(result, label)
+    r.addEventListener(result, "click", action)
+  let fitButton = textControl("Fit preview to the area", "Fit",
+    proc() = vm.setPreviewZoomFit())
+  let actualButton = textControl("Show preview at 100%", "100%",
+    proc() = vm.setPreviewZoomLevel(1.0))
+  r.setAttribute(actualButton, "data-preview-zoom-actual", "true")
+  r.appendChild(group, fitButton)
+  r.appendChild(group, actualButton)
+  let zoomOutButton = chromeGlyphButton[R, E](r, "Zoom preview out", "−",
+    proc() = vm.stepPreviewZoomBy(-1))
+  r.appendChild(group, zoomOutButton)
+  let readout = ui(r):
+    span(`data-preview-zoom-level` = "true", min_width = "40px",
+         text_align = "center", font_size = "11px",
+         font_variant_numeric = "tabular-nums", color = textSecondary):
+      text "100%"
+  r.appendChild(group, readout)
+  let zoomInButton = chromeGlyphButton[R, E](r, "Zoom preview in", "+",
+    proc() = vm.stepPreviewZoomBy(1))
+  r.appendChild(group, zoomInButton)
+
+  createRenderEffect proc() =
+    let viewport = vm.viewport.val
+    let zoom = vm.previewZoom.val
+    let area = vm.previewArea.val
+    let scale = previewScale(zoom, previewViewportWidth(viewport),
+      previewViewportHeight(viewport), area)
+    let fixedFullSize = zoom.mode == pzmFixed and zoom.level == 1.0
+    r.setTextContent(readout, percentLabel(scale))
+    # The pressed mode reads as a filled pill, like the selected segment of
+    # the viewport strip beside it; a pressed text button alone is not visible.
+    let fitPressed = zoom.mode == pzmFit
+    r.setAttribute(fitButton, "aria-pressed",
+      if fitPressed: "true" else: "false")
+    r.setStyle(fitButton, "background-color",
+      if fitPressed: accent else: "transparent")
+    r.setStyle(fitButton, "color",
+      if fitPressed: "#FFFFFF" else: textSecondary)
+    r.setAttribute(fitButton, "data-preview-zoom-mode",
+      if fitPressed: "fit" else: "fixed")
+    r.setAttribute(actualButton, "aria-pressed",
+      if fixedFullSize: "true" else: "false")
+    r.setStyle(actualButton, "background-color",
+      if fixedFullSize: accent else: "transparent")
+    r.setStyle(actualButton, "color",
+      if fixedFullSize: "#FFFFFF" else: textSecondary)
+    r.setAttribute(zoomOutButton, "aria-disabled",
+      if scale <= previewZoomSteps[0] + 1e-9: "true" else: "false")
+    r.setAttribute(zoomInButton, "aria-disabled",
+      if scale >= previewZoomSteps[^1] - 1e-9: "true" else: "false")
+    let shown = vm.activeView.val == evPagePreview and
+      vm.platform.val == pbWeb and vm.surfaceSig.val == sPreview
+    r.setStyle(group, "display", if shown: "inline-flex" else: "none")
   group
 
 proc renderPreviewChromeBar*[R, E](r: R; vm: EditorVM): E =
@@ -5019,6 +5106,9 @@ proc renderPreviewChromeBar*[R, E](r: R; vm: EditorVM): E =
   # document", so they are the centred pair.
   r.appendChild(toolbar, leadingSpacer)
   r.appendChild(toolbar, viewportClusterWrapper)
+  # PSZ-M1: the zoom cluster sits right beside the viewport strip it shares a
+  # meaning with (the frame's size and how it is shown).
+  r.appendChild(toolbar, renderPreviewZoomCluster[R, E](r, vm))
 
   # Spacer #2 — trailing flex-grow:1 wedge. Symmetric with the
   # leading spacer above; together they centre the Viewport cluster

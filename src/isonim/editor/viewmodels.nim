@@ -10,6 +10,7 @@ from std/unicode import runeLen, runeSubStr
 import isonim/core/[signals, computation, batch]
 import isonim/viewmodel
 import isonim/editor/types
+import isonim/editor/preview_zoom
 import isonim/editor/html_classes
 import isonim/editor/css_color_literal
 import isonim/editor/numeric_precision
@@ -480,6 +481,12 @@ type
       ## Empty set = ALL platforms (default). When non-empty, the
       ## left-edge backend strip only surfaces the listed backends.
     viewport*: Signal[PreviewViewport]
+    previewZoom*: Signal[PreviewZoom]
+      ## PSZ-M1: how the device frame is shown in the preview area (Fit or a
+      ## fixed level). Read from and written to the story URL (``zoom``).
+    previewArea*: Signal[PreviewArea]
+      ## PSZ-M1: the preview area's measured client box. The view reports it;
+      ## Fit is recomputed from it, so a resize refits the frame.
     workspaceId*: string
     controlInstanceId*: string
     controlStoryRevealAdapter*: proc() {.closure.}
@@ -3351,6 +3358,32 @@ proc changeViewport*(editor: EditorVM; viewport: PreviewViewport) =
   ## updates the signal so the iframe / streaming bridge picks the new
   ## extent on its next render.
   editor.viewport.val = viewport
+
+proc setPreviewZoomFit*(editor: EditorVM) =
+  ## PSZ-M1: show the device frame fitted to the preview area. The fixed level
+  ## is kept, so leaving Fit returns to the level that was shown before.
+  editor.previewZoom.val = PreviewZoom(mode: pzmFit,
+    level: editor.previewZoom.val.level)
+
+proc setPreviewZoomLevel*(editor: EditorVM; level: float) =
+  ## PSZ-M1: show the device frame at a fixed level (clamped to the zoom range).
+  editor.previewZoom.val = fixedPreviewZoom(level)
+
+proc stepPreviewZoomBy*(editor: EditorVM; direction: int) =
+  ## PSZ-M1: one zoom step in ``direction`` (> 0 in, < 0 out) from the scale now
+  ## shown. The step list is ``previewZoomSteps`` in preview_zoom.nim.
+  let width = previewViewportWidth(editor.viewport.val)
+  let height = previewViewportHeight(editor.viewport.val)
+  editor.previewZoom.val = stepPreviewZoom(editor.previewZoom.val,
+    width, height, editor.previewArea.val, direction)
+
+proc setPreviewArea*(editor: EditorVM; width, height: int) =
+  ## PSZ-M1: record the preview area's measured client box. Called by the view
+  ## when it resizes; a measurement that did not change writes nothing.
+  let next = PreviewArea(width: max(0, width), height: max(0, height))
+  let current = editor.previewArea.val
+  if current.width != next.width or current.height != next.height:
+    editor.previewArea.val = next
 
 proc setSurface*(editor: EditorVM; surface: Surface) =
   ## TBAR-M3: flip the editor's top-bar surface. The shell's reactive
@@ -14609,6 +14642,8 @@ proc createEditorVM*(): EditorVM =
   let rightSidebarTab = createSignal(rstManual)
   let platform = createSignal(pbWeb)
   let viewport = createSignal(defaultViewport(pbWeb))
+  let previewZoom = createSignal(defaultPreviewZoom())
+  let previewArea = createSignal(PreviewArea())
   let responsiveBreakpoints = createSignal[seq[ResponsiveBreakpoint]](@[])
   let previewShowsPendingEdits = createSignal(false)
   let previewRenderedWidth = createSignal(0)
@@ -14736,6 +14771,8 @@ proc createEditorVM*(): EditorVM =
     rightSidebarTab: rightSidebarTab,
     platform: platform,
     viewport: viewport,
+    previewZoom: previewZoom,
+    previewArea: previewArea,
     controlConnected: true,
     agentControlApproval: createSignal(false),
     controlActivity: createSignal(newSeq[JsonNode]()),

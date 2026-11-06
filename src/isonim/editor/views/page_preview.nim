@@ -3,9 +3,11 @@ import isonim/editor/views/view_lifecycle
 ##
 ## Renders project-owned preview documents in an editor-owned responsive frame.
 
+import std/math
 import isonim/core/[computation, signals]
 import isonim/dsl/ui
 import isonim/editor/preview_identity
+import isonim/editor/preview_zoom
 import isonim/editor/types
 import isonim/editor/viewmodels
 import isonim/editor/streaming_preview
@@ -57,19 +59,34 @@ proc renderPagePreview*[R, E](r: R; vm: EditorVM): E =
           background_size = "20px 20px"):
       discard
 
+  # PSZ-M1: the device frame is laid out at its fixed viewport size and then
+  # scaled as a whole (``transform``). It sits absolutely inside a stage that
+  # has the SCALED size, so the scroll host measures the scaled box: a frame
+  # larger than the area scrolls both ways, and ``margin: auto`` centres a
+  # frame that is smaller. The stage is the flex child, so it never shrinks.
+  var zoomStage: E
   var deviceFrame: E
   var fallbackPanel: E
   var fallbackTitle: E
   var fallbackBody: E
   var previewFrame: E
+  let stage = ui(r):
+    tdiv(ref = zoomStage,
+          `data-preview-zoom-stage` = "true",
+          position = "relative", flex = "0 0 auto",
+          flex_shrink = "0", margin = "auto"):
+      discard
   let frame = ui(r):
     tdiv(ref = deviceFrame,
           `aria-label` = "Preview device frame",
+          `data-preview-zoom-frame` = "true",
           background_color = "#FFFFFF",
           border = "1px solid rgba(255,255,255,0.12)",
           box_shadow = "0 20px 60px rgba(0,0,0,0.38)",
           overflow = "hidden", display = "flex",
           flex_direction = "column", flex = "0 0 auto",
+          position = "absolute", top = "0", left = "0",
+          transform_origin = "0 0",
           transition = "width 0.15s"):
       tdiv(ref = fallbackPanel,
             class = "editor-preview-fallback",
@@ -109,8 +126,33 @@ proc renderPagePreview*[R, E](r: R; vm: EditorVM): E =
   # to 80×24 px and make xterm.js unreadable. For those we fall back
   # to filling the preview pane (``flex: 1``).
   let pageCanvasMnt = renderCanvasMount[R, E](r, "data-page-project-canvas")
-  r.appendChild(frameHostNode, frame)
+  r.appendChild(zoomStage, frame)
+  r.appendChild(frameHostNode, zoomStage)
   r.appendChild(frameHostNode, pageCanvasMnt.wrapper)
+
+  # PSZ-M1: report the preview area's client box so Fit can be recomputed.
+  # ``clientWidth``/``clientHeight`` are the layout box, not the scaled one, so
+  # a zoomed frame does not feed back into its own fit. Observed like the
+  # component-edit fit (component_edit.nim): a resize refits, and a write
+  # happens only when the box actually changed.
+  let reportPreviewArea = proc(width, height: int) =
+    vm.setPreviewArea(width, height)
+  when isDomViewHost(E):
+    {.emit: ["""
+      (function (host, report) {
+        if (!host || host.__isonimPreviewAreaInstalled) return;
+        host.__isonimPreviewAreaInstalled = true;
+        const apply = function () { report(host.clientWidth, host.clientHeight); };
+        if (typeof ResizeObserver !== 'undefined') {
+          const observer = new ResizeObserver(apply);
+          observer.observe(host);
+          globalThis.__isonimViewCleanup(host, () => observer.disconnect());
+        } else {
+          window.addEventListener('resize', apply);
+          globalThis.__isonimViewCleanup(host, () => window.removeEventListener('resize', apply));
+        }
+        apply();
+      })(""", frameHostNode, ", ", reportPreviewArea, ");"].}
   # M-EVP-13: breadcrumb sits in the host scroll region directly below
   # the device frame so the canvas selection's componentPath is always
   # readable, even when the device frame is sized to a small viewport
@@ -293,6 +335,33 @@ proc renderPagePreview*[R, E](r: R; vm: EditorVM): E =
       # because Web has no streaming bridge.
       if useCanvas and vm.streamingPreview != nil:
         publishResize(vm.streamingPreview, width, height)
+
+  # PSZ-M1: the zoom effect. It is separate from the render effect above on
+  # purpose: that one rewrites the iframe's srcdoc, and a zoom change must not
+  # reload the story. This one only moves the scale and the stage size.
+  createRenderEffect proc() =
+    let viewport = vm.viewport.val
+    let zoom = vm.previewZoom.val
+    let area = vm.previewArea.val
+    let width = previewViewportWidth(viewport)
+    let height = previewViewportHeight(viewport)
+    let scale = previewScale(zoom, width, height, area)
+    let useCanvas = vm.selectedStory.val.kind == skPage and
+      vm.platform.val != pbWeb
+    r.setStyle(zoomStage, "display", if useCanvas: "none" else: "block")
+    # The host's 16px gutter is for the streamed canvas. A web frame is fitted
+    # to the host's full box with no margin (spec Preview-Sizing-And-Zoom, Fit
+    # area), so the gutter comes off the host while the web frame is shown;
+    # otherwise a Fit frame overflows the host by the gutter.
+    r.setStyle(frameHostNode, "padding", if useCanvas: "16px" else: "0")
+    r.setStyle(zoomStage, "width",
+      $int(round(width.float * scale)) & "px")
+    r.setStyle(zoomStage, "height",
+      $int(round(height.float * scale)) & "px")
+    # At 100% no transform is set, so the frame is drawn at its exact pixels.
+    r.setStyle(deviceFrame, "transform",
+      if scale == 1.0: "none" else: "scale(" & $scale & ")")
+    r.setAttribute(deviceFrame, "data-preview-zoom-scale", $scale)
 
   # M-EVP-13: overlay positioning effect — hover label, selection
   # outline, breadcrumb, edit-mode handles. Shared with component_detail

@@ -13,6 +13,7 @@ import isonim/editor/control_browser
 import isonim/editor/dom_renderer
 import isonim/editor/streaming_preview
 import isonim/editor/types
+import isonim/editor/preview_zoom
 import isonim/editor/viewmodels
 import isonim/editor/workspace
 import isonim/editor/editable_cells
@@ -725,6 +726,7 @@ proc editorRouteUrl(vm: EditorVM): string =
   var parts = @[
     "view=" & encodeParam(viewSlug(vm.activeView.val)),
     "viewport=" & encodeParam(viewportSlug(vm.viewport.val)),
+    "zoom=" & encodeParam(previewZoomRouteParam(vm.previewZoom.val)),
     "mode=" & encodeParam(editModeSlug(vm.editMode.val)),
     "sidebar=" & boolSlug(vm.panels.val.sidebar),
     "inspector=" & boolSlug(vm.panels.val.inspector),
@@ -785,6 +787,13 @@ proc applyEditorRoute(vm: EditorVM) =
   if viewportParam.len > 0:
     vm.changeViewport(viewportFromSlug(viewportParam, vm.viewport.val))
 
+  # PSZ-M1: ``zoom=fit`` or ``zoom=<percent>``; an absent or damaged value
+  # keeps the zoom already shown.
+  let zoomParam = routeParam("zoom")
+  if zoomParam.len > 0:
+    vm.previewZoom.val = previewZoomFromRouteParam(zoomParam,
+      vm.previewZoom.val)
+
   let modeParam = routeParam("mode")
   if modeParam.len > 0:
     vm.setEditMode(editModeFromSlug(modeParam, vm.editMode.val))
@@ -825,6 +834,7 @@ proc installEditorHistorySync(vm: EditorVM) =
     discard vm.activeView.val
     discard vm.selectedStory.val
     discard vm.viewport.val
+    discard vm.previewZoom.val
     discard vm.editMode.val
     discard vm.panels.val
     discard vm.inspector.activeSection.val
