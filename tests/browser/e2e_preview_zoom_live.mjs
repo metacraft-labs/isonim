@@ -17,6 +17,20 @@
 //     cannot pass. The measured per-channel values are printed.
 //   * e2e_preview_zoom_url_roundtrip_live: the zoom the reviewer picks is
 //     written to the story URL, and a URL carrying it restores it.
+//   * e2e_preview_zoom_scrollbars_at_100 (PSZ-AREQ2): at 100% the Desktop frame
+//     overflows the preview area in a 1600x960 window, and the area's scroll
+//     host shows a vertical and a horizontal scrollbar (gutter > 0 on both
+//     axes). In a 1600x1000 window only the horizontal bar shows (the area is
+//     920 px tall, so the 900 px frame fits vertically), and the test asserts
+//     only that bar there. At Fit the frame fits and both gutters are 0.
+//
+// Scrollbar browser: Playwright launches headless Chromium with
+// `--hide-scrollbars` by default, which makes every scrollbar zero-width (a
+// probe on the same overflow:auto box measured a 0 px gutter with the default
+// and 15 px / 15 px with it removed). The scrollbar test therefore launches its
+// own browser with that default removed (`ignoreDefaultArgs`). The other tests
+// keep the default browser, so their pixels are unchanged. The scrollbar test's
+// screenshots are taken from that browser, so the bars are in them.
 //
 // Real stack: the editor build (`just editor-build`), a static server, and
 // headless Chromium driving the chrome-bar controls. Nothing is mocked.
@@ -51,6 +65,7 @@ let pageServer = null;
 let serverExitCode = null;
 let serverLogPath = "";
 let browser = null;
+let scrollbarBrowser = null;
 
 function buildEditor() {
   // Run under `repro exec` (see the header): `just` is already on PATH there.
@@ -121,14 +136,28 @@ async function ensureBrowser() {
   return browser;
 }
 
-async function openPreview(suffix = "") {
-  const b = await ensureBrowser();
+// PSZ-AREQ2: a headless browser that keeps its scrollbars. See the header.
+async function ensureScrollbarBrowser() {
+  if (!scrollbarBrowser) {
+    const { chromium } = await import("@playwright/test");
+    scrollbarBrowser = await chromium.launch({
+      headless: true,
+      ignoreDefaultArgs: ["--hide-scrollbars"],
+      executablePath: process.env.PLAYWRIGHT_CHROMIUM_EXECUTABLE || undefined,
+    });
+  }
+  return scrollbarBrowser;
+}
+
+async function openPreview(suffix = "", { viewport = { width: 2200, height: 1300 },
+    scrollbars = false } = {}) {
+  const b = scrollbars ? await ensureScrollbarBrowser() : await ensureBrowser();
   // The window must leave room for the whole 1440x900 frame inside the preview
   // area at 100%. The capture test asserts that, because an element screenshot
   // of a frame wider than its scroll area shows only the part inside the area's
   // clip: at 1600 px the area is 1020 px wide, and that mismatch measured 51
   // points per channel.
-  const ctx = await b.newContext({ viewport: { width: 2200, height: 1300 } });
+  const ctx = await b.newContext({ viewport });
   const page = await ctx.newPage();
   await page.goto(`http://127.0.0.1:${PAGE_PORT}${STORY}${suffix}`);
   await page.waitForSelector('[data-preview-zoom-cluster="true"]', {
@@ -163,6 +192,9 @@ test.before(async () => {
 test.after(async () => {
   try {
     if (browser) await browser.close();
+  } catch {}
+  try {
+    if (scrollbarBrowser) await scrollbarBrowser.close();
   } catch {}
   try {
     if (pageServer) process.kill(-pageServer.pid);
@@ -312,5 +344,105 @@ test("e2e_preview_zoom_url_roundtrip_live", async () => {
     }, null, { timeout: 10000 });
   } finally {
     await ctx.close();
+  }
+});
+
+// PSZ-AREQ2: the preview area's scroll host is the parent of the zoom stage.
+// Gutters are the scrollbar widths: offset box minus client box.
+async function scrollHostMetrics(page) {
+  return page.locator('[data-preview-zoom-stage="true"]').evaluate((stage) => {
+    const host = stage.parentElement;
+    const style = getComputedStyle(host);
+    return {
+      hostClass: host.className,
+      overflowX: style.overflowX,
+      overflowY: style.overflowY,
+      vGutter: host.offsetWidth - host.clientWidth,
+      hGutter: host.offsetHeight - host.clientHeight,
+      hostW: host.clientWidth,
+      hostH: host.clientHeight,
+      stageW: stage.offsetWidth,
+      stageH: stage.offsetHeight,
+    };
+  });
+}
+
+// The preview area is the window minus about 80 px of chrome. At 1600x1000 it is
+// 1020x920: the 1440x900 frame overflows horizontally only (measured: the
+// horizontal gutter is 10 px, the vertical one 0 px). A vertical bar needs an
+// area shorter than 900 px, so both-axes overflow is measured at 1600x960
+// (area 1020x880). The 1600x1000 capture is kept for the horizontal bar.
+test("e2e_preview_zoom_scrollbars_at_100", async () => {
+  const shotsDir = process.env.PSZ_SCROLLBAR_SHOTS_DIR || "";
+  const { ctx, page } = await openPreview("&zoom=100", {
+    viewport: { width: 1600, height: 960 },
+    scrollbars: true,
+  });
+  try {
+    assert.equal(await readout(page), "100%");
+    const at100 = await scrollHostMetrics(page);
+    console.log(`PSZ-AREQ2 at 100% (1600x960): host ${at100.hostW}x${at100.hostH}, ` +
+      `stage ${at100.stageW}x${at100.stageH}, overflow ${at100.overflowX}/${at100.overflowY}, ` +
+      `gutters vertical ${at100.vGutter}px horizontal ${at100.hGutter}px`);
+    assert.ok(at100.stageW > at100.hostW && at100.stageH > at100.hostH,
+      `100% stage ${at100.stageW}x${at100.stageH} does not overflow the ` +
+      `${at100.hostW}x${at100.hostH} preview area`);
+    assert.equal(at100.overflowX, "auto");
+    assert.equal(at100.overflowY, "auto");
+    assert.ok(at100.vGutter > 0,
+      `vertical scrollbar gutter is ${at100.vGutter}px at 100% (expected > 0)`);
+    assert.ok(at100.hGutter > 0,
+      `horizontal scrollbar gutter is ${at100.hGutter}px at 100% (expected > 0)`);
+    if (shotsDir) {
+      await page.locator('[data-preview-zoom-stage="true"]').locator("xpath=..")
+        .screenshot({ path: join(shotsDir, "scrollbars-100-desktop-1600x960.png") });
+    }
+  } finally {
+    await ctx.close();
+  }
+
+  // The operator's 1600x1000 window: the frame overflows horizontally only.
+  const wide = await openPreview("&zoom=100", {
+    viewport: { width: 1600, height: 1000 },
+    scrollbars: true,
+  });
+  try {
+    assert.equal(await readout(wide.page), "100%");
+    const m = await scrollHostMetrics(wide.page);
+    console.log(`PSZ-AREQ2 at 100% (1600x1000): host ${m.hostW}x${m.hostH}, ` +
+      `gutters vertical ${m.vGutter}px horizontal ${m.hGutter}px`);
+    assert.ok(m.hGutter > 0,
+      `horizontal scrollbar gutter is ${m.hGutter}px at 100% in 1600x1000 (expected > 0)`);
+    if (shotsDir) {
+      await wide.page.locator('[data-preview-zoom-stage="true"]').locator("xpath=..")
+        .screenshot({ path: join(shotsDir, "scrollbars-100-desktop-1600x1000.png") });
+    }
+  } finally {
+    await wide.ctx.close();
+  }
+
+  const fit = await openPreview("&zoom=fit", {
+    viewport: { width: 1600, height: 960 },
+    scrollbars: true,
+  });
+  const page2 = fit.page;
+  try {
+    await clickControl(page2, "Fit preview to the area");
+    assert.match(await readout(page2), /^\d+%$/);
+    const atFit = await scrollHostMetrics(page2);
+    console.log(`PSZ-AREQ2 at Fit (1600x960): host ${atFit.hostW}x${atFit.hostH}, ` +
+      `stage ${atFit.stageW}x${atFit.stageH}, ` +
+      `gutters vertical ${atFit.vGutter}px horizontal ${atFit.hGutter}px`);
+    assert.ok(atFit.stageW <= atFit.hostW && atFit.stageH <= atFit.hostH,
+      `Fit stage ${atFit.stageW}x${atFit.stageH} overflows the ` +
+      `${atFit.hostW}x${atFit.hostH} preview area`);
+    assert.equal(atFit.vGutter, 0, "vertical scrollbar shown while the frame fits");
+    assert.equal(atFit.hGutter, 0, "horizontal scrollbar shown while the frame fits");
+    if (shotsDir) {
+      await page2.locator('[data-preview-zoom-stage="true"]').locator("xpath=..")
+        .screenshot({ path: join(shotsDir, "scrollbars-fit-desktop-1600x960.png") });
+    }
+  } finally {
+    await fit.ctx.close();
   }
 });

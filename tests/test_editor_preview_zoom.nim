@@ -125,6 +125,10 @@ suite "Preview zoom (PSZ-M1) - pure model":
       check page.children.len > 0
       check page.children[0].styles["overflow"] == "auto"
       check findByAttr(page.children[0], "data-preview-zoom-stage", "true") != nil
+      # PSZ-AREQ2: the scroll host carries the scrollbar-token class, so the
+      # editor-wide rule in browser.nim (``.editor-preview-scroll``) styles its
+      # bars. ``overflow: auto`` above shows them while the stage overflows.
+      check page.children[0].attributes["class"].contains("editor-preview-scroll")
       dispose()
 
   test "test_preview_zoom_100_scrolls (zoomed out frame is centred, not scrolled)":

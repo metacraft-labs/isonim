@@ -53,8 +53,13 @@ proc renderPagePreview*[R, E](r: R; vm: EditorVM): E =
       discard
 
   var frameHost: E
+  # PSZ-AREQ2: ``overflow: auto`` on both axes, so a frame larger than the area
+  # shows a vertical and a horizontal scrollbar and a smaller one shows none.
+  # The bars are styled by the editor-wide scrollbar tokens in browser.nim, via
+  # the ``editor-preview-scroll`` class listed with the other scroll areas.
   let frameHostNode = ui(r):
     tdiv(ref = frameHost,
+          class = "editor-preview-scroll",
           flex = "1", overflow = "auto", display = "flex",
           align_items = "flex-start", justify_content = "flex-start",
           padding = "16px", background_color = "#0D1525",
