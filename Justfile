@@ -2365,3 +2365,7 @@ test-record-env-focused-corrections:
 # Owned existing scalar listener observation; real native events and lease lifetimes.
 test-listener-observer-owner:
     python3 tools/test_listener_observer_owner.py
+
+# Opt-in passive outer-flush observation: real graphs, omission and strict inverses.
+test-internal-flush-observation minimum_available_mib="0" minimum_free_mib="0":
+    python3 tools/test_internal_flush_observation.py --minimum-available-mib {{minimum_available_mib}} --minimum-free-mib {{minimum_free_mib}}
