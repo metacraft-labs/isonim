@@ -44,6 +44,9 @@ proc renderPagePreview*[R, E](r: R; vm: EditorVM): E =
   let container = ui(r):
     tdiv(class = "editor-preview",
           `data-page-preview` = "true",
+          # PSZ-M2: focusable without a tab stop, so entering full screen can
+          # move keyboard focus here and the F key and Escape act at once.
+          tabindex = "-1",
           flex = "1", display = "flex", flex_direction = "column",
           min_width = "0", height = "100%",
           background_color = bgBase):

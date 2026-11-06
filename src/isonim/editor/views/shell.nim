@@ -4253,6 +4253,34 @@ proc renderEditorTitleBar[R, E](r: R; vm: EditorVM): E =
       span(font_size = "11px", color = textDim, font_family = "monospace"):
         text "v" & editorVersion
 
+proc requestBrowserFullScreen*() =
+  ## PSZ-M2 (open decision D2): ask the browser for its own full screen on the
+  ## document. This is the one place that touches the browser's full-screen API.
+  ## It is not in the story URL, and the browser's own Escape leaves it. Without
+  ## a DOM (native tests) it does nothing.
+  when defined(js):
+    {.emit: ["""
+      (function () {
+        const root = document.documentElement;
+        if (!root || !root.requestFullscreen || document.fullscreenElement) return;
+        const pending = root.requestFullscreen();
+        if (pending && pending.catch) pending.catch(function () {});
+      })();
+    """].}
+
+proc focusPreviewNode*[E](node: E) =
+  ## PSZ-M2: move keyboard focus to ``node`` after the current effect has applied
+  ## its display change. The focus is deferred, because a node that was hidden a
+  ## moment ago takes focus only once it is displayed.
+  when isDomViewHost(E):
+    {.emit: ["""
+      (function (node) {
+        if (!node) return;
+        setTimeout(function () { if (node.focus) node.focus({ preventScroll: true }); }, 0);
+      })(""", node, ");"].}
+  else:
+    discard
+
 proc chromeGlyphButton[R, E](r: R; label, glyph: string;
     action: proc() {.closure.}): E =
   ## A glyph control of the chrome bar. The flow controls and the PSZ-M1 preview
@@ -4343,6 +4371,7 @@ proc renderPreviewZoomCluster[R, E](r: R; vm: EditorVM): E =
          `data-preview-edge-group` = "zoom",
          display = "none", align_items = "center",
          gap = "4px", flex_shrink = "0",
+         transition = "opacity 0.15s",
          background_color = "#22232e", border_radius = "6px",
          padding = "2px")
   proc textControl(label, glyph: string; action: proc() {.closure.}): E =
@@ -4378,13 +4407,25 @@ proc renderPreviewZoomCluster[R, E](r: R; vm: EditorVM): E =
   let zoomInButton = chromeGlyphButton[R, E](r, "Zoom preview in", "+",
     proc() = vm.stepPreviewZoomBy(1))
   r.appendChild(group, zoomInButton)
+  # PSZ-M2: the two controls only full screen adds. Hidden in the chrome bar;
+  # shown when the cluster floats (the effect below). The browser request is
+  # open decision D2: a press asks the browser for its own full screen.
+  let browserFullScreenButton = chromeGlyphButton[R, E](r,
+    "Request browser full screen", "⤢", proc() = requestBrowserFullScreen())
+  let leaveFullScreenButton = chromeGlyphButton[R, E](r,
+    "Leave full screen", "✕", proc() = vm.setPreviewFullScreen(false))
+  r.appendChild(group, browserFullScreenButton)
+  r.appendChild(group, leaveFullScreenButton)
+  r.setStyle(browserFullScreenButton, "display", "none")
+  r.setStyle(leaveFullScreenButton, "display", "none")
   # The glyph buttons keep the shared chrome-glyph width but take the 22 px
   # pill height of their neighbours. Without an explicit height their 14 px
   # glyph line box made them 25 px tall and the trough 29 px, against the
   # viewport strip's 26 px.
   # ``min-height`` too: chromeGlyphButton declares a 24 px floor that would
   # otherwise win over ``height``.
-  for glyph in [zoomOutButton, zoomInButton]:
+  for glyph in [zoomOutButton, zoomInButton, browserFullScreenButton,
+      leaveFullScreenButton]:
     r.setStyle(glyph, "min-height", "22px")
     r.setStyle(glyph, "height", "22px")
 
@@ -4424,9 +4465,26 @@ proc renderPreviewZoomCluster[R, E](r: R; vm: EditorVM): E =
     let shown = vm.activeView.val == evPagePreview and
       vm.platform.val == pbWeb and vm.surfaceSig.val == sPreview
     r.setStyle(group, "display", if shown: "inline-flex" else: "none")
+    # PSZ-M2: in full screen the cluster floats in the corner and is see-through
+    # until the pointer is in the reveal zone or focus is inside it. Keyboard
+    # focus still reaches it while it is transparent (pointer-events do not
+    # affect focus), and focusing it reveals it (the shell's focusin listener).
+    let fullScreen = vm.previewFullScreenActive()
+    let revealed = vm.previewControlsRevealed.val
+    r.setStyle(browserFullScreenButton, "display",
+      if fullScreen: "inline-flex" else: "none")
+    r.setStyle(leaveFullScreenButton, "display",
+      if fullScreen: "inline-flex" else: "none")
+    r.setStyle(group, "box-shadow",
+      if fullScreen: "0 8px 24px rgba(0,0,0,0.45)" else: "none")
+    r.setStyle(group, "opacity",
+      if fullScreen and not revealed: "0" else: "1")
+    r.setStyle(group, "pointer-events",
+      if fullScreen and not revealed: "none" else: "auto")
   group
 
-proc renderPreviewChromeBar*[R, E](r: R; vm: EditorVM): E =
+proc renderPreviewChromeBar*[R, E](r: R; vm: EditorVM;
+    floatingHost: E = default(E)): E =
   ## Shared preview-pane top toolbar that sits above every view in the
   ## center column. Carries the three reactive chip groups
   ## (Backend / Viewport / Mode). Mounted once per shell and shared
@@ -5126,7 +5184,17 @@ proc renderPreviewChromeBar*[R, E](r: R; vm: EditorVM): E =
   r.appendChild(toolbar, viewportClusterWrapper)
   # PSZ-M1: the zoom cluster sits right beside the viewport strip it shares a
   # meaning with (the frame's size and how it is shown).
-  r.appendChild(toolbar, renderPreviewZoomCluster[R, E](r, vm))
+  let zoomCluster = renderPreviewZoomCluster[R, E](r, vm)
+  r.appendChild(toolbar, zoomCluster)
+  # PSZ-M2: the full-screen button sits beside the zoom cluster, in the same
+  # glyph style. It is shown wherever the cluster is shown.
+  let fullScreenButton = chromeGlyphButton[R, E](r, "Full screen preview",
+    "⛶", proc() = vm.setPreviewFullScreen(true))
+  r.setAttribute(fullScreenButton, "data-preview-fullscreen-toggle", "true")
+  r.appendChild(toolbar, fullScreenButton)
+  createRenderEffect proc() =
+    r.setStyle(fullScreenButton, "display",
+      if vm.previewFullScreenShown(): "inline-flex" else: "none")
 
   # Spacer #2 — trailing flex-grow:1 wedge. Symmetric with the
   # leading spacer above; together they centre the Viewport cluster
@@ -5136,6 +5204,24 @@ proc renderPreviewChromeBar*[R, E](r: R; vm: EditorVM): E =
          flex = "1",
          min_width = "8px")
   r.appendChild(toolbar, trailingSpacer)
+
+  # PSZ-M2: the zoom cluster moves into the floating host while full screen is
+  # on, and back into the chrome bar when it ends. A single element moves, so
+  # the cluster is never in the tree twice (its readout is found by one
+  # selector). Focus is handled by the full-screen effect in renderEditorShell,
+  # which puts it on the preview on both entry and exit.
+  if floatingHost != nil:
+    let capturedVm = vm
+    var inFloatingHost = false
+    createRenderEffect proc() =
+      let fullScreen = capturedVm.previewFullScreenActive()
+      if fullScreen == inFloatingHost:
+        return
+      inFloatingHost = fullScreen
+      if fullScreen:
+        r.appendChild(floatingHost, zoomCluster)
+      else:
+        r.insertBefore(toolbar, zoomCluster, trailingSpacer)
 
   # Phase I (2026-05-28): the Surface (Preview / Spec) cluster is
   # gone; the Mode cluster now carries four options — Spec / View /
@@ -5835,7 +5921,15 @@ proc renderEditorShell*[R, E](r: R; vm: EditorVM;
   # Center column wraps the shared preview chrome bar + the view stack
   # so the toolbar sits above every view. Replaces the previous
   # per-view top toolbars + the legacy global title bar.
-  let chromeBarEl = renderPreviewChromeBar[R, E](r, vm)
+  # PSZ-M2: the floating host of full screen. It sits in the centre column's
+  # top-right corner and is shown only in full screen; the zoom cluster moves
+  # into it (renderPreviewChromeBar). It is appended below, once the column exists.
+  let fullScreenControlsEl = ui(r):
+    tdiv(`data-preview-fullscreen-controls` = "true",
+         position = "absolute", top = "12px", right = "12px",
+         display = "none", align_items = "center",
+         z_index = "30")
+  let chromeBarEl = renderPreviewChromeBar[R, E](r, vm, fullScreenControlsEl)
   let centerColumn = ui(r):
     tdiv(display = "flex", flex_direction = "column",
           flex = "1", min_width = "0", min_height = "0",
@@ -6005,12 +6099,14 @@ proc renderEditorShell*[R, E](r: R; vm: EditorVM;
         evFoundationsPage: "flex" else: "none")
     r.setStyle(vectorEditorEl, "display", if preview and view ==
         evVectorEditor: "flex" else: "none")
+    # PSZ-M2: full screen hides the sidebar and the chrome bar as well.
+    let fullScreen = vm.previewFullScreenActive()
     r.setStyle(sidebarEl, "display", if panels.sidebar and view !=
-        evVectorEditor: "flex" else: "none")
+        evVectorEditor and not fullScreen: "flex" else: "none")
     # Vector editor takes over the whole center column; hide the
     # shared chrome bar so the vector-editor toolbar isn't doubled up.
     r.setStyle(chromeBarEl, "display",
-      if view == evVectorEditor: "none" else: "flex")
+      if view == evVectorEditor or fullScreen: "none" else: "flex")
     # TBAR-M3: spec-pane swaps in when surface is sSpec.
     r.setStyle(specPaneEl, "display",
       if not preview: "flex" else: "none")
@@ -6125,6 +6221,74 @@ proc renderEditorShell*[R, E](r: R; vm: EditorVM;
   r.appendChild(overlayEl, overlaySubtitle)
   r.appendChild(centerColumn, overlayEl)
 
+  # PSZ-M2: the floating controls are revealed by the pointer (any move inside
+  # the centre column, tested against the reveal zone in Nim) and by focus
+  # inside them. Both closures act only in full screen (revealPreviewControlsAt
+  # and setPreviewControlsRevealed check it), so the listeners are inert
+  # otherwise.
+  r.appendChild(centerColumn, fullScreenControlsEl)
+  when isDomViewHost(E):
+    block:
+      let capturedVm = vm
+      let pointerAt = proc(x, y, areaWidth: int) {.closure.} =
+        capturedVm.revealPreviewControlsAt(x, y, areaWidth)
+      let setRevealed = proc(revealed: bool) {.closure.} =
+        if capturedVm.previewFullScreenActive():
+          capturedVm.setPreviewControlsRevealed(revealed)
+      {.emit: ["""
+        (function (center, host, pointerAt, setRevealed) {
+          if (!center || !host || center.__isonimFsBound) return;
+          center.__isonimFsBound = true;
+          const onMove = function (event) {
+            const rect = center.getBoundingClientRect();
+            pointerAt(Math.round(event.clientX - rect.left),
+                      Math.round(event.clientY - rect.top),
+                      Math.round(rect.width));
+          };
+          const onLeave = function () { setRevealed(false); };
+          const onFocusIn = function () { setRevealed(true); };
+          const onFocusOut = function (event) {
+            if (!host.contains(event.relatedTarget)) setRevealed(false);
+          };
+          center.addEventListener('pointermove', onMove);
+          center.addEventListener('pointerleave', onLeave);
+          host.addEventListener('focusin', onFocusIn);
+          host.addEventListener('focusout', onFocusOut);
+          // The device frame is an iframe. Pointer events over it never reach
+          // this document, so the frame's own document is listened to as well.
+          // It is same-origin (srcdoc), and its positions are mapped into the
+          // window through the frame's on-screen scale. A reload of the frame
+          // replaces its document, so the listener is bound again on ``load``.
+          const frame = center.querySelector('[data-page-project-frame="true"]');
+          const onFrameMove = function (event) {
+            const rect = frame.getBoundingClientRect();
+            const scale = frame.offsetWidth ? rect.width / frame.offsetWidth : 1;
+            const box = center.getBoundingClientRect();
+            pointerAt(Math.round(rect.left + event.clientX * scale - box.left),
+                      Math.round(rect.top + event.clientY * scale - box.top),
+                      Math.round(box.width));
+          };
+          const bindFrame = function () {
+            let doc = null;
+            try { doc = frame.contentDocument; } catch (e) { doc = null; }
+            if (!doc || doc.__isonimFsBound) return;
+            doc.__isonimFsBound = true;
+            doc.addEventListener('pointermove', onFrameMove);
+          };
+          if (frame) {
+            frame.addEventListener('load', bindFrame);
+            bindFrame();
+          }
+          globalThis.__isonimViewCleanup(center, function () {
+            center.removeEventListener('pointermove', onMove);
+            center.removeEventListener('pointerleave', onLeave);
+            host.removeEventListener('focusin', onFocusIn);
+            host.removeEventListener('focusout', onFocusOut);
+            if (frame) frame.removeEventListener('load', bindFrame);
+          });
+        })(""", centerColumn, ", ", fullScreenControlsEl, ", ", pointerAt, ", ",
+        setRevealed, ");"].}
+
   block:
     let capturedVm = vm
     let captHeading = overlayHeadingEl
@@ -6233,6 +6397,9 @@ proc renderEditorShell*[R, E](r: R; vm: EditorVM;
       # handoff still pulls the sidebar back into view.
       discard capturedChatFlag.val
       if not panels.inspector:
+        return ""
+      # PSZ-M2: full screen shows no right-hand panel.
+      if capturedVm.previewFullScreenActive():
         return ""
       if capturedVm.editMode.val == emEdit:
         "inspector"
@@ -6361,7 +6528,31 @@ proc renderEditorShell*[R, E](r: R; vm: EditorVM;
   # mode-driven sidebar swap above instead of as a fixed overlay.
   r.appendChild(shellRoot, renderCommandPalette[R, E](r, vm))
   r.appendChild(shellRoot, renderTelemetryOverlay[R, E](r, vm))
-  r.appendChild(shellRoot, renderStatusBar[R, E](r, vm))
+  let statusBarEl = renderStatusBar[R, E](r, vm)
+  r.appendChild(shellRoot, statusBarEl)
+
+  # PSZ-M2: the full-screen layout's remaining pieces. The status bar hides and
+  # the floating host shows. The page preview takes focus on entry, so F and
+  # Escape work at once. A flag left over from the page preview ends when that
+  # view stops being shown, so it cannot hide another view's chrome.
+  block:
+    let capturedVm = vm
+    var wasFullScreen = false
+    createRenderEffect proc() =
+      if capturedVm.previewFullScreen.val and
+          not capturedVm.previewFullScreenShown():
+        capturedVm.setPreviewFullScreen(false)
+        return
+      let fullScreen = capturedVm.previewFullScreenActive()
+      r.setStyle(statusBarEl, "display", if fullScreen: "none" else: "flex")
+      r.setStyle(fullScreenControlsEl, "display",
+        if fullScreen: "flex" else: "none")
+      # Focus moves to the preview on entry and on exit. On exit the control that
+      # had focus (the floating ones) is moved back into the chrome bar or left,
+      # so focus would otherwise be lost, and F would stop working.
+      if fullScreen != wasFullScreen:
+        focusPreviewNode(pagePreviewEl)
+      wasFullScreen = fullScreen
 
   # M-EVP-8: ESC closes the vector editor and routes back to the prior
   # view. We add a single keyboard-event entry-point inside the shell
