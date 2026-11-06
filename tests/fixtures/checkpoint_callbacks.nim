@@ -1,5 +1,7 @@
 ## Real library callbacks in a child process. Positive runs must exit cleanly;
 ## the mutation harness retains this named probe if a native regression faults.
+## Uses the library TestClock to deterministically run scheduled maintenance;
+## sessions, hooks, signal contributions and cancellation are real library code.
 import std/os
 import isonim/core/[signals, owner, checkpoints, nondet]
 type CallbackValue = object
@@ -24,6 +26,9 @@ of "stop-contribution":
     discard backend.schedule((proc() = discard), 1)
     TestClock(backend).advance(100)
     action = nil
+    echo "checkpoint callback probe: stop-contribution observed calls=" & $calls &
+      " contributions=" & $contributions & " value=" & $trigger.val.content
+    stdout.flushFile()
     doAssert calls == 0, "stopped checkpoint session must not emit"
     doAssert contributions == 1
     doAssert trigger.val.content == 1

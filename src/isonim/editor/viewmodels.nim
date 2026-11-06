@@ -10,6 +10,8 @@ from std/unicode import runeLen, runeSubStr
 import isonim/core/[signals, computation, batch]
 import isonim/viewmodel
 import isonim/editor/types
+import isonim/editor/preview_zoom
+import isonim/editor/preview_fullscreen
 import isonim/editor/html_classes
 import isonim/editor/css_color_literal
 import isonim/editor/numeric_precision
@@ -480,6 +482,19 @@ type
       ## Empty set = ALL platforms (default). When non-empty, the
       ## left-edge backend strip only surfaces the listed backends.
     viewport*: Signal[PreviewViewport]
+    previewZoom*: Signal[PreviewZoom]
+      ## PSZ-M1: how the device frame is shown in the preview area (Fit or a
+      ## fixed level). Read from and written to the story URL (``zoom``).
+    previewArea*: Signal[PreviewArea]
+      ## PSZ-M1: the preview area's measured client box. The view reports it;
+      ## Fit is recomputed from it, so a resize refits the frame.
+    previewFullScreen*: Signal[bool]
+      ## PSZ-M2: the reviewer asked for full screen. Read from and written to
+      ## the story URL (``fullscreen``). It takes effect only while the web page
+      ## preview is shown: see ``previewFullScreenActive``.
+    previewControlsRevealed*: Signal[bool]
+      ## PSZ-M2: the pointer is in the reveal corner, or keyboard focus is in the
+      ## floating controls. Only read in full screen.
     workspaceId*: string
     controlInstanceId*: string
     controlStoryRevealAdapter*: proc() {.closure.}
@@ -3351,6 +3366,70 @@ proc changeViewport*(editor: EditorVM; viewport: PreviewViewport) =
   ## updates the signal so the iframe / streaming bridge picks the new
   ## extent on its next render.
   editor.viewport.val = viewport
+
+proc setPreviewZoomFit*(editor: EditorVM) =
+  ## PSZ-M1: show the device frame fitted to the preview area. The fixed level
+  ## is kept, so leaving Fit returns to the level that was shown before.
+  editor.previewZoom.val = PreviewZoom(mode: pzmFit,
+    level: editor.previewZoom.val.level)
+
+proc setPreviewZoomLevel*(editor: EditorVM; level: float) =
+  ## PSZ-M1: show the device frame at a fixed level (clamped to the zoom range).
+  editor.previewZoom.val = fixedPreviewZoom(level)
+
+proc stepPreviewZoomBy*(editor: EditorVM; direction: int) =
+  ## PSZ-M1: one zoom step in ``direction`` (> 0 in, < 0 out) from the scale now
+  ## shown. The step list is ``previewZoomSteps`` in preview_zoom.nim.
+  let width = previewViewportWidth(editor.viewport.val)
+  let height = previewViewportHeight(editor.viewport.val)
+  editor.previewZoom.val = stepPreviewZoom(editor.previewZoom.val,
+    width, height, editor.previewArea.val, direction)
+
+proc previewFullScreenShown*(editor: EditorVM): bool =
+  ## PSZ-M2: full screen is offered where the zoom cluster is: the web page
+  ## preview, with the preview surface (not Spec) showing.
+  editor.activeView.val == evPagePreview and editor.platform.val == pbWeb and
+    editor.surfaceSig.val == sPreview
+
+proc previewFullScreenActive*(editor: EditorVM): bool =
+  ## PSZ-M2: the screen is full screen now. The flag alone is not enough: a
+  ## flag left over from the page preview must not hide the sidebars of another
+  ## view, so the shell clears the flag when the page preview stops being shown.
+  editor.previewFullScreen.val and editor.previewFullScreenShown()
+
+proc setPreviewFullScreen*(editor: EditorVM; on: bool) =
+  ## PSZ-M2: enter (``on``) or leave full screen. Entering is refused where full
+  ## screen is not offered, so the flag cannot start in a view that cannot show it.
+  if on and not editor.previewFullScreenShown():
+    return
+  editor.previewFullScreen.val = on
+  if not on:
+    editor.previewControlsRevealed.val = false
+
+proc togglePreviewFullScreen*(editor: EditorVM) =
+  ## PSZ-M2: the one toggle behind the chrome-bar button and the key. Leaving is
+  ## always allowed; entering needs the page preview to be shown.
+  editor.setPreviewFullScreen(not editor.previewFullScreen.val)
+
+proc setPreviewControlsRevealed*(editor: EditorVM; revealed: bool) =
+  ## PSZ-M2: show or hide the floating controls. A value that did not change
+  ## writes nothing, so pointer moves in the corner do not churn the signal.
+  if editor.previewControlsRevealed.val != revealed:
+    editor.previewControlsRevealed.val = revealed
+
+proc revealPreviewControlsAt*(editor: EditorVM; x, y, areaWidth: int) =
+  ## PSZ-M2: a pointer at ``(x, y)`` in the centre column's box moved. Only in
+  ## full screen does it matter; the zone test is ``inRevealZone``.
+  if editor.previewFullScreenActive():
+    editor.setPreviewControlsRevealed(inRevealZone(x, y, areaWidth))
+
+proc setPreviewArea*(editor: EditorVM; width, height: int) =
+  ## PSZ-M1: record the preview area's measured client box. Called by the view
+  ## when it resizes; a measurement that did not change writes nothing.
+  let next = PreviewArea(width: max(0, width), height: max(0, height))
+  let current = editor.previewArea.val
+  if current.width != next.width or current.height != next.height:
+    editor.previewArea.val = next
 
 proc setSurface*(editor: EditorVM; surface: Surface) =
   ## TBAR-M3: flip the editor's top-bar surface. The shell's reactive
@@ -14609,6 +14688,10 @@ proc createEditorVM*(): EditorVM =
   let rightSidebarTab = createSignal(rstManual)
   let platform = createSignal(pbWeb)
   let viewport = createSignal(defaultViewport(pbWeb))
+  let previewZoom = createSignal(defaultPreviewZoom())
+  let previewArea = createSignal(PreviewArea())
+  let previewFullScreen = createSignal(false)
+  let previewControlsRevealed = createSignal(false)
   let responsiveBreakpoints = createSignal[seq[ResponsiveBreakpoint]](@[])
   let previewShowsPendingEdits = createSignal(false)
   let previewRenderedWidth = createSignal(0)
@@ -14736,6 +14819,10 @@ proc createEditorVM*(): EditorVM =
     rightSidebarTab: rightSidebarTab,
     platform: platform,
     viewport: viewport,
+    previewZoom: previewZoom,
+    previewArea: previewArea,
+    previewFullScreen: previewFullScreen,
+    previewControlsRevealed: previewControlsRevealed,
     controlConnected: true,
     agentControlApproval: createSignal(false),
     controlActivity: createSignal(newSeq[JsonNode]()),
