@@ -13,6 +13,8 @@ import isonim/editor/control_browser
 import isonim/editor/dom_renderer
 import isonim/editor/streaming_preview
 import isonim/editor/types
+import isonim/editor/preview_zoom
+import isonim/editor/preview_fullscreen
 import isonim/editor/viewmodels
 import isonim/editor/workspace
 import isonim/editor/editable_cells
@@ -70,13 +72,15 @@ proc injectEditorStyles*() =
     }
     .editor-sidebar,
     .editor-chat,
-    .editor-manual-inspector {
+    .editor-manual-inspector,
+    .editor-preview-scroll {
       scrollbar-width: thin;
     }
     /* Use platform-sized, visible scrollbars in high-contrast mode. Keep
      * the same specificity as panel rules and override legacy hidden tabs. */
     @media (forced-colors: active) {
-      *, .editor-sidebar, .editor-chat, .editor-manual-inspector {
+      *, .editor-sidebar, .editor-chat, .editor-manual-inspector,
+      .editor-preview-scroll {
         scrollbar-color: auto;
         scrollbar-width: auto;
       }
@@ -564,6 +568,15 @@ proc installEditorKeyboardShortcuts(vm: EditorVM) =
     discard vm.runEditorCommand(eckUndo)
   let redo = proc() =
     discard vm.runEditorCommand(eckRedo)
+  # PSZ-M2: full screen. The key itself is ``previewFullScreenKey`` in
+  # preview_fullscreen.nim; the handler below only reads it.
+  let fullScreenKeyName = previewFullScreenKey.cstring
+  let fullScreenOn = proc(): bool =
+    vm.previewFullScreenActive()
+  let toggleFullScreen = proc() =
+    vm.togglePreviewFullScreen()
+  let leaveFullScreen = proc() =
+    vm.setPreviewFullScreen(false)
   var cleanup: proc()
   {.emit: [cleanup, " = ", """
     (function () {
@@ -585,6 +598,18 @@ proc installEditorKeyboardShortcuts(vm: EditorVM) =
       const save = """, save, """;
       const undo = """, undo, """;
       const redo = """, redo, """;
+      const fullScreenKey = """, fullScreenKeyName, """;
+      const fullScreenOn = """, fullScreenOn, """;
+      const toggleFullScreen = """, toggleFullScreen, """;
+      const leaveFullScreen = """, leaveFullScreen, """;
+      // PSZ-M2: F acts while the preview, or its floating controls, has focus.
+      // Both are marked in the shell; the page preview root is the device
+      // preview's container, so a focused iframe inside it counts too.
+      const previewHasFocus = () => {
+        const active = document.activeElement;
+        return !!(active && active.closest &&
+          active.closest('[data-page-preview="true"], [data-preview-fullscreen-controls="true"]'));
+      };
       let returnFocus = null;
       const isEditable = (target) => {
         if (!target) return false;
@@ -642,6 +667,14 @@ proc installEditorKeyboardShortcuts(vm: EditorVM) =
           }
           return;
         }
+        // PSZ-M2: Escape always leaves full screen. It comes after the palette
+        // (which takes the first Escape) and before the editable early return,
+        // so it also works while a text field has focus.
+        if (key === 'Escape' && fullScreenOn()) {
+          event.preventDefault();
+          leaveFullScreen();
+          return;
+        }
         // Save is exempt from the editable-target early return. Every other
         // shortcut here would fight the field the user is typing in; this one
         // is the thing they reach for immediately AFTER typing a value, and
@@ -671,6 +704,14 @@ proc installEditorKeyboardShortcuts(vm: EditorVM) =
             if (search.select) search.select();
             return;
           }
+        }
+        // PSZ-M2: the full-screen key, while the preview has focus. Not in a
+        // text field (it types there) and not with a modifier.
+        if (!editable && !mod && !event.altKey && lower === fullScreenKey &&
+            previewHasFocus()) {
+          event.preventDefault();
+          toggleFullScreen();
+          return;
         }
         if (editable) return;
         if (mod && (key === '\\' || key === 'Backslash' || code === 'Backslash')) {
@@ -725,6 +766,8 @@ proc editorRouteUrl(vm: EditorVM): string =
   var parts = @[
     "view=" & encodeParam(viewSlug(vm.activeView.val)),
     "viewport=" & encodeParam(viewportSlug(vm.viewport.val)),
+    "zoom=" & encodeParam(previewZoomRouteParam(vm.previewZoom.val)),
+    "fullscreen=" & previewFullScreenRouteParam(vm.previewFullScreen.val),
     "mode=" & encodeParam(editModeSlug(vm.editMode.val)),
     "sidebar=" & boolSlug(vm.panels.val.sidebar),
     "inspector=" & boolSlug(vm.panels.val.inspector),
@@ -785,6 +828,20 @@ proc applyEditorRoute(vm: EditorVM) =
   if viewportParam.len > 0:
     vm.changeViewport(viewportFromSlug(viewportParam, vm.viewport.val))
 
+  # PSZ-M1: ``zoom=fit`` or ``zoom=<percent>``; an absent or damaged value
+  # keeps the zoom already shown.
+  let zoomParam = routeParam("zoom")
+  if zoomParam.len > 0:
+    vm.previewZoom.val = previewZoomFromRouteParam(zoomParam,
+      vm.previewZoom.val)
+
+  # PSZ-M2: ``fullscreen=1`` or ``fullscreen=0``. Written on every route write,
+  # so an entry without it (from before this param) keeps the current screen.
+  let fullScreenParam = routeParam("fullscreen")
+  if fullScreenParam.len > 0:
+    vm.previewFullScreen.val = previewFullScreenFromRouteParam(fullScreenParam,
+      vm.previewFullScreen.val)
+
   let modeParam = routeParam("mode")
   if modeParam.len > 0:
     vm.setEditMode(editModeFromSlug(modeParam, vm.editMode.val))
@@ -825,6 +882,8 @@ proc installEditorHistorySync(vm: EditorVM) =
     discard vm.activeView.val
     discard vm.selectedStory.val
     discard vm.viewport.val
+    discard vm.previewZoom.val
+    discard vm.previewFullScreen.val
     discard vm.editMode.val
     discard vm.panels.val
     discard vm.inspector.activeSection.val

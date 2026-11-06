@@ -889,8 +889,9 @@ suite "M-EVP-3 preview chrome bar density":
       let clusters = findAllByAttr(bar, clusterAttr, "history") &
         findAllByAttr(bar, clusterAttr, "backend") &
         findAllByAttr(bar, clusterAttr, "viewport") &
+        findAllByAttr(bar, clusterAttr, "zoom") &
         findAllByAttr(bar, clusterAttr, "mode")
-      check clusters.len == 4
+      check clusters.len == 5
 
       # Every cluster must be a direct child of the toolbar — if a
       # future refactor nests them inside an intermediate wrapper the
@@ -903,7 +904,8 @@ suite "M-EVP-3 preview chrome bar density":
       # There is no `save` cluster: saving is automatic, so there is no
       # state for a control to report and nothing to press. Failures go to
       # the status bar.
-      let clusterKinds = @["backend", "history", "viewport", "mode"]
+      # PSZ-M1 adds the preview zoom cluster beside the viewport strip.
+      let clusterKinds = @["backend", "history", "viewport", "zoom", "mode"]
       var directChildClusters: seq[string] = @[]
       for child in bar.children:
         let kind = child.attributes.getOrDefault(clusterAttr)
