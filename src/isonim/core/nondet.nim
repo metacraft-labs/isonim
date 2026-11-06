@@ -60,11 +60,15 @@ type
   DomEventEffect* = object of RootEffect
   Rect* = object
     x*, y*, width*, height*: float64
+  ClientSize* = object
+    ## An element's `clientWidth` and `clientHeight`: the layout box without
+    ## the scrollbar gutter, not the bounding rectangle `measure` returns.
+    width*, height*: int
   NondetBackend* = ClockBase
 
 const seamTable* = ["now", "wallNow", "scheduleAt", "scheduleEvery",
   "requestFrame", "cancel", "random", "randomFloat", "fetch",
-  "storageGet", "storageSet", "cookieGet", "measure", "viewport",
+  "storageGet", "storageSet", "cookieGet", "measure", "clientSize", "viewport",
   "matchMedia", "location", "pushState", "replaceState", "env", "randomUuid"]
 
 proc install*(b: NondetBackend)
@@ -323,7 +327,7 @@ when defined(js):
   # newly unavailable/throwing metadata must not break a successful snapshot.
   # Retain the same Date instance at the original offset observation point;
   # later epoch metadata never samples another clock or changes old failures.
-  proc rawRead(name, arg: cstring; el: JsObject): cstring {.importjs: "JSON.stringify((function(n,a,e){switch(n){case 'storageGet':return localStorage.getItem(a);case 'cookieGet':return document.cookie;case 'location':return window.location.pathname;case 'measure':var r=e.getBoundingClientRect();return {x:r.x,y:r.y,width:r.width,height:r.height,top:r.top,right:r.right,bottom:r.bottom,left:r.left};case 'viewport':return {x:0,y:0,width:innerWidth,height:innerHeight};case 'matchMedia':return matchMedia(a).matches;case 'env':var w=window,l=w.location||{},v=w.navigator||{},d=w.document,u=String(v.userAgent||''),hy=globalThis['_'+String.fromCharCode(36)+'HY'],q=function(m){return typeof w.matchMedia==='function'&&w.matchMedia(m)?.matches===true;},t=d&&typeof d.querySelector==='function'?d.querySelector('meta[name=traceparent]'):null,z='',i=w.Intl;if(i&&typeof i.DateTimeFormat==='function'){var f=i.DateTimeFormat();if(f&&typeof f.resolvedOptions==='function'){var o=f.resolvedOptions();if(o&&typeof o.timeZone==='string')z=o.timeZone;}}var bootDate;var snapshot={url:String(l.href||''),ua:u,browserMajor:(u.match(new RegExp('(?:Chrome|Firefox|Version|Edg)/([0-9]+)'))||[])[1]||'',language:String(v.language||''),timezoneOffset:(bootDate=new Date()).getTimezoneOffset(),timeZone:z,viewport:{width:Number(w.innerWidth)||0,height:Number(w.innerHeight)||0},dpr:Number(w.devicePixelRatio)||1,prefersDark:q('(prefers-color-scheme: dark)'),prefersReducedMotion:q('(prefers-reduced-motion: reduce)'),buildId:hy?.buildId||'',assignment:hy?.assignment||{},traceparent:String(t?.content||'')};var dark=snapshot.prefersDark,color=dark?2:0,ref='';if(!dark){try{if(q('(prefers-color-scheme: light)'))color=1;}catch(e){}}try{var r=d&&d.referrer;if(typeof r==='string'&&r){var U=w.URL;if(typeof U==='function'){var origin=new U(r).origin;if(typeof origin==='string')ref=origin;}}}catch(e){}snapshot.colorScheme=color;snapshot.referrerOrigin=ref;var epoch=null;try{var getTime=bootDate&&bootDate.getTime;if(typeof getTime==='function'){var value=getTime.call(bootDate);if(typeof value==='number'&&Number.isFinite(value))epoch=value;}}catch(e){}snapshot.bootDateEpochMs=epoch;return snapshot;}})(#,#,#))", tags: [RawNondet].}
+  proc rawRead(name, arg: cstring; el: JsObject): cstring {.importjs: "JSON.stringify((function(n,a,e){switch(n){case 'storageGet':return localStorage.getItem(a);case 'cookieGet':return document.cookie;case 'location':return window.location.pathname;case 'measure':var r=e.getBoundingClientRect();return {x:r.x,y:r.y,width:r.width,height:r.height,top:r.top,right:r.right,bottom:r.bottom,left:r.left};case 'clientSize':return {width:e.clientWidth,height:e.clientHeight};case 'viewport':return {x:0,y:0,width:innerWidth,height:innerHeight};case 'matchMedia':return matchMedia(a).matches;case 'env':var w=window,l=w.location||{},v=w.navigator||{},d=w.document,u=String(v.userAgent||''),hy=globalThis['_'+String.fromCharCode(36)+'HY'],q=function(m){return typeof w.matchMedia==='function'&&w.matchMedia(m)?.matches===true;},t=d&&typeof d.querySelector==='function'?d.querySelector('meta[name=traceparent]'):null,z='',i=w.Intl;if(i&&typeof i.DateTimeFormat==='function'){var f=i.DateTimeFormat();if(f&&typeof f.resolvedOptions==='function'){var o=f.resolvedOptions();if(o&&typeof o.timeZone==='string')z=o.timeZone;}}var bootDate;var snapshot={url:String(l.href||''),ua:u,browserMajor:(u.match(new RegExp('(?:Chrome|Firefox|Version|Edg)/([0-9]+)'))||[])[1]||'',language:String(v.language||''),timezoneOffset:(bootDate=new Date()).getTimezoneOffset(),timeZone:z,viewport:{width:Number(w.innerWidth)||0,height:Number(w.innerHeight)||0},dpr:Number(w.devicePixelRatio)||1,prefersDark:q('(prefers-color-scheme: dark)'),prefersReducedMotion:q('(prefers-reduced-motion: reduce)'),buildId:hy?.buildId||'',assignment:hy?.assignment||{},traceparent:String(t?.content||'')};var dark=snapshot.prefersDark,color=dark?2:0,ref='';if(!dark){try{if(q('(prefers-color-scheme: light)'))color=1;}catch(e){}}try{var r=d&&d.referrer;if(typeof r==='string'&&r){var U=w.URL;if(typeof U==='function'){var origin=new U(r).origin;if(typeof origin==='string')ref=origin;}}}catch(e){}snapshot.colorScheme=color;snapshot.referrerOrigin=ref;var epoch=null;try{var getTime=bootDate&&bootDate.getTime;if(typeof getTime==='function'){var value=getTime.call(bootDate);if(typeof value==='number'&&Number.isFinite(value))epoch=value;}}catch(e){}snapshot.bootDateEpochMs=epoch;return snapshot;}})(#,#,#))", tags: [RawNondet].}
   proc rawStorageWrite(key, value: cstring) {.importjs: "localStorage.setItem(#,#)", tags: [RawNondet].}
   # Catch metadata failures only: an unsuccessful mutation keeps its original
   # exception and must not query location. Partial hosts can mutate history
@@ -425,6 +429,8 @@ proc replaceState*(url: string) {.tags: [DomEventEffect].} =
       discard historyObservation("replaceState", url)
 proc asRect(value: JsonNode): Rect =
   Rect(x: value["x"].getFloat(), y: value["y"].getFloat(), width: value["width"].getFloat(), height: value["height"].getFloat())
+proc asClientSize(value: JsonNode): ClientSize =
+  ClientSize(width: value["width"].getInt(), height: value["height"].getInt())
 proc viewport*(): Rect {.tags: [LayoutEffect].} =
   {.cast(tags: []).}:
     note("viewport")
@@ -450,6 +456,43 @@ else:
       refuseReadReplay(currentClock, "measure")
       note("measure")
       asRect(readValue("measure"))
+
+when defined(js):
+  proc clientSize*(el: JsObject): ClientSize {.tags: [LayoutEffect].} =
+    ## The element's clientWidth/clientHeight, recorded and replayed exactly
+    ## like measure. Fit depends on this box, not on the bounding rectangle.
+    {.cast(tags: []).}:
+      when defined(isonimInternalReplayReads):
+        if currentClock.isReadReplay:
+          note("clientSize")
+          return asClientSize(readReplayClientSize(currentClock, el))
+      note("clientSize")
+      let b = backend()
+      if b.scripted: return asClientSize(b.read("clientSize"))
+      asClientSize(parseJson($rawRead("clientSize", "", el)))
+else:
+  proc clientSize*(el: pointer): ClientSize {.tags: [LayoutEffect].} =
+    {.cast(tags: []).}:
+      refuseReadReplay(currentClock, "clientSize")
+      note("clientSize")
+      asClientSize(readValue("clientSize"))
+when defined(js):
+  # The pointer coordinates a handler reads from its event. They are the values
+  # the listener records in the event payload (``isonimEventSnapshot``): the
+  # snapshot of a replayed event first, else the event itself. They are event
+  # data, not layout, so they have no seam of their own and no native geometry
+  # read. Lint-exempt with the rest of this framework backend.
+  proc rawRecordedClientX(ev: JsObject): float64 {.importjs: "(function(e){var o=e.isonimReplayOf||e;var s=e.isonimSnapshot||o;return Number(s.clientX)||0;})(#)", tags: [RawNondet].}
+  proc rawRecordedClientY(ev: JsObject): float64 {.importjs: "(function(e){var o=e.isonimReplayOf||e;var s=e.isonimSnapshot||o;return Number(s.clientY)||0;})(#)", tags: [RawNondet].}
+  proc recordedClientX*(ev: JsObject): float64 {.tags: [DomEventEffect].} =
+    ## The ``clientX`` of the event the listener recorded for this handler call.
+    {.cast(tags: []).}:
+      rawRecordedClientX(ev)
+  proc recordedClientY*(ev: JsObject): float64 {.tags: [DomEventEffect].} =
+    ## The ``clientY`` of the event the listener recorded for this handler call.
+    {.cast(tags: []).}:
+      rawRecordedClientY(ev)
+
 proc env*(): JsonNode {.tags: [DomEventEffect].} =
   {.cast(tags: []).}:
     note("env")
@@ -586,7 +629,7 @@ when defined(js):
     if (!entries) isonimListeners.set(node, entries = []);
     const prior = entries.find(e => e.type === type && e.handler === handler && e.capture === capture);
     if (prior) return prior.dispose;
-    const entry = {type, handler, capture, targetIid: node === window ? 'win' : node === document ? 'doc' : node.getAttribute('data-iid') || ''};
+    const entry = {type, handler, capture, targetIid: node === window ? 'win' : node === document ? 'doc' : typeof node.getAttribute === 'function' ? node.getAttribute('data-iid') || '' : ''};
     entry.wrapped = function(ev) {
       const seq = nextSequence();
       const hook = isonimListenerHook;

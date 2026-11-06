@@ -1,5 +1,13 @@
 ## Scripted boundaries make nondeterministic values reproducible. Real timers
 ## still run on the actual event loop; native browser-only seams must reject.
+## The clientSize seam is proved in three places: the scripted read returns the
+## logged width and height (the scripted-and-seamTable coverage check), native
+## calls reject, and in Chromium it returns the element's clientWidth and
+## clientHeight, not its bounding rectangle (the scrollbar gutter is excluded).
+## Its replay path is covered by tests/test_replay_client_size.nim, run by
+## tools/test_replay_reads.py against a checked fake of the owner cursor. No
+## owner harness covers it: the measure owner harnesses need CT_ARTIFACT, and
+## none is written for clientSize.
 {.define: isonimNondetCoverage.}
 import std/[unittest, json, times, monotimes, tables, strutils, options]
 import nim_everywhere/platform
@@ -134,6 +142,7 @@ suite "nondeterminism boundaries":
       expect ValueError: storageSet("key", "value")
       expect ValueError: discard cookieGet()
       expect ValueError: discard measure(nil)
+      expect ValueError: discard clientSize(nil)
       expect ValueError: discard viewport()
       expect ValueError: discard matchMedia("(min-width: 1px)")
       expect ValueError: discard location()
@@ -176,6 +185,7 @@ suite "nondeterminism boundaries":
     b.script("matchMedia", @[%true])
     b.script("viewport", @[%*{"x": 0, "y": 0, "width": 800, "height": 600}])
     b.script("measure", @[%*{"x": 1, "y": 2, "width": 3, "height": 4}])
+    b.script("clientSize", @[%*{"width": 640, "height": 480}])
     b.script("env", @[%*{"language": "bg"}])
     b.script("randomUuid", @[%"00000000-0000-4000-8000-000000000001"])
     check nondet.now().ticks == 0
@@ -195,6 +205,9 @@ suite "nondeterminism boundaries":
     check matchMedia("q")
     check viewport().width == 800
     check measure(nil).height == 4
+    let scriptedClient = clientSize(nil)
+    check scriptedClient.width == 640
+    check scriptedClient.height == 480
     check env()["language"].getStr() == "bg"
     check env()["language"].getStr() == "bg"
     check env() == %*{"language": "bg"} # Explicit scripted JSON stays exact.
@@ -310,6 +323,18 @@ when defined(js):
     doAssert actual["x"].getFloat() != 11.375
     doAssert actual["width"].getFloat() != 23.25
     echo "eight-field-browser-rectangle: PASS"
+    # clientSize is the layout box (clientWidth/clientHeight), never the rotated
+    # bounding rectangle: it must match the platform client box and must not
+    # consult getBoundingClientRect at all.
+    proc clientBox(el: JsObject): cstring {.importjs: "(function(e){return JSON.stringify({width:e.clientWidth,height:e.clientHeight});})(#)".}
+    resetRectCalls()
+    let size = clientSize(el)
+    doAssert rectCalls() == 0, "clientSize must not read the bounding rectangle"
+    let platformSize = parseJson($clientBox(el))
+    doAssert size.width == platformSize["width"].getInt(), "clientSize width differs from clientWidth"
+    doAssert size.height == platformSize["height"].getInt(), "clientSize height differs from clientHeight"
+    doAssert float(size.width) != publicActual["width"].getFloat(), "clientSize must not be the bounding width"
+    echo "client-size-browser-box: PASS"
     var invalidRejected = false
     try: discard measure(nil)
     except: invalidRejected = true

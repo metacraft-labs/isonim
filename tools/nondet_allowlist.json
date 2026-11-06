@@ -128,8 +128,8 @@
   {
     "path": "isonim/src/isonim/editor/streaming_preview.nim",
     "api": "layout read",
-    "count": 10,
-    "reason": "Editor remote-preview adapter: WebSocket video/control bridge, decoder timing and canvas input projection. Existing native scroll/client/offset geometry; not represented by the Rect seam and not claimed replayable."
+    "count": 9,
+    "reason": "Editor remote-preview adapter: WebSocket video/control bridge, decoder timing and canvas input projection. Existing native scroll/client/offset geometry; not represented by the Rect seam and not claimed replayable. PSZ-M3 seam fix, 2026-11-06: the two pickFontSizeJs client-size reads (base lines 2550-2551) now go through nondet.clientSize, so the raw count is 9. At 21911a9e the file had 11 raw matches while this entry said 10, so the entry was already one short before that fix."
   },
   {
     "path": "isonim/src/isonim/editor/streaming_preview.nim",

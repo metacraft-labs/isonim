@@ -4273,11 +4273,9 @@ proc focusPreviewNode*[E](node: E) =
   ## its display change. The focus is deferred, because a node that was hidden a
   ## moment ago takes focus only once it is displayed.
   when isDomViewHost(E):
-    {.emit: ["""
-      (function (node) {
-        if (!node) return;
-        setTimeout(function () { if (node.focus) node.focus({ preventScroll: true }); }, 0);
-      })(""", node, ");"].}
+    # The deferred focus is a scheduled callback; page_preview owns the nondet
+    # timer seam it goes through.
+    previewFocusLater(node)
   else:
     discard
 
@@ -6250,14 +6248,25 @@ proc renderEditorShell*[R, E](r: R; vm: EditorVM;
       let setRevealed = proc(revealed: bool) {.closure.} =
         if capturedVm.previewFullScreenActive():
           capturedVm.setPreviewControlsRevealed(revealed)
+      # Listeners register through the nondet listen seam, which returns an
+      # idempotent disposer; the box reads go through the measure seam (both
+      # wrapped in page_preview.nim). The pointer arithmetic stays in the script.
+      # The pointer coordinates are the event payload the listener records; the
+      # frame's untransformed size is its client box. Neither is a layout read.
+      let listenOn = previewListenOn
+      let boxOf = previewBoxOf
+      let clientXOf = previewClientX
+      let clientYOf = previewClientY
+      let frameSizeOf = previewFrameClientSize
       {.emit: ["""
-        (function (center, host, pointerAt, setRevealed) {
+        (function (center, host, pointerAt, setRevealed, listenOn, boxOf, clientXOf, clientYOf, frameSizeOf) {
           if (!center || !host || center.__isonimFsBound) return;
           center.__isonimFsBound = true;
+          const disposers = [];
           const onMove = function (event) {
-            const rect = center.getBoundingClientRect();
-            pointerAt(Math.round(event.clientX - rect.left),
-                      Math.round(event.clientY - rect.top),
+            const rect = boxOf(center);
+            pointerAt(Math.round(clientXOf(event) - rect.x),
+                      Math.round(clientYOf(event) - rect.y),
                       Math.round(rect.width));
           };
           const onLeave = function () { setRevealed(false); };
@@ -6265,10 +6274,10 @@ proc renderEditorShell*[R, E](r: R; vm: EditorVM;
           const onFocusOut = function (event) {
             if (!host.contains(event.relatedTarget)) setRevealed(false);
           };
-          center.addEventListener('pointermove', onMove);
-          center.addEventListener('pointerleave', onLeave);
-          host.addEventListener('focusin', onFocusIn);
-          host.addEventListener('focusout', onFocusOut);
+          disposers.push(listenOn(center, 'pointermove', onMove));
+          disposers.push(listenOn(center, 'pointerleave', onLeave));
+          disposers.push(listenOn(host, 'focusin', onFocusIn));
+          disposers.push(listenOn(host, 'focusout', onFocusOut));
           // The device frame is an iframe. Pointer events over it never reach
           // this document, so the frame's own document is listened to as well.
           // It is same-origin (srcdoc), and its positions are mapped into the
@@ -6276,11 +6285,12 @@ proc renderEditorShell*[R, E](r: R; vm: EditorVM;
           // replaces its document, so the listener is bound again on ``load``.
           const frame = center.querySelector('[data-page-project-frame="true"]');
           const onFrameMove = function (event) {
-            const rect = frame.getBoundingClientRect();
-            const scale = frame.offsetWidth ? rect.width / frame.offsetWidth : 1;
-            const box = center.getBoundingClientRect();
-            pointerAt(Math.round(rect.left + event.clientX * scale - box.left),
-                      Math.round(rect.top + event.clientY * scale - box.top),
+            const rect = boxOf(frame);
+            const frameWidth = frameSizeOf(frame).width;
+            const scale = frameWidth ? rect.width / frameWidth : 1;
+            const box = boxOf(center);
+            pointerAt(Math.round(rect.x + clientXOf(event) * scale - box.x),
+                      Math.round(rect.y + clientYOf(event) * scale - box.y),
                       Math.round(box.width));
           };
           const bindFrame = function () {
@@ -6288,21 +6298,17 @@ proc renderEditorShell*[R, E](r: R; vm: EditorVM;
             try { doc = frame.contentDocument; } catch (e) { doc = null; }
             if (!doc || doc.__isonimFsBound) return;
             doc.__isonimFsBound = true;
-            doc.addEventListener('pointermove', onFrameMove);
+            listenOn(doc, 'pointermove', onFrameMove);
           };
           if (frame) {
-            frame.addEventListener('load', bindFrame);
+            disposers.push(listenOn(frame, 'load', bindFrame));
             bindFrame();
           }
           globalThis.__isonimViewCleanup(center, function () {
-            center.removeEventListener('pointermove', onMove);
-            center.removeEventListener('pointerleave', onLeave);
-            host.removeEventListener('focusin', onFocusIn);
-            host.removeEventListener('focusout', onFocusOut);
-            if (frame) frame.removeEventListener('load', bindFrame);
+            disposers.forEach(function (dispose) { dispose(); });
           });
         })(""", centerColumn, ", ", fullScreenControlsEl, ", ", pointerAt, ", ",
-        setRevealed, ");"].}
+        setRevealed, ", ", listenOn, ", ", boxOf, ", ", clientXOf, ", ", clientYOf, ", ", frameSizeOf, ");"].}
 
   block:
     let capturedVm = vm

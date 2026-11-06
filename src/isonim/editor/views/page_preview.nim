@@ -4,7 +4,8 @@ import isonim/editor/views/view_lifecycle
 ## Renders project-owned preview documents in an editor-owned responsive frame.
 
 import std/math
-import isonim/core/[computation, signals]
+import isonim/core/[computation, signals, owner]
+import isonim/core/nondet as nondet
 import isonim/dsl/ui
 import isonim/editor/preview_identity
 import isonim/editor/preview_zoom
@@ -13,6 +14,51 @@ import isonim/editor/viewmodels
 import isonim/editor/streaming_preview
 import isonim/editor/views/canvas_mount
 import isonim/editor/views/component_edit  # editablePreviewDocument (edit overlay)
+
+when defined(js):
+  import std/jsffi as jsffi
+  proc domWindow(): jsffi.JsObject =
+    ## The browser window: the target of the preview's resize listener.
+    {.emit: [result, " = window;"].}
+  # The shell's full-screen listeners, box reads and deferred focus go through
+  # the nondet seams here. The shell names no JS type of its own, so its
+  # imports stay as they were.
+  proc previewListenOn*(node: jsffi.JsObject; event: cstring;
+      handler: proc(ev: jsffi.JsObject)): nondet.ListenerDisposer =
+    ## The listen seam; the returned disposer removes the registration. It is
+    ## registered with no owner: the shell's per-element cleanup removes these
+    ## listeners, as it did for the raw registrations, and an owner that is
+    ## disposed while the element stays must not strip them. The event name is
+    ## a cstring because a captured Nim string reaches the listener encoded.
+    var disposer: nondet.ListenerDisposer
+    runWithOwner(nil, proc() =
+      disposer = nondet.listen[jsffi.JsObject](node, $event, handler))
+    disposer
+  proc previewBoxOf*(el: jsffi.JsObject): nondet.Rect =
+    ## The measure seam: the element's bounding rectangle.
+    nondet.measure(el)
+  proc previewClientX*(ev: jsffi.JsObject): float64 =
+    ## The pointer's clientX as the listener recorded it in the event payload.
+    nondet.recordedClientX(ev)
+  proc previewClientY*(ev: jsffi.JsObject): float64 =
+    ## The pointer's clientY as the listener recorded it in the event payload.
+    nondet.recordedClientY(ev)
+  proc previewFrameClientSize*(el: jsffi.JsObject): nondet.ClientSize =
+    ## The untransformed layout size of the frame: its client box. The iframe is
+    ## styled `border: 0` and has no padding (`border` is a style in the DSL,
+    ## dsl/transform.nim), so the client box equals the border box that
+    ## offsetWidth reports. Transforms on ancestors do not change either one.
+    nondet.clientSize(el)
+  proc previewFocusLater*[E](node: E) =
+    ## Focuses ``node`` on a later timer, so a node that was hidden a moment ago
+    ## takes focus once it is displayed. The timer is the nondet timer seam.
+    let target = cast[jsffi.JsObject](node)
+    discard nondet.scheduleAt(0, proc() =
+      {.emit: ["""
+        (function (node) {
+          if (node && node.focus) node.focus({ preventScroll: true });
+        })(""", target, ");"].}
+    )
 
 const
   bgBase = "#0B1120"
@@ -163,24 +209,30 @@ proc renderPagePreview*[R, E](r: R; vm: EditorVM): E =
   # a zoomed frame does not feed back into its own fit. Observed like the
   # component-edit fit (component_edit.nim): a resize refits, and a write
   # happens only when the box actually changed.
-  let reportPreviewArea = proc(width, height: int) =
-    vm.setPreviewArea(width, height)
+  # The client box is read through the nondet client-size seam, and the window
+  # resize fallback registers through nondet.listen, so both are recorded.
   when isDomViewHost(E):
+    let previewAreaHost = cast[jsffi.JsObject](frameHostNode)
+    let reportPreviewArea = proc() =
+      let size = nondet.clientSize(previewAreaHost)
+      vm.setPreviewArea(size.width, size.height)
+    let observeResize = proc(handler: proc()): nondet.ListenerDisposer =
+      previewListenOn(domWindow(), "resize", proc(ev: jsffi.JsObject) = handler())
     {.emit: ["""
-      (function (host, report) {
+      (function (host, report, observeWindow) {
         if (!host || host.__isonimPreviewAreaInstalled) return;
         host.__isonimPreviewAreaInstalled = true;
-        const apply = function () { report(host.clientWidth, host.clientHeight); };
+        const apply = function () { report(); };
         if (typeof ResizeObserver !== 'undefined') {
           const observer = new ResizeObserver(apply);
           observer.observe(host);
           globalThis.__isonimViewCleanup(host, () => observer.disconnect());
         } else {
-          window.addEventListener('resize', apply);
-          globalThis.__isonimViewCleanup(host, () => window.removeEventListener('resize', apply));
+          const dispose = observeWindow(apply);
+          globalThis.__isonimViewCleanup(host, () => dispose());
         }
         apply();
-      })(""", frameHostNode, ", ", reportPreviewArea, ");"].}
+      })(""", frameHostNode, ", ", reportPreviewArea, ", ", observeResize, ");"].}
   # M-EVP-13: breadcrumb sits in the host scroll region directly below
   # the device frame so the canvas selection's componentPath is always
   # readable, even when the device frame is sized to a small viewport

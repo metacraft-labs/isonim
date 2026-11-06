@@ -219,6 +219,7 @@ when defined(js) and defined(isonimInternalReplayReads):
     proc measureIid(el: JsObject): cstring {.importjs: "(function(e){if(typeof Element==='undefined'||!(e instanceof Element))throw new TypeError('internal read Replay does not support measure: requires a registered element');var iid=e.getAttribute('data-iid');if(typeof iid!=='string'||!iid)throw new TypeError('internal read Replay does not support measure: requires a stable iid');return iid;})(#)".}
     proc sameElement(el: JsObject; resolved: JsObject): bool {.importjs: "(# === #)".}
     proc measureRead(cursor: JsObject; iid: cstring): cstring {.importjs: "JSON.stringify(JSON.parse(#.next('LayoutRead',{target:'iid:'+#,prop:'getBoundingClientRect'}).value))".}
+    proc clientSizeRead(cursor: JsObject; iid: cstring): cstring {.importjs: "JSON.stringify(JSON.parse(#.next('LayoutRead',{target:'iid:'+#,prop:'clientSize'}).value))".}
 
   proc readReplayMeasure*(clock: ClockBase; el: JsObject): JsonNode =
     ## Trust the existing registered node identity, never an attribute alone.
@@ -231,3 +232,14 @@ when defined(js) and defined(isonimInternalReplayReads):
       parseJson($measureRead(ReadReplayClock(clock).cursor, iid))
     else:
       raise newException(ValueError, "internal read Replay does not support measure without stable ids")
+
+  proc readReplayClientSize*(clock: ClockBase; el: JsObject): JsonNode =
+    ## Same registered-iid resolution as measure. The owner's LayoutRead names
+    ## the client-size property, so the log answers only this read.
+    when defined(isonimStableIds):
+      let iid = measureIid(el)
+      if not sameElement(el, resolveIidLookup(iid)):
+        raise newException(ValueError, "internal read Replay does not support clientSize: requires the registered iid element")
+      parseJson($clientSizeRead(ReadReplayClock(clock).cursor, iid))
+    else:
+      raise newException(ValueError, "internal read Replay does not support clientSize without stable ids")

@@ -2,6 +2,7 @@
 """Artifact-free custom-clock compatibility; real owner gate is separate."""
 from pathlib import Path
 import subprocess
+import sys
 
 root = Path(__file__).resolve().parent.parent
 for target, flags, suffix in [("c", [], "native"), ("js", ["-d:nodejs"], "js"), ("js", ["-d:nodejs", "-d:isonimInternalReplayReads"], "internal-js"), ("js", ["-d:nodejs", "-d:isonimInternalReplayReads", "-d:isonimStableIds"], "internal-stable-js")]:
@@ -37,3 +38,32 @@ throw new Error('nil inverse escaped exact predicate oracle');"""
     print(result.stderr,end="")
     assert result.returncode==7,"nil inverse failed wrong typed oracle"
     print("nil-check restoration: REJECTED by exact typed predicate oracle")
+
+# clientSize record/replay (tests/test_replay_client_size.nim) against a checked
+# fake owner cursor. The normal run must pass. The inverse makes replay ask the
+# cursor for getBoundingClientRect instead of clientSize; the same test must
+# then fail, or it does not prove the clientSize property is the one replayed.
+client_size_flags = ["-d:nodejs", "-d:isonimInternalReplayReads", "-d:isonimStableIds"]
+client_size_test = root / "tests/test_replay_client_size.nim"
+client_size_output = root / "build/replay-client-size.js"
+subprocess.run(["nim", "js", *client_size_flags, "--nimcache:" + str(root / "build/nimcache/replay-client-size"), "--out:" + str(client_size_output), str(client_size_test)], cwd=root, check=True)
+subprocess.run([sys.executable, str(root / "tools/run_nim_js_test.py"), str(client_size_output)], cwd=root, check=True)
+import tempfile as _tempfile, shutil as _shutil
+with _tempfile.TemporaryDirectory(prefix="isonim-client-size-inverse-") as _directory:
+    _tmp = Path(_directory)
+    _shutil.copytree(root / "src", _tmp / "src")
+    _source = _tmp / "src/isonim/core/private/replay_reads.nim"
+    _code = _source.read_text()
+    _needle = "prop:'clientSize'}"
+    assert _code.count(_needle) == 1, "clientSize replay read must name one property"
+    _source.write_text(_code.replace(_needle, "prop:'getBoundingClientRect'}"))
+    # The fixture is compiled outside the checkout: tests/config.nims would put the
+    # real src ahead of --path and the mutation would never be built.
+    _fixture = _tmp / "client_size_oracle.nim"
+    _shutil.copyfile(client_size_test, _fixture)
+    _inverse = root / "build/replay-client-size-inverse.js"
+    subprocess.run(["nim", "js", *client_size_flags, "--path:" + str(_tmp / "src"), "--path:" + str(root.parent / "nim-everywhere/src"), "--nimcache:" + str(root / "build/nimcache/replay-client-size-inverse"), "--out:" + str(_inverse), str(_fixture)], cwd=root, check=True)
+    _result = subprocess.run(["node", str(_inverse)], cwd=root, capture_output=True, text=True)
+    _text = _result.stdout + _result.stderr
+    assert _result.returncode != 0 or "[FAILED]" in _text or "Check failed" in _text, "bounding-box replay was not rejected"
+    print("clientSize replay inverse (getBoundingClientRect): REJECTED, exit", _result.returncode)

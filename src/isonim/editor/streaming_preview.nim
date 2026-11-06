@@ -84,6 +84,7 @@ when defined(js):
   import isonim/editor/vendor/xterm as xterm_lib
 
 import isonim/core/[signals, computation]
+import isonim/core/nondet as nondet
 import isonim/editor/types
 import isonim/editor/preview_canvas
 import isonim_render_serve
@@ -2441,8 +2442,11 @@ when defined(js):
     # render a legible cell — see M-EVP-14 Wave-X (X-3 fix) note
     # below.
     proc pickFontSize(): int =
-      let w = host.clientWidth
-      let h = host.clientHeight
+      # The client box through the nondet client-size seam (the same read the
+      # recorded and replayed preview fit uses), not a raw DOM read.
+      let size = nondet.clientSize(cast[JsObject](host))
+      let w = size.width
+      let h = size.height
       if w <= 0 or h <= 0:
         return 14
       let fw = w.float / (cols.float * 0.6)
@@ -2488,8 +2492,12 @@ when defined(js):
     # canvas is not bilinear-scaled in steady state; we keep the
     # pixelated cascade as a guard against future code paths that
     # resize the host without re-fitting the font.
+    # The fit's client box comes from the nondet client-size seam, handed to the
+    # emitted script as a callable so the script never reads clientWidth itself.
+    let fitClientSize = proc(): nondet.ClientSize =
+      nondet.clientSize(cast[JsObject](host))
     {.emit: ["""
-      (function (host, url, cols, rows, dispatchMeta, onClick, onHover, onWsOpen, term, initialFontSize, fixedFontSize) {
+      (function (host, url, cols, rows, dispatchMeta, onClick, onHover, onWsOpen, term, initialFontSize, fixedFontSize, fitClientSize) {
         try {
           if (!document.getElementById('__isonim-tui-pixelated-style')) {
             var styleEl = document.createElement('style');
@@ -2547,8 +2555,11 @@ when defined(js):
         function pickFontSizeJs() {
           // PSZ-M3: a fixed font never follows the host's size.
           if (fixedFontSize > 0) return fixedFontSize;
-          var w = host.clientWidth || host.getBoundingClientRect().width || 0;
-          var h = host.clientHeight || host.getBoundingClientRect().height || 0;
+          // The client box through the seam; the bounding rectangle stays the
+          // fallback for a host that has not laid out yet, as before.
+          var size = fitClientSize();
+          var w = size.width || host.getBoundingClientRect().width || 0;
+          var h = size.height || host.getBoundingClientRect().height || 0;
           if (w <= 0 || h <= 0) return 14;
           var fw = w / (cols * 0.6);
           var fh = h / (rows * 1.18);
@@ -2692,7 +2703,7 @@ when defined(js):
         """, socket, """ = ws;
       })(""", host, ", ", bridgeUrl.cstring, ", ", cols, ", ", rows, ", ",
        dispatchMeta, ", ", onClick, ", ", onHover, ", ", onWsOpen, ", ",
-       cast[JsObject](term), ", ", initialFontSize, ", ", fixedFontSize, """);
+       cast[JsObject](term), ", ", initialFontSize, ", ", fixedFontSize, ", ", fitClientSize, """);
     """].}
     TuiTerminalHandle(socket: socket, host: host, term: term,
                       url: bridgeUrl)
