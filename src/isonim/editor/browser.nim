@@ -119,7 +119,9 @@ proc injectEditorStyles*() =
     }
     @container preview-chrome (max-width: 640px) {
       [data-preview-viewport-strip-host] { display: none !important; }
-      [data-preview-viewport-current] { display: inline !important; }
+      /* PSZ-M3: the current size's label truncates with an ellipsis when the
+         chrome bar is narrow, so it never runs under the zoom trough. */
+      [data-preview-viewport-current] { display: inline-block !important; min-width: 0 !important; max-width: 100%; overflow: hidden; text-overflow: ellipsis; vertical-align: middle; }
       [data-preview-viewport-overflow] { gap: 4px; }
       [data-preview-viewport-pinned-option="true"] { display: flex !important; }
     }

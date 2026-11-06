@@ -887,6 +887,25 @@ editor-build: editor-bake-briefs
     cp node_modules/fabric/dist/index.min.js build/editor/fabric.min.js
     cp node_modules/paper/dist/paper-core.min.js build/editor/paper-core.min.js
     cp node_modules/svgo/dist/svgo.browser.js build/editor/svgo.browser.js
+    # PSZ-M3: the TUI backend's terminal (xterm.js) and the spec pane's TipTap
+    # are the editor-vendor bundles, which index.html loads from vendor/. They
+    # come from the nix flake (.#editor-vendor). With nix on PATH the step is
+    # required: a failed nix build fails editor-build. Without nix it is skipped
+    # with a message, the editor still builds, and its TUI backend cannot attach
+    # (xterm is missing). ISONIM_EDITOR_VENDOR=required makes a missing nix an
+    # error too, for a build that serves the TUI backend.
+    if command -v nix >/dev/null 2>&1; then \
+     vendor_out=$(nix --extra-experimental-features 'nix-command flakes' build --no-link --print-out-paths .#editor-vendor) || { echo "editor-build: nix build .#editor-vendor failed" >&2; exit 1; }; \
+     mkdir -p build/editor/vendor && \
+     chmod -f u+w build/editor/vendor/* 2>/dev/null; \
+     cp -L "$vendor_out/tiptap.umd.js" build/editor/vendor/tiptap.umd.js && \
+     cp -L "$vendor_out/xterm.umd.js"  build/editor/vendor/xterm.umd.js && \
+     cp -L "$vendor_out/xterm.css"     build/editor/vendor/xterm.css; \
+    elif [ "${ISONIM_EDITOR_VENDOR:-}" = required ]; then \
+     echo "editor-build: nix is not on PATH, and ISONIM_EDITOR_VENDOR=required needs it for .#editor-vendor" >&2; exit 1; \
+    else \
+     echo "editor-build: nix is not on PATH; skipped build/editor/vendor (xterm.js, TipTap). The TUI backend's terminal cannot attach in this build. Set ISONIM_EDITOR_VENDOR=required to make this an error." >&2; \
+    fi
     @echo "Built: build/editor/ — open build/editor/index.html"
 
 # REV-M2: Run the brief-tab VM and source-scan tests.

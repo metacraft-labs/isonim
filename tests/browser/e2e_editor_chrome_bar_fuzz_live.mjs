@@ -112,7 +112,14 @@ async function ensureBrowser() {
     const m = await import("playwright");
     chromium = m.chromium;
   }
-  if (!browser) browser = await chromium.launch({ headless: true });
+  // PLAYWRIGHT_CHROMIUM_EXECUTABLE (this file's header) picks the browser; on
+  // NixOS Playwright's own download cannot start, so the system chromium is used.
+  if (!browser) {
+    browser = await chromium.launch({
+      headless: true,
+      executablePath: process.env.PLAYWRIGHT_CHROMIUM_EXECUTABLE || undefined,
+    });
+  }
   return browser;
 }
 

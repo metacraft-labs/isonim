@@ -32,6 +32,17 @@ const
   previewZoomSteps* = [0.25, 0.5, 0.75, 1.0, 1.25, 1.5, 2.0, 3.0, 4.0]
     ## The fixed levels that the zoom-out and zoom-in buttons move between.
 
+const
+  tuiCellFontSize* = 14.0
+    ## The font a cell viewport's grid is drawn at in the page preview (PSZ-M3,
+    ## spec "Cell frame (TUI)"). Fixed, so Fit scales the grid instead of
+    ## refitting the font to the pane.
+  tuiCellAdvanceEm* = 0.6
+    ## Cell width in em. The same metric the terminal host uses to fit its font
+    ## (``pickFontSize`` in streaming_preview.nim): ``0.6 * fontSize``.
+  tuiCellLineEm* = 1.18
+    ## Cell height in em. The terminal host's ``1.18 * fontSize`` line height.
+
 type
   PreviewZoomMode* = enum
     pzmFit    ## Scale the frame to fit the preview area, never above 100%.
@@ -47,6 +58,26 @@ type
     ## The preview area's client box in CSS pixels. ``0`` means the view has
     ## not measured it yet; Fit then shows 100% rather than guessing.
     width*, height*: int
+
+const
+  tuiCellBorderPx* = 1
+    ## The canvas wrapper's border on each side of a streamed frame
+    ## (canvas_mount.nim). A cell frame is its grid plus these borders.
+
+func tuiCellFrameSize*(cols, rows: int;
+    cellWidthPx: float = tuiCellAdvanceEm * tuiCellFontSize):
+    tuple[width, height: int] =
+  ## The pixel size of a cell grid's frame at 100% (PSZ-M3, spec "Cell frame
+  ## (TUI)"): the grid plus the wrapper's border on each side.
+  ##
+  ## ``cellWidthPx`` is the column width of the terminal font. The editor passes
+  ## its measured value (``EditorVM.previewCellWidth``, set from
+  ## ``ttyCellWidthPx`` in the browser), so the model and the page draw the same
+  ## frame. The default, the 0.6 em estimate, is used only by headless tests
+  ## that have no browser to measure; it gives 80x24 as 674x396, where the
+  ## measured browser font gives 677x396.
+  (width: round(cols.float * cellWidthPx).int + 2 * tuiCellBorderPx,
+   height: round(rows.float * tuiCellLineEm * tuiCellFontSize).int)
 
 func defaultPreviewZoom*(): PreviewZoom =
   PreviewZoom(mode: pzmFit, level: 1.0)

@@ -238,11 +238,15 @@ suite "Preview full screen (PSZ-M2)":
       # Full screen is refused where it is not offered.
       vm.setPreviewFullScreen(true)
       check not vm.previewFullScreen.val
-      # A non-web backend ends it as well.
+      # PSZ-M3 (amends M2): the streamed backends offer full screen on the page
+      # preview too, so a non-web backend no longer ends it.
       vm.activeView.val = evPagePreview
       vm.setPreviewFullScreen(true)
       check vm.previewFullScreen.val
       vm.platform.val = pbTui
+      check vm.previewFullScreen.val
+      # Leaving the page preview ends it (a stale flag cannot hide another view).
+      vm.activeView.val = evComponentDetail
       check not vm.previewFullScreen.val
       dispose()
 

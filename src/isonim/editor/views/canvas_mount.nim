@@ -29,6 +29,7 @@ import isonim/core/[computation, signals, owner]
 import isonim/dsl/ui
 import isonim/editor/types
 import isonim/editor/viewmodels
+import isonim/editor/preview_zoom
 import isonim/editor/streaming_preview
 
 when defined(js):
@@ -748,7 +749,11 @@ when defined(js):
 
   proc attachIfNeeded*(binding: BridgeBinding; vm: EditorVM;
                        canvas: Element; useCanvas: bool;
-                       onVectorDbl: proc(componentPath: string) = nil) =
+                       onVectorDbl: proc(componentPath: string) = nil;
+                       tuiCols: int = 0; tuiRows: int = 0) =
+    ## PSZ-M3: ``tuiCols`` and ``tuiRows`` > 0 attach the terminal at that cell
+    ## grid, with the fixed cell font (the page preview's cell frame). 0 keeps
+    ## the component views' grid and fit-to-host font.
     ## Idempotent attach/detach reconciliation. Called from the
     ## caller's main render-effect on every tick; detaches when
     ## ``useCanvas`` flips false, re-attaches when the backend
@@ -860,8 +865,15 @@ when defined(js):
             # ``pickFontSize`` helper picks the largest size that fits
             # 120 cols / 36 rows inside the host; with the host at
             # ~1080×720 a 9-px font fills ≥95 % of the pane).
-            binding.tuiHandle = attachTuiTerminalClient(
-              streaming, host, url, 120, 36, onOpen)
+            # PSZ-M3: a page preview passes its viewport's cell grid and the
+            # fixed cell font; the component views keep the legacy grid.
+            if tuiCols > 0 and tuiRows > 0:
+              binding.tuiHandle = attachTuiTerminalClient(
+                streaming, host, url, tuiCols, tuiRows, onOpen,
+                tuiCellFontSize.int)
+            else:
+              binding.tuiHandle = attachTuiTerminalClient(
+                streaming, host, url, 120, 36, onOpen)
           else:
             setCanvasHidden(canvas, false)
             if binding.tuiHost != nil:

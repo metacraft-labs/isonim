@@ -4360,8 +4360,9 @@ proc renderPreviewZoomCluster[R, E](r: R; vm: EditorVM): E =
   ## PSZ-M1: the preview zoom cluster, beside the viewport strip. ``Fit`` and
   ## ``100%`` pick the mode; ``−`` / readout / ``+`` step through the fixed
   ## levels in ``previewZoomSteps``. The cluster shows only where the zoom
-  ## applies: the web page preview. The storyboard keeps its own cluster in the
-  ## flow controls, and the other views and streamed backends have no zoom yet.
+  ## applies: the page preview on every backend (PSZ-M3). The storyboard keeps
+  ## its own cluster in the flow controls, and the component and foundations
+  ## views have no zoom yet (spec open decision D4).
   # The trough and the pill metrics match the viewport strip beside it (the
   # ChoiceGroup trough ``cgGroupBg`` #22232e, 22 px pills, 4 px radius, 500
   # weight, 600 when pressed), so the cluster reads as part of the same row.
@@ -4372,6 +4373,11 @@ proc renderPreviewZoomCluster[R, E](r: R; vm: EditorVM): E =
          display = "none", align_items = "center",
          gap = "4px", flex_shrink = "0",
          transition = "opacity 0.15s",
+         # PSZ-M3: pinned to the trailing edge of the scrolling chrome bar, so
+         # the readout and the zoom buttons stay in view when the bar's other
+         # controls overflow a narrow pane. The trough is opaque, so the
+         # controls scrolling beneath it do not show through.
+         position = "sticky", right = "0", z_index = "2",
          background_color = "#22232e", border_radius = "6px",
          padding = "2px")
   proc textControl(label, glyph: string; action: proc() {.closure.}): E =
@@ -4433,8 +4439,10 @@ proc renderPreviewZoomCluster[R, E](r: R; vm: EditorVM): E =
     let viewport = vm.viewport.val
     let zoom = vm.previewZoom.val
     let area = vm.previewArea.val
-    let scale = previewScale(zoom, previewViewportWidth(viewport),
-      previewViewportHeight(viewport), area)
+    # PSZ-M3: the readout is the scale of the frame, which for a cell viewport
+    # is its grid in pixels, not the cell count.
+    let (frameW, frameH) = previewFrameSize(viewport, vm.previewCellWidth.val)
+    let scale = previewScale(zoom, frameW, frameH, area)
     let fixedFullSize = zoom.mode == pzmFixed and zoom.level == 1.0
     r.setTextContent(readout, percentLabel(scale))
     # The pressed mode reads as a filled pill, like the selected segment of
@@ -4462,8 +4470,9 @@ proc renderPreviewZoomCluster[R, E](r: R; vm: EditorVM): E =
       if scale <= previewZoomSteps[0] + 1e-9: "true" else: "false")
     r.setAttribute(zoomInButton, "aria-disabled",
       if scale >= previewZoomSteps[^1] - 1e-9: "true" else: "false")
+    # PSZ-M3: the page preview on every backend (web and streamed).
     let shown = vm.activeView.val == evPagePreview and
-      vm.platform.val == pbWeb and vm.surfaceSig.val == sPreview
+      vm.surfaceSig.val == sPreview
     r.setStyle(group, "display", if shown: "inline-flex" else: "none")
     # PSZ-M2: in full screen the cluster floats in the corner and is see-through
     # until the pointer is in the reveal zone or focus is inside it. Keyboard
@@ -4785,13 +4794,16 @@ proc renderPreviewChromeBar*[R, E](r: R; vm: EditorVM;
   # Outer wrapper — the cluster surface the test harness resolves via
   # ``data-toolbar-cluster="viewport"``. Position: relative so the
   # popup can anchor against it.
+  # PSZ-M3: the cluster may shrink, so that at a narrow chrome bar the current
+  # size's label truncates with an ellipsis (browser.nim) rather than running
+  # under the sticky zoom trough, which is opaque and sits at the bar's edge.
   let viewportClusterWrapper = ui(r):
     tdiv(`data-edge-strip` = "viewport",
          `data-toolbar-cluster` = "viewport",
          `data-preview-edge-group` = "viewport",
          `data-preview-viewport-strip` = "true",
          display = "inline-flex", align_items = "center",
-         gap = "4px", flex_shrink = "0",
+         gap = "4px", flex_shrink = "1", min_width = "0",
          position = "relative")
 
   # Inner host — the strip (``mountSegmentedChoice`` mounts here). Kept
@@ -5184,14 +5196,17 @@ proc renderPreviewChromeBar*[R, E](r: R; vm: EditorVM;
   r.appendChild(toolbar, viewportClusterWrapper)
   # PSZ-M1: the zoom cluster sits right beside the viewport strip it shares a
   # meaning with (the frame's size and how it is shown).
-  let zoomCluster = renderPreviewZoomCluster[R, E](r, vm)
-  r.appendChild(toolbar, zoomCluster)
   # PSZ-M2: the full-screen button sits beside the zoom cluster, in the same
   # glyph style. It is shown wherever the cluster is shown.
   let fullScreenButton = chromeGlyphButton[R, E](r, "Full screen preview",
     "⛶", proc() = vm.setPreviewFullScreen(true))
   r.setAttribute(fullScreenButton, "data-preview-fullscreen-toggle", "true")
   r.appendChild(toolbar, fullScreenButton)
+  # PSZ-M3: the zoom cluster is the last control before the trailing spacer,
+  # and it is pinned to the bar's trailing edge (see renderPreviewZoomCluster).
+  # At a narrow pane the bar scrolls, so an unpinned readout went out of view.
+  let zoomCluster = renderPreviewZoomCluster[R, E](r, vm)
+  r.appendChild(toolbar, zoomCluster)
   createRenderEffect proc() =
     r.setStyle(fullScreenButton, "display",
       if vm.previewFullScreenShown(): "inline-flex" else: "none")

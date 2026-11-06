@@ -5,6 +5,7 @@
     <meta name="viewport" content="width=device-width, initial-scale=1" />
     <title>IsoNim Editor</title>
     <script src="https://cdn.tailwindcss.com"></script>
+    <link rel="stylesheet" href="vendor/xterm.css" />
     <style>
       *,
       *::before,
@@ -211,6 +212,10 @@
     <script src="fabric.min.js"></script>
     <script src="paper-core.min.js"></script>
     <script type="module" src="svgo.browser.js"></script>
+    <!-- PSZ-M3: the editor-vendor bundles, copied to build/editor/vendor by
+         `just editor-build`. xterm.js is the TUI backend's terminal. -->
+    <script src="vendor/xterm.umd.js"></script>
+    <script src="vendor/tiptap.umd.js"></script>
     <script src="editor.js"></script>
   </body>
 </html>

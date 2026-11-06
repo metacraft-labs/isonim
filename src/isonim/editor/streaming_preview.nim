@@ -2298,11 +2298,37 @@ when defined(js):
       term*: xterm_lib.XtermTerminalHandle
       url*: string
 
+  proc ttyCellWidthPx*(fontSize: int): float =
+    ## PSZ-M3: the width of one terminal column at ``fontSize`` in the terminal
+    ## font, measured the way xterm.js measures its own cell (a run of 32 "W"
+    ## glyphs, ``offsetWidth`` divided by 32, see xterm's CharSizeService). The
+    ## page preview sizes the cell frame from it, so the grid xterm draws
+    ## fits the frame exactly. The font the browser resolves is not always
+    ## 0.6 em wide, and xterm lays columns out in whole-pixel measures.
+    {.emit: [result, """ = (function (size) {
+        var s = document.createElement('span');
+        s.style.position = 'absolute';
+        s.style.visibility = 'hidden';
+        s.style.whiteSpace = 'pre';
+        s.style.fontKerning = 'none';
+        s.style.fontFamily = 'ui-monospace, SFMono-Regular, Menlo, monospace';
+        s.style.fontSize = size + 'px';
+        s.textContent = new Array(33).join('W');
+        document.body.appendChild(s);
+        var w = s.offsetWidth / 32;
+        document.body.removeChild(s);
+        return w;
+      })(""", fontSize, ");"].}
+
   proc attachTuiTerminalClient*(vm: StreamingPreviewVM; host: Element;
                                 bridgeUrl: string;
                                 cols: int = 80; rows: int = 24;
-                                onWsOpen: proc() = nil):
+                                onWsOpen: proc() = nil;
+                                fixedFontSize: int = 0):
                                 TuiTerminalHandle =
+    ## PSZ-M3: ``fixedFontSize`` > 0 draws the grid at that font and never
+    ## refits it to the host (the page preview's cell frame, spec "Cell frame
+    ## (TUI)"); 0 keeps the fit-to-host font the component views use.
     ## RS-M13: open a WS to ``bridgeUrl``, mount an xterm.js Terminal
     ## inside ``host``, and wire the D/M/P packet stream into
     ## ``vm`` + ``host``. D-packet payloads stream into ``term.write``;
@@ -2432,7 +2458,8 @@ when defined(js):
       # measured smaller (with min still respecting the 12-px floor).
       if fs < 12: fs = 12
       fs
-    let initialFontSize = pickFontSize()
+    let initialFontSize =
+      if fixedFontSize > 0: fixedFontSize else: pickFontSize()
     let opts = xterm_lib.newOptions()
     xterm_lib.setCols(opts, cols)
     xterm_lib.setRows(opts, rows)
@@ -2462,7 +2489,7 @@ when defined(js):
     # pixelated cascade as a guard against future code paths that
     # resize the host without re-fitting the font.
     {.emit: ["""
-      (function (host, url, cols, rows, dispatchMeta, onClick, onHover, onWsOpen, term, initialFontSize) {
+      (function (host, url, cols, rows, dispatchMeta, onClick, onHover, onWsOpen, term, initialFontSize, fixedFontSize) {
         try {
           if (!document.getElementById('__isonim-tui-pixelated-style')) {
             var styleEl = document.createElement('style');
@@ -2518,6 +2545,8 @@ when defined(js):
         var lastFontSize = initialFontSize;
         var refitPending = false;
         function pickFontSizeJs() {
+          // PSZ-M3: a fixed font never follows the host's size.
+          if (fixedFontSize > 0) return fixedFontSize;
           var w = host.clientWidth || host.getBoundingClientRect().width || 0;
           var h = host.clientHeight || host.getBoundingClientRect().height || 0;
           if (w <= 0 || h <= 0) return 14;
@@ -2645,15 +2674,41 @@ when defined(js):
           click: onClickEvt,
         };
         ws.__isonimTuiHost = host;
+        // PSZ-M3: the page preview gives the terminal its viewport's grid
+        // when the viewport changes. The grid is the xterm's own size; the
+        // host and the frame are sized by the Nim side.
+        host.__isonimTuiResize = function (newCols, newRows) {
+          try {
+            if (newCols > 0 && newRows > 0 &&
+                (newCols !== cols || newRows !== rows)) {
+              cols = newCols;
+              rows = newRows;
+              term.resize(newCols, newRows);
+            }
+          } catch (_) {}
+        };
         ws.__isonimTuiResizeObs = resizeObs;
         ws.__isonimTuiPixelatedObs = pixelatedObs;
         """, socket, """ = ws;
       })(""", host, ", ", bridgeUrl.cstring, ", ", cols, ", ", rows, ", ",
        dispatchMeta, ", ", onClick, ", ", onHover, ", ", onWsOpen, ", ",
-       cast[JsObject](term), ", ", initialFontSize, """);
+       cast[JsObject](term), ", ", initialFontSize, ", ", fixedFontSize, """);
     """].}
     TuiTerminalHandle(socket: socket, host: host, term: term,
                       url: bridgeUrl)
+
+  proc resizeTuiTerminalGrid*(host: Element; cols, rows: int) =
+    ## PSZ-M3: give an attached terminal the cell grid of its viewport. The
+    ## xterm grid changes; the host keeps its size, which the caller sets from
+    ## the same cell count (``previewFrameSize``). A host with no terminal is
+    ## ignored, so this is safe before the attach has run.
+    if host == nil: return
+    {.emit: ["""
+      (function (host, cols, rows) {
+        if (host && typeof host.__isonimTuiResize === 'function') {
+          host.__isonimTuiResize(cols, rows);
+        }
+      })(""", host, ", ", cols, ", ", rows, ");"].}
 
   proc isTuiBridgeOpen*(handle: TuiTerminalHandle): bool =
     if handle == nil or handle.socket == nil: return false

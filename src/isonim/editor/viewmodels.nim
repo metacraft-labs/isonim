@@ -488,6 +488,11 @@ type
     previewArea*: Signal[PreviewArea]
       ## PSZ-M1: the preview area's measured client box. The view reports it;
       ## Fit is recomputed from it, so a resize refits the frame.
+    previewCellWidth*: Signal[float]
+      ## PSZ-M3: the column width of a cell viewport's grid, in CSS pixels at
+      ## the preview font. The page sets it from the terminal font it measures
+      ## (``ttyCellWidthPx``); it starts at the 0.6 em estimate, which only a
+      ## headless test keeps. Every cell frame size reads this one value.
     previewFullScreen*: Signal[bool]
       ## PSZ-M2: the reviewer asked for full screen. Read from and written to
       ## the story URL (``fullscreen``). It takes effect only while the web page
@@ -1356,6 +1361,19 @@ func previewViewportWidth*(viewport: PreviewViewport): int =
 
 func previewViewportHeight*(viewport: PreviewViewport): int =
   viewport.height
+
+func previewFrameSize*(viewport: PreviewViewport;
+    cellWidthPx: float = tuiCellAdvanceEm * tuiCellFontSize):
+    tuple[width, height: int] =
+  ## The device frame's size in CSS pixels at 100% (PSZ-M3). A pixel viewport
+  ## is its own size. A cell viewport is its cell grid at the preview font plus
+  ## the frame border; ``cellWidthPx`` is the measured column width
+  ## (``EditorVM.previewCellWidth``). The 0.6 em default is the headless
+  ## estimate: an 80x24 frame is 674x396 there, 677x396 with the browser's font.
+  if viewport.isCells:
+    tuiCellFrameSize(viewport.width, viewport.height, cellWidthPx)
+  else:
+    (width: viewport.width, height: viewport.height)
 
 func previewViewportSlug*(viewport: PreviewViewport): string =
   if viewport.slug.len > 0: viewport.slug
@@ -3380,16 +3398,16 @@ proc setPreviewZoomLevel*(editor: EditorVM; level: float) =
 proc stepPreviewZoomBy*(editor: EditorVM; direction: int) =
   ## PSZ-M1: one zoom step in ``direction`` (> 0 in, < 0 out) from the scale now
   ## shown. The step list is ``previewZoomSteps`` in preview_zoom.nim.
-  let width = previewViewportWidth(editor.viewport.val)
-  let height = previewViewportHeight(editor.viewport.val)
+  let (width, height) = previewFrameSize(editor.viewport.val,
+    editor.previewCellWidth.val)
   editor.previewZoom.val = stepPreviewZoom(editor.previewZoom.val,
     width, height, editor.previewArea.val, direction)
 
 proc previewFullScreenShown*(editor: EditorVM): bool =
-  ## PSZ-M2: full screen is offered where the zoom cluster is: the web page
-  ## preview, with the preview surface (not Spec) showing.
-  editor.activeView.val == evPagePreview and editor.platform.val == pbWeb and
-    editor.surfaceSig.val == sPreview
+  ## PSZ-M2/M3: full screen is offered where the zoom cluster is: the page
+  ## preview on every backend (web and streamed, PSZ-M3), with the preview
+  ## surface (not Spec) showing.
+  editor.activeView.val == evPagePreview and editor.surfaceSig.val == sPreview
 
 proc previewFullScreenActive*(editor: EditorVM): bool =
   ## PSZ-M2: the screen is full screen now. The flag alone is not enough: a
@@ -14690,6 +14708,7 @@ proc createEditorVM*(): EditorVM =
   let viewport = createSignal(defaultViewport(pbWeb))
   let previewZoom = createSignal(defaultPreviewZoom())
   let previewArea = createSignal(PreviewArea())
+  let previewCellWidth = createSignal(tuiCellAdvanceEm * tuiCellFontSize)
   let previewFullScreen = createSignal(false)
   let previewControlsRevealed = createSignal(false)
   let responsiveBreakpoints = createSignal[seq[ResponsiveBreakpoint]](@[])
@@ -14821,6 +14840,7 @@ proc createEditorVM*(): EditorVM =
     viewport: viewport,
     previewZoom: previewZoom,
     previewArea: previewArea,
+    previewCellWidth: previewCellWidth,
     previewFullScreen: previewFullScreen,
     previewControlsRevealed: previewControlsRevealed,
     controlConnected: true,

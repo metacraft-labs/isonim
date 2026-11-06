@@ -37,10 +37,23 @@ proc vectorTargetDblclickHandler(vm: EditorVM; symbolName: string): proc() =
             return
           inc idx
 
+proc measurePreviewCellWidth*(vm: EditorVM) =
+  ## PSZ-M3: the single source of a cell frame's column width. In the browser it
+  ## is the terminal font's measured column width (``ttyCellWidthPx``), the width
+  ## xterm draws its columns at, so the grid fits the frame exactly. A headless
+  ## build has no font to measure and keeps the 0.6 em estimate. Every frame
+  ## size reads ``vm.previewCellWidth`` through ``previewFrameSize``.
+  when defined(js):
+    let measured = ttyCellWidthPx(tuiCellFontSize.int)
+    if measured > 0 and measured != vm.previewCellWidth.val:
+      vm.previewCellWidth.val = measured
+
 proc renderPagePreview*[R, E](r: R; vm: EditorVM): E =
   ## M-EVP-6: per-view inner toolbar removed. The canonical chrome bar
   ## lives in `renderPreviewChromeBar` above the view stack; the page
   ## preview body starts directly at the preview canvas.
+  # PSZ-M3: measure the terminal font before any frame size is read.
+  measurePreviewCellWidth(vm)
   let container = ui(r):
     tdiv(class = "editor-preview",
           `data-page-preview` = "true",
@@ -134,9 +147,16 @@ proc renderPagePreview*[R, E](r: R; vm: EditorVM): E =
   # to 80×24 px and make xterm.js unreadable. For those we fall back
   # to filling the preview pane (``flex: 1``).
   let pageCanvasMnt = renderCanvasMount[R, E](r, "data-page-project-canvas")
+  # PSZ-M3: the streamed canvas wrapper sits in the same zoom stage as the web
+  # frame, so one scale transform and one stage size serve both backends. The
+  # wrapper is absolutely placed at the stage's origin, as the device frame is.
   r.appendChild(zoomStage, frame)
+  r.appendChild(zoomStage, pageCanvasMnt.wrapper)
+  r.setStyle(pageCanvasMnt.wrapper, "position", "absolute")
+  r.setStyle(pageCanvasMnt.wrapper, "top", "0")
+  r.setStyle(pageCanvasMnt.wrapper, "left", "0")
+  r.setStyle(pageCanvasMnt.wrapper, "transform-origin", "0 0")
   r.appendChild(frameHostNode, zoomStage)
-  r.appendChild(frameHostNode, pageCanvasMnt.wrapper)
 
   # PSZ-M1: report the preview area's client box so Fit can be recomputed.
   # ``clientWidth``/``clientHeight`` are the layout box, not the scaled one, so
@@ -225,6 +245,9 @@ proc renderPagePreview*[R, E](r: R; vm: EditorVM): E =
     let viewport = vm.viewport.val
     let width = previewViewportWidth(viewport)
     let height = previewViewportHeight(viewport)
+    # PSZ-M3: the frame's CSS size at 100%. It differs from the viewport's own
+    # width and height only for a cell viewport, which is drawn as its grid.
+    let (frameW, frameH) = previewFrameSize(viewport, vm.previewCellWidth.val)
     let title =
       if preview.title.len > 0:
         preview.title
@@ -247,10 +270,10 @@ proc renderPagePreview*[R, E](r: R; vm: EditorVM): E =
     r.setTextContent(fallbackTitle, title)
     r.setTextContent(fallbackBody,
       if preview.bodyText.len > 0: preview.bodyText else: "Workspace page preview")
-    r.setStyle(deviceFrame, "width", $width & "px")
-    r.setStyle(deviceFrame, "height", $height & "px")
-    r.setStyle(deviceFrame, "min-width", $width & "px")
-    r.setStyle(deviceFrame, "min-height", $height & "px")
+    r.setStyle(deviceFrame, "width", $frameW & "px")
+    r.setStyle(deviceFrame, "height", $frameH & "px")
+    r.setStyle(deviceFrame, "min-width", $frameW & "px")
+    r.setStyle(deviceFrame, "min-height", $frameH & "px")
     let borderRadius =
       case viewport.kind
       of pvkDesktop, pvkLaptop, pvkWide, pvkUltrawide,
@@ -314,23 +337,29 @@ proc renderPagePreview*[R, E](r: R; vm: EditorVM): E =
       # wrapper to be readable — fall back to filling the preview
       # pane (the legacy ``canvasPaneEl`` behaviour) so xterm.js has
       # room to pick a usable font size.
-      if viewport.isCells:
-        r.setStyle(pageCanvasMnt.wrapper, "width", "100%")
-        r.setStyle(pageCanvasMnt.wrapper, "height", "100%")
-        r.setStyle(pageCanvasMnt.wrapper, "min-width", "320px")
-        r.setStyle(pageCanvasMnt.wrapper, "min-height", "320px")
-        r.setStyle(pageCanvasMnt.wrapper, "flex", "1 1 auto")
-        r.setStyle(pageCanvasMnt.wrapper, "border-radius", "8px")
-      else:
-        r.setStyle(pageCanvasMnt.wrapper, "width", $width & "px")
-        r.setStyle(pageCanvasMnt.wrapper, "height", $height & "px")
-        r.setStyle(pageCanvasMnt.wrapper, "min-width", $width & "px")
-        r.setStyle(pageCanvasMnt.wrapper, "min-height", $height & "px")
-        r.setStyle(pageCanvasMnt.wrapper, "flex", "0 0 auto")
-        r.setStyle(pageCanvasMnt.wrapper, "border-radius", borderRadius)
+      # PSZ-M3: every viewport now has a frame size at 100% (a cell viewport is
+      # its cell grid at the preview font, ``previewFrameSize``). The wrapper is
+      # that size; the zoom effect below scales it, so a TUI grid is no longer
+      # stretched to fill the pane.
+      r.setStyle(pageCanvasMnt.wrapper, "width", $frameW & "px")
+      r.setStyle(pageCanvasMnt.wrapper, "height", $frameH & "px")
+      r.setStyle(pageCanvasMnt.wrapper, "min-width", $frameW & "px")
+      r.setStyle(pageCanvasMnt.wrapper, "min-height", $frameH & "px")
+      r.setStyle(pageCanvasMnt.wrapper, "flex", "0 0 auto")
+      r.setStyle(pageCanvasMnt.wrapper, "border-radius",
+        if viewport.isCells: "8px" else: borderRadius)
 
     when isDomViewHost(E):
-      pageBridgeBinding.attachIfNeeded(vm, pageCanvasMnt.canvas, useCanvas)
+      # PSZ-M3: a cell viewport's terminal is attached at its grid, and resized
+      # to it on every viewport change (attach runs only on a backend change).
+      let cellGrid = useCanvas and viewport.isCells
+      pageBridgeBinding.attachIfNeeded(vm, pageCanvasMnt.canvas, useCanvas,
+        tuiCols = (if cellGrid: viewport.width else: 0),
+        tuiRows = (if cellGrid: viewport.height else: 0))
+      if cellGrid and vm.platform.val == pbTui and
+          pageBridgeBinding.tuiHost != nil:
+        resizeTuiTerminalGrid(pageBridgeBinding.tuiHost, viewport.width,
+          viewport.height)
       # VRS-M2: tell the launcher to re-render at the user-selected
       # viewport. The publisher closure (installed by
       # ``installStoryPublisher`` inside ``attachIfNeeded``) routes
@@ -351,25 +380,27 @@ proc renderPagePreview*[R, E](r: R; vm: EditorVM): E =
     let viewport = vm.viewport.val
     let zoom = vm.previewZoom.val
     let area = vm.previewArea.val
-    let width = previewViewportWidth(viewport)
-    let height = previewViewportHeight(viewport)
-    let scale = previewScale(zoom, width, height, area)
+    let (frameW, frameH) = previewFrameSize(viewport, vm.previewCellWidth.val)
+    let scale = previewScale(zoom, frameW, frameH, area)
     let useCanvas = vm.selectedStory.val.kind == skPage and
       vm.platform.val != pbWeb
-    r.setStyle(zoomStage, "display", if useCanvas: "none" else: "block")
-    # The host's 16px gutter is for the streamed canvas. A web frame is fitted
-    # to the host's full box with no margin (spec Preview-Sizing-And-Zoom, Fit
-    # area), so the gutter comes off the host while the web frame is shown;
-    # otherwise a Fit frame overflows the host by the gutter.
-    r.setStyle(frameHostNode, "padding", if useCanvas: "16px" else: "0")
+    # PSZ-M3: the stage holds whichever frame is shown (the web device frame or
+    # the streamed canvas wrapper), so the stage is always laid out and the
+    # frame that is hidden has ``display: none``.
+    r.setStyle(zoomStage, "display", "block")
+    # No gutter on either backend: a Fit frame touches the host's edges
+    # (spec Preview-Sizing-And-Zoom, Fit area; PSZ-M3 removes the streamed gutter).
+    r.setStyle(frameHostNode, "padding", "0")
     r.setStyle(zoomStage, "width",
-      $int(round(width.float * scale)) & "px")
+      $int(round(frameW.float * scale)) & "px")
     r.setStyle(zoomStage, "height",
-      $int(round(height.float * scale)) & "px")
-    # At 100% no transform is set, so the frame is drawn at its exact pixels.
-    r.setStyle(deviceFrame, "transform",
+      $int(round(frameH.float * scale)) & "px")
+    # The shown frame is scaled as a whole. At 100% no transform is set, so the
+    # frame is drawn at its exact pixels.
+    let shownFrame = if useCanvas: pageCanvasMnt.wrapper else: deviceFrame
+    r.setStyle(shownFrame, "transform",
       if scale == 1.0: "none" else: "scale(" & $scale & ")")
-    r.setAttribute(deviceFrame, "data-preview-zoom-scale", $scale)
+    r.setAttribute(shownFrame, "data-preview-zoom-scale", $scale)
 
   # M-EVP-13: overlay positioning effect — hover label, selection
   # outline, breadcrumb, edit-mode handles. Shared with component_detail
