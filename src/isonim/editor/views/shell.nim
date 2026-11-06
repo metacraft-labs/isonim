@@ -4334,19 +4334,24 @@ proc renderPreviewZoomCluster[R, E](r: R; vm: EditorVM): E =
   ## levels in ``previewZoomSteps``. The cluster shows only where the zoom
   ## applies: the web page preview. The storyboard keeps its own cluster in the
   ## flow controls, and the other views and streamed backends have no zoom yet.
+  # The trough and the pill metrics match the viewport strip beside it (the
+  # ChoiceGroup trough ``cgGroupBg`` #22232e, 22 px pills, 4 px radius, 500
+  # weight, 600 when pressed), so the cluster reads as part of the same row.
   let group = ui(r):
     tdiv(`data-preview-zoom-cluster` = "true",
          `data-toolbar-cluster` = "zoom",
          `data-preview-edge-group` = "zoom",
          display = "none", align_items = "center",
-         gap = "4px", flex_shrink = "0")
+         gap = "4px", flex_shrink = "0",
+         background_color = "#22232e", border_radius = "6px",
+         padding = "2px")
   proc textControl(label, glyph: string; action: proc() {.closure.}): E =
     result = ui(r):
       button(`type` = "button", tabindex = "0", `aria-label` = label,
            title = label, min_height = "22px", min_width = "30px",
            display = "inline-flex", align_items = "center",
-           justify_content = "center", padding = "2px 6px",
-           font_size = "11px", line_height = "1",
+           justify_content = "center", padding = "2px 10px",
+           font_size = "11px", font_weight = "500", line_height = "1",
            font_family = "inherit", color = textSecondary,
            background_color = "transparent",
            border = "1px solid transparent", border_radius = "4px",
@@ -4373,6 +4378,12 @@ proc renderPreviewZoomCluster[R, E](r: R; vm: EditorVM): E =
   let zoomInButton = chromeGlyphButton[R, E](r, "Zoom preview in", "+",
     proc() = vm.stepPreviewZoomBy(1))
   r.appendChild(group, zoomInButton)
+  # The glyph buttons keep the shared chrome-glyph hit area in width but ask
+  # for the 22 px pill height of their neighbours, so they do not push the
+  # trough taller than the pills need. Their 14 px glyph line box still makes
+  # them about 25 px tall, so the trough is a pixel taller than the strip's.
+  r.setStyle(zoomOutButton, "min-height", "22px")
+  r.setStyle(zoomInButton, "min-height", "22px")
 
   createRenderEffect proc() =
     let viewport = vm.viewport.val
@@ -4391,6 +4402,8 @@ proc renderPreviewZoomCluster[R, E](r: R; vm: EditorVM): E =
       if fitPressed: accent else: "transparent")
     r.setStyle(fitButton, "color",
       if fitPressed: "#FFFFFF" else: textSecondary)
+    r.setStyle(fitButton, "font-weight",
+      if fitPressed: "600" else: "500")
     r.setAttribute(fitButton, "data-preview-zoom-mode",
       if fitPressed: "fit" else: "fixed")
     r.setAttribute(actualButton, "aria-pressed",
@@ -4399,6 +4412,8 @@ proc renderPreviewZoomCluster[R, E](r: R; vm: EditorVM): E =
       if fixedFullSize: accent else: "transparent")
     r.setStyle(actualButton, "color",
       if fixedFullSize: "#FFFFFF" else: textSecondary)
+    r.setStyle(actualButton, "font-weight",
+      if fixedFullSize: "600" else: "500")
     r.setAttribute(zoomOutButton, "aria-disabled",
       if scale <= previewZoomSteps[0] + 1e-9: "true" else: "false")
     r.setAttribute(zoomInButton, "aria-disabled",
