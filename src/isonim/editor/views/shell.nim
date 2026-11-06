@@ -4378,12 +4378,15 @@ proc renderPreviewZoomCluster[R, E](r: R; vm: EditorVM): E =
   let zoomInButton = chromeGlyphButton[R, E](r, "Zoom preview in", "+",
     proc() = vm.stepPreviewZoomBy(1))
   r.appendChild(group, zoomInButton)
-  # The glyph buttons keep the shared chrome-glyph hit area in width but ask
-  # for the 22 px pill height of their neighbours, so they do not push the
-  # trough taller than the pills need. Their 14 px glyph line box still makes
-  # them about 25 px tall, so the trough is a pixel taller than the strip's.
-  r.setStyle(zoomOutButton, "min-height", "22px")
-  r.setStyle(zoomInButton, "min-height", "22px")
+  # The glyph buttons keep the shared chrome-glyph width but take the 22 px
+  # pill height of their neighbours. Without an explicit height their 14 px
+  # glyph line box made them 25 px tall and the trough 29 px, against the
+  # viewport strip's 26 px.
+  # ``min-height`` too: chromeGlyphButton declares a 24 px floor that would
+  # otherwise win over ``height``.
+  for glyph in [zoomOutButton, zoomInButton]:
+    r.setStyle(glyph, "min-height", "22px")
+    r.setStyle(glyph, "height", "22px")
 
   createRenderEffect proc() =
     let viewport = vm.viewport.val
