@@ -100,10 +100,14 @@ export async function closeBrowser() {
 
 // Opens a story in a fresh context whose window leaves room for the whole
 // 1440x900 Desktop frame at 100%, and waits until the story's document is in the
-// srcdoc iframe (the empty-state fallback is not accepted).
-export async function openStoryPreview(port, story, { suffix = "" } = {}) {
+// srcdoc iframe (the empty-state fallback is not accepted). ``viewport`` is the
+// window size; the default is the 2200x1300 window the M1/M2 files use.
+export async function openStoryPreview(port, story, {
+  suffix = "",
+  viewport = { width: 2200, height: 1300 },
+} = {}) {
   const b = await ensureBrowser();
-  const ctx = await b.newContext({ viewport: { width: 2200, height: 1300 } });
+  const ctx = await b.newContext({ viewport });
   const page = await ctx.newPage();
   await page.goto(`http://127.0.0.1:${port}${story}${suffix}`);
   await page.waitForSelector('[data-preview-zoom-cluster="true"]', {

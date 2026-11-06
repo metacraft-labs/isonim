@@ -2306,7 +2306,11 @@ when defined(js):
     ## page preview sizes the cell frame from it, so the grid xterm draws
     ## fits the frame exactly. The font the browser resolves is not always
     ## 0.6 em wide, and xterm lays columns out in whole-pixel measures.
+    ## A JS host with no document (headless node) has no font to measure, so
+    ## the result is 0: the caller keeps its 0.6 em estimate, as its comment
+    ## promises for a headless build.
     {.emit: [result, """ = (function (size) {
+        if (typeof document === 'undefined' || !document.body) return 0;
         var s = document.createElement('span');
         s.style.position = 'absolute';
         s.style.visibility = 'hidden';
