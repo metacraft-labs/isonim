@@ -860,7 +860,9 @@ dev-pg-stop:
     set -e
     export ISONIM_REVIEW_PGDATA="${ISONIM_REVIEW_PGDATA:-$PWD/.dev/postgres}"
     export ISONIM_REVIEW_PGPORT="${ISONIM_REVIEW_PGPORT:-5533}"
-    process-compose down -f process-compose.yaml
+    # `down` addresses the running server through its API port; unlike `up`
+    # it takes no `-f` (process-compose refuses the flag and stops nothing).
+    process-compose down
 
 # Full wipe: stop + rm -rf the project-local data dir.  Use when the
 # migration history is dirty or the cluster won't start.
@@ -868,7 +870,7 @@ dev-pg-reset:
     #!/usr/bin/env bash
     export ISONIM_REVIEW_PGDATA="${ISONIM_REVIEW_PGDATA:-$PWD/.dev/postgres}"
     export ISONIM_REVIEW_PGPORT="${ISONIM_REVIEW_PGPORT:-5533}"
-    -process-compose down -f process-compose.yaml || true
+    process-compose down || true
     rm -rf "$ISONIM_REVIEW_PGDATA"
 
 # Interactive ``psql`` against the running dev cluster.
