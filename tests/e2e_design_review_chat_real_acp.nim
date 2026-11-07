@@ -9,7 +9,7 @@
 ## Test harness intentionally builds a tiny, deterministic prompt and
 ## asserts only that the call returned a non-empty reply within 30 s.
 
-import std/[os, osproc, times, unittest]
+import std/[os, osproc, strutils, times, unittest]
 
 import helpers/agent_routes_fixture
 
