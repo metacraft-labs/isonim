@@ -14,9 +14,9 @@ let config = DiagramConfig(d2Path: d2, dotPath: dot, cacheDir: work / "cache")
 proc html(body: string): string =
   renderProseHtml(parseMarkdownDocWithHooks(@[diagramHooks(config)], body, "diagrams.md"))
 
-proc generatedRules(svg: XmlNode): OrderedTable[string, string] =
+proc stylesheetRules(svg: XmlNode): OrderedTable[string, string] =
   ## The rules of the stylesheet the normaliser appends to the root, by
-  ## selector. It holds the declarations the renderers wrote as attributes.
+  ## selector: the renderer's, normalized, and the generated ones.
   let last = svg[svg.len - 1]
   doAssert last.kind == xnElement and last.tag == "style", "no generated stylesheet"
   for rule in last.innerText.split('}'):
@@ -24,6 +24,24 @@ proc generatedRules(svg: XmlNode): OrderedTable[string, string] =
     let open = rule.find('{')
     doAssert open > 0, "malformed generated rule: " & rule
     result[rule[0 ..< open]] = rule[open + 1 .. ^1]
+
+proc isGeneratedRule(svg: XmlNode; selector: string): bool =
+  selector == "#" & svg.attr("id") or ".isonim-diagram-s" in selector
+
+proc generatedRules(svg: XmlNode): OrderedTable[string, string] =
+  ## The rules holding the declarations the renderers wrote as attributes.
+  for selector, body in stylesheetRules(svg):
+    if isGeneratedRule(svg, selector): result[selector] = body
+
+proc rendererRules(svg: XmlNode): OrderedTable[string, string] =
+  ## The rules normalized from the renderer's own stylesheets.
+  for selector, body in stylesheetRules(svg):
+    if not isGeneratedRule(svg, selector): result[selector] = body
+
+proc styleElements(node: XmlNode): int =
+  if node.kind != xnElement: return 0
+  if node.tag == "style": inc result
+  for child in node: result += styleElements(child)
 
 proc rootDeclarations(svg: XmlNode): string =
   generatedRules(svg).getOrDefault("#" & svg.attr("id"))
@@ -324,9 +342,9 @@ suite "build time diagrams":
         check body notin bodies
         bodies.add body
   test "generated rules outrank every renderer stylesheet rule":
-    # Fault injection: the pinned D2 writes its palette stylesheet as CDATA,
-    # which the normaliser does not currently keep, so a plain-text palette
-    # rule stands in for the renderer class rules the attributes must beat.
+    # Fault injection: a small plain-text palette stylesheet keeps the
+    # renderer rules the attributes must beat few and known; the real D2
+    # stylesheet is covered by the CDATA test below.
     let payload = "<svg><style>.d2-x .fill-N1{fill:#0A0F25}.shape{stroke-linejoin:round}</style>" &
       "<g class=\"d2-x\"><rect class=\"shape fill-N1\" fill=\"white\" width=\"4\" height=\"4\"/></g></svg>"
     let executable = instrumentTool(work, "palette-dot", dot,
@@ -334,10 +352,7 @@ suite "build time diagrams":
     let isolated = DiagramConfig(dotPath: executable, cacheDir: work / "palette")
     let svg = strictXml(fragmentHtml(renderDiagram("dot", "digraph { a }", isolated, SourceLocation(path: "palette.md", line: 1))))
     var renderer, generated: seq[string]
-    for element in svg:
-      if element.kind == xnElement and element.tag == "style" and element != svg[svg.len - 1]:
-        for rule in element.innerText.split('}'):
-          if '{' in rule: renderer.add rule[0 ..< rule.find('{')]
+    for selector in rendererRules(svg).keys: renderer.add selector
     for selector in generatedRules(svg).keys:
       if " ." in selector: generated.add selector
     require renderer.len == 2
@@ -377,5 +392,98 @@ suite "build time diagrams":
       let output = fragmentHtml(renderDiagram("dot", "digraph { a }", isolated, SourceLocation(path: "empty.md", line: 1)))
       check "style=" notin output
       check "isonim-diagram-s" notin output
+
+  test "D2's CDATA stylesheet keeps shape and palette rules and drops embedded fonts":
+    # The pinned D2 writes its stylesheets as CDATA sections: one with
+    # @font-face rules embedding WOFF fonts as data: URLs, one with the
+    # shape, connection and palette rules. Real CLI output, no fixture.
+    let output = fragmentHtml(renderDiagram("d2", "draft -> post: publish", config,
+      SourceLocation(path: "cdata.md", line: 1)))
+    let svg = strictXml(output)
+    let root = "#" & svg.attr("id")
+    # One element, whose hash a strict policy allows, however many D2 wrote.
+    check styleElements(svg) == 1
+    let rules = rendererRules(svg)
+    check rules.len > 0
+    let css = stylesheetText(svg[svg.len - 1])
+    check root & " .shape{shape-rendering:geometricPrecision;stroke-linejoin:round}" in css
+    check root & " .connection{stroke-linecap:round;stroke-linejoin:round}" in css
+    var palette = 0
+    for selector, body in rules:
+      if " .fill-" in selector or " .stroke-" in selector:
+        inc palette
+        check body.startsWith("fill:var(--diagram-") or body.startsWith("stroke:var(--diagram-")
+    check palette > 0
+    # Bold node labels and italic edge labels keep their emphasis in the
+    # page's font once the faces that carried it are gone.
+    check " .text-bold{font-weight:bold}" in css
+    check " .text-italic{font-style:italic}" in css
+    for absent in ["@font-face", "font-family", "data:", "woff", "CDATA", "!"]:
+      checkpoint absent
+      check absent notin output
+    # Every kept rule is scoped under the root ID and names no other ID.
+    for selector in rules.keys:
+      for part in selector.split(','):
+        check part.startsWith(root & " ")
+        check part.count('#') == 1
+    for ch in ['&', '<', '>']: check ch notin css
+    # A monospace face leaves its generic family: a label, a bold label and a
+    # code block all keep their fixed width, with no face of their own.
+    let mono = fragmentHtml(renderDiagram("d2",
+      "a: x {style.font: mono}\nb: y {style.font: mono; style.bold: true}\nc: |go\n  z := 1\n|", config,
+      SourceLocation(path: "mono.md", line: 1)))
+    check " .text-mono{font-family:monospace}" in mono
+    check " .text-mono-bold{font-family:monospace;font-weight:bold}" in mono
+    for absent in ["@font-face", "-font-mono", "data:"]:
+      checkpoint absent
+      check absent notin mono
+
+  test "D2 underlined labels keep their text decoration":
+    let output = fragmentHtml(renderDiagram("d2", "a: link {style.underline: true}", config,
+      SourceLocation(path: "underline.md", line: 1)))
+    check " .text-underline{text-decoration:underline}" in output
+    check "@font-face" notin output
+
+  test "D2 code blocks show only their light variant":
+    # D2 writes each code block twice and hides one variant through its
+    # stylesheet; without the rule both are painted over each other.
+    let output = fragmentHtml(renderDiagram("d2", "c: |go\n  x := 1\n|", config,
+      SourceLocation(path: "code.md", line: 1)))
+    check "class=\"dark-code\"" in output
+    check " .dark-code{display:none}" in output
+
+  test "CDATA and text in one renderer stylesheet are read in order":
+    let payload = "<svg><style>.a{fill-rule:evenodd}<![CDATA[.b{stroke-linejoin:round}]]></style>" &
+      "<g class=\"a b\"/></svg>"
+    let executable = instrumentTool(work, "cdata-dot", dot,
+      "for argument in \"$@\"; do output=\"$argument\"; done\nprintf '%s' " & quoteShell(payload) & " > \"$output\"")
+    let isolated = DiagramConfig(dotPath: executable, cacheDir: work / "cdata-order")
+    let svg = strictXml(fragmentHtml(renderDiagram("dot", "digraph { a }", isolated, SourceLocation(path: "order.md", line: 1))))
+    let root = "#" & svg.attr("id")
+    check stylesheetText(svg[svg.len - 1]).startsWith(root & " .a{fill-rule:evenodd}" & root & " .b{stroke-linejoin:round}")
+
+  test "hostile renderer CSS in a CDATA stylesheet is refused before cache publication":
+    for (css, reason) in [
+        ("@import url(https://example.test/x.css);", "unsafe SVG stylesheet"),
+        (".a{fill:url(https://example.test/x.svg#p)}", "remote or active SVG resource"),
+        ("@font-face{font-family:x;src:url(https://example.test/x.woff)}", "remote or active SVG resource"),
+        (".a{fill:none}</style><script>bad()</script><style>", "unsafe SVG stylesheet"),
+        (".a{stroke-linejoin:round !important}", "outranks normalized paint"),
+        (".a{/* } */fill:none}", "CSS comments are not supported"),
+        (".a{font-family:\"A&B\"}", "must not contain &"),
+        ("@media print{.a{display:none}}", "unsupported SVG stylesheet rule"),
+        ("<media>", "unsupported SVG stylesheet attribute")]:
+      checkpoint css
+      # An attribute scoping the element must not vanish along with it.
+      let payload = if css == "<media>": "<svg><style media=\"print\">.a{fill:none}</style><g class=\"a\"/></svg>"
+        else: "<svg><style><![CDATA[" & css & "]]></style><g class=\"a\"/></svg>"
+      let executable = instrumentTool(work, "hostile-dot", dot,
+        "for argument in \"$@\"; do output=\"$argument\"; done\nprintf '%s' " & quoteShell(payload) & " > \"$output\"")
+      let isolated = DiagramConfig(dotPath: executable, cacheDir: work / "hostile")
+      var message = ""
+      try: discard renderDiagram("dot", "digraph { a }", isolated, SourceLocation(path: "hostile.md", line: 1))
+      except ValueError as error: message = error.msg
+      check reason in message
+      check not dirExists(isolated.cacheDir)
 
 removeDir(work)

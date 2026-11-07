@@ -119,6 +119,22 @@ suite "content extension scanner":
       expect ValueError: discard diagramFragment("<svg><style>svg{" & css & "}</style></svg>")
     for selector in ["path:has(a)", "path > rect", "[href]", "@media screen"]:
       expect ValueError: discard diagramFragment("<svg><style>" & selector & "{fill:none}</style></svg>")
+  test "passive SVG stylesheet text is exactly the bytes a page hash covers":
+    # In inline SVG the HTML parser decodes references and CDATA in a
+    # <style>, so validated text holds no &, < or > (nor NUL), is never
+    # CDATA, and holds no element; comments are refused as well.
+    check fragmentHtml(diagramFragment("<svg><style>svg{text-decoration:underline}</style></svg>")) ==
+      "<svg><style>svg{text-decoration:underline}</style></svg>"
+    for payload in ["<svg><style>svg{font-family:\"A&amp;B\"}</style></svg>",
+        "<svg><style>svg{font-family:\"A&gt;B\"}</style></svg>",
+        "<svg><style>svg{font-family:\"A&#0;B\"}</style></svg>",
+        "<svg><style><![CDATA[svg{fill:none}]]></style></svg>",
+        "<svg><style>svg{fill:none}<g></g></style></svg>",
+        "<svg><style>svg{/* x */fill:none}</style></svg>"]:
+      checkpoint payload
+      expect ValueError: discard diagramFragment(payload)
+    let style = strictXml("<style>a{b:c}<!-- note --><![CDATA[d{e:f}]]></style>")
+    check stylesheetText(style) == "a{b:c}d{e:f}"
   test "quoted local URLs and accessible labels retain validation":
     let fragment = diagramFragment("<svg aria-labelledby=\"label\"><title id=\"label\">a</title><defs><path id=\"shape\"></path></defs><use href=\"#shape\" fill=\"url('#shape')\"></use><style>use{fill:url('#shape')}</style></svg>")
     check "aria-labelledby=\"label\"" in fragmentHtml(fragment)

@@ -9,7 +9,7 @@ type DiagramConfig* = object
   d2Path*, dotPath*: string
   cacheDir*: string ## Required when a diagram is authored.
 
-const FormatVersion = "isonim-passive-svg-3"
+const FormatVersion = "isonim-passive-svg-4"
 const MaskStyle = "--diagram-mask-visible:white;--diagram-mask-hidden:black"
 
 proc paint(value, property: string; mask = false): string =
@@ -39,11 +39,49 @@ proc normalizeDeclarations(css: string; text = false; mask = false; edge = false
       result.add paint(value, role, mask)
     else: result.add value
 
+proc fontFamilies(value: string): seq[string] =
+  ## The family names of a `font-family` value, unquoted
+  ## (https://www.w3.org/TR/css-fonts-4/#font-family-prop). The scanner
+  ## upstream has refused escapes, so a comma always separates names.
+  for family in value.split(','):
+    let name = family.strip().strip(chars = {'\'', '"'}).strip()
+    if name.len > 0: result.add name
+
+proc droppedFaceStyle(family: string): seq[string] =
+  ## What an embedded face stood for, in terms that need no font of its own.
+  ## A face's own descriptors are not written by D2, whose
+  ## faces are named `<diagram>-font-<style>` with the style one of
+  ## `regular`, `semibold`, `bold` or `italic`, optionally after `mono-`
+  ## (d2renderers/d2svg/d2svg.go, `EmbedFonts`, at
+  ## https://github.com/terrastruct/d2/blob/v0.7.1/d2renderers/d2svg/d2svg.go).
+  ## Bold and italic labels keep their emphasis in the page's font. A
+  ## monospace face becomes the generic `monospace` family
+  ## (https://www.w3.org/TR/css-fonts-4/#generic-font-families): code that
+  ## loses its fixed width no longer lines up, and a generic family loads
+  ## nothing, so a policy's `font-src` does not come into it.
+  let tokens = family.toLowerAscii().split('-')
+  if "mono" in tokens: result.add "font-family:monospace"
+  if "semibold" in tokens: result.add "font-weight:600"
+  elif "bold" in tokens: result.add "font-weight:bold"
+  if "italic" in tokens: result.add "font-style:italic"
+
 proc normalizeCss(css: string; classes: seq[string]): string =
   ## D2 includes unused palette/sketch rules whose references have no defs.
-  ## Drop only selectors requiring classes absent from this SVG. Keep font
-  ## faces and every rule that can apply, scoped under the SVG root's ID.
+  ## Drop only selectors requiring classes absent from this SVG, and scope
+  ## every rule that can apply under the SVG root's ID.
+  ##
+  ## Embedded fonts are dropped on purpose: an `@font-face` with a `data:`
+  ## source is blocked by a policy whose `font-src` does not list `data:`
+  ## (https://www.w3.org/TR/CSP3/#directive-font-src), and labels are meant
+  ## to read in the page's own font. A `font-family` declaration naming only
+  ## dropped faces goes with them; what the face stood for stays as
+  ## `font-weight`, `font-style` or the generic `monospace` family, and a rule
+  ## left with no declarations is not written. The shape, connection and palette rules
+  ## are kept.
   discard cssUrls(css)
+  if "/*" in css: raise newException(ValueError, "CSS comments are not supported in SVG stylesheets")
+  var rules: seq[tuple[selector, body: string]]
+  var dropped: seq[string]
   var i = 0
   while i < css.len:
     let open = css.find('{', i)
@@ -53,8 +91,16 @@ proc normalizeCss(css: string; classes: seq[string]): string =
     let close = css.find('}', open + 1)
     if close < 0: raise newException(ValueError, "unclosed SVG stylesheet rule")
     let selector = css[i ..< open].strip()
-    if selector.startsWith("@") and selector != "@font-face":
+    let body = css[open + 1 ..< close]
+    if selector == "@font-face":
+      for (key, value) in cssDeclarations(body):
+        if key == "font-family": dropped.add fontFamilies(value)
+    elif selector.startsWith("@"):
       raise newException(ValueError, "unsupported SVG stylesheet rule: " & selector)
+    else:
+      rules.add (selector, body)
+    i = close + 1
+  for (selector, body) in rules:
     var kept: seq[string]
     for part in svgSelectors(selector):
       var applies = true
@@ -67,22 +113,46 @@ proc normalizeCss(css: string; classes: seq[string]): string =
           if part[start ..< c] notin classes: applies = false
         else: inc c
       if applies:
-        kept.add(if selector == "@font-face": selector else: "#isonim-diagram-root " & part.strip())
-    if kept.len > 0:
-      result.add kept.join(",") & "{" & normalizeDeclarations(css[open + 1 ..< close],
-        text = ".text" in selector or ".color-" in selector or ".fill-N1" in selector or ".fill-N2" in selector) & "}"
-    i = close + 1
+        kept.add "#isonim-diagram-root " & part.strip()
+    if kept.len == 0: continue
+    var declarations: seq[string]
+    var hasWeight, hasStyle = false
+    for (key, value) in cssDeclarations(body):
+      # The generated rules outrank renderer rules by specificity alone, and
+      # an `!important` renderer declaration would defeat that
+      # (https://www.w3.org/TR/css-cascade-4/#importance).
+      if "!" in value: raise newException(ValueError, "SVG stylesheet declaration outranks normalized paint: " & key)
+      if key == "font-weight": hasWeight = true
+      if key == "font-style": hasStyle = true
+    for (key, value) in cssDeclarations(body):
+      let families = if key == "font-family": fontFamilies(value) else: @[]
+      var onlyDropped = families.len > 0
+      for family in families:
+        if family notin dropped: onlyDropped = false
+      if onlyDropped:
+        for family in families:
+          for implied in droppedFaceStyle(family):
+            if implied.startsWith("font-weight:") and hasWeight: continue
+            if implied.startsWith("font-style:") and hasStyle: continue
+            if implied notin declarations: declarations.add implied
+      else:
+        declarations.add key & ":" & value
+    if declarations.len == 0: continue
+    result.add kept.join(",") & "{" & normalizeDeclarations(declarations.join(";"),
+      text = ".text" in selector or ".color-" in selector or ".fill-N1" in selector or ".fill-N2" in selector) & "}"
 
 const InlineClassPrefix = "isonim-diagram-s"
 
-proc moveInlineStyles(root: XmlNode) =
+proc moveInlineStyles(root: XmlNode; rendererCss: string) =
   ## A page served with a Content-Security-Policy whose `style-src` has no
   ## 'unsafe-inline' applies no `style` attribute (allowing one by its hash
   ## needs 'unsafe-hashes'; https://www.w3.org/TR/CSP3/#directive-style-src),
   ## while a `<style>` element can be allowed by the hash of its text. So the
   ## normalized declarations leave the attributes for one generated stylesheet,
-  ## appended to the root: the root's own under its ID, every other distinct
-  ## declaration list under a class added to the elements that carried it.
+  ## appended to the root: the normalized renderer rules, the root's own under
+  ## its ID, every other distinct declaration list under a class added to the
+  ## elements that carried it. One element is one hash per diagram in the
+  ## page's policy, whatever number of stylesheets the renderer wrote.
   ##
   ## An attribute outranks every stylesheet rule, which is what lets a
   ## semantic paint win over the renderer's palette classes. The generated
@@ -93,25 +163,17 @@ proc moveInlineStyles(root: XmlNode) =
   ## than all of them. A renderer selector with a second ID could not be
   ## outranked and is refused.
   var mostClasses = 0
-  proc rules(node: XmlNode) =
-    if node.kind != xnElement: return
-    if node.tag == "style":
-      let css = node.innerText
-      var i = 0
-      while i < css.len:
-        let open = css.find('{', i)
-        if open < 0: break
-        let close = css.find('}', open + 1)
-        if close < 0: raise newException(ValueError, "unclosed SVG stylesheet rule")
-        let selector = css[i ..< open].strip()
-        if selector != "@font-face":
-          for part in selector.split(','):
-            if part.count('#') > 1:
-              raise newException(ValueError, "SVG stylesheet selector outranks normalized paint: " & part.strip())
-            mostClasses = max(mostClasses, part.count('.'))
-        i = close + 1
-    for child in node: rules(child)
-  rules(root)
+  var i = 0
+  while i < rendererCss.len:
+    let open = rendererCss.find('{', i)
+    if open < 0: break
+    let close = rendererCss.find('}', open + 1)
+    if close < 0: raise newException(ValueError, "unclosed SVG stylesheet rule")
+    for part in rendererCss[i ..< open].split(','):
+      if part.count('#') > 1:
+        raise newException(ValueError, "SVG stylesheet selector outranks normalized paint: " & part.strip())
+      mostClasses = max(mostClasses, part.count('.'))
+    i = close + 1
   var lists: seq[string]
   proc collect(node: XmlNode) =
     if node.kind != xnElement: return
@@ -128,7 +190,7 @@ proc moveInlineStyles(root: XmlNode) =
       node.attrs.del("style")
     for child in node: collect(child)
   for child in root: collect(child)
-  var css = "#isonim-diagram-root{" & root.attr("style") & "}"
+  var css = rendererCss & "#isonim-diagram-root{" & root.attr("style") & "}"
   root.attrs.del("style")
   for index, declarations in lists:
     css.add "#isonim-diagram-root " & repeat("." & InlineClassPrefix & $index, mostClasses + 1) &
@@ -149,14 +211,19 @@ proc normalizeSvg(output: string): string =
       if name notin classes: classes.add name
     for child in node: collect(child)
   collect(root)
+  var rendererCss = ""
   proc visit(node: XmlNode; mask = false; edge = false) =
     if node.kind != xnElement: return
     let inMask = mask or node.tag == "mask"
     let inEdge = edge or node.tag == "marker" or "edge" in node.attr("class").splitWhitespace() or "connection" in node.attr("class").splitWhitespace()
     if node.tag == "style":
-      let css = normalizeCss(node.innerText, classes)
-      while node.len > 0: node.delete(0)
-      node.add newText(css)
+      # The element goes away below, so an attribute that scopes it (`media`,
+      # say) would be lost with it rather than honoured.
+      if node.attrs != nil:
+        for key, value in node.attrs:
+          if key != "type" or value != "text/css":
+            raise newException(ValueError, "unsupported SVG stylesheet attribute: " & key)
+      rendererCss.add normalizeCss(stylesheetText(node), classes)
     if node.attrs != nil:
       var keys: seq[string]
       for key in node.attrs.keys: keys.add key
@@ -170,13 +237,27 @@ proc normalizeSvg(output: string): string =
       node.attrs["fill"] = "var(--diagram-foreground, currentColor)"
     # D2 repeats paints as both attributes and palette class rules. Inline
     # declarations give the semantic role precedence over those class rules,
-    # without removing geometry, masks, fonts or useful stylesheet structure.
+    # without removing geometry, masks or useful stylesheet structure.
     for property in ["fill", "stroke"]:
       if node.attr(property).len > 0:
         let previous = node.attr("style")
         node.attrs["style"] = previous & (if previous.len > 0: ";" else: "") & property & ":" & node.attr(property)
     for child in node: visit(child, inMask, inEdge)
   visit(root)
+  # The rules now live in `rendererCss`, written as plain text (never CDATA)
+  # into the one generated element, so the page carries the exact bytes a
+  # hash-based style-src allows.
+  proc removeStyles(node: XmlNode) =
+    if node.kind != xnElement: return
+    var c = 0
+    while c < node.len:
+      let child = node[c]
+      if child.kind == xnElement and child.tag == "style":
+        node.delete(c)
+      else:
+        removeStyles(child)
+        inc c
+  removeStyles(root)
   if root.attrs == nil: root.attrs = newStringTable()
   if root.attr("id").len > 0: raise newException(ValueError, "renderer root IDs are not supported")
   root.attrs["id"] = "isonim-diagram-root"
@@ -184,7 +265,7 @@ proc normalizeSvg(output: string): string =
   root.attrs["fill"] = "var(--diagram-fill, Canvas)"
   root.attrs["xmlns"] = "http://www.w3.org/2000/svg"
   root.attrs["style"] = (if root.attr("style").len > 0: root.attr("style") & ";" else: "") & MaskStyle
-  moveInlineStyles(root)
+  moveInlineStyles(root, rendererCss)
   fragmentHtml(diagramFragment(compactXml(root)))
 
 proc instanceSvg(svg, prefix: string): ContentFragment =
@@ -235,7 +316,7 @@ proc instanceSvg(svg, prefix: string): ContentFragment =
           node.attrs[key] = "#" & ids[value[1 .. ^1]]
         else: node.attrs[key] = references(value)
     if node.tag == "style":
-      let css = stylesheet(node.innerText)
+      let css = stylesheet(stylesheetText(node))
       while node.len > 0: node.delete(0)
       node.add newText(css)
     for child in node: visit(child)

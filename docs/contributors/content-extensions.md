@@ -199,21 +199,45 @@ applies a `style` attribute only with `'unsafe-inline'` or, by hash, with
 `'unsafe-hashes'`; see [CSP Level 3](https://www.w3.org/TR/CSP3/#directive-style-src)).
 The declarations the renderers write inline, and the semantic paints that must
 beat the renderer's own palette classes, move into one `<style>` element
-appended to the SVG root: the root's reserved variables under its ID, and each
-distinct declaration list under a generated `isonim-diagram-s<n>` class. Those
+appended to the SVG root, after the normalized renderer stylesheets: the root's
+reserved variables under its ID, and each distinct declaration list under a
+generated `isonim-diagram-s<n>` class. Those
 rules repeat their class once more than the most class-heavy renderer
 selector, so, like the attributes they replace, they win over every renderer
 rule. Such a page allows the element by the hash of its text
 (`'sha256-…'` in `style-src`). The validator refuses a `style` attribute, a
 renderer class named `isonim-diagram-s<n>`, and a renderer selector with a
-second ID, which no generated rule could outrank.
+second ID, which no generated rule could outrank; the normalizer refuses a
+renderer `!important`, which would outrank them too.
+
+A renderer stylesheet is read whether it is written as text or, as D2 does, as
+[CDATA](https://www.w3.org/TR/xml/#sec-cdata-sect). Its shape, connection and
+palette rules are kept, scoped under the root's ID, with paints mapped to the
+variables above. Embedded fonts are not: `@font-face` rules are removed, along
+with `font-family` declarations that name only a removed face, so labels use
+the page's font and a policy needs no `data:` in `font-src`. A label a removed
+face made bold or italic stays so through `font-weight` or `font-style`, and a
+label or code block in D2's monospace face uses the generic `monospace` family,
+which loads no font.
+The stylesheet text holds no `&`, `<`, `>`, NUL or CSS comment, since the HTML
+parser decodes references in SVG `<style>` content and the hash must cover the
+bytes the browser sees.
+
+D2 features whose stylesheet the supported output cannot express fail the build
+instead of losing styles silently: a `tooltip` (a `filter` on the appendix's
+icon), a dark theme set through `vars.d2-config` (an `@media` rule) and
+`style.animated` (`@keyframes`). A Markdown block fails on its stylesheet too,
+which carries CSS comments. A `link`, `style.shadow`, an icon and the `grain` and
+`paper` fill patterns fail on the elements or properties they write; the `dots`
+and `lines` patterns are supported.
 
 The adapters qualify the pinned D2 with its fixed Dagre/theme options, and Graphviz's [`svg_inline` output](https://graphviz.org/docs/outputs/svg/).
 The supported output is passive, self-contained SVG: no scripts, events,
 foreign HTML, images, external links/resources, CSS escapes or advanced
 selectors. Simple type/class/ID compound selectors and descendants, listed
-presentation properties, local fragment URLs (quoted or unquoted) and embedded
-WOFF fonts are supported. Unsupported output fails. This bounded tool-output
+presentation properties and local fragment URLs (quoted or unquoted) are
+supported. `diagramFragment` also accepts an embedded WOFF font source, though
+the adapters' normalization leaves none. Unsupported output fails. This bounded tool-output
 validator is not a general sanitizer for arbitrary untrusted content.
 
 The cache hashes source, backend, executable path/content and normalization

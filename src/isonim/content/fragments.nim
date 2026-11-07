@@ -90,6 +90,20 @@ proc mathFragment*(source: string): ContentFragment =
   result.markup = compactXml(root)
   result.displayMath = root.attr("display") == "block"
 
+proc stylesheetText*(style: XmlNode): string =
+  ## The stylesheet a `<style>` element carries. A CDATA section is character
+  ## data like any other (XML 1.0, https://www.w3.org/TR/xml/#sec-cdata-sect),
+  ## and some renderers (D2, for one) write their whole stylesheet as CDATA,
+  ## which `xmltree.innerText` leaves out. Text and CDATA children are read
+  ## in document order; XML comments are not character data and are skipped.
+  ## Any other child (an element, an unresolved entity) is refused rather
+  ## than read as, or dropped from, the stylesheet.
+  for child in style:
+    case child.kind
+    of xnText, xnCData: result.add child.text
+    of xnComment: discard
+    else: raise newException(ValueError, "SVG stylesheet must be text")
+
 proc svgIdentifier*(value: string): bool =
   ## The CLI output subset uses unescaped ASCII CSS/XML identifiers.
   value.len > 0 and value[0] in Letters + {'_', '-'} and
@@ -192,6 +206,7 @@ proc validateSvgCss(css: string; stylesheet: bool) =
           "fill-opacity", "stroke-opacity", "opacity", "font-family", "font-size",
           "font-weight", "font-style", "font-variant", "text-anchor", "dominant-baseline",
           "shape-rendering", "text-rendering", "mix-blend-mode", "display", "src",
+          "text-decoration",
           "--diagram-mask-visible", "--diagram-mask-hidden"] and not key.startsWith("--color-"):
         raise newException(ValueError, "unsupported SVG CSS property: " & key)
       if key in ["fill", "stroke", "color", "background-color", "stop-color"] and not normalizedPaint(value):
@@ -205,6 +220,17 @@ proc validateSvgCss(css: string; stylesheet: bool) =
   if not stylesheet:
     validate(css)
     return
+  # Inline SVG in an HTML page is foreign content: the parser decodes
+  # character references and CDATA in a `<style>` there
+  # (https://html.spec.whatwg.org/multipage/parsing.html#parsing-main-inforeign),
+  # so a stylesheet holding `&`, `<` or `>` would reach the browser as other
+  # bytes than the page carries, and a hash of the page's bytes would not
+  # allow it. NUL is replaced by the parser for the same effect. A comment
+  # could hide a brace or a declaration from this bounded scanner.
+  for forbidden in ["&", "<", ">", "\0", "/*"]:
+    if forbidden in css:
+      raise newException(ValueError, "SVG stylesheet text must not contain " &
+        (if forbidden == "\0": "NUL" else: forbidden))
   var i = 0
   while i < css.len:
     let open = css.find('{', i)
@@ -270,8 +296,9 @@ proc diagramFragment*(source: string): ContentFragment =
         for url in cssUrls(value):
           if url.startsWith("#"): references.add url[1 .. ^1]
     if node.tag == "style":
-      validateSvgCss(node.innerText, true)
-      for url in cssUrls(node.innerText):
+      let css = stylesheetText(node)
+      validateSvgCss(css, true)
+      for url in cssUrls(css):
         if url.startsWith("#"): references.add url[1 .. ^1]
     for child in node: visit(child)
   visit(root)
