@@ -119,7 +119,16 @@ proc injectEditorStyles*() =
     }
     @container preview-chrome (max-width: 640px) {
       [data-preview-viewport-strip-host] { display: none !important; }
-      [data-preview-viewport-current] { display: inline !important; }
+      /* Keep the current viewport legible: the trigger and its label
+         shrink with an ellipsis instead of collapsing to the chevron. */
+      [data-preview-chrome-bar] [data-toolbar-cluster="viewport"] {
+        min-width: 44px !important; flex-shrink: 1 !important;
+      }
+      [data-preview-viewport-overflow] { min-width: 44px !important; flex-shrink: 1; box-sizing: border-box; }
+      [data-preview-viewport-current] {
+        display: inline !important; min-width: 20px; flex-shrink: 1;
+        overflow: hidden; text-overflow: ellipsis;
+      }
       [data-preview-viewport-overflow] { gap: 4px; }
       [data-preview-viewport-pinned-option="true"] { display: flex !important; }
     }
