@@ -105,6 +105,15 @@ check-siblings:
     #
     # vendor/ and the yoga submodule are excluded: they are third-party trees
     # whose configs describe their own layout, not isonim's siblings.
+    #
+    # Only the repository's own configs are read -- tracked, or new and not
+    # ignored -- never an ignored build output. Test runs copy config.nims
+    # files into nested directories under build/ (hundreds after one suite
+    # sweep, most of them under build/client-target-resolver), whose `..`
+    # paths describe no sibling of this checkout, so they are not evidence of
+    # what the repository reaches. Walking them also once made this recipe
+    # abort under bash 5.3.9 ("malloc(): unaligned fastbin chunk detected",
+    # signal 6) in a checkout that had run the suites.
     root_name="$(basename "$PWD")"
     reached=""
     cfg_count=0
@@ -134,7 +143,7 @@ check-siblings:
         [ "$1" = "$root_name" ] && continue
         reached="$reached $1"
       done < <(grep -o -E '\$projectDir[A-Za-z0-9_./-]*' "$cfgfile" | sed -e 's#^\$projectDir/\{0,1\}##')
-    done < <(find . -name 'config.nims' -not -path './vendor/*' -not -path './src/isonim/layout/yoga/*' | sort)
+    done < <(git ls-files --cached --others --exclude-standard -- 'config.nims' ':(glob)**/config.nims' | grep -v -E '^(vendor|src/isonim/layout/yoga)/' | sort -u)
 
     reached="$(printf '%s\n' $reached | grep -v '^$' | sort -u)"
     undeclared=""
