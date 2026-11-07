@@ -215,6 +215,13 @@
           shellHook = ''
             ${pkgs.lib.optionalString pkgs.stdenv.isLinux ''
               export LD_LIBRARY_PATH="${pkgs.libwebp}/lib''${LD_LIBRARY_PATH:+:$LD_LIBRARY_PATH}"
+              # The GUI test drivers (tests/*_gui.mjs and friends) launch
+              # `executablePath: process.env.PLAYWRIGHT_CHROMIUM_EXECUTABLE`;
+              # unset, Playwright looks for its own downloaded headless shell,
+              # which `browser-test-install` deliberately does not fetch on
+              # Linux (a glibc build cannot start on NixOS). Point it at the
+              # shell's chromium, as the recipes that pass it inline already do.
+              export PLAYWRIGHT_CHROMIUM_EXECUTABLE="''${PLAYWRIGHT_CHROMIUM_EXECUTABLE:-${pkgs.chromium}/bin/chromium}"
             ''}
             ${pkgs.lib.optionalString pkgs.stdenv.isDarwin ''
               export DYLD_FALLBACK_LIBRARY_PATH="${pkgs.libwebp}/lib''${DYLD_FALLBACK_LIBRARY_PATH:+:$DYLD_FALLBACK_LIBRARY_PATH}"
