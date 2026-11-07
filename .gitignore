@@ -48,6 +48,8 @@ tests/test_form_actions
 tests/test_rpc_dispatch
 tests/test_traceparent_meta
 tests/routing/t_manifest_streaming_buffered
+tests/routing/t_manifest_streaming
+tests/routing/t_manifest_negotiation
 tests/routing/t_manifest_mapped_exceptions
 tests/routing/t_manifest_csrf_binding
 tests/routing/t_csrf_binding_runtime
@@ -299,3 +301,16 @@ tests/test_editor_loop_handlers
 /tests/test_editor_edit_regime
 /tests/test_scene_graph_hooks
 /tests/test_style_provenance
+
+# Native test executables emitted beside their tracked
+# Nim sources by the test-* recipes.
+/tests/test_design_review_campaign_pins
+/tests/test_design_review_campaign_pins_pg
+/tests/test_design_review_class_quota
+/tests/test_design_review_gallery_full_screen
+/tests/test_design_review_gallery_save_layout_wired
+/tests/test_design_review_workspace_pin
+/tests/test_editor_agent_route_ownership
+/tests/test_editor_scenario_protocol
+/tests/test_editor_renderer_boundaries
+/tests/test_signal_checkpoints
