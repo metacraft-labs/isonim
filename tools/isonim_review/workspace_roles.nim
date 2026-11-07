@@ -3,11 +3,20 @@
 import std/[json, os, strutils]
 
 proc workspaceRoot*(project: string): string =
+  ## The nearest ancestor Repro treats as a workspace root: one carrying the
+  ## settings file ``repro-workspace.toml``, or the state file
+  ## ``.repro/workspace-state.toml`` beside the ``projects/`` and ``repos/``
+  ## manifests. The retired names (``.repro-workspace.toml`` and
+  ## ``.repro/workspace.toml``) still mark a root, as they do for Repro itself,
+  ## so that its role query refuses there with the remedy instead of this
+  ## search walking past a real workspace into standalone sibling discovery.
   var candidate = absolutePath(project)
   while true:
-    if fileExists(candidate / ".repro-workspace.toml") or
-        (fileExists(candidate / ".repro" / "workspace.toml") and
-         dirExists(candidate / "projects") and dirExists(candidate / "repos")):
+    let manifests = dirExists(candidate / "projects") and dirExists(candidate / "repos")
+    if fileExists(candidate / "repro-workspace.toml") or
+        fileExists(candidate / ".repro-workspace.toml") or
+        (manifests and (fileExists(candidate / ".repro" / "workspace-state.toml") or
+                        fileExists(candidate / ".repro" / "workspace.toml"))):
       return candidate
     let parent = candidate.parentDir
     if parent == candidate: return ""

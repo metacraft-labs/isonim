@@ -7,11 +7,19 @@ import subprocess
 
 
 def workspace_root(project):
+    """The nearest ancestor Repro treats as a workspace root.
+
+    Mirrors tools/isonim_review/workspace_roles.nim: the settings file
+    repro-workspace.toml, or the state file .repro/workspace-state.toml beside
+    projects/ and repos/. The retired names still mark a root so that Repro
+    refuses there with its remedy rather than this search walking past it.
+    """
     for candidate in (project, *project.parents):
-        if ((candidate / '.repro-workspace.toml').is_file() or
-                ((candidate / '.repro/workspace.toml').is_file()
-                 and (candidate / 'projects').is_dir()
-                 and (candidate / 'repos').is_dir())):
+        manifests = (candidate / 'projects').is_dir() and (candidate / 'repos').is_dir()
+        if ((candidate / 'repro-workspace.toml').is_file() or
+                (candidate / '.repro-workspace.toml').is_file() or
+                (manifests and ((candidate / '.repro/workspace-state.toml').is_file()
+                                or (candidate / '.repro/workspace.toml').is_file()))):
             return candidate
     return None
 

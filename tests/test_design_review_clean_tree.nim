@@ -2,7 +2,7 @@
 ##
 ## Each test builds a hermetic reprobuild workspace
 ## (``helpers/repro_workspace_fixture``: a temp workspace root with
-## ``.repro/workspace.toml``, project/repo manifests, and git repos
+## ``.repro/workspace-state.toml``, project/repo manifests, and git repos
 ## cloned from local bare "remotes"), then runs ``checkCleanTree``
 ## against it.  The gate covers one reprobuild project (``isonim`` by
 ## default, which is the fixture's project); the scope test adds a second

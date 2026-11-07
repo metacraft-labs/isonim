@@ -15,7 +15,7 @@
 ## repos the design review builds from (``isonim``, ``isonim-examples``,
 ## ``isonim-render-serve``, ``nim-everywhere``, ...).  Without the
 ## argument reprobuild answers for the whole active project set
-## (``.repro/workspace.toml`` ``projects``), so an unpublished commit in
+## (``.repro/workspace-state.toml`` ``projects``), so an unpublished commit in
 ## an unrelated project would block every capture.  reprobuild has no
 ## per-repo dependency closure query for ``status``; the project's own
 ## member list is how a project declares what it consumes.

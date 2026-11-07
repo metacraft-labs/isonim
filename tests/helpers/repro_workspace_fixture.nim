@@ -5,7 +5,7 @@
 ##   <scratch>/
 ##     origins/<repo>.git          bare "remote" per repo
 ##     ws/                         the workspace root
-##       .repro/workspace.toml     active project set: <project> [, <otherProject>]
+##       .repro/workspace-state.toml  active project set: <project> [, <otherProject>]
 ##       projects/<project>.toml   declares one remote + repo per name
 ##       projects/<otherProject>.toml  (optional) an unrelated second project
 ##       repos/<repo>.toml
@@ -69,8 +69,7 @@ proc configureIdentity(repo: string) =
 proc writeProjectManifest(ws: ReproWorkspace; project: string;
                           repos: openArray[string]) =
   var text = "schema = \"reprobuild.workspace.project.v1\"\n\n" &
-    "[project]\nname = \"" & project & "\"\n" &
-    "default_revision = \"main\"\ntrunk = \"main\"\n"
+    "[project]\nname = \"" & project & "\"\n"
   for name in repos:
     text.add "\n[[remote]]\nname = \"" & name & "-origin\"\nfetch = \"" &
       fileUrlOf(ws.scratch / "origins" / (name & ".git")) & "\"\n"
@@ -81,9 +80,9 @@ proc writeProjectManifest(ws: ReproWorkspace; project: string;
   writeFile(ws.root / "projects" / (project & ".toml"), text)
   for name in repos:
     writeFile(ws.root / "repos" / (name & ".toml"),
-      "schema = \"reprobuild.workspace.repo.v1\"\n\n[repo]\n" &
+      "schema = \"reprobuild.workspace.repo.v2\"\n\n[repo]\n" &
       "name = \"" & name & "\"\npath = \"" & name & "\"\n" &
-      "remote = \"" & name & "-origin\"\nrevision = \"main\"\n")
+      "remote = \"" & name & "-origin\"\nmainline = \"main\"\n")
 
 proc writeWorkspaceMetadata(ws: ReproWorkspace) =
   createDir(ws.root / "projects")
@@ -94,8 +93,8 @@ proc writeWorkspaceMetadata(ws: ReproWorkspace) =
   if ws.otherProject.len > 0:
     ws.writeProjectManifest(ws.otherProject, ws.otherRepos)
     active.add ", \"" & ws.otherProject & "\""
-  writeFile(ws.root / ".repro" / "workspace.toml",
-    "schema = \"reprobuild.workspace.local.v1\"\n\n[workspace]\n" &
+  writeFile(ws.root / ".repro" / "workspace-state.toml",
+    "schema = \"reprobuild.workspace.state.v1\"\n\n[workspace]\n" &
     "project = \"" & ws.project & "\"\n" &
     "projects = [" & active & "]\nbranch = \"main\"\n")
 

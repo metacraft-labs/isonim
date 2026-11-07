@@ -97,7 +97,7 @@ def snapshot(root):
             target.parent.mkdir(parents=True, exist_ok=True)
             shutil.copy2(source, target)
             workspace_metadata[name] = sha(source)
-        state = Path('.repro/workspace.toml')
+        state = Path('.repro/workspace-state.toml')
         if (source_workspace / state).is_file():
             (workspace / state).parent.mkdir(parents=True, exist_ok=True)
             shutil.copy2(source_workspace / state, workspace / state)
