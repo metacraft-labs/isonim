@@ -13,7 +13,10 @@ suite "editor persistence boundary":
     install(selected)
     defer: install(previous)
     when defined(js):
-      selected.script("storageGet", @[%"{\"open\":true,\"activeChatId\":\"chat-1\"}", %"layout,fill"])
+      # Reads in createEditorVM order: the persisted sidebar widths (absent
+      # here, so the defaults stand), the AI drawer, then the inspector
+      # expansion read by hydrateInspectorExpansionFromStorage.
+      selected.script("storageGet", @[newJNull(), %"{\"open\":true,\"activeChatId\":\"chat-1\"}", %"layout,fill"])
     createRoot proc(dispose: proc()) =
       let vm = createEditorVM()
       when defined(js):
