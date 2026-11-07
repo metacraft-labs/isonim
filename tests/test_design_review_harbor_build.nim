@@ -74,18 +74,27 @@ package testHarbor:
       other.startOwnedProcess("python3", @[producer / "listener.py", "unrelated-port"],
         workingDir = producer)
       defer: other.stop()
+      # Path.write_text creates the file before it writes the port, so its
+      # existence alone is not the barrier: under load the read can land in
+      # between and see an empty file. Wait for the complete number.
+      proc portIn(path: string): int =
+        if not fileExists(path): return 0
+        try:
+          result = parseInt(readFile(path).strip())
+        except ValueError:
+          result = 0
       for attempt in 0 ..< 100:
-        if fileExists(producer / "unrelated-port"): break
+        if portIn(producer / "unrelated-port") > 0: break
         sleep(10)
-      require fileExists(producer / "unrelated-port")
-      let otherPort = Port(parseInt(readFile(producer / "unrelated-port")))
+      require portIn(producer / "unrelated-port") > 0
+      let otherPort = Port(portIn(producer / "unrelated-port"))
       writeFile(producer / "build.sh", "set -eu\npython3 listener.py\n")
       defer: writeFile(producer / "build.sh", original)
       var listenerPort = Port(0)
       try:
         discard buildLocalHarbor(producer, consumer, env, proc(): bool =
-          if not fileExists(listenerFile): return false
-          listenerPort = Port(parseInt(readFile(listenerFile)))
+          if portIn(listenerFile) == 0: return false
+          listenerPort = Port(portIn(listenerFile))
           let before = newSocket()
           before.connect("127.0.0.1", listenerPort)
           before.close()
