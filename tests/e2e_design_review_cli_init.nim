@@ -73,6 +73,13 @@ proc runEndToEnd() =
   # step has finished.  Wait until ``schema_migrations`` reports every
   # shipped migration before invoking the CLI — that's the natural
   # barrier.
+  var shippedMigrations = 0
+  for kind, path in walkDir(MigDir):
+    let name = extractFilename(path)
+    if kind == pcFile and name.endsWith(".sql") and name.len > 4 and
+        name[0..2].allCharsInSet(Digits) and name[3] == '_':
+      inc shippedMigrations
+  check shippedMigrations > 0
   proc migratorReady(): bool =
     var conn: DbConn
     try:
@@ -86,8 +93,11 @@ proc runEndToEnd() =
     try:
       let v = conn.getValue(sql"""
         SELECT count(*) FROM public.schema_migrations""")
-      # REV-M8 added migration 004 (``fetch_layout``).
-      return parseInt(v) >= 4
+      # Every shipped migration, not a fixed prefix of them: the barrier
+      # used to be ``>= 4`` (REV-M8's 004), so once 005..012 existed the
+      # CLI ``init`` below raced the still-running bash migrator (seen as
+      # ``initRc == 7`` and 11 of 12 rows).
+      return parseInt(v) >= shippedMigrations
     except DbError:
       return false
   let migrateDeadline = epochTime() + 60.0
