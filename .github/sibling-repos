@@ -44,14 +44,16 @@
 # on one existing. Every sibling is still cloned -- none is dropped, skipped or
 # made optional -- and the lock is still consulted and still reported on.
 #
-# The SHAs are not "current tips". They are the exact revisions of the eight
-# sibling checkouts in the workspace where `just test-c` and `just test-js` were
-# measured green (748 assertions, 0 failures, 0 `cannot open file`). That is
-# precisely the set the pre-push gate would have written into the lock had it
-# been able to run, so this file is standing in for the missing lock rather than
-# inventing a different pinning. Each SHA was verified present upstream with
-# `gh api repos/metacraft-labs/<repo>/commits/<sha>`, and each is an ancestor of
-# that repo's `dev`.
+# The SHAs are not "current tips". The six that this repository's own
+# `repro.lock` also pins (nim-everywhere, nim-acp, nim-agents,
+# isonim-render-serve, nim-agent-harbor, isonim-cocoa) are exactly the lock's
+# revisions, so CI builds against what the lock records rather than against a
+# second, older pinning: on the 2026-11-06 promotion branch the previous pins
+# were 8 to 89 commits behind the lock, and this file had never been moved
+# with it. Keep the two in step whenever the lock moves. Each SHA was verified
+# present upstream with `gh api repos/metacraft-labs/<repo>/commits/<sha>`;
+# the lock's revisions are on each repo's `agents` line and need not be on its
+# `dev` yet.
 #
 # TO REVERT: once any isonim commit on `dev` carries a published workspace lock,
 # delete the `=<sha>` from the seven metacraft siblings below and they resolve
@@ -65,10 +67,10 @@
 # ---------------------------------------------------------------------------
 
 # Directly imported by src/ and tests/.
-nim-everywhere=0c259bec859d74b696d1aabd677c06365b399869
-nim-acp=c7c430ad1fd64ef8c4c508c5ccdfa5a41eae69b4
-nim-agents=a4bc08c21fa53ca9f5de324fbaa938373b916a54
-isonim-render-serve=688e7d2af57c49b539de4da124c98995d15d0649
+nim-everywhere=1ef439320e7c11cad9a11a13960e94d37afe8482
+nim-acp=9f3c80611590cdd8c0dc1b9f7ad31b9741260cb6
+nim-agents=35f30a9543375ac9af873d69ced375295a92b3d0
+isonim-render-serve=cd47ad7ef3cef66f073e16a4c6b5a15b3f279e24
 
 # Transitive, and each one verified load-bearing by removing it from a
 # provisioned checkout and re-running `nim check`:
@@ -83,9 +85,9 @@ isonim-render-serve=688e7d2af57c49b539de4da124c98995d15d0649
 #                        h264_videotoolbox_encoder.nim imports
 #                        `isonim_cocoa/appkit/capture_videotoolbox`
 #                        unconditionally on macOS.
-nim-agent-harbor=271cef2214216a7e940b69af677b18571f25eb9d
+nim-agent-harbor=4e9b8208b312a949a15dfcf1f3eb9491da78ad64
 nim-faststreams=82c8c3edb5fa7a4fdfcdb5d8ab53bbe1830d4503
-isonim-cocoa=69d835c9cff51ac394908397fdb7b68cf4a129ea
+isonim-cocoa=d5733fad04f04df05e726cdc262dcd267f088a09
 
 # nim-stew is reached only through nim-faststreams: `faststreams/inputs.nim`
 # imports `stew/ptrops`. It is easy to conclude it is unneeded, because on a
@@ -120,7 +122,10 @@ nim-stew=83eb1157963b7f49351dbdd858355fa990bbe23c
 # scripts/build-module.sh in its dev shell). Nothing in tests/config.nims
 # reaches it; the fixture's server side is compiled by that build.
 #
-# The pin is ngx-isonim@agents b9c65ec, the commit that carries IFP-M3 (it
-# serves this repo's hydration bootstrap, which the SSR hydration round trip
-# replays); it in turn pins this repo's IFP-M3 commit bd31893.
-ngx-isonim=b9c65ec0aa97af204ec3dcbd90a289c09f537a3c
+# The pin is ngx-isonim@agents a308a27. The earlier pin, b9c65ec (IFP-M3, the
+# hydration bootstrap), predates ngx-isonim's streaming of async app responses
+# at isonim_rpc locations (0b84ef3) and its Isonim-Context request header
+# (6e669a4): against it all ten tests of tests/routing/t_manifest_streaming.nim
+# fail (measured 2026-11-07 on the isonim agents-to-dev-2026-11-06 branch),
+# and against a308a27 `just test-nginx` passes.
+ngx-isonim=a308a278819dd4906c899ef565d943d8c9237402
