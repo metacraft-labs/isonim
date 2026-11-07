@@ -189,6 +189,19 @@ test-static-site-nix:
     grep -q "<lastmod>" "$out/sitemap.xml"
     echo "static-site-fixture: $out, rebuilt byte-identical"
 
+# Build what this repository ships beyond the library sources consumers
+# compile themselves: the generated Tailwind styles (build/tailwind.css,
+# build/tailwind-styles.json), the `isonim` / `isonim-review` CLI
+# (build/bin/) and the packaged IsoNim Editor (build/editor/).
+#
+# .github/workflows/ci-reprobuild.yml runs `just build` as the cross-check of
+# `repro build`, a step it inherited from the shared recorder workflow shape
+# (95cea7e). This repository had no `build` recipe, so that step could only
+# fail with "Justfile does not contain recipe `build`". It went unnoticed
+# because no run of that workflow has ever succeeded (checked 2026-11-07), so
+# none was ever red at this step alone.
+build: build-tailwind isonim-review-build editor-build
+
 # Run all tests (both JS and C targets)
 test: test-c test-js
 
