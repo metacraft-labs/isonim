@@ -32,7 +32,10 @@ proc bodyText[T](req: T; exclude: seq[string]): string =
   jsonStringify(obj)
 
 proc callRoute*[Req, Resp](httpMethod, pattern: string; req: Req;
-                           scope: ContextScope): Future[Resp] {.async.} =
+                           scope: ContextScope;
+                           idempotencyKey = ""): Future[Resp] {.async.} =
+  ## One API entry's call. `idempotencyKey`, when not "", is the write's
+  ## key (rpc_client.requestJson: a caller retrying one logical write).
   let pathNames = patternParams(pattern)
   var url = buildPath(pattern, req)
   var node: JsonNode
@@ -40,10 +43,11 @@ proc callRoute*[Req, Resp](httpMethod, pattern: string; req: Req;
     let q = queryString(req, pathNames)
     if q.len > 0:
       url.add '?' & q
-    node = await requestJson(httpMethod, url, "", false, scope)
+    node = await requestJson(httpMethod, url, "", false, scope,
+                             idempotencyKey = idempotencyKey)
   else:
     node = await requestJson(httpMethod, url, bodyText(req, pathNames), true,
-                             scope)
+                             scope, idempotencyKey = idempotencyKey)
   result = fromJsonLite[Resp](node)
 
 proc callPageData*[Req, Resp](pattern: string; req: Req;

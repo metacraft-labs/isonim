@@ -1390,7 +1390,7 @@ test-browser: test-browser-demo test-browser-ssr test-browser-hmr test-browser-h
 # not replace the CSS/map inputs these provisioned fixtures exercise.
 
 # Build every artifact the six static in-repo Playwright projects serve.
-browser-test-deps: build-tailwind demo-build build-hmr-fixture build-hmr-parametric-fixture build-hmr-transport-fixture build-web-worker-fixture editor-build
+browser-test-deps: build-tailwind demo-build build-hmr-fixture build-hmr-parametric-fixture build-hmr-transport-fixture build-web-worker-fixture build-worker-steps-fixture editor-build
 
 # Separate from `browser-test-deps` because it is the only step here that
 # touches the network.
@@ -1408,7 +1408,7 @@ browser-test-install:
 # Build everything, then run the six static in-repo Playwright projects (51 tests).
 test-browser-all: browser-test-deps
     PLAYWRIGHT_CHROMIUM_EXECUTABLE="${PLAYWRIGHT_CHROMIUM_EXECUTABLE:-$(command -v chromium)}" "${ISONIM_SCENARIO_NODE:-node}" tests/test_editor_example_reset_gui.mjs
-    cd tests/browser && PLAYWRIGHT_CHROMIUM_EXECUTABLE="${PLAYWRIGHT_CHROMIUM_EXECUTABLE:-$(command -v chromium)}" npx playwright test --project=demo-app --project=hmr --project=hmr-parametric --project=hmr-transport --project=web-worker --project=editor-example
+    cd tests/browser && PLAYWRIGHT_CHROMIUM_EXECUTABLE="${PLAYWRIGHT_CHROMIUM_EXECUTABLE:-$(command -v chromium)}" npx playwright test --project=demo-app --project=hmr --project=hmr-parametric --project=hmr-transport --project=web-worker --project=worker-steps --project=editor-example
 
 # The gate run on every push: the three HMR projects, 25 tests, ~20s of
 # browser time once the Nim fixtures are built.
@@ -1445,6 +1445,15 @@ build-web-worker-fixture:
     node tools/isonim-bundle.mjs build --kind main --minify --entry tests/browser/web_worker_fixture/main.nim --out build/web-worker-fixture/main.inline.js -- -d:previewInline --path:src --path:../nim-everywhere/src
     cp tests/browser/web_worker_fixture/index.html tests/browser/web_worker_fixture/inline.html tests/browser/web_worker_fixture/beacon.js build/web-worker-fixture/
     node tools/isonim-bundle.mjs report build/web-worker-fixture
+
+# The Web Worker target's stepwise handler and supervised bridge
+# (tests/browser/specs/worker-steps.spec.ts): a stepwise worker chunk and the
+# page script driving it through a supervised bridge.
+build-worker-steps-fixture:
+    rm -rf build/worker-steps-fixture
+    node tools/isonim-bundle.mjs build --kind worker --minify --entry tests/browser/worker_steps_fixture/steps_worker.nim --out build/worker-steps-fixture/steps.worker.js -- --path:src --path:../nim-everywhere/src
+    node tools/isonim-bundle.mjs build --kind main --minify --entry tests/browser/worker_steps_fixture/steps_main.nim --out build/worker-steps-fixture/steps_main.js -- --path:src --path:../nim-everywhere/src
+    cp tests/browser/worker_steps_fixture/index.html build/worker-steps-fixture/
 
 # Run the Web Worker target's Playwright spec.
 test-browser-web-worker: build-web-worker-fixture

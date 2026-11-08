@@ -501,6 +501,10 @@ macro routeManifest*(enumName: untyped; body: untyped): untyped =
       jsSide.add quote do:
         template `callProc`*(req: `reqT`): Future[`respT`] =
           callRoute[`reqT`, `respT`](`m`, `pat`, req, `scope`)
+        template `callProc`*(req: `reqT`; idempotencyKey: string): Future[`respT`] =
+          ## The same call with the caller's idempotency key (one logical
+          ## write retried by the caller: route_client.callRoute).
+          callRoute[`reqT`, `respT`](`m`, `pat`, req, `scope`, idempotencyKey)
     of rkPage:
       let navProc = ident($e.name & "Navigate")
       let linkProc = ident($e.name & "Link")

@@ -160,6 +160,15 @@ const specs: ServerSpec[] = [
     needs: "just build-web-worker-fixture",
   },
   {
+    // The Web Worker target's stepwise handler and supervised bridge.
+    project: "worker-steps",
+    testMatch: "worker-steps.spec.ts",
+    basePort: 8087,
+    command: (p) => staticServer(resolve(repoRoot, "build/worker-steps-fixture"), p),
+    requires: resolve(repoRoot, "build/worker-steps-fixture/bundle-manifest.json"),
+    needs: "just build-worker-steps-fixture",
+  },
+  {
     project: "editor-example",
     testMatch: "editor-example.spec.ts",
     basePort: 8090,

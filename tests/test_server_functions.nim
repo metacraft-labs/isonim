@@ -194,7 +194,7 @@ else:
       if (name === "retried") {
         const n = tries[args.tag] = (tries[args.tag] ?? 0) + 1;
         globalThis.__received[globalThis.__received.length - 1].at = Date.now();
-        const retryAfter = {after1: "1", after0: "0", always: "0", toolong: "61",
+        const retryAfter = {after1: "1", after0: "0", always: "0", toolong: "61", callerkey: "0",
                             date: "Wed, 21 Oct 2026 07:28:00 GMT"}[args.tag];
         if (args.tag === "always" || n === 1) {
           const h = {"Content-Type": "application/json"};
@@ -317,6 +317,17 @@ else:
       $attempts("always")[0].headers["idempotency-key"].to(cstring)
     # Another write draws another key.
     doAssert $attempts("after0")[0].headers["idempotency-key"].to(cstring) != key1
+    # A caller's own key (a caller retrying one logical write itself, after
+    # a dropped connection or a reload) is sent as given, and kept on the
+    # resend.
+    const callerKey = "11111111-2222-4333-8444-555555555555"
+    let n = await requestJson("POST", "/api/test_server_functions/retried", "{\"tag\":\"callerkey\"}", true,
+                              csAccount, idempotencyKey = callerKey)
+    doAssert n.getInt == 2
+    let ck = attempts("callerkey")
+    doAssert ck.len == 2
+    doAssert $ck[0].headers["idempotency-key"].to(cstring) == callerKey
+    doAssert $ck[1].headers["idempotency-key"].to(cstring) == callerKey
 
     # The context argument is not sent.
     doAssert whoAmIUrl == "/api/test_server_functions/whoAmI"
@@ -325,7 +336,7 @@ else:
     # (The needle is built at run time so that this check is not itself an
     # occurrence.)
     doAssert ("XMLHttp" & "Request") notin $ownSource()
-    echo "[OK] server functions over fetch (JS): 6 checks, the commit position sent back, and the 503 resend"
+    echo "[OK] server functions over fetch (JS): 6 checks, the commit position sent back, the 503 resend and a caller's key"
     {.emit: "globalThis.__server.close();".}
 
   discard main()

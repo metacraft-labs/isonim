@@ -94,15 +94,25 @@ const jsonMediaType = "application/json"
 proc requestJson*(httpMethod, url: string; body: string; hasBody: bool;
                   scope: ContextScope;
                   contentType = "";
-                  accept = ""): Future[JsonNode] {.async.} =
+                  accept = "";
+                  idempotencyKey = ""): Future[JsonNode] {.async.} =
   ## Sends one request and returns the parsed JSON response, subject to
   ## the context check of `scope` (module doc: the idempotency key and the
   ## one resend of a write answered `503` with `Retry-After`). A body is
   ## sent as `contentType` ("": `application/json`); `accept`, when not "",
   ## is sent as `Accept`.
+  ##
+  ## `idempotencyKey`, when not "", is the write's key instead of a fresh
+  ## one: a caller that retries one logical write itself (after a dropped
+  ## connection, or after a reload, with the key kept in its own storage)
+  ## passes the same key every time, so the server's idempotency ledger
+  ## answers the retries with the first attempt's result. It is ignored for
+  ## GET and HEAD, which carry no key.
   let captured = clientContext()
   let signal = if scope == csNavigation: navigationSignal() else: nil
-  let key = if isStateChanging(httpMethod): nondet.randomUuid() else: ""
+  let key = if not isStateChanging(httpMethod): ""
+            elif idempotencyKey.len > 0: idempotencyKey
+            else: nondet.randomUuid()
   let after = afterHeaderC(nondet.nowMs())
   var extra: JsObject = nil
   if key.len > 0 or accept.len > 0 or after.len > 0:
