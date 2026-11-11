@@ -3,7 +3,8 @@
 // uses (Fit, 100% by the zoom control, and 100% opened by the URL in a wide
 // window), with headless Chromium, no sway.
 //
-// For each state it writes three files into PSZ_M3_WEB_FRAMES:
+// For each state it writes three files into PSZ_M3_WEB_FRAMES (each PNG's sha256
+// and UTC capture time go into the JSON's `captures`, for sidecar.py):
 //   web-<state>-page.png   the whole window
 //   web-<state>-frame.png  the frame as the reader sees it: the device stage
 //                          clipped to the preview's scroll port
@@ -24,8 +25,9 @@
 // Playwright is the one the browser e2e suite installs, found relative to this file.
 const { chromium } = await import(
   new URL("../../tests/browser/node_modules/playwright/index.mjs", import.meta.url));
-import { existsSync, mkdirSync, readdirSync, writeFileSync } from "node:fs";
-import { join } from "node:path";
+import { createHash, randomUUID } from "node:crypto";
+import { existsSync, mkdirSync, readFileSync, readdirSync, writeFileSync } from "node:fs";
+import { basename, join } from "node:path";
 
 const outDir = process.env.PSZ_M3_WEB_FRAMES;
 const base = process.env.PSZ_M3_WEB_BASE ||
@@ -80,6 +82,21 @@ const measure = () => {
   };
 };
 
+// Each screenshot is hashed the moment it is written. The sidecar writer
+// (sidecar.py) checks the file's digest against this record, so an image copied
+// from another run, or changed afterwards, cannot be described as this run's.
+const runId = randomUUID();
+const shoot = async (page, file, options = {}) => {
+  await page.screenshot({ path: file, ...options });
+  const bytes = readFileSync(file);
+  return {
+    file: basename(file),
+    sha256: createHash("sha256").update(bytes).digest("hex"),
+    capturedAt: new Date().toISOString().replace(/\.\d{3}Z$/, "Z"),
+    bytes: bytes.length,
+  };
+};
+
 const browser = await chromium.launch({
   executablePath,
   headless: true,
@@ -103,16 +120,17 @@ try {
       await page.waitForTimeout(1200);
     }
     const info = await page.evaluate(measure);
-    await page.screenshot({ path: join(outDir, `web-${s.name}-page.png`) });
+    const captures = { page: await shoot(page, join(outDir, `web-${s.name}-page.png`)) };
     const v = info.visible;
     if (v.w > 0 && v.h > 0) {
-      await page.screenshot({
-        path: join(outDir, `web-${s.name}-frame.png`),
+      captures.frame = await shoot(page, join(outDir, `web-${s.name}-frame.png`), {
         clip: { x: v.x, y: v.y, width: v.w, height: v.h },
       });
     }
     info.state = s.name;
     info.viewport = s.size;
+    info.runId = runId;
+    info.captures = captures;
     writeFileSync(join(outDir, `web-${s.name}.json`), JSON.stringify(info, null, 1));
     console.log(`${s.name}: stage ${info.stage.w}x${info.stage.h}, visible ${v.w}x${v.h}, readout ${info.readout}`);
     await page.close();

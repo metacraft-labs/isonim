@@ -4,7 +4,7 @@
 # first (the editor server, the GPUI launcher) and how to build the driver.
 # Each capture writes PNGs beside its PPMs and a <state>.sidecar.json (sidecar.py)
 # with the frame source the page declared, the renderer, the tree commits, the
-# window and the painted box.
+# window, the painted box and each image's sha256 (see sidecar.py).
 #
 #   PSZ_M3_GPUI_FRAMES=/tmp/fit CAPTURE_DRIVER=... NODE=... CHROMIUM=... \
 #     GUI_ASSERT_DIR=... ./capture.sh
@@ -37,8 +37,13 @@ nix develop "$GUI_ASSERT_DIR" --command env NODE="$NODE" CHROMIUM="$CHROMIUM" \
 export ISONIM_TREE="${ISONIM_TREE:-$here/../..}"
 export RENDER_SERVE_TREE="${RENDER_SERVE_TREE:-$here/../../../isonim-render-serve}"
 export EXAMPLES_TREE="${EXAMPLES_TREE:-$here/../../../isonim-examples}"
+# Each image's sha256 and UTC capture time are recorded as the image is written
+# (sidecar.py --record, into captures.json), so the sidecar writer below can
+# refuse an image that was copied in from another run or changed afterwards.
 for ppm in "$PSZ_M3_GPUI_FRAMES"/*.ppm; do
+  python3 "$here/sidecar.py" --frames "$PSZ_M3_GPUI_FRAMES" --record "$ppm"
   python3 "$here/ppm_to_png.py" "$ppm" "${ppm%.ppm}.png"
+  python3 "$here/sidecar.py" --frames "$PSZ_M3_GPUI_FRAMES" --record "${ppm%.ppm}.png"
 done
 python3 "$here/sidecar.py" --frames "$PSZ_M3_GPUI_FRAMES" --capture gpui \
   --window "$PSZ_M3_WINDOW" --states "$PSZ_M3_STATES" \

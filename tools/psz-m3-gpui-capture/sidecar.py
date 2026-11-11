@@ -26,8 +26,21 @@ The sidecar records what the frames came from:
                channel (the rule paintedBox uses in
                tests/test_editor_preview_streamed_zoom.nim). For web it is the
                visible frame measured in the page, in CSS px.
+  files        each image the sidecar describes, with the sha256 and the UTC
+               capture time taken when the image was written, and the runId of
+               that capture run.
+
+Freshness. The writer refuses to describe an image it cannot tie to its own
+capture run. Each capture records every image's sha256 and capture time at the
+moment the image is written: web_capture.mjs does it into the state's JSON
+(`captures`), and capture.sh does it through `--record` into captures.json for
+the GPUI PPMs and PNGs. The writer hashes each file again and raises
+CaptureRefused when an image is missing, has no record, or its digest differs
+from the one taken at capture (an image copied from an older run, or changed
+after the capture). Nothing is written in that case.
 
 Usage:
+  sidecar.py --frames DIR --record FILE [FILE ...]           (capture.sh, after each write)
   sidecar.py --frames DIR --capture gpui --window W,H \
       --isonim-tree P --render-serve-tree P --examples-tree P [--states a,b,c]
   sidecar.py --frames DIR --capture web --isonim-tree P ...   (web: window from the page)
@@ -36,15 +49,92 @@ The writer reads only files in DIR and git state of the trees; it needs no
 browser and no network, so tests/test_sidecar.py runs it on fixtures.
 """
 import argparse
+import datetime
+import hashlib
 import json
 import os
 import subprocess
 import sys
+import uuid
 
-SCHEMA = "psz-m3-capture-sidecar/1"
+SCHEMA = "psz-m3-capture-sidecar/2"
 STATES = ("fit", "actual", "actual-wide")
 # The same threshold as paintedBox in tests/test_editor_preview_streamed_zoom.nim.
 PAINT_THRESHOLD = 24
+# The capture-time record of the GPUI images (written by --record).
+CAPTURES_FILE = "captures.json"
+
+
+class CaptureRefused(ValueError):
+    """The writer will not describe an image it cannot tie to its own capture run."""
+
+
+def sha256_file(path):
+    """The lowercase hex sha256 of a file's bytes."""
+    digest = hashlib.sha256()
+    with open(path, "rb") as f:
+        for chunk in iter(lambda: f.read(1 << 20), b""):
+            digest.update(chunk)
+    return digest.hexdigest()
+
+
+def utc_now():
+    """The current time as an ISO 8601 UTC string, to the second, with a Z suffix."""
+    return datetime.datetime.now(datetime.timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
+
+
+def read_captures(frames):
+    """The captures.json of a frames directory, or an empty record when none exists."""
+    path = os.path.join(frames, CAPTURES_FILE)
+    if not os.path.exists(path):
+        return {"runId": None, "captures": {}}
+    with open(path) as f:
+        return json.load(f)
+
+
+def record_capture(frames, path, run_id=None):
+    """Hashes one image at capture time into frames/captures.json.
+
+    Called by capture.sh right after each PPM and PNG is written. The first
+    record of a file is kept: recording the same file again with the same bytes
+    is a no-op, and with different bytes it is refused, so a file cannot be
+    re-recorded to match a copy from another run.
+    """
+    name = os.path.basename(path)
+    digest = sha256_file(path)
+    record = read_captures(frames)
+    if record["runId"] is None:
+        record["runId"] = run_id or str(uuid.uuid4())
+    existing = record["captures"].get(name)
+    if existing is not None:
+        if existing["sha256"] != digest:
+            raise CaptureRefused(f"{name}: already recorded with sha256 {existing['sha256']}, "
+                                 f"now {digest}; refusing to re-record a changed image")
+        return existing
+    entry = {"sha256": digest, "capturedAt": utc_now()}
+    record["captures"][name] = entry
+    with open(os.path.join(frames, CAPTURES_FILE), "w") as f:
+        json.dump(record, f, indent=1)
+        f.write("\n")
+    return entry
+
+
+def verify_image(frames, name, recorded):
+    """Checks that frames/name is the image recorded at capture, and returns its file entry.
+
+    recorded is the capture-time entry ({"sha256", "capturedAt"}) or None when
+    the capture recorded nothing for this image.
+    """
+    path = os.path.join(frames, name)
+    if not os.path.isfile(path):
+        raise CaptureRefused(f"{path}: image missing")
+    if recorded is None:
+        raise CaptureRefused(f"{name}: no digest was recorded at capture")
+    digest = sha256_file(path)
+    if digest != recorded["sha256"]:
+        raise CaptureRefused(f"{name}: sha256 {digest} differs from the {recorded['sha256']} "
+                             f"taken at capture {recorded['capturedAt']}; not this run's image")
+    return {"path": name, "sha256": digest, "capturedAt": recorded["capturedAt"]}
 
 
 def read_ppm(path):
@@ -163,13 +253,21 @@ def build_sidecar(capture, state, window, trees, measured, painted, captured=Non
 def write_gpui(frames, state, window, trees):
     with open(os.path.join(frames, state + ".json")) as f:
         measured = json.load(f)
-    shown = os.path.join(frames, state + "-shown.ppm")
-    hidden = os.path.join(frames, state + "-hidden.ppm")
+    record = read_captures(frames)
+    names = {"shown": state + "-shown.ppm", "hidden": state + "-hidden.ppm",
+             "shownPng": state + "-shown.png", "hiddenPng": state + "-hidden.png"}
+    # Every image is verified before anything is read from it, so a stale PPM
+    # cannot paint a box the PNG beside it does not show.
+    files = {key: verify_image(frames, name, record["captures"].get(name))
+             for key, name in names.items()}
+    shown = os.path.join(frames, names["shown"])
+    hidden = os.path.join(frames, names["hidden"])
     width, height, _ = read_ppm(shown)
     painted = painted_box(shown, hidden)
     sidecar = build_sidecar("gpui", state, window, trees, measured, painted,
                             captured={"width": width, "height": height})
-    sidecar["files"] = {"shown": state + "-shown.ppm", "hidden": state + "-hidden.ppm"}
+    sidecar["files"] = files
+    sidecar["runId"] = record["runId"]
     return sidecar
 
 
@@ -180,21 +278,43 @@ def write_web(frames, state, trees):
     painted = {"x": round(visible["x"]), "y": round(visible["y"]),
                "width": round(visible["w"]), "height": round(visible["h"])}
     window = parse_size("%d,%d" % tuple(measured["viewport"]))
+    # web_capture.mjs records each PNG's digest when it screenshots it. The page
+    # frame is needed only when a visible frame was measured.
+    recorded = measured.get("captures") or {}
+    names = {"page": "web-%s-page.png" % state}
+    if visible["w"] > 0 and visible["h"] > 0:
+        names["frame"] = "web-%s-frame.png" % state
+    files = {}
+    for key, name in names.items():
+        entry = recorded.get(key)
+        if entry is not None and entry.get("file") != name:
+            raise CaptureRefused(f"{name}: the capture recorded {entry.get('file')} for {key}")
+        files[key] = verify_image(frames, name, entry)
     sidecar = build_sidecar("web", state, window, trees, measured, painted)
-    sidecar["files"] = {"page": "web-%s-page.png" % state, "frame": "web-%s-frame.png" % state}
+    sidecar["files"] = files
+    sidecar["runId"] = measured.get("runId")
     return sidecar
 
 
 def main(argv=None):
     p = argparse.ArgumentParser(description=__doc__.split("\n")[0])
     p.add_argument("--frames", required=True)
-    p.add_argument("--capture", required=True, choices=("gpui", "web"))
+    p.add_argument("--record", nargs="+", metavar="FILE",
+                   help="record the sha256 of these images (capture.sh) and exit")
+    p.add_argument("--capture", choices=("gpui", "web"))
     p.add_argument("--window", default="", help="W,H of the chromium window (gpui)")
     p.add_argument("--states", default=",".join(STATES))
-    p.add_argument("--isonim-tree", required=True)
-    p.add_argument("--render-serve-tree", required=True)
-    p.add_argument("--examples-tree", required=True)
+    p.add_argument("--isonim-tree")
+    p.add_argument("--render-serve-tree")
+    p.add_argument("--examples-tree")
     args = p.parse_args(argv)
+    if args.record:
+        for path in args.record:
+            record_capture(args.frames, path)
+        return 0
+    for required in ("capture", "isonim_tree", "render_serve_tree", "examples_tree"):
+        if getattr(args, required) is None:
+            p.error("--%s is required to write a sidecar" % required.replace("_", "-"))
     trees = {"isonim": args.isonim_tree, "renderServe": args.render_serve_tree,
              "examples": args.examples_tree}
     window = parse_size(args.window) if args.window else None
@@ -216,4 +336,8 @@ def main(argv=None):
 
 
 if __name__ == "__main__":
-    sys.exit(main())
+    try:
+        sys.exit(main())
+    except CaptureRefused as refusal:
+        print("sidecar: refused:", refusal, file=sys.stderr)
+        sys.exit(3)
