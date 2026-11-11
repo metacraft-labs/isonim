@@ -127,6 +127,39 @@ class WriteTest(unittest.TestCase):
                                         capture_output=True, text=True).stdout.strip())
         self.assertEqual(side["capturedPpm"], {"width": 8, "height": 5})
 
+    def _gpui_with_declaration(self, declared_value, name):
+        """Writes a GPUI state whose page declares declared_value, runs main, returns the sidecar."""
+        frames = os.path.join(self.root, name)
+        os.makedirs(frames)
+        measured = {"areaWidth": 8, "readout": "100%"}
+        if declared_value is not None:
+            measured["frameSource"] = declared_value
+        with open(os.path.join(frames, "fit.json"), "w") as f:
+            json.dump(measured, f)
+        write_ppm(os.path.join(frames, "fit-shown.ppm"), 8, 5, lambda x, y: (200, 200, 200) if x >= 4 else (1, 1, 1))
+        write_ppm(os.path.join(frames, "fit-hidden.ppm"), 8, 5, lambda x, y: (1, 1, 1))
+        sidecar.main(["--frames", frames, "--capture", "gpui", "--window", "8,5",
+                      "--states", "fit", "--isonim-tree", self.isonim,
+                      "--render-serve-tree", self.serve, "--examples-tree", self.examples])
+        with open(os.path.join(frames, "fit.sidecar.json")) as f:
+            return json.load(f)
+
+    def test_real_declaration_flows_end_to_end(self):
+        side = self._gpui_with_declaration("real", "frames-real")
+        self.assertEqual(side["frameSource"], "real")
+        self.assertEqual(side["renderer"], "gpui headless")
+
+    def test_absent_declaration_is_none_end_to_end(self):
+        side = self._gpui_with_declaration(None, "frames-none")
+        self.assertEqual(side["frameSource"], "none")
+        self.assertEqual(side["renderer"], "gpui (no declared source)")
+
+    def test_source_is_read_from_the_page_not_fixed(self):
+        # Two different declarations must give two different sidecars.
+        a = self._gpui_with_declaration("synthetic", "frames-a")
+        b = self._gpui_with_declaration("real", "frames-b")
+        self.assertNotEqual(a["frameSource"], b["frameSource"])
+
     def test_web_sidecar_has_no_stream_source(self):
         frames = os.path.join(self.root, "frames-web")
         os.makedirs(frames)

@@ -14,9 +14,13 @@ The sidecar records what the frames came from:
   renderer     the renderer behind the frames: "synthetic raster" and
                "gpui headless" for a streamed frame, from the declared source;
                "web iframe" for the web preview.
-  commits      the HEAD commit of the isonim, render-serve and examples trees,
-               and how many entries git status reports for each (0 is clean).
-  window       the chromium window size the capture was taken at.
+  commits      the HEAD commit of the checkout at each tree path given, and how
+               many entries git status reports for it (0 is clean). These name
+               the checkouts that were served or run; they do not prove what the
+               launcher process was built from.
+  window       the window size the capture was requested at (--window, which
+               capture.sh passes from PSZ_M3_WINDOW). It is not a size measured
+               from chromium; the captured PPM size is recorded as capturedPpm.
   paintedBox   the box the streamed frame paints: the bounding box of the pixels
                where the shown and hidden PPMs differ by more than 24 on some
                channel (the rule paintedBox uses in
