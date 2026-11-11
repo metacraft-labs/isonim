@@ -11,7 +11,7 @@ import ../core/nondet as nondet
 import ../core/[signals, computation]
 when defined(js):
   import client_context
-import match, params, outlet
+import match, params, outlet, navigator
 export params, outlet
 
 type
@@ -30,7 +30,9 @@ type
     matchChain*: Signal[seq[MatchChainEntry]]  ## full match chain for nested routes (M1)
 
 var activeRouter*: Router
-  ## The currently active router instance. Used by global navigate().
+  ## The currently active router instance. `createRouter` also installs it
+  ## as the active navigator (navigator.nim), which global navigate() and
+  ## `Link` call.
 
 proc findMatchChain(routes: seq[RouteEntry]; path: string): (int, seq[MatchChainEntry]) =
   ## Find the first matching route, including nested children.
@@ -114,6 +116,9 @@ when defined(js):
   proc getWindowPathname(): string =
     nondet.location()
 
+proc navigate*(router: Router; path: string; replace = false)
+  ## (Defined below; `createRouter` installs it as the navigator.)
+
 proc createRouter*(routes: seq[RouteEntry]; initialPath: string): Router =
   ## Create a router from route definitions with an explicit initial path.
   ## Does not read window.location or listen to popstate.
@@ -142,6 +147,9 @@ proc createRouter*(routes: seq[RouteEntry]; initialPath: string): Router =
     router.updateMatch()
 
   activeRouter = router
+  # The router is the target of global navigate() and `Link` from now on
+  # (navigator.nim), until another navigator is installed.
+  setNavigator(proc (path: string; replace: bool) = router.navigate(path, replace))
   result = router
 
 proc createRouter*(routes: seq[RouteEntry]): Router =

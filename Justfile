@@ -223,6 +223,7 @@ test-c:
     nim c -r tests/test_corner_cases.nim
     nim c -r tests/test_accessibility.nim
     nim c -r tests/test_router.nim
+    nim c -r tests/test_navigator.nim
     nim c -r tests/test_ssr_routing.nim
     nim c -r tests/test_server_functions.nim
     # A write or flush on a nil `ctx.bodyWriter` raises ValueError (a 500),
@@ -360,6 +361,11 @@ test-js: build-tailwind
     nim js -r tests/poc_monaco_host.nim
     nim js -r tests/test_accessibility.nim
     nim js -r tests/test_router.nim
+    nim js -r tests/test_navigator.nim
+    # An application's own navigator does not compile the router in.
+    nim js -d:release --out:build/navigator_only.js tests/fixtures/navigator_only.nim
+    "${ISONIM_SCENARIO_NODE:-node}" build/navigator_only.js
+    ! grep -E 'currentPath|updateMatch|matchChain' build/navigator_only.js
     nim js -r tests/test_server_functions.nim
     nim js -r tests/test_form_actions.nim
     nim js -r tests/test_data_loading.nim

@@ -50,7 +50,9 @@
 ##
 ## **Generated, both targets.**  The enum `ForumRoute`;
 ## `routeSpecs(ForumRoute)` and `spec(r)` (the declared entries as
-## `RouteSpec`); `<name>Path(req)` for every page and data entry.
+## `RouteSpec`); `<name>Path(req)` for every page and data entry (a
+## template: a program carries the path building of the paths it builds,
+## at the call).
 ##
 ## **Generated, C target.**  `ForumRouteHandlers`, an object with one
 ## handler field per page, data and `any` entry, and
@@ -64,7 +66,9 @@
 ## and mutation entry (fetch, CSRF and context headers, stale responses
 ## dropped, an idempotency key and one resend of a write answered `503`
 ## with `Retry-After`: route_client.nim, rpc_client.nim);
-## `<name>Navigate(req)` and `<name>Link(parent, req, text)` for each page;
+## `<name>Navigate(req)` (a template) and `<name>Link(parent, req, text)`
+## for each page, which navigate through the active navigator
+## (navigator.nim): IsoNim's `Router`, or the application's own;
 ## `<name>Data(req): Future[Resp]` for each page with `json = true` (its
 ## JSON variant, by `Accept`, navigation-scoped: what a client router
 ## renders a page from without loading its document).
@@ -378,7 +382,7 @@ macro routeManifest*(enumName: untyped; body: untyped): untyped =
       let reqT = e.reqType
       let pat = newLit(e.path)
       result.add quote do:
-        proc `pathProc`*(req: `reqT`): string =
+        template `pathProc`*(req: `reqT`): string =
           buildPath(`pat`, req)
 
   var cSide = newStmtList()
@@ -508,8 +512,10 @@ macro routeManifest*(enumName: untyped; body: untyped): untyped =
     of rkPage:
       let navProc = ident($e.name & "Navigate")
       let linkProc = ident($e.name & "Link")
+      # A template, like `<name>Call`: a bundle carries the navigation of
+      # the pages it navigates to, at the call, and no helper per page.
       jsSide.add quote do:
-        proc `navProc`*(req: `reqT`) =
+        template `navProc`*(req: `reqT`) =
           navigate(`pathProc`(req))
         proc `linkProc`*[P](parent: P; req: `reqT`; text: string) =
           Link(parent, `pathProc`(req), text)

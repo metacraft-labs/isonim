@@ -1,15 +1,22 @@
 ## isonim/routing/navigate.nim
 ##
 ## Navigation helpers: global navigate() and Link component.
+##
+## Both go through the active navigator (navigator.nim): the `Router` that
+## `createRouter` made, or the navigator an application that renders its own
+## pages installed with `setNavigator`. Neither refers to `Router` itself, so
+## an application of the second kind does not compile the router in.
 
-import router
+import router, navigator
 
-export router.navigate
+export router.navigate, navigator
 
 proc navigate*(path: string; replace = false) =
-  ## Global navigation function. Uses the active router.
-  if activeRouter != nil:
-    activeRouter.navigate(path, replace)
+  ## Global navigation function: the active navigator shows `path`
+  ## (navigator.nim); without one, nothing happens.
+  let target = currentNavigator()
+  if target != nil:
+    target(path, replace)
 
 when defined(js):
   import ../web/dom_api
