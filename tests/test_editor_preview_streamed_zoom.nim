@@ -19,7 +19,13 @@
 ##   with the streamed canvas hidden (``PSZ_M3_GPUI_FRAMES``). The painted frame
 ##   is the box where the two captures differ, so the size is measured from
 ##   pixels and not read back from the DOM. The test fails when no capture is
-##   given, and when the painted frame is not the model's size.
+##   given, when the painted frame is not the model's size, and when its content
+##   is not the Trip Planner page: a uniform frame (a black or unpainted canvas)
+##   or a frame with other blocks (another story, such as the Task App Inbox).
+##   The capture tool is tools/psz-m3-gpui-capture/ (its README says what must be
+##   running). The GPUI raster draws element boxes, not glyphs, so the content
+##   check is on the two text elements the web preview draws (title, body), not
+##   on the words.
 ##   The area the browser measured is handed to the model in that half, so the
 ##   model's Fit is computed for the layout that was captured.
 ## - No layout engine runs, so the preview area is supplied by the test through
@@ -34,7 +40,7 @@
 ##   browser's measured width (677x396) is checked by
 ##   tests/browser/e2e_tui_cells_viewport_zoom_live.mjs, and one case below sets
 ##   the measured value to show that the model reads whatever the page measured.
-import std/[json, math, os, strutils, tables, unittest]
+import std/[json, math, os, sequtils, strutils, tables, unittest]
 import isonim/core/[signals, computation, owner]
 import isonim/testing/mock_dom
 import isonim/editor/[viewmodels, types, preview_zoom]
@@ -91,10 +97,15 @@ proc parsePpm(path: string): PpmImage =
   doAssert result.rgb.len == result.width * result.height * 3,
     "PPM payload does not match its header: " & path
 
-proc paintedBox(shownPath, hiddenPath: string): tuple[w, h: int] =
-  ## The pixel size of the box the streamed frame paints on screen. The two
-  ## captures differ only where the canvas paints, because the driver hides the
-  ## canvas and nothing else; the box of the differing pixels is the frame.
+type
+  PaintedBox = object
+    x, y, w, h: int
+    ## The frame's box on screen, in the capture's pixels.
+
+proc paintedBox(shownPath, hiddenPath: string): PaintedBox =
+  ## The box the streamed frame paints on screen. The two captures differ only
+  ## where the canvas paints, because the driver hides the canvas and nothing
+  ## else; the box of the differing pixels is the frame.
   let shown = parsePpm(shownPath)
   let hidden = parsePpm(hiddenPath)
   doAssert shown.width == hidden.width and shown.height == hidden.height,
@@ -115,8 +126,74 @@ proc paintedBox(shownPath, hiddenPath: string): tuple[w, h: int] =
         maxX = max(maxX, x)
         maxY = max(maxY, y)
   if maxX < 0:
-    return (0, 0)
-  result = (maxX - minX + 1, maxY - minY + 1)
+    return PaintedBox()
+  result = PaintedBox(x: minX, y: minY, w: maxX - minX + 1, h: maxY - minY + 1)
+
+proc pixel(img: PpmImage; x, y: int): tuple[r, g, b: int] =
+  let i = (y * img.width + x) * 3
+  (ord(img.rgb[i]), ord(img.rgb[i + 1]), ord(img.rgb[i + 2]))
+
+proc distance(a, b: tuple[r, g, b: int]): int =
+  max(abs(a.r - b.r), max(abs(a.g - b.g), abs(a.b - b.b)))
+
+type
+  Block = object
+    colour: tuple[r, g, b: int]
+    length: int
+
+proc columnBlocks(img: PpmImage; box: PaintedBox): seq[Block] =
+  ## The runs of one colour down the middle of the frame, top to bottom. Runs
+  ## shorter than 6 px are edge pixels, not elements.
+  var runs: seq[Block]
+  let x = box.x + box.w div 2
+  for y in box.y ..< box.y + box.h:
+    let c = pixel(img, x, y)
+    if runs.len > 0 and distance(runs[^1].colour, c) <= 12:
+      inc runs[^1].length
+    else:
+      runs.add Block(colour: c, length: 1)
+  for run in runs:
+    if run.length >= 6:
+      result.add run
+
+proc checkFrameContent(shownPath: string; box: PaintedBox; state: string) =
+  ## The frame's content, not only its size. The expectation is the Trip
+  ## Planner page the web preview shows: the page's title and its body text,
+  ## as two text elements, the title above the body, inside the page. The web
+  ## preview draws that in its fallback panel (the story's registry hook supplies
+  ## the title and body, see examples/wanderlust/stories.nim). The GPUI frame
+  ## draws the same two elements as
+  ## the launcher's raster: a dark page header, then a title block, then a body
+  ## block. A black or unpainted canvas is one colour, and another story's frame
+  ## (the Task App Inbox) has more blocks than this.
+  let shot = parsePpm(shownPath)
+  var colours = initCountTable[int]()
+  for y in box.y ..< box.y + box.h:
+    for x in countup(box.x, box.x + box.w - 1, 3):
+      let c = pixel(shot, x, y)
+      inc colours, c.r * 65536 + c.g * 256 + c.b
+  var total = 0
+  var largest = 0
+  for _, count in colours.pairs:
+    inc total, count
+    largest = max(largest, count)
+  let share = largest.float / total.float
+  echo "  ", state, ": ", colours.len, " colours in the frame, the largest ", int(share * 100), "%"
+  doAssert colours.len >= 3,
+    "the " & state & " frame has " & $colours.len & " colour(s): it is not a rendered page"
+  doAssert share < 0.9,
+    "the " & state & " frame is " & $int(share * 100) & "% one colour"
+  let blocks = columnBlocks(shot, box)
+  echo "  ", state, ": blocks down the middle ", blocks.len, " (",
+    blocks.mapIt($it.length).join(", "), " px)"
+  doAssert blocks.len == 3,
+    "the " & state & " frame has " & $blocks.len & " element blocks, not the page's header, title and body"
+  doAssert blocks[0].length <= 16,
+    "the page header is " & $blocks[0].length & " px in " & state
+  doAssert blocks[1].length >= 100 and blocks[2].length >= 100,
+    "the title and body blocks are not both element-sized in " & state
+  doAssert distance(blocks[1].colour, blocks[2].colour) > 12,
+    "the title and body blocks are one colour in " & state
 
 proc checkCapturedFrame(vm: EditorVM; dir, state: string) =
   ## One capture state (``fit``, ``actual``, ``actual-wide``): the browser's
@@ -148,6 +225,7 @@ proc checkCapturedFrame(vm: EditorVM; dir, state: string) =
     "painted frame width " & $box.w & " is not " & $want.w & " in " & state
   doAssert abs(box.h - want.h) <= 1,
     "painted frame height " & $box.h & " is not " & $want.h & " in " & state
+  checkFrameContent(dir / (state & "-shown.ppm"), box, state)
   if state.startsWith("actual"):
     # At 100% the frame is larger than the area on some axis, so it scrolls.
     doAssert (desktopFrameW > areaW) or (desktopFrameH > areaH),
