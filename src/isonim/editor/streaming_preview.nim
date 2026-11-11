@@ -137,6 +137,12 @@ type
     availableBackends*: Signal[seq[PreviewBackend]]
     status*: Signal[BridgeStatus]
     lastError*: Signal[string]
+    frameSource*: Signal[string]
+      ## PSZ-M3 note 20: the launcher's declared frame source, read from the
+      ## hello bag's ``capabilities.frameSource``. ``"synthetic"`` means the
+      ## frames are the tree-derived raster, not the native renderer's
+      ## output, so the page preview labels them. Empty when the launcher
+      ## declared nothing (or no hello has arrived yet).
     bridgePort*: Signal[int]
     componentPath*: Signal[string]
     reloadGeneration*: Signal[int]
@@ -448,6 +454,7 @@ proc newStreamingPreviewVM*(initial: PreviewBackend = pbWeb;
   let availableBackends = createSignal(available)
   let status = createSignal(bsIdle)
   let lastError = createSignal("")
+  let frameSource = createSignal("")
   let bridgePort = createSignal(0)
   let componentPath = createSignal("")
   let reloadGeneration = createSignal(0)
@@ -469,6 +476,7 @@ proc newStreamingPreviewVM*(initial: PreviewBackend = pbWeb;
     availableBackends: availableBackends,
     status: status,
     lastError: lastError,
+    frameSource: frameSource,
     bridgePort: bridgePort,
     componentPath: componentPath,
     reloadGeneration: reloadGeneration,
@@ -635,6 +643,24 @@ proc decodeTuiElementTreeAsManifest(jsonBody: string): ElementTreeManifest =
       w: b["w"].getInt, h: b["h"].getInt)
     result.elements.add entry
 
+proc helloFrameSource*(jsonBody: string): string =
+  ## PSZ-M3 note 20: the ``capabilities.frameSource`` value of a ``hello``
+  ## M-packet body, or ``""`` when the body does not carry one, is not a
+  ## hello, or does not parse. The launcher's own ``hello`` is the only
+  ## source; nothing here guesses a frame source from the backend name.
+  try:
+    let node = parseJson(jsonBody)
+    if node.kind == JObject and node.hasKey("type") and
+       node["type"].kind == JString and node["type"].getStr() == "hello" and
+       node.hasKey("capabilities") and
+       node["capabilities"].kind == JObject and
+       node["capabilities"].hasKey("frameSource") and
+       node["capabilities"]["frameSource"].kind == JString:
+      return node["capabilities"]["frameSource"].getStr()
+  except CatchableError:
+    discard
+  ""
+
 proc dispatchMetaPacket*(vm: StreamingPreviewVM; jsonBody: string) =
   ## Dispatch one decoded M-packet JSON body. Today the editor
   ## consumes two element-tree sub-kinds from a launcher:
@@ -666,6 +692,13 @@ proc dispatchMetaPacket*(vm: StreamingPreviewVM; jsonBody: string) =
   ## legacy string as a prefix). The delta probe MUST run first so
   ## delta bodies route to ``applyElementTreeDeltaOps`` instead of
   ## ``decodeElementTreeJson`` (which would raise).
+  # PSZ-M3 note 20: a `hello` records the launcher's declared frame source on
+  # ``vm.frameSource`` (empty when it declares none), so each launch replaces
+  # the previous launcher's value. Hello carries no element-tree body, so it
+  # returns before the element-tree probes.
+  if jsonBody.contains("\"type\":\"hello\""):
+    vm.frameSource.val = helloFrameSource(jsonBody)
+    return
   if isElementTreeDeltaBody(jsonBody):
     try:
       let decoded = decodeElementTreeDelta(jsonBody)

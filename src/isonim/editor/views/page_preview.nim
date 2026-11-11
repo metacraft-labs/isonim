@@ -241,6 +241,33 @@ proc renderPagePreview*[R, E](r: R; vm: EditorVM): E =
   r.setStyle(pageCanvasMnt.breadcrumb, "margin", "12px 16px 0 16px")
   r.setStyle(pageCanvasMnt.breadcrumb, "align-self", "flex-start")
   r.appendChild(frameHostNode, pageCanvasMnt.breadcrumb)
+  # PSZ-M3 note 20: a one-line muted note under the streamed frame, shown only
+  # while the frame is the synthetic raster (the launcher's hello declares
+  # ``frameSource: "synthetic"``). It is absolutely placed in the zoom stage
+  # just below the stage box, so it is not scaled by the zoom transform (the
+  # transform is on the frame, not the stage), and it does not take a row in
+  # the scroll host's flex layout.
+  var frameSourceLabel: E
+  let frameSourceNode = ui(r):
+    tdiv(ref = frameSourceLabel,
+          `data-preview-frame-source` = "synthetic",
+          `role` = "note",
+          position = "absolute",
+          top = "100%",
+          left = "0",
+          margin = "6px 0 0 0",
+          font_family = "ui-sans-serif, system-ui, sans-serif",
+          font_size = "11px",
+          line_height = "1.3",
+          color = "#A0A2B0",
+          white_space = "nowrap",
+          overflow = "hidden",
+          text_overflow = "ellipsis",
+          max_width = "100%",
+          display = "none"):
+      text "Synthetic preview: GPUI draws boxes only on Linux"
+  discard frameSourceNode
+  r.appendChild(zoomStage, frameSourceLabel)
   r.appendChild(container, frameHostNode)
   # Pages use the same overlay and guarded rendered-property selection path
   # as component previews. A layer record alone has no computed properties.
@@ -453,6 +480,16 @@ proc renderPagePreview*[R, E](r: R; vm: EditorVM): E =
     r.setStyle(shownFrame, "transform",
       if scale == 1.0: "none" else: "scale(" & $scale & ")")
     r.setAttribute(shownFrame, "data-preview-zoom-scale", $scale)
+
+  # PSZ-M3 note 20: show the synthetic-frame label only for a streamed page
+  # whose launcher declared the synthetic raster.
+  createRenderEffect proc() =
+    let useCanvas = vm.selectedStory.val.kind == skPage and
+      vm.platform.val != pbWeb
+    let synthetic = vm.streamingPreview != nil and
+      vm.streamingPreview.frameSource.val == "synthetic"
+    r.setStyle(frameSourceLabel, "display",
+      if useCanvas and synthetic: "block" else: "none")
 
   # M-EVP-13: overlay positioning effect — hover label, selection
   # outline, breadcrumb, edit-mode handles. Shared with component_detail
