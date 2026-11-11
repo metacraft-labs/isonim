@@ -143,6 +143,12 @@ type
       ## frames are the tree-derived raster, not the native renderer's
       ## output, so the page preview labels them. Empty when the launcher
       ## declared nothing (or no hello has arrived yet).
+    rendererFellBack*: Signal[bool]
+      ## PSZ-M3 note 22: true once the bridge closed the connection with
+      ## ``rendererFellBackCloseCode``: the launcher's renderer fell back
+      ## mid-connection. The page preview then shows
+      ## ``rendererFellBackText`` in place of the frame, and the canvas holds
+      ## no frame. A new hello clears it (a new launch is a new connection).
     bridgePort*: Signal[int]
     componentPath*: Signal[string]
     reloadGeneration*: Signal[int]
@@ -455,6 +461,7 @@ proc newStreamingPreviewVM*(initial: PreviewBackend = pbWeb;
   let status = createSignal(bsIdle)
   let lastError = createSignal("")
   let frameSource = createSignal("")
+  let rendererFellBack = createSignal(false)
   let bridgePort = createSignal(0)
   let componentPath = createSignal("")
   let reloadGeneration = createSignal(0)
@@ -477,6 +484,7 @@ proc newStreamingPreviewVM*(initial: PreviewBackend = pbWeb;
     status: status,
     lastError: lastError,
     frameSource: frameSource,
+    rendererFellBack: rendererFellBack,
     bridgePort: bridgePort,
     componentPath: componentPath,
     reloadGeneration: reloadGeneration,
@@ -587,6 +595,7 @@ proc selectBackend*(vm: StreamingPreviewVM; backend: PreviewBackend) =
     return
   vm.selectedBackend.val = backend
   vm.lastError.val = ""
+  vm.rendererFellBack.val = false
   vm.bridgePort.val = 0
   vm.status.val = if backendNeedsRenderServe(backend): bsLaunching
                   else: bsIdle
@@ -597,6 +606,27 @@ proc onBridgeLaunched*(vm: StreamingPreviewVM; bp: BridgeProcess) =
   vm.bridgePort.val = bp.port
   vm.status.val = bsRunning
   vm.lastError.val = ""
+
+const
+  rendererFellBackCloseCode* = 4001
+    ## PSZ-M3 note 22: the WebSocket close code the bridge sends when the
+    ## launcher's frame source changed after its hello (the renderer fell back
+    ## to the synthetic raster). The bridge's copy is
+    ## `rendererFellBackCloseCode` in isonim-render-serve `bridge.nim`; a test
+    ## on each side pins the value.
+  rendererFellBackText* = "GPUI preview unavailable: renderer fell back"
+    ## The message the page preview shows in place of a fallen-back frame.
+
+proc applyBridgeClose*(vm: StreamingPreviewVM; code: int; reason: string) =
+  ## PSZ-M3 note 22: the state transition for a closed bridge connection. The
+  ## fallback close is the only close that changes the preview: any other close
+  ## (a normal close, a protocol error, a detach by the editor) leaves the
+  ## preview as it is. ``reason`` is accepted for the record but not parsed, so
+  ## the code alone decides. A reason that names the fallback without the code
+  ## does not count.
+  if vm == nil: return
+  if code == rendererFellBackCloseCode:
+    vm.rendererFellBack.val = true
 
 proc onBridgeError*(vm: StreamingPreviewVM; message: string) =
   vm.bridgePort.val = 0
@@ -698,6 +728,9 @@ proc dispatchMetaPacket*(vm: StreamingPreviewVM; jsonBody: string) =
   # returns before the element-tree probes.
   if jsonBody.contains("\"type\":\"hello\""):
     vm.frameSource.val = helloFrameSource(jsonBody)
+    # PSZ-M3 note 22: a new hello is a new connection, so an earlier fallback
+    # no longer applies to the frames that follow it.
+    vm.rendererFellBack.val = false
     return
   if isElementTreeDeltaBody(jsonBody):
     try:
@@ -1105,6 +1138,10 @@ when defined(js):
             }
           } catch (_) {}
         """].}
+    let onSocketClose = proc(code: int; reason: string) =
+      ## PSZ-M3 note 22: the socket closed. Only the renderer-fell-back close
+      ## changes the preview; see ``applyBridgeClose``.
+      vm.applyBridgeClose(code, reason)
     let onDblClick = proc(x: int; y: int) =
       ## M-EVP-11: hit-test the manifest at the dblclick coordinate.
       ## When the resolved entry's ``kind == "vector-symbol"``, fire
@@ -1120,7 +1157,7 @@ when defined(js):
       if onVectorSymbolDblClick != nil:
         onVectorSymbolDblClick(entry.componentPath)
     {.emit: ["""
-      (function (canvas, url, dispatchMeta, onClick, onHover, onDblClick, onWsOpen) {
+      (function (canvas, url, dispatchMeta, onClick, onHover, onDblClick, onWsOpen, onSocketClose) {
         if (!canvas || !url) return null;
         var ws = new WebSocket(url);
         ws.binaryType = 'arraybuffer';
@@ -2101,6 +2138,18 @@ when defined(js):
           pointerdown: focusOnPointerDown,
           keydown: onCanvasKey, keyup: onCanvasKey,
         };
+        // PSZ-M3 note 22: the bridge closes with 4001 when the launcher's
+        // renderer fell back mid-connection. Report it to the editor (which
+        // shows the "renderer fell back" note) and clear the canvas, so the
+        // last frame of the healthy renderer is not left on screen.
+        ws.addEventListener('close', function (e) {
+          if (!e || e.code !== 4001) return;
+          try { if (onSocketClose) onSocketClose(e.code, e.reason || ''); } catch (_) {}
+          try {
+            var c2d = canvas.getContext('2d');
+            if (c2d) c2d.clearRect(0, 0, canvas.width, canvas.height);
+          } catch (_) {}
+        });
         ws.__isonimCanvas = canvas;
         // EPP-M6: expose the video-decoder teardown so
         // ``detachBridgeClient`` can release any held GPU surface
@@ -2112,7 +2161,7 @@ when defined(js):
         """, socket, """ = ws;
       })(""", canvas, ", ", bridgeUrl.cstring, ", ",
        dispatchMeta, ", ", onClick, ", ", onHover, ", ", onDblClick,
-       ", ", onWsOpen, """);
+       ", ", onWsOpen, ", ", onSocketClose, """);
     """].}
     BridgeClientHandle(socket: socket, canvas: canvas, url: bridgeUrl)
 

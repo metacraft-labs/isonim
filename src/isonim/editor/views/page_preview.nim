@@ -268,6 +268,36 @@ proc renderPagePreview*[R, E](r: R; vm: EditorVM): E =
       text "Synthetic preview: GPUI draws boxes only on Linux"
   discard frameSourceNode
   r.appendChild(zoomStage, frameSourceLabel)
+  # PSZ-M3 note 22: the note that replaces a frame the renderer fell back from.
+  # It covers the device frame (the wrapper is absolutely positioned, so the
+  # child is laid over the canvas), in the editor's dark chrome with the same
+  # muted note colour as the label. It is shown only while the bridge reports
+  # the fallback, and the canvas holds no frame then (the bridge's close clears
+  # it), so the frame area never shows a stale or blank frame in silence.
+  var rendererFellBackNote: E
+  let rendererFellBackNode = ui(r):
+    tdiv(ref = rendererFellBackNote,
+          `data-renderer-fell-back` = "true",
+          `role` = "status",
+          position = "absolute",
+          top = "0",
+          left = "0",
+          right = "0",
+          bottom = "0",
+          display = "none",
+          align_items = "center",
+          justify_content = "center",
+          padding = "16px",
+          box_sizing = "border-box",
+          background_color = "#1B1D27",
+          color = "#A0A2B0",
+          font_family = "ui-sans-serif, system-ui, sans-serif",
+          font_size = "13px",
+          line_height = "1.3",
+          text_align = "center"):
+      text rendererFellBackText
+  discard rendererFellBackNode
+  r.appendChild(pageCanvasMnt.wrapper, rendererFellBackNote)
   r.appendChild(container, frameHostNode)
   # Pages use the same overlay and guarded rendered-property selection path
   # as component previews. A layer record alone has no computed properties.
@@ -497,9 +527,15 @@ proc renderPagePreview*[R, E](r: R; vm: EditorVM): E =
     # can record which frames the page showed, and the note stays
     # synthetic-only.
     r.setAttribute(zoomStage, "data-preview-frame-declared", declared)
+    # PSZ-M3 note 22: a fallen-back renderer shows its note in place of the
+    # frame, and the frame's label goes with the frame.
+    let fellBack = useCanvas and vm.streamingPreview != nil and
+      vm.streamingPreview.rendererFellBack.val
     let synthetic = declared == "synthetic"
     r.setStyle(frameSourceLabel, "display",
-      if useCanvas and synthetic: "block" else: "none")
+      if useCanvas and synthetic and not fellBack: "block" else: "none")
+    r.setStyle(rendererFellBackNote, "display",
+      if fellBack: "flex" else: "none")
 
   # M-EVP-13: overlay positioning effect — hover label, selection
   # outline, breadcrumb, edit-mode handles. Shared with component_detail
