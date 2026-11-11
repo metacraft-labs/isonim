@@ -5,6 +5,7 @@ when not defined(js):
   {.error: "The editor must be compiled with `nim js`".}
 
 import examples/wanderlust/stories as wanderlust
+import examples/wanderlust/pages/trip_planner_document
 import isonim/core/signals
 import isonim/editor
 import isonim/editor/browser
@@ -49,7 +50,11 @@ proc main() =
       result = wanderlust.wanderlustPreviewHook(story, platform)
       if story.kind == skComponent and story.group == "DestinationCard":
         result.documentHtml = demoComponentDocument(foundationSource[],
-          result.title, result.bodyText),
+          result.title, result.bodyText)
+      elif story.kind == skPage and story.name == "Trip Planner":
+        # The web preview shows a page as its document. Without one it falls
+        # back to the title and summary line, which is what it showed before.
+        result.documentHtml = tripPlannerDocument(),
     agentPromptAdapter = proc(prompt: string; context: AgentPromptContext): bool =
       editor.chat.addAgentResponse(
         "Fake adapter streamed response for '" & prompt &
