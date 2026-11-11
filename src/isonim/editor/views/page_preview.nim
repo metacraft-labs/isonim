@@ -486,8 +486,11 @@ proc renderPagePreview*[R, E](r: R; vm: EditorVM): E =
   createRenderEffect proc() =
     let useCanvas = vm.selectedStory.val.kind == skPage and
       vm.platform.val != pbWeb
+    # Only a streamed page carries a declared source: a web page after a GPUI
+    # session must not report the stale source of that session.
     let declared =
-      if vm.streamingPreview != nil: vm.streamingPreview.frameSource.val
+      if useCanvas and vm.streamingPreview != nil:
+        vm.streamingPreview.frameSource.val
       else: ""
     # PSZ-M3 note 21: the source the launcher declared, whatever it is
     # ("synthetic", "real", or "" for none). The stage carries it so a capture

@@ -28,14 +28,10 @@
 ##   on the words.
 ##   The capture records the frame source the launcher declared (the hello's
 ##   ``capabilities.frameSource``, read by the page into the zoom stage's
-##   ``data-preview-frame-declared``), and the label state. The check depends on
-##   that source (PSZ-M3 note 21):
-##   - ``real``: the Trip Planner content check is required, as before.
-##   - ``synthetic``: the synthetic label must be visible with its text, and the
-##     content check is NOT run. It is reported as an expected failure that
-##     names RS-M14b and its issue, and it is printed and counted. The sizing and
-##     zoom checks still run and are required.
-##   - anything else, or a capture that declares no source: the test fails.
+##   ``data-preview-frame-declared``), and the label state. Both sources run the
+##   same content check (measured at isonim 0768a132, it passes on the synthetic
+##   structural raster). A synthetic source must show the synthetic label; a real
+##   source must not. Any other source, or none, fails.
 ##   The area the browser measured is handed to the model in that half, so the
 ##   model's Fit is computed for the layout that was captured.
 ## - No layout engine runs, so the preview area is supplied by the test through
@@ -266,11 +262,15 @@ proc checkCapturedFrame(vm: EditorVM; dir, state: string): int =
     "painted frame height " & $box.h & " is not " & $want.h & " in " & state
   if source == "synthetic":
     checkSyntheticLabel(meta, state)
-    echo "  XFAIL[RS-M14b] ", state, ": Trip Planner content check not run: the frame is",
-      " the synthetic raster, which draws boxes and no page text. Record: ", rsM14bIssue
-    result = 1
   else:
-    checkFrameContent(dir / (state & "-shown.ppm"), box, state)
+    # A real frame must not carry the synthetic note.
+    doAssert not meta["frameSourceLabel"]["visible"].getBool,
+      "the real frame in " & state & " shows the synthetic note"
+  # The content check is the same for both sources. Measured at isonim
+  # 0768a132: it is structural (three element blocks down the middle), and the
+  # synthetic raster draws those blocks, so it passes on a synthetic frame. It is
+  # NOT reported as an expected failure (see the PSZ-M3 note 21 record).
+  checkFrameContent(dir / (state & "-shown.ppm"), box, state)
   if state.startsWith("actual"):
     # At 100% the frame is larger than the area on some axis, so it scrolls.
     doAssert (desktopFrameW > areaW) or (desktopFrameH > areaH),
