@@ -1070,6 +1070,7 @@ test-editor: test-design-review-local-harbor test-design-review-harbor-build tes
     nim c -r tests/test_editor_agent_harbor.nim
     nim c -r tests/test_editor_user_project.nim
     nim c -r tests/test_editor_shell_views.nim
+    nim c -r tests/test_editor_status_bar_page_story.nim
     nim c -r tests/test_editor_shell_controls.nim
     nim c -r tests/test_editor_loop_handlers.nim
     nim c -r tests/test_loop_accessors.nim

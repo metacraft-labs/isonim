@@ -2433,8 +2433,18 @@ proc applyFoundationStoryScope(editor: EditorVM; story: StoryRef) =
         editor.foundations.selectedTokenKey.val = token.key
         break
 
+proc clearInspectorSelection*(editor: EditorVM)
+  ## Declared here because ``selectStory`` clears the selection on a story
+  ## change; defined with the inspector helpers below.
+
 proc selectStory*(editor: EditorVM; story: StoryRef): bool {.discardable.} =
   ## Select a story and move the shell to the view that owns that story kind.
+  ##
+  ## A different story drops the inspector selection. An element belongs to
+  ## the story whose tree it came from: the workspace's initial element
+  ## (the DestinationCard root) was still selected when the URL route moved
+  ## to a page, so the status bar kept naming a component the page does not
+  ## show (PSZ-M3 note 24). Selecting the same story again keeps it.
   if not editor.hasStory(story):
     return false
 
@@ -2442,8 +2452,13 @@ proc selectStory*(editor: EditorVM; story: StoryRef): bool {.discardable.} =
   # observers rebuild surfaces/controls, rather than rendering each partial
   # story, surface and schema update. Outermost batches flush synchronously;
   # enclosing callers retain their own batch boundary.
+  let previous = editor.selectedStory.val
+  let changed = previous.group != story.group or previous.name != story.name or
+    previous.kind != story.kind
   batch proc() =
     let nextView = viewForStory(story)
+    if changed:
+      editor.clearInspectorSelection()
     # M-EVP-8: selecting a non-vector-symbol story while the vector editor
     # is open closes it before routing to the new view. Selecting the same
     # vector-symbol story keeps the editor open (no-op on the target /
