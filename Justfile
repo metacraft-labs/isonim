@@ -1693,11 +1693,14 @@ test-editor-chat-visual-readiness output="build/chat-visual-readiness":
 test-editor-chat-contract:
     python3 tools/validate-chat-event-corpus.py
 
-# Entering the dev shell from another git repository must write nothing there.
-# Runs `nix develop`, so it is not part of the in-shell test recipes.
+# Entering the dev shell from another git repository must write nothing there,
+# and entering it here keeps Reprobuild's managed hooks in their slots (needs
+# `repro` on PATH). Runs `nix develop`, so it is not part of the in-shell test
+# recipes.
 test-dev-shell:
     bash tests/test_dev_shell_writes_nothing_elsewhere.sh
     bash tests/test_dev_shell_linked_worktree.sh
+    bash tests/test_dev_shell_keeps_repro_hooks.sh
 
 # Functional inspector popup geometry, focus and private-source acceptance.
 editor-popup-build:
