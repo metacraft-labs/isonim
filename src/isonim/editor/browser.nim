@@ -924,7 +924,9 @@ proc exposeWindowEditorHandle*(vm: EditorVM) =
       name: $name,
       kind: skPage,
       index: 0)
-    capturedVm.selectedStory.val = story
+    # The same clear as selectStory: a story change drops the element selected
+    # in the previous story (PSZ-M3 note 25).
+    capturedVm.setSelectedStory(story)
   proc setEditModeByIndex(modeIndex: int) =
     # Phase I (2026-05-28): the mode strip now carries four options —
     # Spec / View / Comment / Edit. Index 0 is Spec; the prior

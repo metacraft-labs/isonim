@@ -2365,6 +2365,22 @@ proc syncFlowStep(vm: EditorVM; story: StoryRef) =
       vm.flowPlayer.currentStep.val = i
       return
 
+proc clearInspectorSelection*(editor: EditorVM)
+  ## Declared here because ``setSelectedStory`` clears the selection on a story
+  ## change; defined with the inspector helpers below.
+
+proc setSelectedStory*(editor: EditorVM; story: StoryRef) =
+  ## Writes ``selectedStory`` for a route other than ``selectStory``: a flow
+  ## step, the vector editor, the browser test hook. An element belongs to the
+  ## story whose tree it came from, so a different story drops the inspector
+  ## selection, as ``selectStory`` does (PSZ-M3 notes 24 and 25). The same
+  ## story keeps its selection.
+  let changed = not sameStory(editor.selectedStory.val, story)
+  batch proc() =
+    if changed:
+      editor.clearInspectorSelection()
+    editor.selectedStory.val = story
+
 proc selectFlowStep*(editor: EditorVM; index: int): bool {.discardable.} =
   ## Select a flow step and synchronize the story, canvas item, and action.
   let steps = editor.flowPlayer.steps.val
@@ -2376,7 +2392,7 @@ proc selectFlowStep*(editor: EditorVM; index: int): bool {.discardable.} =
     return false
 
   editor.flowPlayer.currentStep.val = index
-  editor.selectedStory.val = story
+  editor.setSelectedStory(story)
   editor.activeView.val = evStoryboard
   editor.storyboard.selectedItem.val = editor.findCanvasItem(story)
   true
@@ -2432,10 +2448,6 @@ proc applyFoundationStoryScope(editor: EditorVM; story: StoryRef) =
       if token.kind in scope:
         editor.foundations.selectedTokenKey.val = token.key
         break
-
-proc clearInspectorSelection*(editor: EditorVM)
-  ## Declared here because ``selectStory`` clears the selection on a story
-  ## change; defined with the inspector helpers below.
 
 proc selectStory*(editor: EditorVM; story: StoryRef): bool {.discardable.} =
   ## Select a story and move the shell to the view that owns that story kind.
@@ -2594,7 +2606,7 @@ proc openVectorEditor*(editor: EditorVM; story: StoryRef): bool {.discardable.} 
   editor.vectorEditorUsages.val =
     editor.computeVectorEditorUsages(story.name)
   editor.vectorEditorUsageIndex.val = 0
-  editor.selectedStory.val = story
+  editor.setSelectedStory(story)
   editor.activeView.val = evVectorEditor
   true
 
