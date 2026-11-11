@@ -7,14 +7,22 @@ The fixture PNGs are arbitrary bytes: the writer hashes an image and never
 decodes it, so the freshness rules do not depend on a PNG encoder.
 Run: python3 -m unittest -v test_sidecar.py   (from this directory)
 """
+import datetime
+import functools
 import hashlib
+import http.server
+import io
 import json
 import os
 import shutil
+import socket
 import subprocess
 import tempfile
+import threading
 import unittest
+from contextlib import redirect_stdout
 
+import editor_bundle
 import sidecar
 
 
@@ -42,6 +50,13 @@ def git(cwd, *args):
     subprocess.run(["git", "-C", cwd, *args], check=True, capture_output=True,
                    env=dict(os.environ, GIT_AUTHOR_NAME="t", GIT_AUTHOR_EMAIL="t@example.invalid",
                             GIT_COMMITTER_NAME="t", GIT_COMMITTER_EMAIL="t@example.invalid"))
+
+
+def write_bundle_record(frames):
+    """A bundle.json as editor_bundle.py writes it. The fixture runs do not serve an editor, so
+    the sidecar tests use this record; BundleTest checks the real record against a real server."""
+    with open(os.path.join(frames, sidecar.BUNDLE_FILE), "w") as f:
+        json.dump({"url": "http://127.0.0.1:0", "files": {}, "treeHead": "fixture"}, f)
 
 
 class PaintedBoxTest(unittest.TestCase):
@@ -132,12 +147,16 @@ class CaptureFixtures(unittest.TestCase):
             measured["frameSource"] = declared_value
         with open(os.path.join(frames, "fit.json"), "w") as f:
             json.dump(measured, f)
-        write_ppm(os.path.join(frames, "fit-shown.ppm"), 8, 5, lambda x, y: (200, 200, 200) if x >= 4 else (1, 1, 1))
+        # The frame area is two slabs, as the synthetic raster paints them: the top
+        # three rows are one colour, the bottom two another.
+        write_ppm(os.path.join(frames, "fit-shown.ppm"), 8, 5,
+                  lambda x, y: ((200, 200, 200) if y < 3 else (100, 100, 100)) if x >= 4 else (1, 1, 1))
         write_ppm(os.path.join(frames, "fit-hidden.ppm"), 8, 5, lambda x, y: (1, 1, 1))
         write_bytes(os.path.join(frames, "fit-shown.png"), shown_png)
         write_bytes(os.path.join(frames, "fit-hidden.png"), hidden_png)
         for image in ("fit-shown.ppm", "fit-hidden.ppm", "fit-shown.png", "fit-hidden.png"):
             sidecar.record_capture(frames, os.path.join(frames, image))
+        write_bundle_record(frames)
         return frames
 
     def write_gpui_sidecar(self, frames, declared_value="synthetic"):
@@ -164,6 +183,7 @@ class CaptureFixtures(unittest.TestCase):
                     "runId": name, "captures": captures}
         with open(os.path.join(frames, "web-fit.json"), "w") as f:
             json.dump(measured, f)
+        write_bundle_record(frames)
         return frames
 
     def write_web_sidecar(self, frames):
@@ -309,6 +329,162 @@ class FreshnessTest(CaptureFixtures):
         self.assertEqual(self.write_web_sidecar(frames), 0)
         side = self.read_sidecar(frames, "web-fit.sidecar.json")
         self.assertEqual(sorted(side["files"]), ["page"])
+
+
+class FrameBoxTest(CaptureFixtures):
+    """A shown capture must show a streamed frame in its frame box, not the measuring colour or a blank."""
+
+    def setUp(self):
+        super().setUp()
+        # One sample per pixel, so the fixtures' small boxes are sampled in full.
+        saved = sidecar.SAMPLE_STEP
+        sidecar.SAMPLE_STEP = 1
+        self.addCleanup(setattr, sidecar, "SAMPLE_STEP", saved)
+
+    def run_with_shown(self, frame_pixel):
+        """A fit run whose shown frame area is frame_pixel(x, y) and whose hidden capture is all (1, 1, 1)."""
+        frames = self.new_dir("box")
+        with open(os.path.join(frames, "fit.json"), "w") as f:
+            json.dump({"areaWidth": 8, "readout": "100%", "frameSource": "synthetic"}, f)
+        write_ppm(os.path.join(frames, "fit-shown.ppm"), 8, 5,
+                  lambda x, y: frame_pixel(x, y) if x >= 4 else (1, 1, 1))
+        write_ppm(os.path.join(frames, "fit-hidden.ppm"), 8, 5, lambda x, y: (1, 1, 1))
+        write_bytes(os.path.join(frames, "fit-shown.png"), b"shown")
+        write_bytes(os.path.join(frames, "fit-hidden.png"), b"hidden")
+        for image in ("fit-shown.ppm", "fit-hidden.ppm", "fit-shown.png", "fit-hidden.png"):
+            sidecar.record_capture(frames, os.path.join(frames, image))
+        write_bundle_record(frames)
+        return frames
+
+    def test_magenta_frame_is_refused(self):
+        frames = self.run_with_shown(lambda x, y: (255, 0, 255))
+        with self.assertRaisesRegex(sidecar.CaptureRefused, "dominant colour is the measuring colour"):
+            self.write_gpui_sidecar(frames)
+        self.assertFalse(os.path.exists(os.path.join(frames, "fit.sidecar.json")))
+
+    def test_frame_mostly_magenta_is_refused(self):
+        # Four of five rows are magenta: the dominant colour is still the measuring colour.
+        frames = self.run_with_shown(lambda x, y: (255, 0, 255) if y < 4 else (120, 120, 120))
+        with self.assertRaisesRegex(sidecar.CaptureRefused, "measuring colour"):
+            self.write_gpui_sidecar(frames)
+
+    def test_uniform_frame_is_refused(self):
+        frames = self.run_with_shown(lambda x, y: (200, 200, 200))
+        with self.assertRaisesRegex(sidecar.CaptureRefused, "uniform"):
+            self.write_gpui_sidecar(frames)
+
+    def test_frame_identical_to_the_hidden_capture_is_refused(self):
+        # Shown equals hidden everywhere: nothing painted the frame area.
+        frames = self.run_with_shown(lambda x, y: (1, 1, 1))
+        with self.assertRaisesRegex(sidecar.CaptureRefused, "no frame was painted"):
+            self.write_gpui_sidecar(frames)
+
+    def test_painted_frame_is_accepted_and_its_colours_recorded(self):
+        # Three of five rows are one colour and two rows another: a painted frame.
+        frames = self.run_with_shown(lambda x, y: (200, 200, 200) if y < 3 else (100, 100, 100))
+        self.assertEqual(self.write_gpui_sidecar(frames), 0)
+        side = self.read_sidecar(frames)
+        self.assertEqual(side["frameBox"]["box"], {"x": 4, "y": 0, "width": 4, "height": 5})
+        self.assertEqual(side["frameBox"]["dominant"], "#c8c8c8")
+        self.assertEqual(side["frameBox"]["dominantFraction"], 0.6)
+        self.assertEqual(side["frameBox"]["distinct"], 2)
+
+    def test_painted_frame_with_default_sampling_is_accepted(self):
+        sidecar.SAMPLE_STEP = 3
+        frames = self.run_with_shown(lambda x, y: (200, 200, 200) if y < 3 else (100, 100, 100))
+        self.assertEqual(self.write_gpui_sidecar(frames), 0)
+
+
+class BundleTest(unittest.TestCase):
+    """editor_bundle.py against a real HTTP server on a free port, serving real build directories."""
+
+    class Quiet(http.server.SimpleHTTPRequestHandler):
+        def log_message(self, *args):
+            pass
+
+    def setUp(self):
+        self.tmp = tempfile.TemporaryDirectory()
+        self.addCleanup(self.tmp.cleanup)
+        self.tree = os.path.join(self.tmp.name, "isonim")
+        os.makedirs(self.tree)
+        git(self.tree, "init", "-q")
+        with open(os.path.join(self.tree, "f.txt"), "w") as f:
+            f.write("tree")
+        git(self.tree, "add", "f.txt")
+        git(self.tree, "commit", "-q", "-m", "fixture")
+        self.head = subprocess.run(["git", "-C", self.tree, "rev-parse", "HEAD"],
+                                   capture_output=True, text=True, check=True).stdout.strip()
+        self.build = self.make_build("build", b"bundle A")
+
+    def make_build(self, name, script):
+        path = os.path.join(self.tmp.name, name)
+        os.makedirs(path)
+        write_bytes(os.path.join(path, "index.html"), b"<!doctype html><title>editor</title>")
+        write_bytes(os.path.join(path, "editor.js"), script * 10)
+        return path
+
+    def serve(self, directory):
+        """Starts an HTTP server on a free port for directory and returns its base URL."""
+        handler = functools.partial(self.Quiet, directory=directory)
+        server = http.server.ThreadingHTTPServer(("127.0.0.1", 0), handler)
+        thread = threading.Thread(target=server.serve_forever, daemon=True)
+        thread.start()
+        self.addCleanup(server.server_close)
+        self.addCleanup(server.shutdown)
+        return "http://127.0.0.1:%d/index.html?view=page" % server.server_address[1]
+
+    def test_server_on_this_build_is_accepted(self):
+        base = self.serve(self.build)
+        record = editor_bundle.check(base, self.build, self.tree)
+        self.assertEqual(record["files"]["editor.js"]["servedSha256"], sha(b"bundle A" * 10))
+        self.assertEqual(record["files"]["editor.js"]["buildSha256"], sha(b"bundle A" * 10))
+        self.assertEqual(record["treeHead"], self.head)
+        self.assertEqual(record["url"], base.split("/index.html")[0])
+
+    def test_server_on_an_older_build_directory_is_refused(self):
+        older = self.make_build("older", b"bundle old")
+        base = self.serve(older)
+        with self.assertRaisesRegex(editor_bundle.CaptureRefused, "not serving this build directory"):
+            editor_bundle.check(base, self.build, self.tree)
+
+    def test_build_older_than_head_commit_is_refused(self):
+        base = self.serve(self.build)
+        commit_time = int(subprocess.run(["git", "-C", self.tree, "log", "-1", "--format=%ct"],
+                                         capture_output=True, text=True, check=True).stdout)
+        old = commit_time - 3600
+        os.utime(os.path.join(self.build, "editor.js"), (old, old))
+        with self.assertRaisesRegex(editor_bundle.CaptureRefused, "predates"):
+            editor_bundle.check(base, self.build, self.tree)
+
+    def test_no_server_is_refused(self):
+        with socket.socket() as probe:
+            probe.bind(("127.0.0.1", 0))
+            port = probe.getsockname()[1]
+        with self.assertRaisesRegex(editor_bundle.CaptureRefused, "no editor server answered"):
+            editor_bundle.check("http://127.0.0.1:%d/index.html" % port, self.build, self.tree)
+
+    def test_main_writes_the_record(self):
+        base = self.serve(self.build)
+        out = os.path.join(self.tmp.name, "bundle.json")
+        with redirect_stdout(io.StringIO()):
+            rc = editor_bundle.main(["--base", base, "--build", self.build, "--tree", self.tree, "--out", out])
+        self.assertEqual(rc, 0)
+        with open(out) as f:
+            self.assertEqual(json.load(f)["treeHead"], self.head)
+
+
+class BundleRecordInSidecarTest(CaptureFixtures):
+    def test_run_without_a_bundle_record_is_refused(self):
+        frames = self.gpui_run("no-bundle")
+        os.remove(os.path.join(frames, sidecar.BUNDLE_FILE))
+        with self.assertRaisesRegex(sidecar.CaptureRefused, "bundle.json missing"):
+            self.write_gpui_sidecar(frames)
+
+    def test_web_run_without_a_bundle_record_is_refused(self):
+        frames = self.web_run("web-no-bundle")
+        os.remove(os.path.join(frames, sidecar.BUNDLE_FILE))
+        with self.assertRaisesRegex(sidecar.CaptureRefused, "bundle.json missing"):
+            self.write_web_sidecar(frames)
 
 
 if __name__ == "__main__":

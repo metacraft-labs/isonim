@@ -26,6 +26,15 @@ The sidecar records what the frames came from:
                channel (the rule paintedBox uses in
                tests/test_editor_preview_streamed_zoom.nim). For web it is the
                visible frame measured in the page, in CSS px.
+  frameBox     the colours sampled inside the painted box of the shown PPM. A GPUI
+               capture is refused when the dominant colour is the measuring colour
+               (#ff00ff, which drive.mjs paints behind the hidden canvas), when one
+               colour fills the box (a blank frame), or when nothing was painted
+               (the shown and hidden captures match).
+  bundle       the editor bundle the server served for this run, from bundle.json
+               (editor_bundle.py): the sha256 of its files, as served and as built,
+               and the build's time against the HEAD commit it was made from. The
+               writer refuses a run without this record.
   files        each image the sidecar describes, with the sha256 and the UTC
                capture time taken when the image was written, and the runId of
                that capture run.
@@ -57,12 +66,23 @@ import subprocess
 import sys
 import uuid
 
-SCHEMA = "psz-m3-capture-sidecar/2"
+SCHEMA = "psz-m3-capture-sidecar/3"
 STATES = ("fit", "actual", "actual-wide")
 # The same threshold as paintedBox in tests/test_editor_preview_streamed_zoom.nim.
 PAINT_THRESHOLD = 24
 # The capture-time record of the GPUI images (written by --record).
 CAPTURES_FILE = "captures.json"
+# The record of the editor bundle the capture was served from (editor_bundle.py).
+BUNDLE_FILE = "bundle.json"
+# drive.mjs hides the canvas and paints the frame background this colour, so a
+# frame area that is this colour is the measuring colour, not a streamed frame.
+MEASURING_COLOUR = (255, 0, 255)
+# A frame box where one colour fills at least this share of the samples is
+# uniform: the launcher's synthetic raster has two slabs, and a real frame has
+# text and edges, so neither reaches this share.
+UNIFORM_FRACTION = 0.98
+# The frame box is sampled every this many pixels in each direction.
+SAMPLE_STEP = 3
 
 
 class CaptureRefused(ValueError):
@@ -189,6 +209,47 @@ def painted_box(shown_path, hidden_path):
     return {"x": min_x, "y": min_y, "width": max_x - min_x + 1, "height": max_y - min_y + 1}
 
 
+def frame_box_colours(shown_path, box):
+    """Samples the shown capture inside a box and reports its colours.
+
+    Returns {"dominant": "#rrggbb", "dominantFraction", "sampled", "distinct"}
+    over every SAMPLE_STEP-th pixel of the box (clipped to the image). Used to
+    tell a painted frame from the measuring colour or from a blank frame.
+    """
+    width, height, pixels = read_ppm(shown_path)
+    x0, y0 = max(0, box["x"]), max(0, box["y"])
+    x1, y1 = min(width, box["x"] + box["width"]), min(height, box["y"] + box["height"])
+    if x1 <= x0 or y1 <= y0:
+        raise CaptureRefused(f"{os.path.basename(shown_path)}: the frame box {box} is outside the capture")
+    counts = {}
+    row_bytes = width * 3
+    for y in range(y0, y1, SAMPLE_STEP):
+        row = pixels[y * row_bytes:(y + 1) * row_bytes]
+        for x in range(x0, x1, SAMPLE_STEP):
+            colour = (row[x * 3], row[x * 3 + 1], row[x * 3 + 2])
+            counts[colour] = counts.get(colour, 0) + 1
+    sampled = sum(counts.values())
+    dominant, top = max(counts.items(), key=lambda item: item[1])
+    return {"dominant": "#%02x%02x%02x" % dominant, "dominantFraction": round(top / sampled, 4),
+            "sampled": sampled, "distinct": len(counts)}
+
+
+def check_frame_box(colours, name):
+    """Refuses a frame box that does not show a streamed frame.
+
+    The measuring colour is refused as the dominant colour, and so is a box one
+    colour fills (a blank frame). Raises CaptureRefused; returns None when the
+    frame is painted.
+    """
+    if tuple(int(colours["dominant"][i:i + 2], 16) for i in (1, 3, 5)) == MEASURING_COLOUR:
+        raise CaptureRefused(f"{name}: the frame box's dominant colour is the measuring colour "
+                             f"(#ff00ff, {colours['dominantFraction']:.0%} of samples); the frame "
+                             "was not painted, so this is not a streamed frame")
+    if colours["dominantFraction"] >= UNIFORM_FRACTION:
+        raise CaptureRefused(f"{name}: the frame box is uniform ({colours['dominant']} fills "
+                             f"{colours['dominantFraction']:.0%} of samples); not a streamed frame")
+
+
 def renderer_for(capture, frame_source):
     """The renderer name a frame source stands for."""
     if capture == "web":
@@ -243,7 +304,7 @@ def build_sidecar(capture, state, window, trees, measured, painted, captured=Non
         "pageState": {k: measured.get(k) for k in (
             "areaWidth", "areaHeight", "scale", "readout", "wrapperRect",
             "canvasCssWidth", "canvasCssHeight", "frameSourceLabel", "viewport", "visible",
-            "stage", "scrollPort") if k in measured},
+            "stage", "scrollPort", "statusBar") if k in measured},
     }
     if captured is not None:
         sidecar["capturedPpm"] = captured
@@ -264,11 +325,30 @@ def write_gpui(frames, state, window, trees):
     hidden = os.path.join(frames, names["hidden"])
     width, height, _ = read_ppm(shown)
     painted = painted_box(shown, hidden)
+    # No painted box means the shown capture matches the hidden one, which is
+    # the measuring colour in the frame area: the frame never painted.
+    if painted is None:
+        raise CaptureRefused(f"{state}: the shown and hidden captures match, so the frame area "
+                             "is the measuring colour and no frame was painted")
+    colours = frame_box_colours(shown, painted)
+    check_frame_box(colours, names["shown"])
     sidecar = build_sidecar("gpui", state, window, trees, measured, painted,
                             captured={"width": width, "height": height})
+    sidecar["frameBox"] = dict(colours, box=painted)
+    sidecar["bundle"] = read_bundle(frames)
     sidecar["files"] = files
     sidecar["runId"] = record["runId"]
     return sidecar
+
+
+def read_bundle(frames):
+    """The editor bundle record editor_bundle.py wrote for this run, or a refusal when there is none."""
+    path = os.path.join(frames, BUNDLE_FILE)
+    if not os.path.isfile(path):
+        raise CaptureRefused(f"{BUNDLE_FILE} missing: the run did not check the served editor "
+                             "bundle (editor_bundle.py)")
+    with open(path) as f:
+        return json.load(f)
 
 
 def write_web(frames, state, trees):
@@ -291,6 +371,7 @@ def write_web(frames, state, trees):
             raise CaptureRefused(f"{name}: the capture recorded {entry.get('file')} for {key}")
         files[key] = verify_image(frames, name, entry)
     sidecar = build_sidecar("web", state, window, trees, measured, painted)
+    sidecar["bundle"] = read_bundle(frames)
     sidecar["files"] = files
     sidecar["runId"] = measured.get("runId")
     return sidecar

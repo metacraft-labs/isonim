@@ -25,11 +25,6 @@ if [ -d "$PSZ_M3_GPUI_FRAMES" ] && [ -n "$(ls -A "$PSZ_M3_GPUI_FRAMES")" ]; then
   echo "capture.sh: $PSZ_M3_GPUI_FRAMES is not empty" >&2
   exit 2
 fi
-mkdir -p "$PSZ_M3_GPUI_FRAMES"
-nix develop "$GUI_ASSERT_DIR" --command env NODE="$NODE" CHROMIUM="$CHROMIUM" \
-  PSZ_M3_DRIVE="$here/drive.mjs" PSZ_M3_URL="$PSZ_M3_URL" \
-  PSZ_M3_GPUI_FRAMES="$PSZ_M3_GPUI_FRAMES" PSZ_M3_STATES="$PSZ_M3_STATES" \
-  PSZ_M3_OUTPUT="$PSZ_M3_OUTPUT" PSZ_M3_WINDOW="$PSZ_M3_WINDOW" "$CAPTURE_DRIVER"
 # The trees the frames came from. The sidecars record their HEAD commits and
 # whether they are dirty, so a capture names the build it measured. Point these
 # at the checkouts that were built and served (the defaults are the workspace
@@ -37,6 +32,20 @@ nix develop "$GUI_ASSERT_DIR" --command env NODE="$NODE" CHROMIUM="$CHROMIUM" \
 export ISONIM_TREE="${ISONIM_TREE:-$here/../..}"
 export RENDER_SERVE_TREE="${RENDER_SERVE_TREE:-$here/../../../isonim-render-serve}"
 export EXAMPLES_TREE="${EXAMPLES_TREE:-$here/../../../isonim-examples}"
+# The bundle the server must serve: the build directory of ISONIM_TREE. Before
+# the run and after it, editor_bundle.py checks the server against that build
+# (a server left running from an older build directory is refused), and the
+# last record goes into the frames directory for the sidecar.
+export PSZ_M3_EDITOR_BUILD="${PSZ_M3_EDITOR_BUILD:-$ISONIM_TREE/build/editor}"
+mkdir -p "$PSZ_M3_GPUI_FRAMES"
+python3 "$here/editor_bundle.py" --base "$PSZ_M3_URL" --build "$PSZ_M3_EDITOR_BUILD" \
+  --tree "$ISONIM_TREE" --out "$PSZ_M3_GPUI_FRAMES/bundle.json" >/dev/null
+nix develop "$GUI_ASSERT_DIR" --command env NODE="$NODE" CHROMIUM="$CHROMIUM" \
+  PSZ_M3_DRIVE="$here/drive.mjs" PSZ_M3_URL="$PSZ_M3_URL" \
+  PSZ_M3_GPUI_FRAMES="$PSZ_M3_GPUI_FRAMES" PSZ_M3_STATES="$PSZ_M3_STATES" \
+  PSZ_M3_OUTPUT="$PSZ_M3_OUTPUT" PSZ_M3_WINDOW="$PSZ_M3_WINDOW" "$CAPTURE_DRIVER"
+python3 "$here/editor_bundle.py" --base "$PSZ_M3_URL" --build "$PSZ_M3_EDITOR_BUILD" \
+  --tree "$ISONIM_TREE" --out "$PSZ_M3_GPUI_FRAMES/bundle.json" >/dev/null
 # Each image's sha256 and UTC capture time are recorded as the image is written
 # (sidecar.py --record, into captures.json), so the sidecar writer below can
 # refuse an image that was copied in from another run or changed afterwards.

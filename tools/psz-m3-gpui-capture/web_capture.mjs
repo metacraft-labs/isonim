@@ -26,8 +26,10 @@
 const { chromium } = await import(
   new URL("../../tests/browser/node_modules/playwright/index.mjs", import.meta.url));
 import { createHash, randomUUID } from "node:crypto";
+import { execFileSync } from "node:child_process";
 import { existsSync, mkdirSync, readFileSync, readdirSync, writeFileSync } from "node:fs";
-import { basename, join } from "node:path";
+import { basename, dirname, join } from "node:path";
+import { fileURLToPath } from "node:url";
 
 const outDir = process.env.PSZ_M3_WEB_FRAMES;
 const base = process.env.PSZ_M3_WEB_BASE ||
@@ -39,6 +41,16 @@ if (existsSync(outDir) && readdirSync(outDir).length > 0) {
   throw new Error(`${outDir} is not empty`);
 }
 mkdirSync(outDir, { recursive: true });
+
+// The bundle the editor server must serve, and the checkout it was built from
+// (the defaults are this script's checkout). editor_bundle.py refuses a server
+// that serves another build directory, or a build older than the checkout's
+// HEAD, before any page is captured; its record goes into the output directory.
+const here = dirname(fileURLToPath(import.meta.url));
+const isonimTree = process.env.ISONIM_TREE || join(here, "..", "..");
+const buildDir = process.env.PSZ_M3_EDITOR_BUILD || join(isonimTree, "build", "editor");
+execFileSync("python3", [join(here, "editor_bundle.py"), "--base", base, "--build", buildDir,
+  "--tree", isonimTree, "--out", join(outDir, "bundle.json")], { stdio: ["ignore", "ignore", "inherit"] });
 
 const states = [
   { name: "fit", url: base + "&zoom=fit", size: [1920, 1200] },
@@ -79,6 +91,14 @@ const measure = () => {
     // The source the page declares for streamed frames. The web preview has none,
     // so this is "" there (sidecar.py records "none"); it is read, not assumed.
     frameSource: stage.getAttribute("data-preview-frame-declared"),
+    // The bottom bar: the breadcrumb trail and the mode badge. A page route must
+    // name the page and not a component the page does not show (PSZ-M3 note 24).
+    statusBar: {
+      crumbs: [...document.querySelectorAll("[data-breadcrumb-id]")]
+        .map((n) => n.textContent.trim()),
+      mode: [...document.querySelectorAll("span")].map((s) => s.textContent.trim())
+        .find((t) => ["View", "Comment", "Edit", "Spec"].includes(t)) || null,
+    },
   };
 };
 
