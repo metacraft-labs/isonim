@@ -241,21 +241,36 @@ proc renderPagePreview*[R, E](r: R; vm: EditorVM): E =
   r.setStyle(pageCanvasMnt.breadcrumb, "margin", "12px 16px 0 16px")
   r.setStyle(pageCanvasMnt.breadcrumb, "align-self", "flex-start")
   r.appendChild(frameHostNode, pageCanvasMnt.breadcrumb)
-  # PSZ-M3 note 20: a one-line muted note under the streamed frame, shown only
-  # while the frame is the synthetic raster (the launcher's hello declares
-  # ``frameSource: "synthetic"``). It is absolutely placed in the zoom stage
-  # just below the stage box, so it is not scaled by the zoom transform (the
-  # transform is on the frame, not the stage), and it does not take a row in
-  # the scroll host's flex layout.
+  # PSZ-M3 note 20: a badge over the streamed frame, shown only while the frame
+  # is the synthetic raster (the launcher's hello declares
+  # ``frameSource: "synthetic"``). PSZ-M3 note 24 moved it from under the stage
+  # into the frame box: it sits at the stage's top-right corner, inside the
+  # frame, so a reader of the preview sees it on the frame itself.
+  #
+  # Zoom: the badge is a child of the zoom stage, not of the transformed frame,
+  # so its size is never scaled. It keeps 11px type at Fit and at 100% alike,
+  # and it stays pinned to the stage's top-right corner, which is the scaled
+  # frame's corner at Fit and the full frame's corner at 100%. At 100% in a
+  # preview area narrower than the frame, that corner can be scrolled out of
+  # view, and the badge scrolls with it.
+  # The colours are the status-bar chip's (surface #22232e, note text #A0A2B0),
+  # and the badge does not take pointer events, so the canvas under it still
+  # receives hover and selection.
   var frameSourceLabel: E
   let frameSourceNode = ui(r):
     tdiv(ref = frameSourceLabel,
           `data-preview-frame-source` = "synthetic",
           `role` = "note",
           position = "absolute",
-          top = "100%",
-          left = "0",
-          margin = "6px 0 0 0",
+          top = "8px",
+          right = "8px",
+          margin = "0",
+          box_sizing = "border-box",
+          padding = "3px 8px",
+          border = "1px solid rgba(255,255,255,0.12)",
+          border_radius = "6px",
+          background_color = "#22232e",
+          pointer_events = "none",
           font_family = "ui-sans-serif, system-ui, sans-serif",
           font_size = "11px",
           line_height = "1.3",
@@ -263,7 +278,7 @@ proc renderPagePreview*[R, E](r: R; vm: EditorVM): E =
           white_space = "nowrap",
           overflow = "hidden",
           text_overflow = "ellipsis",
-          max_width = "100%",
+          max_width = "calc(100% - 16px)",
           display = "none"):
       text "Synthetic preview: GPUI draws boxes only on Linux"
   discard frameSourceNode

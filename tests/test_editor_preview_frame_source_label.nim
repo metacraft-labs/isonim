@@ -20,7 +20,8 @@
 ##
 ## Negative control: with the `frameSource` read removed from
 ## `helloFrameSource` (streaming_preview.nim) the synthetic case fails. See the
-## PSZ-M3 note 20 record.
+## PSZ-M3 note 20 record. The placement case (PSZ-M3 note 24) fails with the
+## note 20 placement (``top: 100%``, under the stage).
 import std/[json, strutils, tables, unittest]
 import isonim/core/[signals, computation, owner]
 import isonim/testing/mock_dom
@@ -125,3 +126,26 @@ suite "PSZ-M3 note 20: synthetic frame label":
       check labelState(vm).shown
       vm.streamingPreview.dispatchMetaPacket(unlabelledHello)
       check not labelState(vm).shown
+
+  test "the synthetic badge sits at the stage's top-right corner, inside the frame":
+    # PSZ-M3 note 24: the badge is a child of the zoom stage (the box the frame
+    # fills), pinned to its top-right corner. It is not a child of the scaled
+    # frame, so the zoom transform does not scale it, and it is not under the
+    # stage any more (the old placement was ``top: 100%``).
+    createRoot do (dispose: proc()):
+      let vm = createEditorVM()
+      vm.platform.val = pbGpui
+      vm.selectedStory.val = pageStory()
+      vm.streamingPreview = newStreamingPreviewVM(initial = pbGpui,
+        available = @[pbGpui])
+      vm.streamingPreview.dispatchMetaPacket(syntheticHello)
+      let page = renderedPage(vm)
+      let stage = findByAttr(page, "data-preview-zoom-stage", "true")
+      check stage != nil
+      let label = findByAttr(page, "data-preview-frame-source", "synthetic")
+      check label != nil
+      check label in stage.children
+      check label.styles.getOrDefault("top", "") == "8px"
+      check label.styles.getOrDefault("right", "") == "8px"
+      check label.styles.getOrDefault("top", "") != "100%"
+      dispose()
