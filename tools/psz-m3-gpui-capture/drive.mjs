@@ -76,6 +76,17 @@ const measure = (page) => page.evaluate(() => {
     canvasCssWidth: canvas ? canvas.getBoundingClientRect().width : null,
     canvasCssHeight: canvas ? canvas.getBoundingClientRect().height : null,
     readout: readout ? readout.textContent : null,
+    // PSZ-M3 note 21: the frame source the launcher declared (the zoom stage
+    // carries it), and the synthetic note: whether it is present, visible, and
+    // its text. A real frame has no note.
+    frameSource: stage ? stage.getAttribute("data-preview-frame-declared") || null : null,
+    frameSourceLabel: (() => {
+      const el = root && root.querySelector('[data-preview-frame-source]');
+      if (!el) return { present: false, visible: false, text: null };
+      const r = el.getBoundingClientRect();
+      return { present: true, visible: getComputedStyle(el).display !== "none" && r.height > 0,
+        text: el.textContent.trim() };
+    })(),
     frame: null,
   };
 });

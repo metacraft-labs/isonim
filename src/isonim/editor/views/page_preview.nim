@@ -486,8 +486,15 @@ proc renderPagePreview*[R, E](r: R; vm: EditorVM): E =
   createRenderEffect proc() =
     let useCanvas = vm.selectedStory.val.kind == skPage and
       vm.platform.val != pbWeb
-    let synthetic = vm.streamingPreview != nil and
-      vm.streamingPreview.frameSource.val == "synthetic"
+    let declared =
+      if vm.streamingPreview != nil: vm.streamingPreview.frameSource.val
+      else: ""
+    # PSZ-M3 note 21: the source the launcher declared, whatever it is
+    # ("synthetic", "real", or "" for none). The stage carries it so a capture
+    # can record which frames the page showed, and the note stays
+    # synthetic-only.
+    r.setAttribute(zoomStage, "data-preview-frame-declared", declared)
+    let synthetic = declared == "synthetic"
     r.setStyle(frameSourceLabel, "display",
       if useCanvas and synthetic: "block" else: "none")
 

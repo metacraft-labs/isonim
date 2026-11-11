@@ -26,6 +26,16 @@
 ##   running). The GPUI raster draws element boxes, not glyphs, so the content
 ##   check is on the two text elements the web preview draws (title, body), not
 ##   on the words.
+##   The capture records the frame source the launcher declared (the hello's
+##   ``capabilities.frameSource``, read by the page into the zoom stage's
+##   ``data-preview-frame-declared``), and the label state. The check depends on
+##   that source (PSZ-M3 note 21):
+##   - ``real``: the Trip Planner content check is required, as before.
+##   - ``synthetic``: the synthetic label must be visible with its text, and the
+##     content check is NOT run. It is reported as an expected failure that
+##     names RS-M14b and its issue, and it is printed and counted. The sizing and
+##     zoom checks still run and are required.
+##   - anything else, or a capture that declares no source: the test fails.
 ##   The area the browser measured is handed to the model in that half, so the
 ##   model's Fit is computed for the layout that was captured.
 ## - No layout engine runs, so the preview area is supplied by the test through
@@ -70,6 +80,11 @@ proc pageStory(): StoryRef =
   StoryRef(group: "Destination", name: "Default", kind: skPage, index: 0)
 
 const
+  syntheticLabelText = "Synthetic preview: GPUI draws boxes only on Linux"
+    ## The note the page preview shows under a synthetic frame
+    ## (``renderPagePreview``, ``frameSourceLabel``).
+  rsM14bIssue = "isonim-pm/issues/2026-11-11-gpui-linux-synthetic-raster-blocks-the-trip-planner-content-check-on-rs-m14b.md"
+    ## The record that the synthetic content check is blocked on.
   desktopFrameW = 1440
     ## The Desktop preset's frame, in CSS px (``makeBuiltinViewport(pvkDesktop)``).
   desktopFrameH = 900
@@ -195,14 +210,38 @@ proc checkFrameContent(shownPath: string; box: PaintedBox; state: string) =
   doAssert distance(blocks[1].colour, blocks[2].colour) > 12,
     "the title and body blocks are one colour in " & state
 
-proc checkCapturedFrame(vm: EditorVM; dir, state: string) =
+proc frameSourceOf(meta: JsonNode): string =
+  ## The frame source the capture declares: ``real``, ``synthetic``, or ``""``
+  ## when the capture declares none.
+  if meta.hasKey("frameSource") and meta["frameSource"].kind == JString:
+    result = meta["frameSource"].getStr
+  else:
+    result = ""
+
+proc checkSyntheticLabel(meta: JsonNode; state: string) =
+  ## A synthetic frame must say so on screen: the note is present, visible,
+  ## and carries the expected text. Without it the frame is shown as a real one.
+  let label = meta["frameSourceLabel"]
+  doAssert label["present"].getBool,
+    "the synthetic frame in " & state & " has no frame-source label"
+  doAssert label["visible"].getBool,
+    "the synthetic frame-source label is not visible in " & state
+  doAssert label["text"].getStr == syntheticLabelText,
+    "the frame-source label in " & state & " reads '" & label["text"].getStr &
+    "', not the synthetic note"
+
+proc checkCapturedFrame(vm: EditorVM; dir, state: string): int =
   ## One capture state (``fit``, ``actual``, ``actual-wide``): the browser's
   ## preview area is fed to the model, and the painted frame must be the model's
   ## frame at the model's scale, as far as the scroll area shows it. The area
   ## clips a frame larger than it, so the painted box is the frame's size on
   ## each axis, or the area's size where the area is smaller. A 100% state must
   ## have a frame larger than the area on some axis: the area scrolls.
+  ## Returns the number of expected failures reported (0 or 1).
   let meta = parseJson(readFile(dir / (state & ".json")))
+  let source = frameSourceOf(meta)
+  doAssert source in ["real", "synthetic"],
+    "the " & state & " capture declares no frame source (got '" & source & "')"
   let areaW = meta["areaWidth"].getInt
   let areaH = meta["areaHeight"].getInt
   doAssert areaW > 0 and areaH > 0, "the browser measured no preview area for " & state
@@ -225,7 +264,13 @@ proc checkCapturedFrame(vm: EditorVM; dir, state: string) =
     "painted frame width " & $box.w & " is not " & $want.w & " in " & state
   doAssert abs(box.h - want.h) <= 1,
     "painted frame height " & $box.h & " is not " & $want.h & " in " & state
-  checkFrameContent(dir / (state & "-shown.ppm"), box, state)
+  if source == "synthetic":
+    checkSyntheticLabel(meta, state)
+    echo "  XFAIL[RS-M14b] ", state, ": Trip Planner content check not run: the frame is",
+      " the synthetic raster, which draws boxes and no page text. Record: ", rsM14bIssue
+    result = 1
+  else:
+    checkFrameContent(dir / (state & "-shown.ppm"), box, state)
   if state.startsWith("actual"):
     # At 100% the frame is larger than the area on some axis, so it scrolls.
     doAssert (desktopFrameW > areaW) or (desktopFrameH > areaH),
@@ -289,13 +334,16 @@ suite "Preview streamed and TUI zoom (PSZ-M3)":
       let frames = getEnv("PSZ_M3_GPUI_FRAMES")
       doAssert frames.len > 0, "PSZ_M3_GPUI_FRAMES names no capture directory"
       vm.setPreviewZoomFit()
-      vm.checkCapturedFrame(frames, "fit")
+      var expected = 0
+      expected += vm.checkCapturedFrame(frames, "fit")
       vm.setPreviewZoomLevel(1.0)
-      vm.checkCapturedFrame(frames, "actual")
+      expected += vm.checkCapturedFrame(frames, "actual")
       # A second 100% capture, in a window where the area is wider than the
       # frame: the full 1440 px width is then visible, and the area scrolls
       # vertically. Together the two captures show the frame's 1440 and 900.
-      vm.checkCapturedFrame(frames, "actual-wide")
+      expected += vm.checkCapturedFrame(frames, "actual-wide")
+      # Every expected failure is printed and counted, never skipped silently.
+      echo "  expected failures reported: ", expected, " (RS-M14b, ", rsM14bIssue, ")"
       dispose()
 
   test "test_tui_cells_viewport_zoom":
