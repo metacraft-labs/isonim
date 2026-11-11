@@ -2,6 +2,9 @@
 # Captures the editor's GPUI page preview: Fit (the default), 100% by the zoom
 # control, or 100% opened by the URL. See README.md for what must be running
 # first (the editor server, the GPUI launcher) and how to build the driver.
+# Each capture writes PNGs beside its PPMs and a <state>.sidecar.json (sidecar.py)
+# with the frame source the page declared, the renderer, the tree commits, the
+# window and the painted box.
 #
 #   PSZ_M3_GPUI_FRAMES=/tmp/fit CAPTURE_DRIVER=... NODE=... CHROMIUM=... \
 #     GUI_ASSERT_DIR=... ./capture.sh
@@ -27,3 +30,17 @@ nix develop "$GUI_ASSERT_DIR" --command env NODE="$NODE" CHROMIUM="$CHROMIUM" \
   PSZ_M3_DRIVE="$here/drive.mjs" PSZ_M3_URL="$PSZ_M3_URL" \
   PSZ_M3_GPUI_FRAMES="$PSZ_M3_GPUI_FRAMES" PSZ_M3_STATES="$PSZ_M3_STATES" \
   PSZ_M3_OUTPUT="$PSZ_M3_OUTPUT" PSZ_M3_WINDOW="$PSZ_M3_WINDOW" "$CAPTURE_DRIVER"
+# The trees the frames came from. The sidecars record their HEAD commits and
+# whether they are dirty, so a capture names the build it measured. Point these
+# at the checkouts that were built and served (the defaults are the workspace
+# siblings of this script's checkout).
+export ISONIM_TREE="${ISONIM_TREE:-$here/../..}"
+export RENDER_SERVE_TREE="${RENDER_SERVE_TREE:-$here/../../../isonim-render-serve}"
+export EXAMPLES_TREE="${EXAMPLES_TREE:-$here/../../../isonim-examples}"
+for ppm in "$PSZ_M3_GPUI_FRAMES"/*.ppm; do
+  python3 "$here/ppm_to_png.py" "$ppm" "${ppm%.ppm}.png"
+done
+python3 "$here/sidecar.py" --frames "$PSZ_M3_GPUI_FRAMES" --capture gpui \
+  --window "$PSZ_M3_WINDOW" --states "$PSZ_M3_STATES" \
+  --isonim-tree "$ISONIM_TREE" --render-serve-tree "$RENDER_SERVE_TREE" \
+  --examples-tree "$EXAMPLES_TREE"

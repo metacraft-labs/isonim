@@ -74,6 +74,9 @@ const measure = () => {
     visible,
     stageClipped: visible.w < sr.width || visible.h < sr.height,
     layers: (document.body.innerText.match(/Nothing to show[^\n]*/) || [null])[0],
+    // The source the page declares for streamed frames. The web preview has none,
+    // so this is "" there (sidecar.py records "none"); it is read, not assumed.
+    frameSource: stage.getAttribute("data-preview-frame-declared"),
   };
 };
 
