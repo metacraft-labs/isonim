@@ -19,19 +19,28 @@
 ##   with the streamed canvas hidden (``PSZ_M3_GPUI_FRAMES``). The painted frame
 ##   is the box where the two captures differ, so the size is measured from
 ##   pixels and not read back from the DOM. The test fails when no capture is
-##   given, when the painted frame is not the model's size, and when its content
-##   is not the Trip Planner page: a uniform frame (a black or unpainted canvas)
-##   or a frame with other blocks (another story, such as the Task App Inbox).
+##   given, and when the painted frame is not the model's size.
+##   Two checks read the frame's content, and they are separate on purpose:
+##   * the STRUCTURAL check (``checkFrameStructure``) runs on every source. It
+##     checks the shape of the frame, not its text: enough colours, a dark page
+##     header, then a title block and a body block down the middle. A uniform
+##     frame (a black or unpainted canvas, or a white page with no element
+##     drawn) fails it, and so does a frame with other blocks (another story,
+##     such as the Task App Inbox). The synthetic raster draws those three
+##     blocks, so a synthetic frame passes it.
+##   * the TEXT check (``checkFrameText``) reads the words of the frame with
+##     tesseract and requires "Trip Planner". It runs only when the source is
+##     ``real``. On a ``synthetic`` source it is reported as SKIPPED, with the
+##     reason "synthetic source, text needs RS-M14b", and the skip is counted and
+##     printed. It never passes silently. Running it needs ``tesseract`` on PATH
+##     (the GuiAssert dev shell provides it); a real source without it fails.
 ##   The capture tool is tools/psz-m3-gpui-capture/ (its README says what must be
-##   running). The GPUI raster draws element boxes, not glyphs, so the content
-##   check is on the two text elements the web preview draws (title, body), not
-##   on the words.
+##   running).
 ##   The capture records the frame source the launcher declared (the hello's
 ##   ``capabilities.frameSource``, read by the page into the zoom stage's
-##   ``data-preview-frame-declared``), and the label state. Both sources run the
-##   same content check (measured at isonim 0768a132, it passes on the synthetic
-##   structural raster). A synthetic source must show the synthetic label; a real
-##   source must not. Any other source, or none, fails.
+##   ``data-preview-frame-declared``), and the label state. A synthetic source must
+##   show the synthetic label; a real source must not. Any other source, or none,
+##   fails.
 ##   The area the browser measured is handed to the model in that half, so the
 ##   model's Fit is computed for the layout that was captured.
 ## - No layout engine runs, so the preview area is supplied by the test through
@@ -46,7 +55,7 @@
 ##   browser's measured width (677x396) is checked by
 ##   tests/browser/e2e_tui_cells_viewport_zoom_live.mjs, and one case below sets
 ##   the measured value to show that the model reads whatever the page measured.
-import std/[json, math, os, sequtils, strutils, tables, unittest]
+import std/[json, math, os, osproc, sequtils, strutils, tables, unittest]
 import isonim/core/[signals, computation, owner]
 import isonim/testing/mock_dom
 import isonim/editor/[viewmodels, types, preview_zoom]
@@ -79,8 +88,10 @@ const
   syntheticLabelText = "Synthetic preview: GPUI draws boxes only on Linux"
     ## The note the page preview shows under a synthetic frame
     ## (``renderPagePreview``, ``frameSourceLabel``).
-  rsM14bIssue = "isonim-pm/issues/2026-11-11-gpui-linux-synthetic-raster-blocks-the-trip-planner-content-check-on-rs-m14b.md"
-    ## The record that the synthetic content check is blocked on.
+  textSkipReason = "synthetic source, text needs RS-M14b"
+    ## The reason the text check is reported as skipped on a synthetic source.
+  tripPlannerWords = "trip planner"
+    ## The words the text check must read on a real frame (lower case).
   desktopFrameW = 1440
     ## The Desktop preset's frame, in CSS px (``makeBuiltinViewport(pvkDesktop)``).
   desktopFrameH = 900
@@ -167,16 +178,17 @@ proc columnBlocks(img: PpmImage; box: PaintedBox): seq[Block] =
     if run.length >= 6:
       result.add run
 
-proc checkFrameContent(shownPath: string; box: PaintedBox; state: string) =
-  ## The frame's content, not only its size. The expectation is the Trip
-  ## Planner page the web preview shows: the page's title and its body text,
-  ## as two text elements, the title above the body, inside the page. The web
-  ## preview draws that in its fallback panel (the story's registry hook supplies
-  ## the title and body, see examples/wanderlust/stories.nim). The GPUI frame
-  ## draws the same two elements as
-  ## the launcher's raster: a dark page header, then a title block, then a body
-  ## block. A black or unpainted canvas is one colour, and another story's frame
-  ## (the Task App Inbox) has more blocks than this.
+proc checkFrameStructure(shownPath: string; box: PaintedBox; state: string) =
+  ## The STRUCTURAL check: the frame's shape, not its words. It runs on every
+  ## source. The expected shape is the Trip Planner page's: a dark page header,
+  ## then a title block and a body block one below the other down the middle of
+  ## the frame. It passes a real frame and the synthetic raster alike, because
+  ## both draw those three blocks. It fails:
+  ##   * a uniform frame: a black or unpainted canvas, or a white page with no
+  ##     element drawn (the note 20 captures are white with an unpainted canvas);
+  ##   * a frame with other blocks (another story, such as the Task App Inbox).
+  ## It does NOT read text. The words are the text check's job
+  ## (``checkFrameText``), so a boxes-only frame passes this check and fails that.
   let shot = parsePpm(shownPath)
   var colours = initCountTable[int]()
   for y in box.y ..< box.y + box.h:
@@ -189,13 +201,13 @@ proc checkFrameContent(shownPath: string; box: PaintedBox; state: string) =
     inc total, count
     largest = max(largest, count)
   let share = largest.float / total.float
-  echo "  ", state, ": ", colours.len, " colours in the frame, the largest ", int(share * 100), "%"
+  echo "  structure ", state, ": ", colours.len, " colours in the frame, the largest ", int(share * 100), "%"
   doAssert colours.len >= 3,
     "the " & state & " frame has " & $colours.len & " colour(s): it is not a rendered page"
   doAssert share < 0.9,
     "the " & state & " frame is " & $int(share * 100) & "% one colour"
   let blocks = columnBlocks(shot, box)
-  echo "  ", state, ": blocks down the middle ", blocks.len, " (",
+  echo "  structure ", state, ": blocks down the middle ", blocks.len, " (",
     blocks.mapIt($it.length).join(", "), " px)"
   doAssert blocks.len == 3,
     "the " & state & " frame has " & $blocks.len & " element blocks, not the page's header, title and body"
@@ -205,6 +217,41 @@ proc checkFrameContent(shownPath: string; box: PaintedBox; state: string) =
     "the title and body blocks are not both element-sized in " & state
   doAssert distance(blocks[1].colour, blocks[2].colour) > 12,
     "the title and body blocks are one colour in " & state
+
+proc writeCrop(shot: PpmImage; box: PaintedBox; path: string) =
+  ## Writes the painted box as a binary PPM: the form tesseract reads directly.
+  var data = "P6\n" & $box.w & " " & $box.h & "\n255\n"
+  for y in box.y ..< box.y + box.h:
+    let start = (y * shot.width + box.x) * 3
+    data.add shot.rgb[start ..< start + box.w * 3]
+  writeFile(path, data)
+
+proc checkFrameText(shownPath: string; box: PaintedBox; state, source,
+                    outDir: string): int =
+  ## The TEXT check: the title must be readable. It reads the painted frame with
+  ## tesseract and requires the Trip Planner words. It runs only for a ``real``
+  ## frame. For a ``synthetic`` frame the check is SKIPPED: the printed line
+  ## says so and the caller counts it (the return value is 1 for a skip, 0 for a
+  ## run). The synthetic raster draws boxes, so reading it proves nothing about
+  ## the words; that needs the real Linux frame (RS-M14b). A real frame without
+  ## tesseract on PATH fails here, it does not skip.
+  if source != "real":
+    echo "  SKIPPED text ", state, ": ", textSkipReason
+    return 1
+  let shot = parsePpm(shownPath)
+  let crop = outDir / (state & "-frame-text.ppm")
+  writeCrop(shot, box, crop)
+  let (output, code) = execCmdEx("tesseract " & quoteShell(crop) & " stdout")
+  doAssert code == 0,
+    "the text check of the real " & state & " frame could not run tesseract (exit " &
+    $code & "): install tesseract, the GuiAssert dev shell has it"
+  let words = output.splitWhitespace().join(" ").toLowerAscii()
+  echo "  text ", state, ": ", words.splitWhitespace().len, " word(s) read, Trip Planner ",
+    (if tripPlannerWords in words: "found" else: "not found")
+  doAssert tripPlannerWords in words,
+    "the real " & state & " frame does not show the readable title '" &
+    tripPlannerWords & "' (the words read: '" & words.strip() & "')"
+  result = 0
 
 proc frameSourceOf(meta: JsonNode): string =
   ## The frame source the capture declares: ``real``, ``synthetic``, or ``""``
@@ -233,7 +280,8 @@ proc checkCapturedFrame(vm: EditorVM; dir, state: string): int =
   ## clips a frame larger than it, so the painted box is the frame's size on
   ## each axis, or the area's size where the area is smaller. A 100% state must
   ## have a frame larger than the area on some axis: the area scrolls.
-  ## Returns the number of expected failures reported (0 or 1).
+  ## Returns the number of text checks SKIPPED for this state (1 on a synthetic
+  ## source, 0 on a real one). The caller sums and prints them.
   let meta = parseJson(readFile(dir / (state & ".json")))
   let source = frameSourceOf(meta)
   doAssert source in ["real", "synthetic"],
@@ -266,11 +314,12 @@ proc checkCapturedFrame(vm: EditorVM; dir, state: string): int =
     # A real frame must not carry the synthetic note.
     doAssert not meta["frameSourceLabel"]["visible"].getBool,
       "the real frame in " & state & " shows the synthetic note"
-  # The content check is the same for both sources. Measured at isonim
-  # 0768a132: it is structural (three element blocks down the middle), and the
-  # synthetic raster draws those blocks, so it passes on a synthetic frame. It is
-  # NOT reported as an expected failure (see the PSZ-M3 note 21 record).
-  checkFrameContent(dir / (state & "-shown.ppm"), box, state)
+  # The structural check runs on both sources. It is the gate for the frame's
+  # shape, not its text (the text check below is separate).
+  checkFrameStructure(dir / (state & "-shown.ppm"), box, state)
+  # The text check runs on a real frame and is SKIPPED (counted, printed) on a
+  # synthetic one, because the synthetic raster has no words to read (RS-M14b).
+  result = checkFrameText(dir / (state & "-shown.ppm"), box, state, source, dir)
   if state.startsWith("actual"):
     # At 100% the frame is larger than the area on some axis, so it scrolls.
     doAssert (desktopFrameW > areaW) or (desktopFrameH > areaH),
@@ -334,16 +383,16 @@ suite "Preview streamed and TUI zoom (PSZ-M3)":
       let frames = getEnv("PSZ_M3_GPUI_FRAMES")
       doAssert frames.len > 0, "PSZ_M3_GPUI_FRAMES names no capture directory"
       vm.setPreviewZoomFit()
-      var expected = 0
-      expected += vm.checkCapturedFrame(frames, "fit")
+      var skipped = 0
+      skipped += vm.checkCapturedFrame(frames, "fit")
       vm.setPreviewZoomLevel(1.0)
-      expected += vm.checkCapturedFrame(frames, "actual")
+      skipped += vm.checkCapturedFrame(frames, "actual")
       # A second 100% capture, in a window where the area is wider than the
       # frame: the full 1440 px width is then visible, and the area scrolls
       # vertically. Together the two captures show the frame's 1440 and 900.
-      expected += vm.checkCapturedFrame(frames, "actual-wide")
-      # Every expected failure is printed and counted, never skipped silently.
-      echo "  expected failures reported: ", expected, " (RS-M14b, ", rsM14bIssue, ")"
+      skipped += vm.checkCapturedFrame(frames, "actual-wide")
+      # Every skipped text check is printed and counted; none passes silently.
+      echo "  text checks SKIPPED: ", skipped, " of 3 (", textSkipReason, ")"
       dispose()
 
   test "test_tui_cells_viewport_zoom":
