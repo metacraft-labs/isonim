@@ -81,6 +81,11 @@ proc labelShown(vm: EditorVM): bool =
 suite "PSZ-M3 note 22: a renderer fallback is shown, not a stale frame":
 
   test "only the renderer-fell-back close code moves the state":
+    # The code the bridge sends is 4001 (isonim-render-serve bridge.nim
+    # `rendererFellBackCloseCode`, pinned to the same literal by its test
+    # test_bridge_renderer_fell_back.nim). Both sides must hold the literal.
+    check rendererFellBackCloseCode == 4001
+    check rendererFellBackCode == rendererFellBackCloseCode
     createRoot do (dispose: proc()):
       let vm = createEditorVM()
       let sp = newStreamingPreviewVM(initial = pbGpui, available = @[pbGpui])

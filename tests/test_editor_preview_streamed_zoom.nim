@@ -33,7 +33,11 @@
 ##     ``real``. On a ``synthetic`` source it is reported as SKIPPED, with the
 ##     reason "synthetic source, text needs RS-M14b", and the skip is counted and
 ##     printed. It never passes silently. Running it needs ``tesseract`` on PATH
-##     (the GuiAssert dev shell provides it); a real source without it fails.
+##     and its ``eng`` language data (``TESSDATA_PREFIX``); the GuiAssert dev shell
+##     provides both. A real source without them fails.
+##     ``PSZ_M3_EXPECT_FRAME_SOURCE`` (optional) names the source the run must see;
+##     a capture that declares the other source then fails, so the text gate cannot
+##     be avoided by a declaration.
 ##   The capture tool is tools/psz-m3-gpui-capture/ (its README says what must be
 ##   running).
 ##   The capture records the frame source the launcher declared (the hello's
@@ -241,10 +245,13 @@ proc checkFrameText(shownPath: string; box: PaintedBox; state, source,
   let shot = parsePpm(shownPath)
   let crop = outDir / (state & "-frame-text.ppm")
   writeCrop(shot, box, crop)
-  let (output, code) = execCmdEx("tesseract " & quoteShell(crop) & " stdout")
+  # Stdout only: tesseract's warnings on stderr must not count as words.
+  let (output, code) = execCmdEx("tesseract " & quoteShell(crop) & " stdout",
+    options = {poUsePath})
   doAssert code == 0,
     "the text check of the real " & state & " frame could not run tesseract (exit " &
-    $code & "): install tesseract, the GuiAssert dev shell has it"
+    $code & "): install tesseract and set TESSDATA_PREFIX to the directory that " &
+    "holds its eng.traineddata (the GuiAssert dev shell provides both)"
   let words = output.splitWhitespace().join(" ").toLowerAscii()
   echo "  text ", state, ": ", words.splitWhitespace().len, " word(s) read, Trip Planner ",
     (if tripPlannerWords in words: "found" else: "not found")
@@ -286,6 +293,14 @@ proc checkCapturedFrame(vm: EditorVM; dir, state: string): int =
   let source = frameSourceOf(meta)
   doAssert source in ["real", "synthetic"],
     "the " & state & " capture declares no frame source (got '" & source & "')"
+  # The text check is keyed on the declared source. A run that knows which
+  # source it must see (a real Linux or macOS launcher run) names it here, and a
+  # capture that declares the other source then fails instead of skipping.
+  let expectedSource = getEnv("PSZ_M3_EXPECT_FRAME_SOURCE")
+  if expectedSource.len > 0:
+    doAssert source == expectedSource,
+      "the " & state & " capture declares '" & source &
+      "' but PSZ_M3_EXPECT_FRAME_SOURCE says '" & expectedSource & "'"
   let areaW = meta["areaWidth"].getInt
   let areaH = meta["areaHeight"].getInt
   doAssert areaW > 0 and areaH > 0, "the browser measured no preview area for " & state

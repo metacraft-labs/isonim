@@ -269,11 +269,13 @@ proc renderPagePreview*[R, E](r: R; vm: EditorVM): E =
   discard frameSourceNode
   r.appendChild(zoomStage, frameSourceLabel)
   # PSZ-M3 note 22: the note that replaces a frame the renderer fell back from.
-  # It covers the device frame (the wrapper is absolutely positioned, so the
-  # child is laid over the canvas), in the editor's dark chrome with the same
-  # muted note colour as the label. It is shown only while the bridge reports
-  # the fallback, and the canvas holds no frame then (the bridge's close clears
-  # it), so the frame area never shows a stale or blank frame in silence.
+  # It is a child of the zoom stage, not of the device frame: the stage is
+  # sized to the scaled frame, so the note covers the frame area exactly, and
+  # the note's text is not scaled by the zoom transform on the frame. It is
+  # drawn over the canvas in the editor's dark chrome with the same muted note
+  # colour as the label. It is shown only while the bridge reports the
+  # fallback. The opaque background hides any frame still painted under it;
+  # the canvas is also cleared on the close, as a second guard.
   var rendererFellBackNote: E
   let rendererFellBackNode = ui(r):
     tdiv(ref = rendererFellBackNote,
@@ -297,7 +299,7 @@ proc renderPagePreview*[R, E](r: R; vm: EditorVM): E =
           text_align = "center"):
       text rendererFellBackText
   discard rendererFellBackNode
-  r.appendChild(pageCanvasMnt.wrapper, rendererFellBackNote)
+  r.appendChild(zoomStage, rendererFellBackNote)
   r.appendChild(container, frameHostNode)
   # Pages use the same overlay and guarded rendered-property selection path
   # as component previews. A layer record alone has no computed properties.
