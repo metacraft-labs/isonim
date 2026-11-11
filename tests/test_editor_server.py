@@ -343,6 +343,59 @@ class LauncherTests(unittest.TestCase):
                 child.terminate(); self.assertEqual(child.wait(10), 143)
                 with self.assertRaises(OSError): request(port)
 
+    def test_bridge_gpui_upgrade_returns_101_and_pipes_frames(self):
+        # The GPUI bridge route (BRIDGE_PORTS, the same port
+        # bridgePortForBackend names). Without a frontend, the server answered
+        # the upgrade with a static 404, so the streamed canvas never opened.
+        # The controlled peer on 8103 stands in for the launcher, and only
+        # for the launcher: it checks the rewritten upgrade request, answers
+        # 101, sends one server frame and reads the browser's frame back.
+        _, port, _ = self.external()
+        with socket.socket() as listener:
+            # SO_REUSEADDR: an earlier run's connections to 8103 may still sit in TIME_WAIT.
+            listener.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
+            listener.bind(('127.0.0.1', 8103)); listener.listen(); listener.settimeout(10)
+            seen = {}
+            def launcher():
+                stream, _ = listener.accept()
+                with stream:
+                    stream.settimeout(10)
+                    head = b''
+                    while b'\r\n\r\n' not in head:
+                        head += stream.recv(4096)
+                    seen['head'] = head
+                    stream.sendall(b'HTTP/1.1 101 Switching Protocols\r\nUpgrade: websocket\r\nConnection: Upgrade\r\n\r\n')
+                    stream.sendall(b'\x82\x04gpui')  # one unmasked binary frame carrying "gpui"
+                    received = b''
+                    while len(received) < 4:
+                        received += stream.recv(4 - len(received))
+                    seen['frame'] = received
+            thread = threading.Thread(target=launcher, daemon=True); thread.start()
+            with socket.create_connection(('127.0.0.1', port), timeout=10) as client:
+                client.sendall(b'GET /bridge/gpui HTTP/1.1\r\nHost: remote.test\r\nUpgrade: websocket\r\n'
+                               b'Connection: Upgrade\r\nSec-WebSocket-Version: 13\r\n'
+                               b'Sec-WebSocket-Key: dGhlIHNhbXBsZSBub25jZQ==\r\n\r\n')
+                reply = b''
+                while b'\r\n\r\n' not in reply:
+                    reply += client.recv(4096)
+                status_line, _, rest = reply.partition(b'\r\n\r\n')
+                self.assertTrue(status_line.startswith(b'HTTP/1.1 101 '), reply)
+                frame = rest
+                while len(frame) < 6:
+                    frame += client.recv(6 - len(frame))
+                self.assertEqual(frame, b'\x82\x04gpui')
+                client.sendall(b'ping')
+            thread.join(10)
+        self.assertTrue(seen['head'].startswith(b'GET / HTTP/1.1\r\n'), seen['head'])
+        self.assertIn(b'Host: 127.0.0.1:8103\r\n', seen['head'])
+        self.assertIn(b'Sec-WebSocket-Key: dGhlIHNhbXBsZSBub25jZQ==\r\n', seen['head'])
+        self.assertEqual(seen['frame'], b'ping')
+        # A backend the table does not name is not bridged.
+        connection = http.client.HTTPConnection('127.0.0.1', port, timeout=5)
+        connection.request('GET', '/bridge/nosuchbackend', headers={'Upgrade': 'websocket', 'Connection': 'Upgrade'})
+        self.assertEqual(connection.getresponse().status, 404)
+        connection.close()
+
     def test_real_daemon_uses_project_and_preserves_explicit_config(self):
         # External Harbor mode creates a local draft before contacting the peer.
         # Invalid sibling proves explicit backend config wins in the real daemon.

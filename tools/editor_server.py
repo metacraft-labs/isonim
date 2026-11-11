@@ -32,6 +32,32 @@ import urllib.request
 
 REPO = Path(__file__).resolve().parent.parent
 
+# WebSocket bridge routes, the same table isonim-examples'
+# tools/editor-server.mjs proxies (its BRIDGE_PORTS) and that
+# bridgePortForBackend in src/isonim/editor/streaming_preview.nim names. The
+# browser connects to ws://<host>/bridge/<backend> (or /tui-bridge for the
+# terminal transport) and the launcher listening on 127.0.0.1:<port> receives
+# the upgrade with its path rewritten to "/", as a direct client would send it.
+BRIDGE_PORTS = {
+    'tui': 8102,       # the deprecated pixel TUI launcher, kept for one cycle
+    'tui-term': 8112,  # the D/M/P terminal launcher, reached through /tui-bridge
+    'gpui': 8103,
+    'freya': 8104,
+    'cocoa': 8105,
+    'android': 8106,
+    'ios': 8107,
+}
+BRIDGE_PATH = re.compile(r'^/bridge/([a-z]+)(?:/.*)?$')
+TUI_BRIDGE_PATH = re.compile(r'^/tui-bridge(?:/.*)?$')
+
+
+def bridge_port(path: str) -> int | None:
+    """The launcher port for a bridge path, or None when it is not a bridge route."""
+    if TUI_BRIDGE_PATH.match(path):
+        return BRIDGE_PORTS['tui-term']
+    match = BRIDGE_PATH.match(path)
+    return BRIDGE_PORTS.get(match.group(1)) if match else None
+
 
 def public_source_manifest(manifest: dict) -> dict:
     """Expose catalog identity capabilities without private source locations."""
@@ -364,6 +390,12 @@ class EditorHandler(http.server.SimpleHTTPRequestHandler):
             return
         if path.startswith("/api/"):
             return self.api_request()
+        if self.headers.get("Upgrade", "").lower() == "websocket":
+            # A launcher's stream is a same-origin bridge route, whether or
+            # not a frontend is kept behind this server.
+            port = bridge_port(path)
+            if port is not None:
+                return self.pipe_upgrade('127.0.0.1', port, '/', f'127.0.0.1:{port}', 'Launcher unavailable')
         if self.frontend_url:
             if self.headers.get("Upgrade", "").lower() == "websocket":
                 return self.upgrade_frontend()
@@ -477,12 +509,21 @@ class EditorHandler(http.server.SimpleHTTPRequestHandler):
 
     def upgrade_frontend(self):
         endpoint = urllib.parse.urlsplit(self.frontend_url)
+        return self.pipe_upgrade(endpoint.hostname, endpoint.port, self.path, endpoint.netloc, 'Editor frontend unavailable')
+
+    def pipe_upgrade(self, host, port, target, host_header, unavailable):
+        """Forward a WebSocket upgrade to ``host:port`` and pipe raw bytes both ways.
+
+        The upstream sees this request line (``target``) and Host header, and
+        every other header as the browser sent it. After the upstream's 101
+        response, frames are opaque to this server.
+        """
         upstream = None
         try:
-            upstream = socket.create_connection((endpoint.hostname, endpoint.port), timeout=5)
+            upstream = socket.create_connection((host, port), timeout=5)
             headers = dict(self.headers)
-            headers['Host'] = endpoint.netloc
-            head = f'{self.command} {self.path} HTTP/1.1\r\n' + ''.join(f'{k}: {v}\r\n' for k, v in headers.items()) + '\r\n'
+            headers['Host'] = host_header
+            head = f'{self.command} {target} HTTP/1.1\r\n' + ''.join(f'{k}: {v}\r\n' for k, v in headers.items()) + '\r\n'
             upstream.sendall(head.encode())
             while True:
                 readable, _, _ = select.select([self.connection, upstream], [], [], 1)
@@ -492,8 +533,8 @@ class EditorHandler(http.server.SimpleHTTPRequestHandler):
                     destination = upstream if source is self.connection else self.connection
                     destination.sendall(data)
         except OSError as error:
-            self.log_error('frontend upgrade failed: %s', error)
-            if upstream is None: self.send_error(502, 'Editor frontend unavailable')
+            self.log_error('upgrade to %s:%d failed: %s', host, port, error)
+            if upstream is None: self.send_error(502, unavailable)
         finally:
             self.close_connection = True
             if upstream: upstream.close()
