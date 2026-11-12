@@ -233,6 +233,12 @@ proc renderPagePreview*[R, E](r: R; vm: EditorVM): E =
         }
         apply();
       })(""", frameHostNode, ", ", reportPreviewArea, ", ", observeResize, ");"].}
+    # The cleanups above are registered on frameHostNode; they run only when
+    # the owning view disposes that node, as component_edit.nim does for its
+    # fit host. Without this the ResizeObserver, or the window resize listener
+    # that replaces it, outlived whole-UI disposal: ``previewListenOn``
+    # registers with no owner, so its disposer runs only from this cleanup.
+    ownViewResources(frameHostNode)
   # M-EVP-13: breadcrumb sits in the host scroll region directly below
   # the device frame so the canvas selection's componentPath is always
   # readable, even when the device frame is sized to a small viewport

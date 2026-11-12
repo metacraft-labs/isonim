@@ -1,7 +1,17 @@
 /** Real production DOMRenderer shell starts with no story. The authored project
  * HTML/mount callback supplies a declared DOM fixture, not source/compiler/native
  * ACK/Harbor results. Native browser loading, physical selection and ownership
- * run. Read-only method wrappers record identities without changing outcomes. */
+ * run. Read-only method wrappers record identities without changing outcomes.
+ *
+ * Whole-UI disposal of the page preview's area measurement (PSZ-M1): the
+ * resource audit wraps ResizeObserver and EventTarget listener registration.
+ * Each wrapper forwards to the native method unchanged and only records the
+ * creation stack, so the checks attribute a resource to renderPagePreview.
+ * The window-resize fallback scenario deletes window.ResizeObserver before the
+ * bundle loads. That is not a mock: it reproduces a browser without the API,
+ * the condition under which the view takes its real fallback path. No timer
+ * or wall-clock budget is involved; every check runs after synchronous
+ * disposal. */
 import { spawn } from "node:child_process";
 import {
   mkdtempSync,
@@ -61,6 +71,51 @@ writeFileSync(
     traceScript +
     '</script><script src="editor.js"></script></body></html>',
 );
+const resourceAudit = () => {
+  // Forwarding wrappers only: native observe/disconnect and add/remove run
+  // unchanged; the audit records which live resources renderPagePreview made.
+  const pagePreview = (stack) => stack.includes("renderPagePreview");
+  const observers = new Set();
+  const resize = [];
+  if (window.ResizeObserver) {
+    const Native = window.ResizeObserver;
+    window.ResizeObserver = class AuditedResizeObserver extends Native {
+      constructor(callback) {
+        super(callback);
+        this.auditStack = new Error().stack || "";
+      }
+      observe(...args) {
+        observers.add(this);
+        return super.observe(...args);
+      }
+      disconnect() {
+        observers.delete(this);
+        return super.disconnect();
+      }
+    };
+  }
+  const add = EventTarget.prototype.addEventListener;
+  const remove = EventTarget.prototype.removeEventListener;
+  const capture = (o) => (typeof o === "boolean" ? o : !!o?.capture);
+  EventTarget.prototype.addEventListener = function (type, fn, options) {
+    if (this === window && type === "resize")
+      resize.push({ fn, capture: capture(options), stack: new Error().stack || "" });
+    return add.call(this, type, fn, options);
+  };
+  EventTarget.prototype.removeEventListener = function (type, fn, options) {
+    if (this === window && type === "resize") {
+      const at = resize.findIndex((r) => r.fn === fn && r.capture === capture(options));
+      if (at >= 0) resize.splice(at, 1);
+    }
+    return remove.call(this, type, fn, options);
+  };
+  window.__previewAreaResources = () => ({
+    observers: [...observers].filter((o) => pagePreview(o.auditStack)).length,
+    resizeListeners: resize.filter((r) => pagePreview(r.stack)).length,
+    allObservers: observers.size,
+    allResizeListeners: resize.length,
+  });
+};
 const proof = {
   head: process.env.ISONIM_TEST_HEAD,
   sourceState: process.env.ISONIM_TEST_SOURCE_STATE,
@@ -97,6 +152,7 @@ try {
     executablePath: process.env.PLAYWRIGHT_CHROMIUM_EXECUTABLE,
   });
   page = await browser.newPage({ viewport: { width: 1440, height: 900 } });
+  await page.addInitScript(resourceAudit);
   page.setDefaultTimeout(30000);
   page.on("pageerror", (e) => proof.errors.push(e.message));
   page.on("request", (request) => {
@@ -284,6 +340,12 @@ try {
     "hidden requested document loads without mounting; activating that loaded document uses the valid immediate path",
   );
   proof.beforeDispose = returned;
+  // Positive control for the disposal check below: the audit sees the page
+  // preview's live area observer while the UI is mounted.
+  proof.previewAreaMounted = await page.evaluate(() =>
+    window.__previewAreaResources(),
+  );
+  assert.equal(proof.previewAreaMounted.observers, 1);
   const pendingListeners = await page.evaluate(() => {
     window.__mountProbe.reload();
     const pending = window.__mountLoadCallbacks.active();
@@ -307,10 +369,56 @@ try {
   proof.cases.push(
     "disposal cancels a genuine queued document request, removes its load listener and makes retained callbacks inert",
   );
+  // Whole-UI disposal releases the page preview's area observer (PSZ-M1).
+  proof.previewAreaDisposed = await page.evaluate(() =>
+    window.__previewAreaResources(),
+  );
+  assert.equal(
+    proof.previewAreaDisposed.observers,
+    0,
+    "Whole UI disposal disconnects the page preview's ResizeObserver",
+  );
+  proof.cases.push(
+    "whole UI disposal disconnects the page preview area ResizeObserver",
+  );
   assert.equal(retired.pending, 0);
   assert.equal(retired.messages, 0);
   assert.deepEqual(proof.errors, []);
   assert(proof.requests.every((request) => request.method === "GET"));
+  // Window-resize fallback: without ResizeObserver the view measures on the
+  // window resize event through the nondet listen seam. Its registration has
+  // no reactive owner, so only the view's own cleanup can release it.
+  const fallback = await browser.newPage({ viewport: { width: 1440, height: 900 } });
+  try {
+    await fallback.addInitScript(() => {
+      delete window.ResizeObserver;
+    });
+    await fallback.addInitScript(resourceAudit);
+    fallback.on("pageerror", (e) => proof.errors.push("fallback: " + e.message));
+    await fallback.goto(origin, { waitUntil: "load" });
+    await fallback.waitForFunction(() => window.__mountProbe);
+    proof.fallbackMounted = await fallback.evaluate(() => ({
+      api: typeof window.ResizeObserver,
+      ...window.__previewAreaResources(),
+    }));
+    assert.equal(proof.fallbackMounted.api, "undefined");
+    assert.equal(proof.fallbackMounted.resizeListeners, 1);
+    await fallback.evaluate(() => window.__mountProbe.dispose());
+    proof.fallbackDisposed = await fallback.evaluate(() =>
+      window.__previewAreaResources(),
+    );
+    assert.equal(
+      proof.fallbackDisposed.resizeListeners,
+      0,
+      "Whole UI disposal removes the page preview's window resize listener",
+    );
+    assert.deepEqual(proof.errors, []);
+    proof.cases.push(
+      "without ResizeObserver, whole UI disposal removes the page preview's window resize listener",
+    );
+  } finally {
+    await fallback.close();
+  }
 } finally {
   if (page && !page.isClosed())
     proof.final = await page.evaluate(() => ({
