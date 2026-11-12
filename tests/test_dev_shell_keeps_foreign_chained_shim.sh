@@ -110,4 +110,13 @@ cp "$hooks/pre-commit" "$SCRATCH/kept"
 cmp -s "$hooks/pre-commit" "$SCRATCH/kept" || fail "a hand-written hook was overwritten"
 grep -q 'repro hooks ensure --vcs' "$SCRATCH/err" || fail "the installer reported nothing"
 
+echo "== installer: a symlink in the slot is left and reported"
+new_repo "$SCRATCH/f"
+printf 'repos: []\n' >"$SCRATCH/f/.pre-commit-config.yaml"
+rm "$hooks/pre-commit"; ln -s /bin/true "$hooks/pre-commit"
+(cd "$SCRATCH/f" && bash "$REPO/scripts/install-git-hooks.sh" /bin/true) 2>"$SCRATCH/err" \
+  || fail "the installer failed the shell over a symlinked slot: $(cat "$SCRATCH/err")"
+[ "$(readlink "$hooks/pre-commit")" = /bin/true ] || fail "the symlinked slot was replaced"
+grep -q 'repro hooks ensure --vcs' "$SCRATCH/err" || fail "the installer reported nothing"
+
 echo "PASS: no dev-shell step overwrites another generator's chained shim"
