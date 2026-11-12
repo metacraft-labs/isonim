@@ -61,6 +61,13 @@ for stage in "${stages[@]}"; do
 		hook="$hook.repro-local"
 	fi
 	if [[ -L $hook ]]; then
+		if [[ $hook == *.repro-local ]]; then
+			# Reported and left, like any foreign chained hook (see below).
+			echo "git-hooks: $hook is a symlink; leaving it and not installing the $stage" \
+				"check. Run 'repro hooks ensure --vcs' to reconcile." >&2
+			targets+=("")
+			continue
+		fi
 		echo "Refusing to replace a symlink local hook: $hook" >&2
 		exit 1
 	fi
