@@ -99,4 +99,15 @@ rm "$hooks/pre-commit.repro-local"; ln -s /bin/true "$hooks/pre-commit.repro-loc
 (cd "$SCRATCH/d" && bash "$REPO/scripts/install-git-hooks.sh" /bin/true) 2>"$SCRATCH/err" \
   || fail "the installer failed the shell over a symlinked .repro-local: $(cat "$SCRATCH/err")"
 [ "$(readlink "$hooks/pre-commit.repro-local")" = /bin/true ] || fail "the symlinked .repro-local was replaced"
+echo "== installer: a hand-written hook in a slot with no dispatcher is left and reported"
+new_repo "$SCRATCH/e"
+printf 'repos: []\n' >"$SCRATCH/e/.pre-commit-config.yaml"
+printf '#!/bin/sh\necho mine\n' >"$hooks/pre-commit.mine"
+mv "$hooks/pre-commit" "$hooks/pre-commit.dispatcher"; mv "$hooks/pre-commit.mine" "$hooks/pre-commit"
+cp "$hooks/pre-commit" "$SCRATCH/kept"
+(cd "$SCRATCH/e" && bash "$REPO/scripts/install-git-hooks.sh" /bin/true) 2>"$SCRATCH/err" \
+  || fail "the installer failed the shell over a hand-written hook: $(cat "$SCRATCH/err")"
+cmp -s "$hooks/pre-commit" "$SCRATCH/kept" || fail "a hand-written hook was overwritten"
+grep -q 'repro hooks ensure --vcs' "$SCRATCH/err" || fail "the installer reported nothing"
+
 echo "PASS: no dev-shell step overwrites another generator's chained shim"
