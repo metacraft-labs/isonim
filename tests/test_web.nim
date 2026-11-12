@@ -638,3 +638,71 @@ suite "WebRenderer element navigation and form state":
     check input.toJs.checked.to(bool)
     r.setChecked(input, false)
     check not input.toJs.checked.to(bool)
+
+suite "WebRenderer skips writes of the value a node already holds":
+  # Each node's own `setAttribute` and `textContent` setter are wrapped to
+  # count the writes that reach the DOM shim. A real DOM records every one of
+  # them as a mutation, same value or not.
+  proc countWrites(n: Node) {.importjs: """(function(n) {
+    n.__writes = 0;
+    var setAttr = n.setAttribute;
+    if (setAttr) n.setAttribute = function(k, v) { n.__writes++; return setAttr.call(n, k, v); };
+    var text = Object.getOwnPropertyDescriptor(Object.getPrototypeOf(n), 'textContent');
+    Object.defineProperty(n, 'textContent', {
+      configurable: true,
+      get: function() { return text.get.call(n); },
+      set: function(v) { n.__writes++; text.set.call(n, v); }
+    });
+  })(#)""".}
+  proc writes(n: Node): int {.importjs: "#.__writes".}
+
+  test "an attribute is written only when its value changes":
+    let r = WebRenderer()
+    let e = r.createElement("span")
+    countWrites(Node(e))
+    r.setAttribute(e, "class", "badge")
+    r.setAttribute(e, "class", "badge")
+    r.setAttribute(e, "aria-label", "hop 2")
+    r.setAttribute(e, "aria-label", "hop 2")
+    check writes(Node(e)) == 2
+    r.setAttribute(e, "class", "badge low")
+    check writes(Node(e)) == 3
+    check r.getAttribute(e, "class") == "badge low"
+    # An attribute removed since is absent, not equal: it is written again.
+    r.removeAttribute(e, "aria-label")
+    r.setAttribute(e, "aria-label", "hop 2")
+    check writes(Node(e)) == 4
+    check r.getAttribute(e, "aria-label") == "hop 2"
+
+  test "text is written only when it changes":
+    let r = WebRenderer()
+    let e = r.createElement("span")
+    countWrites(Node(e))
+    r.setTextContent(e, "10")
+    r.setTextContent(e, "10")
+    check writes(Node(e)) == 1
+    r.setTextContent(e, "11")
+    check writes(Node(e)) == 2
+    check Node(e).textContent == "11"
+
+    let t = r.createTextNode("a")
+    countWrites(t)
+    r.setTextContent(t, "a")
+    check writes(t) == 0
+    r.setTextContent(t, "b")
+    check writes(t) == 1
+    check t.textContent == "b"
+
+  test "an element whose text is split over several children is rewritten":
+    let r = WebRenderer()
+    let e = r.createElement("div")
+    r.appendChild(e, r.createTextNode("1"))
+    let inner = r.createElement("b")
+    r.appendChild(inner, r.createTextNode("0"))
+    r.appendChild(e, inner)
+    countWrites(Node(e))
+    # The concatenated text already reads "10", but the write replaces the
+    # two children with one text node, so it must happen.
+    r.setTextContent(e, "10")
+    check writes(Node(e)) == 1
+    check Node(e).firstChild.nextSibling.isNil

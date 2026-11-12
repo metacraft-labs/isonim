@@ -134,7 +134,14 @@ proc appendRawHtml*(r: WebRenderer; parent: Element; html: string) =
 
 proc setAttribute*(r: WebRenderer; node: Element; name, value: string) =
   ## Set an attribute on a real DOM element.
+  ##
+  ## An attribute that already holds `value` is left alone: the DOM records
+  ## even a same-value `setAttribute` as a mutation, and an effect re-runs
+  ## with the value it wrote last whenever its row is reused.
   noteOp(boSetAttribute, 1, name, value)
+  let current = dom_api.getAttribute(node, cstring(name))
+  if not current.isNil and current == cstring(value):
+    return
   dom_api.setAttribute(node, cstring(name), cstring(value))
 
 proc removeAttribute*(r: WebRenderer; node: Element; name: string) =
@@ -146,14 +153,34 @@ proc removeAttribute*(r: WebRenderer; node: Element; name: string) =
 # Text content
 # ---------------------------------------------------------------------------
 
+proc holdsText(node: Node; text: string): bool =
+  ## Does `node` already read `text`, with nothing a `textContent` write would
+  ## replace?  A text node compares its data.  An element qualifies when its
+  ## only child is a text node holding `text`, or when it is empty and `text`
+  ## is: an element with more children than that is restructured by the
+  ## write even when its concatenated text is the same.
+  if node.nodeType == 3:
+    return node.textContent == cstring(text)
+  let first = node.firstChild
+  if first.isNil:
+    return text.len == 0
+  first.nextSibling.isNil and first.nodeType == 3 and
+    first.textContent == cstring(text)
+
 proc setTextContent*(r: WebRenderer; node: Element; text: string) =
-  ## Set the text content of a real DOM element.
+  ## Set the text content of a real DOM element, unless it already reads
+  ## `text` (see `holdsText`).
   noteOp(boSetTextContent, 1, text)
+  if holdsText(Node(node), text):
+    return
   Node(node).textContent = cstring(text)
 
 proc setTextContent*(r: WebRenderer; node: Node; text: string) =
-  ## Set the text content of a real DOM node.
+  ## Set the text content of a real DOM node, unless it already reads `text`
+  ## (see `holdsText`).
   noteOp(boSetTextContent, 1, text)
+  if holdsText(node, text):
+    return
   node.textContent = cstring(text)
 
 # ---------------------------------------------------------------------------
