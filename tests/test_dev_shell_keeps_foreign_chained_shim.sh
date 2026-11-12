@@ -8,8 +8,8 @@
 # this repository that write a chained hook, in a scratch repository whose
 # dispatchers are the ones the `repro` on PATH installs (nothing is mocked):
 #   - the installer, scripts/install-git-hooks.sh: its own shim at
-#     `.repro-local` is replaced, a pre-commit framework shim there is refused
-#     and left byte-identical;
+#     `.repro-local` is replaced, a pre-commit framework shim there is reported and left
+#     byte-identical, without failing the shell;
 #   - the handoff loop of flake.nix's `ownRepoOnly`, extracted verbatim from
 #     the flake: a pre-commit shim displaced to the slot is chained over a
 #     previous shim of the same generator and template, and over nothing else.
@@ -82,14 +82,14 @@ displace pre-commit 22222222
 handoff "$SCRATCH/c"
 cmp -s "$hooks/pre-commit.repro-local" "$SCRATCH/kept" || fail "other template revision overwritten"
 
-echo "== installer: another generator's shim at .repro-local is refused, its own is replaced"
+echo "== installer: another generator's shim at .repro-local is left and reported, its own is replaced"
 new_repo "$SCRATCH/d"
 printf 'repos: []\n' >"$SCRATCH/d/.pre-commit-config.yaml"
 shim pre-commit 22222222 /old >"$hooks/pre-commit.repro-local"
 cp "$hooks/pre-commit.repro-local" "$SCRATCH/kept"
-if (cd "$SCRATCH/d" && bash "$REPO/scripts/install-git-hooks.sh" /bin/true) 2>"$SCRATCH/err"; then
-  fail "the installer replaced a pre-commit framework shim chained as .repro-local"
-fi
+(cd "$SCRATCH/d" && bash "$REPO/scripts/install-git-hooks.sh" /bin/true) 2>"$SCRATCH/err" \
+  || fail "the installer failed the shell over a foreign .repro-local: $(cat "$SCRATCH/err")"
+grep -q 'repro hooks ensure --vcs' "$SCRATCH/err" || fail "the installer reported nothing"
 cmp -s "$hooks/pre-commit.repro-local" "$SCRATCH/kept" || fail "the installer modified the foreign .repro-local"
 rm "$hooks/pre-commit.repro-local"
 (cd "$SCRATCH/d" && bash "$REPO/scripts/install-git-hooks.sh" /bin/true) || fail "the installer failed on a free .repro-local"
