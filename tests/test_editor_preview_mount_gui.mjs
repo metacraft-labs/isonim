@@ -20,7 +20,7 @@
  * released only if disposal removed it, not because its node left the page.
  * Every listener of the full-screen event types on those targets is recorded,
  * not only the shell's: disposal must remove all of them except the entries of
- * LEFT_BY_DESIGN, each with its reason. Full screen is entered through the
+ * LEFT_BY_DESIGN, each with its reason and exact count. Full screen is entered through the
  * fixture's enterPageFullScreen, which calls the VM's own entry point.
  *
  * The lifetime assertions use no wall-clock budget: each runs after a
@@ -488,7 +488,8 @@ try {
   // listener counts as the shell's seam listener when its handler is the listen
   // seam's wrapper; every other listener of the same types on the same targets
   // is recorded too, so a leaked raw listener cannot pass unseen. Disposal must
-  // remove all of them except LEFT_BY_DESIGN, each entry with its reason.
+  // remove all of them except LEFT_BY_DESIGN, each entry with its reason and
+  // its exact count: a count that differs, more or fewer, fails the audit.
   const fullScreenTypes = {
     center: ["pointermove", "pointerleave"],
     host: ["focusin", "focusout"],
@@ -497,7 +498,7 @@ try {
   };
   const LEFT_BY_DESIGN = [
     {
-      target: "frame", type: "load", script: "harness",
+      target: "frame", type: "load", script: "harness", count: 1,
       reason: "this test's own srcdoc trace listener (traceScript in index.html); the editor did not register it",
     },
   ];
@@ -576,10 +577,21 @@ try {
     };
     const seamCounts = (found) => Object.fromEntries(
       Object.entries(found).map(([key, list]) => [key, list.filter((l) => l.seam).length]));
-    const leftOver = (found) => Object.entries(found).flatMap(([target, list]) =>
-      list.filter((l) => !LEFT_BY_DESIGN.some((allowed) => allowed.target === target &&
-        allowed.type === l.type && allowed.script === l.script))
-        .map((l) => ({ target, ...l })));
+    const allows = (allowed, target, l) => allowed.target === target &&
+      allowed.type === l.type && allowed.script === l.script;
+    // Listeners outside LEFT_BY_DESIGN, plus every entry whose queried target
+    // holds a number of matching listeners other than its count.
+    const leftOver = (found) => [
+      ...Object.entries(found).flatMap(([target, list]) =>
+        list.filter((l) => !LEFT_BY_DESIGN.some((allowed) => allows(allowed, target, l)))
+          .map((l) => ({ target, ...l }))),
+      ...LEFT_BY_DESIGN.filter((allowed) => found[allowed.target])
+        .map((allowed) => ({ allowed, actual: found[allowed.target]
+          .filter((l) => allows(allowed, allowed.target, l)).length }))
+        .filter(({ allowed, actual }) => actual !== allowed.count)
+        .map(({ allowed, actual }) => ({ target: allowed.target, type: allowed.type,
+          script: allowed.script, expectedCount: allowed.count, actualCount: actual })),
+    ];
     return { targetIds, inventory, seamCounts, leftOver };
   };
   const lifetime = await browser.newPage({ viewport: { width: 1440, height: 900 } });
