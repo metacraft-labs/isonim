@@ -3727,6 +3727,11 @@ proc renderInspectorPanel*[R, E](r: R; vm: EditorVM): E =
       focusMemoryAlive = false
       {.emit: ["if (", sidebarRoot, ".__isonimFocusRestoreDisarm) ",
         sidebarRoot, ".__isonimFocusRestoreDisarm();"].}
+    # focusInspectorControl schedules its first attempt with
+    # __isonimFrameView(sidebarRoot, ...), whose cancellation is registered on
+    # this node; owning it cancels an animation frame still pending when the
+    # inspector is disposed.
+    ownViewResources(sidebarRoot)
 
     var lastFocusRestore = untrack(proc(): int =
       focusVm.inspector.focusRestoreRequest.val)
