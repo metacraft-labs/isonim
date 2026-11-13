@@ -6293,12 +6293,16 @@ proc renderEditorShell*[R, E](r: R; vm: EditorVM;
                       Math.round(rect.y + clientYOf(event) * scale - box.y),
                       Math.round(box.width));
           };
+          // Only the current frame document's listener is kept: a reload
+          // replaces the document, and the replaced one is released with it.
+          let disposeFrameDoc = null;
           const bindFrame = function () {
             let doc = null;
             try { doc = frame.contentDocument; } catch (e) { doc = null; }
             if (!doc || doc.__isonimFsBound) return;
             doc.__isonimFsBound = true;
-            listenOn(doc, 'pointermove', onFrameMove);
+            if (disposeFrameDoc) disposeFrameDoc();
+            disposeFrameDoc = listenOn(doc, 'pointermove', onFrameMove);
           };
           if (frame) {
             disposers.push(listenOn(frame, 'load', bindFrame));
@@ -6306,9 +6310,16 @@ proc renderEditorShell*[R, E](r: R; vm: EditorVM;
           }
           globalThis.__isonimViewCleanup(center, function () {
             disposers.forEach(function (dispose) { dispose(); });
+            if (disposeFrameDoc) disposeFrameDoc();
+            disposeFrameDoc = null;
           });
         })(""", centerColumn, ", ", fullScreenControlsEl, ", ", pointerAt, ", ",
         setRevealed, ", ", listenOn, ", ", boxOf, ", ", clientXOf, ", ", clientYOf, ", ", frameSizeOf, ");"].}
+      # previewListenOn registers with no owner, so the disposers above run only
+      # from the cleanup registered on centerColumn, and that cleanup runs only
+      # when the owning view disposes the node. Without this, whole-UI disposal
+      # left every full-screen listener registered.
+      ownViewResources(centerColumn)
 
   block:
     let capturedVm = vm
