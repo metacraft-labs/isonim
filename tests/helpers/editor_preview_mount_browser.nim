@@ -3,6 +3,9 @@
 ## peers, not compiler/filesystem/native ACK/Harbor outcomes. The callback really
 ## appends DOM content. Trace wrappers forward unchanged actual browser methods;
 ## they only record document/VM identity. No renderer or load result is mocked.
+## remount, disposeRetainingDom and requestFocusRestore drive the same real
+## createRoot disposal and inspector VM request the editor uses; they only let
+## the lifetime checks observe released resources with the DOM still attached.
 import std/[dom, json]
 import isonim/editor/[browser, dom_renderer, viewmodels, types, stories]
 import isonim/core/[signals, computation, owner]
@@ -31,9 +34,11 @@ vm.previewMount = proc(story: StoryRef; host: PreviewMountHost) =
   onCleanup proc() = inc unmounts
 vm.setEditMode(emEdit)
 injectEditorStyles()
-createRoot do(dispose: proc()):
-  disposeView = dispose
-  document.body.appendChild(renderEditorShell[DomRenderer, Element](DomRenderer(), vm))
+proc mountShell() =
+  createRoot do(dispose: proc()):
+    disposeView = dispose
+    document.body.appendChild(renderEditorShell[DomRenderer, Element](DomRenderer(), vm))
+mountShell()
 
 proc selectComponent(index: int): bool =
   var position = 0
@@ -58,10 +63,30 @@ proc closeView() =
     disposed = true
     disposeView()
     document.body.innerHTML = ""
+proc remountView() =
+  ## Whole-UI disposal of the live shell, then a fresh shell over the same VM.
+  if not disposed:
+    disposeView()
+    document.body.innerHTML = ""
+  disposed = false
+  mountShell()
+proc disposeRetainingDom() =
+  ## Whole-UI disposal that leaves the shell's DOM attached, so a check can
+  ## tell resources released by disposal from resources dropped with the DOM.
+  if not disposed:
+    disposed = true
+    disposeView()
+proc requestFocusRestore(id: cstring) =
+  vm.inspector.requestInspectorFocusRestore($id)
 let selectFn = selectComponent
 let snapshotFn = snapshot
 let reloadFn = reloadFixture
 let disposeFn = closeView
 let storyboardFn = showStoryboard
+let remountFn = remountView
+let disposeRetainingDomFn = disposeRetainingDom
+let focusRestoreFn = requestFocusRestore
 {.emit: ["window.__mountProbe={select:", selectFn, ",snapshot:", snapshotFn,
-  ",reload:", reloadFn, ",dispose:", disposeFn, ",storyboard:", storyboardFn, "};"].}
+  ",reload:", reloadFn, ",dispose:", disposeFn, ",storyboard:", storyboardFn,
+  ",remount:", remountFn, ",disposeRetainingDom:", disposeRetainingDomFn,
+  ",requestFocusRestore:", focusRestoreFn, "};"].}
