@@ -3,9 +3,10 @@
 ## peers, not compiler/filesystem/native ACK/Harbor outcomes. The callback really
 ## appends DOM content. Trace wrappers forward unchanged actual browser methods;
 ## they only record document/VM identity. No renderer or load result is mocked.
-## remount, disposeRetainingDom and requestFocusRestore drive the same real
-## createRoot disposal and inspector VM request the editor uses; they only let
-## the lifetime checks observe released resources with the DOM still attached.
+## remount, disposeRetainingDom, requestFocusRestore and enterPageFullScreen
+## drive the same real createRoot disposal and VM requests the editor uses; they
+## only let the lifetime checks observe released resources with the DOM still
+## attached, and reach the page preview in full screen without driving the UI.
 import std/[dom, json]
 import isonim/editor/[browser, dom_renderer, viewmodels, types, stories]
 import isonim/core/[signals, computation, owner]
@@ -78,6 +79,16 @@ proc disposeRetainingDom() =
     disposeView()
 proc requestFocusRestore(id: cstring) =
   vm.inspector.requestInspectorFocusRestore($id)
+proc enterPageFullScreen(): bool =
+  ## Shows the first page story in the page preview and enters full screen
+  ## through the VM's own entry point, which refuses where it is not offered.
+  for group in vm.sidebar.groups.val:
+    for storyIndex, story in group.items:
+      if story.kind == skPage:
+        discard vm.selectStory(StoryRef(group: story.group, name: story.name,
+          kind: story.kind, index: storyIndex))
+        vm.setPreviewFullScreen(true)
+        return vm.previewFullScreenActive()
 let selectFn = selectComponent
 let snapshotFn = snapshot
 let reloadFn = reloadFixture
@@ -86,7 +97,8 @@ let storyboardFn = showStoryboard
 let remountFn = remountView
 let disposeRetainingDomFn = disposeRetainingDom
 let focusRestoreFn = requestFocusRestore
+let fullScreenFn = enterPageFullScreen
 {.emit: ["window.__mountProbe={select:", selectFn, ",snapshot:", snapshotFn,
   ",reload:", reloadFn, ",dispose:", disposeFn, ",storyboard:", storyboardFn,
   ",remount:", remountFn, ",disposeRetainingDom:", disposeRetainingDomFn,
-  ",requestFocusRestore:", focusRestoreFn, "};"].}
+  ",requestFocusRestore:", focusRestoreFn, ",enterPageFullScreen:", fullScreenFn, "};"].}

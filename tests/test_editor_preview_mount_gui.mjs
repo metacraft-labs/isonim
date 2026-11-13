@@ -18,6 +18,10 @@
  * cancelAnimationFrame, forwarding to the native functions. The fixture's
  * disposeRetainingDom keeps the shell attached, so a listener counts as
  * released only if disposal removed it, not because its node left the page.
+ * Every listener of the full-screen event types on those targets is recorded,
+ * not only the shell's: disposal must remove all of them except the entries of
+ * LEFT_BY_DESIGN, each with its reason. Full screen is entered through the
+ * fixture's enterPageFullScreen, which calls the VM's own entry point.
  *
  * The lifetime assertions use no wall-clock budget: each runs after a
  * synchronous disposal, and the pending-frame check disposes in the same task
@@ -480,37 +484,55 @@ try {
   const wrapperLine = bundleLines.findIndex((line) => line.includes("entry.wrapped = function("));
   assert(wrapperLine >= 0, "The listen seam's wrapper is in the bundle");
   const wrapperColumn = bundleLines[wrapperLine].indexOf("function(") + "function".length;
-  const lifetime = await browser.newPage({ viewport: { width: 1440, height: 900 } });
-  try {
-    await lifetime.addInitScript(resourceAudit);
-    lifetime.on("pageerror", (e) => proof.errors.push("lifetime: " + e.message));
-    await lifetime.goto(origin, { waitUntil: "load" });
-    await lifetime.waitForFunction(() => window.__mountProbe);
-    const cdp = await lifetime.context().newCDPSession(lifetime);
+  // The full-screen audit, shared by the lifetime and full-screen pages. A
+  // listener counts as the shell's seam listener when its handler is the listen
+  // seam's wrapper; every other listener of the same types on the same targets
+  // is recorded too, so a leaked raw listener cannot pass unseen. Disposal must
+  // remove all of them except LEFT_BY_DESIGN, each entry with its reason.
+  const fullScreenTypes = {
+    center: ["pointermove", "pointerleave"],
+    host: ["focusin", "focusout"],
+    frame: ["load"],
+    frameDocument: ["pointermove"],
+  };
+  const LEFT_BY_DESIGN = [
+    {
+      target: "frame", type: "load", script: "harness",
+      reason: "this test's own srcdoc trace listener (traceScript in index.html); the editor did not register it",
+    },
+  ];
+  const mountedCounts = { center: 2, host: 2, frame: 1, frameDocument: 1 };
+  const disposedCounts = { center: 0, host: 0, frame: 0, frameDocument: 0 };
+  const openAudit = async (auditPage) => {
+    const cdp = await auditPage.context().newCDPSession(auditPage);
     const contexts = new Set();
+    const scripts = new Map();
     cdp.on("Runtime.executionContextCreated", (e) => contexts.add(e.context.id));
     cdp.on("Runtime.executionContextDestroyed", (e) =>
       contexts.delete(e.executionContextId),
     );
+    cdp.on("Debugger.scriptParsed", (e) => scripts.set(e.scriptId, e.url));
     await cdp.send("Runtime.enable");
-    const fullScreenTypes = {
-      center: ["pointermove", "pointerleave"],
-      host: ["focusin", "focusout"],
-      frame: ["load"],
-      frameDocument: ["pointermove"],
+    // Only to name each listener's script; no breakpoint is ever set.
+    await cdp.send("Debugger.enable");
+    const scriptOf = (scriptId) => {
+      const url = scripts.get(scriptId) || "";
+      if (url.endsWith("/editor.js")) return "editor";
+      if (url === origin + "/") return "harness";
+      return url || "other";
     };
     // Targets are read in the context that owns them: the frame document's
     // listeners are only visible from the frame's own context.
     const targetIds = async () => {
       // The frame document is read once its srcdoc document has loaded, so
       // the document queried is the one the shell has bound.
-      await lifetime.waitForFunction(() => {
+      await auditPage.waitForFunction(() => {
         const frame = document.querySelector('[data-page-project-frame="true"]');
         const doc = frame?.contentDocument;
         return doc?.URL === "about:srcdoc" && doc.readyState === "complete" &&
           doc.__isonimFsBound === true;
       });
-      await lifetime.evaluate(() => {
+      await auditPage.evaluate(() => {
         const host = document.querySelector('[data-preview-fullscreen-controls="true"]');
         const center = host.parentElement;
         window.__fullScreenTargets = {
@@ -535,31 +557,54 @@ try {
       assert(ids.frameDocument, "The page preview frame document is reachable");
       return ids;
     };
-    const seamListeners = async (ids) => {
-      const counts = {};
+    // Every listener of the full-screen types on each queried target.
+    const inventory = async (ids) => {
+      const found = {};
       for (const [key, types] of Object.entries(fullScreenTypes)) {
+        if (!ids[key]) continue;
         const { listeners } = await cdp.send("DOMDebugger.getEventListeners", {
           objectId: ids[key],
         });
-        counts[key] = listeners.filter((listener) => types.includes(listener.type) &&
-          listener.lineNumber === wrapperLine && listener.columnNumber === wrapperColumn).length;
+        found[key] = listeners.filter((listener) => types.includes(listener.type))
+          .map((listener) => ({
+            type: listener.type,
+            script: scriptOf(listener.scriptId),
+            seam: listener.lineNumber === wrapperLine && listener.columnNumber === wrapperColumn,
+          }));
       }
-      return counts;
+      return found;
     };
-    const mountedCounts = { center: 2, host: 2, frame: 1, frameDocument: 1 };
+    const seamCounts = (found) => Object.fromEntries(
+      Object.entries(found).map(([key, list]) => [key, list.filter((l) => l.seam).length]));
+    const leftOver = (found) => Object.entries(found).flatMap(([target, list]) =>
+      list.filter((l) => !LEFT_BY_DESIGN.some((allowed) => allowed.target === target &&
+        allowed.type === l.type && allowed.script === l.script))
+        .map((l) => ({ target, ...l })));
+    return { targetIds, inventory, seamCounts, leftOver };
+  };
+  const lifetime = await browser.newPage({ viewport: { width: 1440, height: 900 } });
+  try {
+    await lifetime.addInitScript(resourceAudit);
+    lifetime.on("pageerror", (e) => proof.errors.push("lifetime: " + e.message));
+    await lifetime.goto(origin, { waitUntil: "load" });
+    await lifetime.waitForFunction(() => window.__mountProbe);
+    const { targetIds, inventory, seamCounts, leftOver } = await openAudit(lifetime);
     const firstIds = await targetIds();
-    proof.fullScreenMounted = await seamListeners(firstIds);
+    proof.fullScreenMountedListeners = await inventory(firstIds);
+    proof.fullScreenMounted = seamCounts(proof.fullScreenMountedListeners);
     assert.deepEqual(proof.fullScreenMounted, mountedCounts,
       "The full-screen listeners are registered while the shell is mounted");
     // A remount disposes the first shell (its DOM is removed by the fixture,
     // so only the elements are queried) and registers exactly one new set.
     await lifetime.evaluate(() => window.__mountProbe.remount());
     const remountIds = await targetIds();
-    const replaced = await seamListeners({ ...firstIds, frameDocument: remountIds.frameDocument });
-    proof.fullScreenReplacedShell = { center: replaced.center, host: replaced.host, frame: replaced.frame };
+    const replaced = await inventory({ center: firstIds.center, host: firstIds.host, frame: firstIds.frame });
+    proof.fullScreenReplacedShell = seamCounts(replaced);
     assert.deepEqual(proof.fullScreenReplacedShell, { center: 0, host: 0, frame: 0 },
       "A disposed shell keeps no full-screen listener");
-    proof.fullScreenRemounted = await seamListeners(remountIds);
+    assert.deepEqual(leftOver(replaced), [],
+      "A disposed shell keeps no listener of the full-screen types");
+    proof.fullScreenRemounted = seamCounts(await inventory(remountIds));
     assert.deepEqual(proof.fullScreenRemounted, mountedCounts,
       "A remounted shell registers one set of full-screen listeners");
     // The inspector's focus restore schedules its first attempt on the next
@@ -577,10 +622,13 @@ try {
       "A focus restore request schedules one animation frame");
     assert.equal(proof.focusRestoreFrames.afterDisposal, 0,
       "Whole UI disposal cancels the inspector's pending focus-restore frame");
-    proof.fullScreenDisposed = await seamListeners(remountIds);
-    assert.deepEqual(proof.fullScreenDisposed,
-      { center: 0, host: 0, frame: 0, frameDocument: 0 },
+    const disposed = await inventory(remountIds);
+    proof.fullScreenDisposedListeners = disposed;
+    proof.fullScreenDisposed = seamCounts(disposed);
+    assert.deepEqual(proof.fullScreenDisposed, disposedCounts,
       "Whole UI disposal removes every full-screen listener");
+    assert.deepEqual(leftOver(disposed), [],
+      "Whole UI disposal leaves no listener of the full-screen types beyond LEFT_BY_DESIGN");
     assert.deepEqual(proof.errors, []);
     proof.cases.push(
       "whole UI disposal removes the full-screen listeners, including the frame document's, and a remount registers one set",
@@ -590,6 +638,48 @@ try {
     );
   } finally {
     await lifetime.close();
+  }
+  // Reload while in full screen: the frame's document is replaced while the
+  // full-screen listeners are live; the shell binds the new document once and
+  // disposal releases every listener, the new document's included.
+  const fullScreen = await browser.newPage({ viewport: { width: 1440, height: 900 } });
+  try {
+    fullScreen.on("pageerror", (e) => proof.errors.push("full screen: " + e.message));
+    await fullScreen.goto(origin, { waitUntil: "load" });
+    await fullScreen.waitForFunction(() => window.__mountProbe);
+    const { targetIds, inventory, seamCounts, leftOver } = await openAudit(fullScreen);
+    assert.equal(await fullScreen.evaluate(() => window.__mountProbe.enterPageFullScreen()), true,
+      "The page preview enters full screen");
+    await fullScreen.locator('[data-preview-fullscreen-controls="true"]').waitFor({ state: "visible" });
+    const enteredIds = await targetIds();
+    proof.fullScreenEntered = seamCounts(await inventory(enteredIds));
+    assert.deepEqual(proof.fullScreenEntered, mountedCounts,
+      "Entering full screen keeps one set of full-screen listeners");
+    await fullScreen.evaluate(() => {
+      window.__fullScreenReplacedDocument = window.__fullScreenTargets.frame.contentDocument;
+      window.__mountProbe.reload();
+    });
+    await fullScreen.waitForFunction(() =>
+      window.__fullScreenTargets.frame.contentDocument !== window.__fullScreenReplacedDocument);
+    const reloadedIds = await targetIds();
+    proof.fullScreenReloaded = seamCounts(await inventory(reloadedIds));
+    assert.deepEqual(proof.fullScreenReloaded, mountedCounts,
+      "A reload in full screen binds the new frame document once");
+    assert.equal(await fullScreen.locator('[data-preview-fullscreen-controls="true"]').isVisible(), true,
+      "Full screen survives the reload");
+    await fullScreen.evaluate(() => window.__mountProbe.disposeRetainingDom());
+    const disposed = await inventory(reloadedIds);
+    proof.fullScreenReloadDisposedListeners = disposed;
+    assert.deepEqual(seamCounts(disposed), disposedCounts,
+      "Disposal after a full-screen reload removes every full-screen listener");
+    assert.deepEqual(leftOver(disposed), [],
+      "Disposal after a full-screen reload leaves no listener beyond LEFT_BY_DESIGN");
+    assert.deepEqual(proof.errors, []);
+    proof.cases.push(
+      "a reload in full screen rebinds the new frame document once, and disposal removes every full-screen listener",
+    );
+  } finally {
+    await fullScreen.close();
   }
 } finally {
   if (page && !page.isClosed())
