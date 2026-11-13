@@ -864,7 +864,8 @@ proc renderComponentDetail*[R, E](r: R; vm: EditorVM): E =
   let detailSrcdocGeneration = createSignal(0)
   when isDomViewHost(E):
     let bridgeBinding = newBridgeBinding()
-  ownViewResources(projectFrame)
+  # projectFrame's view resources are owned by installPreviewSelectionBridge
+  # above, in this same owner; a second ownViewResources only re-ran a no-op.
   createRenderEffect proc() =
     let story = vm.selectedStory.val
     let preview = vm.preview.current.val
