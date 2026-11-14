@@ -69,13 +69,16 @@ const MappedSides = ["padding-top", "padding-right", "padding-bottom",
   "margin"]
 
 proc boxVm(foundation: ref string; writable = true; mapSides = true;
-    element = boxElement(); alsoMapped: seq[string] = @[]): EditorVM =
+    element = boxElement(); alsoMapped: seq[string] = @[];
+    orderless = false): EditorVM =
   let vector = new(string)
   vector[] = "<svg/>"
   let story = StoryRef(group: "DestinationCard", name: "Default",
     kind: skComponent, index: 0)
   var schema = demoDesignSystemSchema()
   var adapter = demoVectorEditAdapter(vector, foundation)
+  # A writer that does not report its rules' declarations.
+  if orderless: adapter.ruleDeclarations = nil
   if mapSides:
     for property in @MappedSides & alsoMapped:
       schema.nodes.add DesignSchemaNode(
@@ -539,6 +542,24 @@ proc followers(vm: EditorVM): seq[(string, string)] =
   let history = vm.inspector.undoStack.val
   if history.len > 0: history[^1].sideFollowersAfter else: @[]
 
+const BaseCard = ".destination-card"
+const MediaCard = "@media (max-width: 640px) .destination-card"
+
+proc measuredCard(sides: openArray[(string, (string, string))];
+    padding = "18px"; matched = @[BaseCard, MediaCard]): ElementRef =
+  ## The card as a capture that measured its sides reports it: each side's
+  ## computed value and the declaration block that decides it
+  ## (`decidingRule`), as the preview bridge's probe names it. ``padding`` is
+  ## the shorthand as the rule authors it.
+  result = boxElement()
+  result.matchedRules = matched
+  for prop in result.properties.mitems:
+    if prop.name == "padding": prop.value = padding
+    for (name, measured) in sides:
+      if prop.name == name:
+        prop.value = measured[0]
+        prop.decidingRule = measured[1]
+
 proc recaptured(vm: EditorVM; values: openArray[(string, string)]) =
   ## Select the card again as a fresh preview capture reports it: computed
   ## values, no provenance, nothing remembered from earlier edits.
@@ -634,19 +655,29 @@ suite "shorthand sides follow the rule's declaration order":
       check r.inputOf(panel.field("Padding, all sides")) == "20"
       dispose()
 
-  test "a side edited in place before the shorthand still renders the shorthand's value":
+  test "a side a later shorthand in the same rule overrides is refused at the act":
+    ## Operator decision of 2026-11-05 (overridden side, option B): an edit of
+    ## a side that a later or `!important` shorthand in the same rule still
+    ## overrides would change nothing that renders, so it is refused at the
+    ## act with that reason, and nothing changes (editor spec "Saving": a
+    ## refusal the editor can know at the act is made at the act).
     createRoot proc(dispose: proc()) =
       let r = MockRenderer()
       let foundation = new(string)
-      foundation[] = withCardRule("padding-top: 24px; padding: 18px;")
+      let declared = withCardRule("padding-top: 24px; padding: 18px;")
+      foundation[] = declared
       let vm = boxVm(foundation)
       let panel = renderInspectorPanel[MockRenderer, MockNode](r, vm)
       r.commitField(panel, "Padding top", "30")
-      vm.write()
-      check foundation[] == withCardRule("padding-top: 30px; padding: 18px;")
+      check vm.stacks == (0, 0)
+      check vm.inspector.pendingSourceEdits.val.len == 0
       check vm.value("padding-top") == "18px"
       check r.inputOf(panel.field("Padding top")) == "18"
-      check vm.followers == @[("padding-top", "18px")]
+      check textOf(panel.boxMessage) == "Padding top: A later `padding` " &
+        "declaration in `.destination-card` overrides padding-top, so this " &
+        "edit would not change it. Nothing was changed."
+      check foundation[] == declared
+      # The shorthand itself can still be set, and reaches the side.
       r.commitField(panel, "Padding, all sides", "20")
       check vm.sides("padding-") == @["20px", "20px", "20px", "20px"]
       dispose()
@@ -714,7 +745,283 @@ suite "shorthand sides follow the rule's declaration order":
       vm.recaptured({"padding": "18px !important", "padding-top": "18px"})
       r.commitField(panel, "Padding top", "30")
       check vm.value("padding-top") == "18px"
-      check vm.followers == @[("padding-top", "18px !important")]
+      check vm.inspector.pendingSourceEdits.val.len == 0
+      check textOf(panel.boxMessage) == "Padding top: The `!important` " &
+        "`padding` declaration in `.destination-card` overrides padding-top, " &
+        "so this edit would not change it. Nothing was changed."
+      dispose()
+
+  test "a side an @media rule decides keeps its value when the base rule is not in pixels":
+    ## Issue 2026-11-04-a-shorthand-edit-moves-a-side-another-rule-decides-
+    ## when-units-differ, case 1: `1rem` against a captured 30px top cannot be
+    ## compared; the capture's measurement of which rule decides the side can.
+    createRoot proc(dispose: proc()) =
+      let r = MockRenderer()
+      let foundation = new(string)
+      foundation[] = withCardRule("padding: 1rem;").replace(
+        ".destination-card { font-size: 13px; }",
+        ".destination-card { font-size: 13px; padding-top: 30px; }")
+      let vm = boxVm(foundation, element = measuredCard({
+        "padding-top": ("30px", MediaCard), "padding-right": ("16px", BaseCard),
+        "padding-bottom": ("16px", BaseCard), "padding-left": ("16px", BaseCard)},
+        padding = "1rem"))
+      let panel = renderInspectorPanel[MockRenderer, MockNode](r, vm)
+      r.commitField(panel, "Padding, all sides", "20")
+      check vm.sides("padding-") == @["30px", "20px", "20px", "20px"]
+      check vm.followers == @[("padding-right", "20px"),
+        ("padding-bottom", "20px"), ("padding-left", "20px")]
+      check r.inputOf(panel.field("Padding, all sides")) == ""
+      dispose()
+
+  test "a side an @media rule decides with the base rule's own value is not moved":
+    ## Case 3: the values coincide (18px both), so only the capture's
+    ## measurement can say the @media rule decides the top.
+    createRoot proc(dispose: proc()) =
+      let r = MockRenderer()
+      let foundation = new(string)
+      foundation[] = DemoFoundationInitialSource.replace(
+        ".destination-card { font-size: 13px; }",
+        ".destination-card { font-size: 13px; padding-top: 18px; }")
+      let vm = boxVm(foundation, element = measuredCard({
+        "padding-top": ("18px", MediaCard), "padding-right": ("18px", BaseCard),
+        "padding-bottom": ("18px", BaseCard), "padding-left": ("18px", BaseCard)}))
+      let panel = renderInspectorPanel[MockRenderer, MockNode](r, vm)
+      r.commitField(panel, "Padding, all sides", "20")
+      check vm.sides("padding-") == @["18px", "20px", "20px", "20px"]
+      check vm.followers.len == 3
+      dispose()
+
+  test "a side nothing declared is decided by the rule once it declares it":
+    createRoot proc(dispose: proc()) =
+      let r = MockRenderer()
+      let foundation = new(string)
+      foundation[] = DemoFoundationInitialSource
+      let vm = boxVm(foundation, element = measuredCard({
+        "margin-top": ("4px", "none"), "margin-right": ("8px", "none"),
+        "margin-bottom": ("4px", "none"), "margin-left": ("8px", "none")}))
+      let panel = renderInspectorPanel[MockRenderer, MockNode](r, vm)
+      r.commitField(panel, "Margin, all sides", "6")
+      check vm.sides("margin-") == @["6px", "6px", "6px", "6px"]
+      dispose()
+
+  test "a side an edit declares is the rule's for the next edit, before any capture":
+    ## The measurement on the selection follows the editor's own edits: the
+    ## side Margin top declared is the rule's when Margin, all sides is
+    ## inserted after it, so its undo puts the side back in the preview.
+    createRoot proc(dispose: proc()) =
+      let r = MockRenderer()
+      let foundation = new(string)
+      foundation[] = DemoFoundationInitialSource
+      let vm = boxVm(foundation, element = measuredCard({
+        "margin-top": ("4px", "none"), "margin-right": ("8px", "none"),
+        "margin-bottom": ("4px", "none"), "margin-left": ("8px", "none")}))
+      let panel = renderInspectorPanel[MockRenderer, MockNode](r, vm)
+      r.commitField(panel, "Margin top", "10")
+      r.commitField(panel, "Margin, all sides", "6")
+      let history = vm.inspector.undoStack.val
+      check history[^1].sideFollowersBefore == @[("margin-top", "10px")]
+      check vm.runEditorCommand(eckUndo).status == ecsSucceeded
+      check vm.value("margin-top") == "10px"
+      dispose()
+
+  test "a writer's rule the capture does not know by name is compared by value":
+    ## The capture named the card's rule `article.destination-card`; the
+    ## writer names it `.destination-card`. Trusting the measurement would
+    ## say no side is the writer's and move nothing; the value comparison
+    ## moves the sides the rule gave their values.
+    createRoot proc(dispose: proc()) =
+      let r = MockRenderer()
+      let foundation = new(string)
+      foundation[] = DemoFoundationInitialSource
+      const Spelled = "article.destination-card"
+      let vm = boxVm(foundation, element = measuredCard({
+        "padding-top": ("18px", Spelled), "padding-right": ("18px", Spelled),
+        "padding-bottom": ("18px", Spelled), "padding-left": ("18px", Spelled)},
+        matched = @[Spelled]))
+      let panel = renderInspectorPanel[MockRenderer, MockNode](r, vm)
+      r.commitField(panel, "Padding, all sides", "20")
+      check vm.sides("padding-") == @["20px", "20px", "20px", "20px"]
+      check vm.followers.len == 4
+      dispose()
+
+  test "a var() shorthand before the edit: the rule after it decides every side":
+    ## Case 2: the shorthand before the edit does not expand, but the rule the
+    ## write produces does, and a later side still decides its own.
+    createRoot proc(dispose: proc()) =
+      let r = MockRenderer()
+      let foundation = new(string)
+      foundation[] = withCardRule("padding: var(--wl-space-card); padding-top: 24px;")
+      var element = boxElement()
+      for prop in element.properties.mitems:
+        case prop.name
+        of "padding": prop.value = "var(--wl-space-card)"
+        of "padding-top": prop.value = "24px"
+        of "padding-right", "padding-bottom", "padding-left": prop.value = "16px"
+        else: discard
+      let vm = boxVm(foundation, element = element)
+      let panel = renderInspectorPanel[MockRenderer, MockNode](r, vm)
+      r.commitField(panel, "Padding, all sides", "20")
+      vm.write()
+      check foundation[] == withCardRule("padding: 20px; padding-top: 24px;")
+      check vm.sides("padding-") == @["24px", "20px", "20px", "20px"]
+      check vm.followers[0] == ("padding-top", "24px")
+      dispose()
+
+  test "a shorthand whose sides its text does not say still lets a later side decide":
+    ## A multi-value list with `var()` gives the sides values its text does
+    ## not spell out; each side is read on its own, so the later
+    ## `padding-top` still decides the top after the edit.
+    createRoot proc(dispose: proc()) =
+      let r = MockRenderer()
+      let foundation = new(string)
+      foundation[] = withCardRule("padding: var(--wl-space-card) 4px; padding-top: 24px;")
+      var element = boxElement()
+      for prop in element.properties.mitems:
+        case prop.name
+        of "padding": prop.value = "var(--wl-space-card) 4px"
+        of "padding-top": prop.value = "24px"
+        of "padding-right", "padding-left": prop.value = "4px"
+        of "padding-bottom": prop.value = "16px"
+        else: discard
+      let vm = boxVm(foundation, element = element)
+      let panel = renderInspectorPanel[MockRenderer, MockNode](r, vm)
+      r.commitField(panel, "Padding, all sides", "20")
+      check vm.sides("padding-") == @["24px", "20px", "20px", "20px"]
+      dispose()
+
+  test "a shorthand set to a variable shows the variable on every side":
+    ## isonim-pm issue 2026-10-23-a-shorthand-set-to-a-variable-leaves-the-
+    ## box-model-sides-stale; "Visual box model": a field shows a function
+    ## as written, and the all-sides field the value the sides agree on.
+    createRoot proc(dispose: proc()) =
+      let r = MockRenderer()
+      let foundation = new(string)
+      foundation[] = DemoFoundationInitialSource
+      let vm = boxVm(foundation)
+      let panel = renderInspectorPanel[MockRenderer, MockNode](r, vm)
+      r.commitField(panel, "Padding, all sides", "1.5rem")
+      check vm.sides("padding-") == @["1.5rem", "1.5rem", "1.5rem", "1.5rem"]
+      r.commitField(panel, "Padding, all sides", "var(--wl-space-card)")
+      # The editor normalises a typed variable to the project's token
+      # reference, and the shorthand's own row shows that; so do its sides.
+      const token = "token(wl-space-card)"
+      check vm.value("padding") == token
+      for side in Sides:
+        check vm.value("padding-" & side) == token
+        check r.inputOf(panel.field("Padding " & side)) == token
+      check r.inputOf(panel.field("Padding, all sides")) == token
+      # A canvas handle reads the side as shown: not a number, so a press is
+      # refused rather than scaled from the earlier length.
+      check vm.boxCanvasDragRefusal("padding-top") ==
+        "Padding top: Type a numeric value to replace " & token & "."
+      check vm.runEditorCommand(eckUndo).status == ecsSucceeded
+      check vm.sides("padding-") == @["1.5rem", "1.5rem", "1.5rem", "1.5rem"]
+      dispose()
+
+  test "a shorthand set to a variable without a writer's order shows it too":
+    ## The same through `withShorthandSides` alone (no `ruleDeclarations`).
+    createRoot proc(dispose: proc()) =
+      let foundation = new(string)
+      foundation[] = DemoFoundationInitialSource
+      let vm = boxVm(foundation, orderless = true)
+      check vm.editCssProperty("padding", "var(--wl-space-card)",
+        pesShared).status == pesAccepted
+      check vm.sides("padding-") == @["token(wl-space-card)",
+        "token(wl-space-card)", "token(wl-space-card)", "token(wl-space-card)"]
+      dispose()
+
+  test "`! important` with a space is a priority":
+    createRoot proc(dispose: proc()) =
+      let r = MockRenderer()
+      let foundation = new(string)
+      foundation[] = withCardRule("padding-top: 24px ! important; padding: 18px;")
+      var element = boxElement()
+      for prop in element.properties.mitems:
+        if prop.name == "padding-top": prop.value = "24px"
+      let vm = boxVm(foundation, element = element)
+      let panel = renderInspectorPanel[MockRenderer, MockNode](r, vm)
+      r.commitField(panel, "Padding, all sides", "20")
+      check vm.sides("padding-") == @["24px", "20px", "20px", "20px"]
+      check vm.followers[0] == ("padding-top", "24px !important")
+      dispose()
+
+  test "without writer order, a side whose value the capture read still follows the shorthand":
+    ## Approved wording: "Without either, every side follows the shorthand."
+    ## A capture that read `var(--wl-space-card)` off the preview keeps it as
+    ## the side's authored value (shown, and refusing a canvas drag), but that
+    ## is no statement that the side is its own declaration
+    ## (`authoredFromCapture`).
+    createRoot proc(dispose: proc()) =
+      let foundation = new(string)
+      foundation[] = DemoFoundationInitialSource
+      var element = boxElement()
+      for prop in element.properties.mitems:
+        if prop.name in ["padding-top", "padding-right", "padding-bottom",
+            "padding-left"]:
+          prop.value = "16px"
+          prop.authoredValue = "var(--wl-space-card)"
+          prop.authoredFromCapture = true
+      let vm = boxVm(foundation, element = element, orderless = true)
+      check vm.boxCanvasDragRefusal("padding-top") ==
+        "Padding top: Type a numeric value to replace var(--wl-space-card)."
+      check vm.editCssProperty("padding", "20px", pesShared).status == pesAccepted
+      for prop in vm.inspector.selectedElement.val.properties:
+        if prop.name in ["padding-top", "padding-right", "padding-bottom",
+            "padding-left"]:
+          check prop.value == "20px"
+          check prop.authoredValue == "20px"
+      dispose()
+
+  test "a native catalog's owners decide which sides a shorthand edit moves":
+    ## Case 4: the catalog states, per side, the declaration that decides it
+    ## (`sourceDeclarations`, read into `sourceOwner`). Sides the shorthand
+    ## owns follow it, authored value included, before the catalog is
+    ## published again; a side its own later declaration owns does not.
+    createRoot proc(dispose: proc()) =
+      let foundation = new(string)
+      foundation[] = DemoFoundationInitialSource
+      var element = boxElement()
+      for prop in element.properties.mitems:
+        case prop.name
+        of "padding": prop.authoredValue = "18px"
+        of "padding-top":
+          prop.value = "24px"; prop.authoredValue = "24px"
+          prop.sourceOwner = "padding-top"
+        of "padding-right", "padding-bottom", "padding-left":
+          prop.authoredValue = "18px"; prop.sourceOwner = "padding"
+        else: discard
+      let vm = boxVm(foundation, element = element, orderless = true)
+      check vm.editCssProperty("padding", "20px", pesShared).status == pesAccepted
+      for prop in vm.inspector.selectedElement.val.properties:
+        case prop.name
+        of "padding-top":
+          check prop.value == "24px"
+          check prop.authoredValue == "24px"
+        of "padding-right", "padding-bottom", "padding-left":
+          check prop.value == "20px"
+          check prop.authoredValue == "20px"
+        else: discard
+      dispose()
+
+  test "a corner radius's order is read from the rule, with `!important`":
+    createRoot proc(dispose: proc()) =
+      let foundation = new(string)
+      foundation[] = withCardRule(
+        "padding: 18px; border-top-left-radius: 8px ! important; border-radius: 14px;")
+      var element = boxElement()
+      for prop in element.properties.mitems:
+        if prop.name == "border-radius":
+          prop = cardProperty("border-radius", "14px")
+      for corner in ["border-top-left-radius", "border-top-right-radius",
+          "border-bottom-right-radius", "border-bottom-left-radius"]:
+        element.properties.add cardProperty(corner,
+          if corner == "border-top-left-radius": "8px" else: "14px")
+      let vm = boxVm(foundation, element = element, alsoMapped = @[
+        "border-radius", "border-top-left-radius"])
+      check vm.editCssProperty("border-radius", "12px",
+        pesShared).status == pesAccepted
+      check vm.value("border-top-left-radius") == "8px"
+      check vm.value("border-top-right-radius") == "12px"
       dispose()
 
 suite "refusals":

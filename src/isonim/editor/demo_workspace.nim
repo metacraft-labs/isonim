@@ -476,16 +476,14 @@ func demoRuleDeclarations*(content: string;
   let rules = content.demoRules(selector)
   if rules.len != 1: return
   result.ok = true
+  # A top-level rule: no at-rule conditions, so the selector names it.
+  result.rule = rules[0].selector.splitWhitespace().join(" ")
   for part in content[rules[0].bodyStart ..< rules[0].bodyEnd].split(';'):
     let colon = part.find(':')
     if colon < 0: continue
     let property = part[0 ..< colon].strip()
-    var value = part[colon + 1 .. ^1].strip()
     if property.len == 0: continue
-    var important = false
-    if value.toLowerAscii().endsWith("!important"):
-      important = true
-      value = value[0 ..< value.len - "!important".len].strip()
+    let (value, important) = splitCssPriority(part[colon + 1 .. ^1])
     result.declarations.add WorkspaceRuleDeclaration(property: property,
       value: value, important: important)
 

@@ -83,6 +83,19 @@ type
     condition*: string   ## Enclosing at-rule prelude, "" at the top level.
     selector*: string    ## The later rule's selector, as written.
 
+func splitCssPriority*(value: string): tuple[value: string; important: bool] =
+  ## ``value`` without a trailing `!important`, and whether it had one. CSS
+  ## allows whitespace between `!` and `important`, and either case
+  ## (https://www.w3.org/TR/css-syntax-3/#consume-declaration).
+  let text = value.strip()
+  let lower = text.toLowerAscii()
+  if lower.endsWith("important"):
+    var at = text.len - "important".len - 1
+    while at >= 0 and text[at] in Whitespace: dec at
+    if at >= 0 and text[at] == '!':
+      return (text[0 ..< at].strip(), true)
+  (text, false)
+
 func isIdentChar(c: char): bool =
   c.isAlphaNumeric or c in {'-', '_'}
 

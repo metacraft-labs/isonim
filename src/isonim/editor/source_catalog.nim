@@ -107,3 +107,23 @@ proc sourceCatalogWorkspace*(catalog, manifest: JsonNode; base: EditorWorkspace)
         return rendered
     if previous != nil: return previous(story, platform)
     ProjectPreview(status: ppsUnsupportedStory, story: story)
+
+func nativeSideOwner*(mapping: JsonNode; property: string): string =
+  ## Which declaration decides ``property`` in its rule, as a compiled style
+  ## binding reports it (`sourceDeclarations`): the property itself, or the
+  ## later shorthand a side was derived from. "" when the binding does not
+  ## say. Read into `PropertyInfo.sourceOwner` by the source browser.
+  if mapping.isNil or mapping.kind != JObject: return
+  let owner = mapping{"sourceDeclarations", property, "property"}
+  if owner != nil and owner.kind == JString: owner.getStr() else: ""
+
+func withoutNativeStatements*(property: PropertyInfo): PropertyInfo =
+  ## ``property`` without what a native catalog stated about it -- its
+  ## removal and edit statements and which declaration decides it
+  ## (`sourceOwner`) -- for a property no current mapping offers any more (another
+  ## story, a refreshed catalog without it, an inline owner).
+  result = property
+  result.nativeRemovalStated = false
+  result.nativeRemovalRefusal = ""
+  result.nativeEditRefusal = ""
+  result.sourceOwner = ""

@@ -13,6 +13,7 @@ import isonim/editor/types
 import isonim/editor/preview_zoom
 import isonim/editor/preview_fullscreen
 import isonim/editor/html_classes
+import isonim/editor/css_patch
 import isonim/editor/css_color_literal
 import isonim/editor/numeric_precision
 import isonim/editor/design_review/context_policy
@@ -3146,7 +3147,7 @@ proc previewDomElementRef*(metadata: StoryRenderMetadata; tag, testId,
     fontSize, fontWeight, lineHeight, boxShadow, opacity, rectWidth,
     rectHeight, textContent, elementId, sourceKey, schemaKey, ancestorIds,
     layerTreeJson: string; styleBindings = "";
-    computedStyles = ""): ElementRef =
+    computedStyles = ""; sideRules = ""): ElementRef =
   ## Build the generic inspector selection produced by the browser iframe DOM
   ## bridge. Projects own the preview HTML/source metadata; the editor owns the
   ## normalized ElementRef and editable property model.
@@ -3272,7 +3273,7 @@ proc previewDomElementRef*(metadata: StoryRenderMetadata; tag, testId,
         ancestors = treeAncestry.labels
         parsedAncestorIds = treeAncestry.ids
 
-  ElementRef(
+  result = ElementRef(
     id: identity,
     sourceKey: if sourceKey.len > 0: sourceKey else: identity,
     domPath: elementPath,
@@ -3300,6 +3301,28 @@ proc previewDomElementRef*(metadata: StoryRenderMetadata; tag, testId,
     ancestors: ancestors,
     ancestorIds: parsedAncestorIds,
     styleBindings: styleBindings)
+  # Which declaration block decides each shorthand side, as the preview
+  # measured it: one `side<TAB>rule` line per side (`decidingRule`).
+  # The `@matched` line lists every rule matching the element.
+  for line in sideRules.splitLines():
+    let tab = line.find('\t')
+    if tab <= 0: continue
+    let side = line[0 ..< tab]
+    if side == "@matched":
+      result.matchedRules = line[tab + 1 .. ^1].split('\x1f')
+      continue
+    # `side<TAB>rule[<TAB>specified]`: the deciding block's own text for the
+    # side when it is not a plain length becomes its authored value, so a
+    # variable or function is shown and refused by a canvas drag as written
+    # ("Visual box model": a side that is not a number cannot be dragged
+    # without replacing it), not read as the length it resolves to.
+    let columns = line[tab + 1 .. ^1].split('\t')
+    for prop in result.properties.mitems:
+      if prop.name == side:
+        prop.decidingRule = columns[0]
+        if columns.len > 1 and prop.authoredValue.len == 0:
+          prop.authoredValue = columns[1]
+          prop.authoredFromCapture = true
 
 proc previewDomElementRef*(metadata: StoryRenderMetadata; tag, testId,
     className, sourceFile: string; sourceLine: int; backgroundColor, color,
@@ -4853,6 +4876,47 @@ func shorthandSideValues*(value: string): seq[string] =
   of 4: parts
   else: @[]
 
+func cssTopLevelTokens(text: string): seq[string] =
+  ## ``text`` split at whitespace outside parentheses.
+  var depth = 0
+  var token = ""
+  for c in text:
+    if c == '(': inc depth
+    elif c == ')' and depth > 0: dec depth
+    if c in Whitespace and depth == 0:
+      if token.len > 0: result.add token
+      token = ""
+    else:
+      token.add c
+  if token.len > 0: result.add token
+
+const substitutionFunctions = ["var(", "env(", "attr(", "token("]
+
+func shorthandSidesAsWritten*(value: string): seq[string] =
+  ## The four side values of a shorthand, each as written, in CSS clockwise
+  ## order, or nothing when which side gets what cannot be read from the
+  ## text. Beyond `shorthandSideValues` it takes a single value of any form
+  ## -- `var(--space)`, `calc(1rem + 2px)` -- as every side's (isonim-pm
+  ## issue 2026-10-23-a-shorthand-set-to-a-variable-leaves-the-box-model-
+  ## sides-stale), and a 2-4 value list whose values are functions other
+  ## than a substitution (`var()` and the like may stand for several
+  ## values, so their positions are not known). An elliptical radius (`/`)
+  ## is not read.
+  let text = value.strip()
+  if text.len == 0 or '/' in text:
+    return
+  let parts = cssTopLevelTokens(text)
+  if parts.len > 1:
+    for part in parts:
+      for function in substitutionFunctions:
+        if function in part.toLowerAscii(): return
+  case parts.len
+  of 1: @[parts[0], parts[0], parts[0], parts[0]]
+  of 2: @[parts[0], parts[1], parts[0], parts[1]]
+  of 3: @[parts[0], parts[1], parts[2], parts[1]]
+  of 4: parts
+  else: @[]
+
 func withShorthandSides(element: ElementRef; property,
     value: string): ElementRef =
   ## ``element`` with the captured sides of a simple shorthand following an
@@ -4866,19 +4930,34 @@ func withShorthandSides(element: ElementRef; property,
   ## BL still said 0 -- before and after the write (isonim-pm issue
   ## 2026-10-14-consumer-corner-radius-edit-is-previewed-then-refused-only-at-save).
   ##
-  ## Only sides without an authored value follow: an authored side is its own
-  ## source declaration, which this edit did not change.
+  ## A side follows unless it is its own source declaration, which this edit
+  ## did not change: a native catalog states which declaration decides each
+  ## side (`sourceOwner`); without that, an authored side is taken to be its
+  ## own. A side whose owner is the shorthand follows, authored value
+  ## included, so the box model does not show the previous part until the
+  ## catalog is published again (isonim-pm issue 2026-11-04-a-shorthand-edit-
+  ## moves-a-side-another-rule-decides-when-units-differ, case 4). A value
+  ## that is a single variable or function applies to every side, as
+  ## written (`shorthandSidesAsWritten`).
   result = element
   for (shorthand, sides) in shorthandSideProperties:
     if property != shorthand:
       continue
-    let values = shorthandSideValues(value)
+    let values = shorthandSidesAsWritten(value)
     if values.len != 4:
       return
     for i, side in sides:
       for prop in result.properties.mitems:
-        if prop.name == side and prop.authoredValue.len == 0:
+        if prop.name != side: continue
+        # Without the catalog's statement, an authored side is its own
+        # declaration -- but not one the capture merely read for display
+        # (`authoredFromCapture`): "without either, every side follows".
+        let follows =
+          if prop.sourceOwner.len > 0: prop.sourceOwner == shorthand
+          else: prop.authoredValue.len == 0 or prop.authoredFromCapture
+        if follows:
           prop.value = values[i]
+          if prop.authoredValue.len > 0: prop.authoredValue = values[i]
     return
 
 func shorthandGroup(property: string): tuple[found: bool; shorthand: string;
@@ -4888,6 +4967,21 @@ func shorthandGroup(property: string): tuple[found: bool; shorthand: string;
     if property == shorthand or property in sides:
       return (true, shorthand, @sides)
 
+const UnknownSide* = "?"
+
+func ruleSideWinner*(declarations: seq[WorkspaceRuleDeclaration];
+    shorthand, side: string): int =
+  ## The index of the declaration that decides ``side`` within one rule (an
+  ## `!important` declaration over a normal one, among equals the later
+  ## one), or -1 when the rule declares neither the side nor its shorthand.
+  result = -1
+  for j, declaration in declarations:
+    if declaration.property != side and declaration.property != shorthand:
+      continue
+    if result < 0 or declaration.important or
+        not declarations[result].important:
+      result = j
+
 func renderedRuleSides*(declarations: seq[WorkspaceRuleDeclaration];
     shorthand: string; sides: openArray[string]): tuple[ok: bool;
       values: seq[string]] =
@@ -4896,19 +4990,14 @@ func renderedRuleSides*(declarations: seq[WorkspaceRuleDeclaration];
   ## normal one, and among equals the later one
   ## (https://www.w3.org/TR/css-cascade-4/#cascade-sort) -- with the winning
   ## shorthand expanded to that side. A value carries ` !important` when its
-  ## declaration did. "" for a side the rule declares nothing for. Not ``ok``
-  ## when a winning shorthand is not a simple 1-4 value list (`var()`,
-  ## `calc()`, an elliptical radius): which side it gives what is unknown.
+  ## declaration did. "" for a side the rule declares nothing for, and
+  ## `UnknownSide` for one a winning shorthand gives a value its text does not
+  ## say (`shorthandSidesAsWritten`: a multi-value list with `var()`, an
+  ## elliptical radius) -- per side, so the other sides are still read.
   result.ok = true
   result.values = newSeq[string](sides.len)
   for i, side in sides:
-    var winner = -1
-    for j, declaration in declarations:
-      if declaration.property != side and declaration.property != shorthand:
-        continue
-      if winner < 0 or declaration.important or
-          not declarations[winner].important:
-        winner = j
+    let winner = ruleSideWinner(declarations, shorthand, side)
     if winner < 0:
       continue
     let declaration = declarations[winner]
@@ -4916,20 +5005,18 @@ func renderedRuleSides*(declarations: seq[WorkspaceRuleDeclaration];
     if declaration.property == side:
       result.values[i] = declaration.value.strip() & priority
     else:
-      let parts = shorthandSideValues(declaration.value)
-      if parts.len != 4:
-        return (false, @[])
-      result.values[i] = parts[i] & priority
+      let parts = shorthandSidesAsWritten(declaration.value)
+      result.values[i] =
+        if parts.len != 4: UnknownSide else: parts[i] & priority
 
 func withoutPriority(value: string): string =
-  result = value.strip()
-  if result.toLowerAscii().endsWith("!important"):
-    result = result[0 ..< result.len - "!important".len].strip()
+  splitCssPriority(value).value
 
 func sameRenderedValue(captured, declared: string): bool =
-  ## Whether a captured (computed) side value can be the value ``declared``
-  ## gives it. Only two pixel lengths can be told apart; anything else
-  ## (another unit, a keyword) is taken to agree.
+  ## Whether a captured side value can be the value ``declared`` gives it,
+  ## for a capture that does not say which rule decides the side
+  ## (`decidingRule`). Equal text agrees, two different pixel lengths do not;
+  ## anything else (another unit, a keyword) is taken to agree.
   let a = captured.strip().toLowerAscii()
   let b = declared.withoutPriority().toLowerAscii()
   if a == b: return true
@@ -5175,7 +5262,7 @@ proc sourcePlanAdmissionRefusal(editor: EditorVM;
 
 proc removalWriteRefusal(editor: EditorVM; plan: SourceEditPlan): string
 proc withRuleOrderedSides(editor: EditorVM;
-    transaction: var CSSPropertyEditTransaction)
+    transaction: var CSSPropertyEditTransaction): string
 
 proc writerEditRefusal(editor: EditorVM; plan: SourceEditPlan): string =
   ## The project writer's statement against changing ``plan``'s declaration
@@ -5213,7 +5300,14 @@ proc editInspectorProperty*(editor: EditorVM;
           message: refusal & " Nothing was changed.", file: plan.file, line: plan.line,
           property: plan.property)])
     else:
-      editor.withRuleOrderedSides(prepared.transaction)
+      let overridden = editor.withRuleOrderedSides(prepared.transaction)
+      if overridden.len > 0:
+        prepared.outcome = PropertyEditResult(status: pesRejected,
+          diagnostics: @[PropertyEditDiagnostic(kind: pedSchemaViolation,
+            message: overridden & " Nothing was changed.", file: plan.file,
+            line: plan.line, property: plan.property)])
+      else:
+        prepared.outcome.sideFollowers = prepared.transaction.sideFollowersAfter
   result = prepared.outcome
   if result.status == pesAccepted:
     editor.inspector.acceptPreparedPropertyEdit(prepared)
@@ -7985,7 +8079,15 @@ proc editSharedDesignProperty*(editor: EditorVM; property, newValue: string;
     editOrigin: peoInspector, sourcePlanKind: plan.planKind)
   var transaction = CSSPropertyEditTransaction(record: record,
     sourceEdit: plan, beforeElement: beforeElement, afterElement: afterElement)
-  editor.withRuleOrderedSides(transaction)
+  let overridden = editor.withRuleOrderedSides(transaction)
+  if overridden.len > 0:
+    let refused = PropertyEditDiagnostic(kind: pedSchemaViolation,
+      message: overridden & " Nothing was changed.", file: plan.file,
+      line: plan.line, property: property)
+    editor.inspector.editDiagnostics.val = @[refused]
+    return SharedDesignEditResult(status: pesRejected, editor: result.editor,
+      diagnostics: @[refused])
+  result.sideFollowers = transaction.sideFollowersAfter
   editor.inspector.selectedElement.val = transaction.afterElement
   editor.inspector.journalSourceEdit(plan)
   editor.inspector.undoStack.update proc(prev: seq[CSSPropertyEditTransaction]): seq[
@@ -10557,7 +10659,7 @@ proc removalWriteRefusal(editor: EditorVM; plan: SourceEditPlan): string =
     return reason
 
 proc withRuleOrderedSides(editor: EditorVM;
-    transaction: var CSSPropertyEditTransaction) =
+    transaction: var CSSPropertyEditTransaction): string =
   ## Settle the sides of a simple shorthand after an edit of the shorthand or
   ## of one of its sides, from the declaration order the writer produces.
   ##
@@ -10625,35 +10727,84 @@ proc withRuleOrderedSides(editor: EditorVM;
     group.sides)
   let after = renderedRuleSides(afterRule.declarations, group.shorthand,
     group.sides)
-  if not before.ok or not after.ok:
-    return
+  let target = afterRule.rule
+  # An edit of a side that a later or `!important` shorthand in the same rule
+  # still overrides would change nothing that renders: refused at the act,
+  # with that reason (editor spec "Native project source capabilities").
+  # Only a value, not a removal: removing a declaration nothing renders
+  # changes nothing either, and Reset keeps its own admission.
+  if plan.property != group.shorthand and plan.newValue.strip().len > 0:
+    let at = group.sides.find(plan.property)
+    let winner = ruleSideWinner(afterRule.declarations, group.shorthand,
+      plan.property)
+    if at >= 0 and winner >= 0 and
+        afterRule.declarations[winner].property == group.shorthand:
+      let shorthandDeclaration = afterRule.declarations[winner]
+      let ruleName = if target.len > 0: " in `" & target & "`" else: ""
+      return (if shorthandDeclaration.important:
+          "The `!important` `" & group.shorthand & "` declaration" & ruleName
+        else:
+          "A later `" & group.shorthand & "` declaration" & ruleName) &
+        " overrides " & plan.property & ", so this edit would not change it."
   var followersBefore, followersAfter: seq[(string, string)] = @[]
   for i, side in group.sides:
-    var captured = ""
+    var captured, compared, capturedAuthored, deciding = ""
     var exposed = false
     for prop in transaction.beforeElement.properties:
       if prop.name == side:
         captured = prop.value
+        capturedAuthored = prop.authoredValue
+        compared = if prop.authoredValue.len > 0: prop.authoredValue else: prop.value
+        deciding = prop.decidingRule
         exposed = true
-    let decidedBefore = before.values[i].len > 0 and
-      (not exposed or sameRenderedValue(captured, before.values[i]))
+    # Which declaration block decides the side now. The capture measured it
+    # when it can say (`decidingRule`); then this rule decides it exactly
+    # when the capture names it, and a side nothing declares is this rule's
+    # once it declares one. Otherwise the side's value is compared with what
+    # the rule gave it, which tells only two pixel lengths apart.
+    # Trusted only when the capture knows the writer's rule by that name: a
+    # rule it cannot see under the writer's name (another spelling of the
+    # selector, a sheet it could not read) is compared by value instead.
+    let measured = deciding.len > 0 and target.len > 0 and
+      target in transaction.beforeElement.matchedRules
+    let decidedBefore =
+      if measured: deciding == target
+      else: before.values[i].len > 0 and
+        (not exposed or before.values[i] == UnknownSide or
+          sameRenderedValue(compared, before.values[i]))
     let decidedAfter = after.values[i].len > 0 and
-      (before.values[i].len == 0 or decidedBefore)
+      (if measured: decidedBefore or deciding == "none"
+       else: before.values[i].len == 0 or decidedBefore)
     # A side's own declaration overlaps only itself in the CSSOM; a
-    # shorthand's overlaps every side.
+    # shorthand's overlaps every side. A side the shorthand gives a value it
+    # does not spell out, or a substitution (`var()`), needs no follower:
+    # setting the shorthand already gives it that value.
     let overlaps = plan.property == group.shorthand or side == plan.property
-    if decidedBefore and overlaps:
+    proc settable(value: string): bool =
+      if value.len == 0 or value == UnknownSide: return false
+      for function in substitutionFunctions:
+        if function in value.toLowerAscii(): return false
+      true
+    if decidedBefore and overlaps and settable(before.values[i]):
       followersBefore.add (side, before.values[i])
-    if decidedAfter and overlaps:
+    if decidedAfter and overlaps and settable(after.values[i]):
       followersAfter.add (side, after.values[i])
     if not exposed:
       continue
     for prop in transaction.afterElement.properties.mitems:
       if prop.name == side:
-        prop.value =
-          if decidedAfter: after.values[i].withoutPriority()
-          elif side == plan.property: prop.value
-          else: captured
+        # Keep the measurement true to the edit: a side this rule now
+        # decides is this rule's; one it stopped declaring is unmeasured
+        # until the next capture.
+        if measured:
+          if decidedAfter: prop.decidingRule = target
+          elif decidedBefore: prop.decidingRule = ""
+        if decidedAfter and after.values[i] != UnknownSide:
+          prop.value = after.values[i].withoutPriority()
+          if prop.authoredValue.len > 0: prop.authoredValue = prop.value
+        elif side != plan.property:
+          prop.value = captured
+          prop.authoredValue = capturedAuthored
   transaction.sideFollowersBefore = followersBefore
   transaction.sideFollowersAfter = followersAfter
 

@@ -7,8 +7,16 @@
 ## only the `padding` shorthand, so a side cannot be written there at all.
 ##
 ## The card rule the page starts from is read from
-## `window.__isonimShorthandCardRule` (set by the test's page before this
-## script), so each case starts from the declaration order it is about.
+## `window.__isonimShorthandCardRule`, and CSS appended after the
+## foundation's rules from `window.__isonimShorthandExtraCss` (both set by the
+## test's page before this script), so each case starts from the
+## declaration order it is about.
+##
+## The card's corners are mapped too, and the example document's inline
+## `border-radius:8px` is left out of the preview unless
+## `window.__isonimShorthandKeepInlineRadius` is set: an inline declaration
+## outranks every rule, so with it no rule order could show on the corners
+## (the case that keeps it asserts exactly that the inline corners hold).
 
 when not defined(js):
   {.error: "Compile with `nim js`".}
@@ -22,12 +30,38 @@ import isonim/editor/demo_workspace
 
 const MappedSides = ["padding-top", "padding-right", "padding-bottom",
   "padding-left", "margin-top", "margin-right", "margin-bottom", "margin-left",
-  "margin"]
+  "margin", "border-radius", "border-top-left-radius",
+  "border-top-right-radius", "border-bottom-right-radius",
+  "border-bottom-left-radius"]
 
 proc startingRule(): string =
   var rule: cstring = ""
   {.emit: [rule, " = (typeof window !== 'undefined' && window.__isonimShorthandCardRule) || '';"].}
   $rule
+
+proc pageString(name: string): string =
+  ## A string the test's page set on `window` before this script, or "".
+  var value: cstring = ""
+  let key: cstring = name
+  {.emit: [value, " = (typeof window !== 'undefined' && window[", key, "]) || '';"].}
+  $value
+
+proc orderless(): bool =
+  ## `window.__isonimShorthandOrderless`: the writer reports no rule order, a
+  ## host with neither writer order nor native catalog statements.
+  var drop = false
+  {.emit: [drop, " = !!(typeof window !== 'undefined' && window.__isonimShorthandOrderless);"].}
+  drop
+
+proc keepInlineRadius(): bool =
+  var keep = false
+  {.emit: [keep, " = !!(typeof window !== 'undefined' && window.__isonimShorthandKeepInlineRadius);"].}
+  keep
+
+proc extraCss(): string =
+  var css: cstring = ""
+  {.emit: [css, " = (typeof window !== 'undefined' && window.__isonimShorthandExtraCss) || '';"].}
+  $css
 
 proc main() =
   let groups = wanderlust.buildWanderlustStoryboard()
@@ -40,11 +74,26 @@ proc main() =
       DemoFoundationInitialSource.replace(".destination-card { padding: 18px; }",
         ".destination-card { " & rule & " }")
     else: DemoFoundationInitialSource
+  foundationSource[].add extraCss()
+  # Text placed at the start of the preview's stylesheet, before every rule
+  # (`window.__isonimShorthandPrefixCss`; added to the document, not to the
+  # foundation source, whose first `.destination-card` the example's page
+  # splits at), and a stylesheet the preview links from another origin
+  # (`window.__isonimShorthandLink`), for the cases about what the capture
+  # can read.
+  let prefix = pageString("__isonimShorthandPrefixCss")
+  let link = pageString("__isonimShorthandLink")
+  # A script run right after the preview's stylesheet, before the editor's
+  # preview runtime (`window.__isonimShorthandAfterStyleScript`): a page
+  # script whose CSSOM edits the runtime cannot have seen.
+  let afterStyle = pageString("__isonimShorthandAfterStyleScript")
+  let stripInline = not keepInlineRadius()
   exposeDemoSource(DemoFoundationSource, foundationSource[])
   let story = StoryRef(group: "DestinationCard", name: "Default",
     kind: skComponent, index: 0)
   var schema = demoDesignSystemSchema()
   var adapter = demoVectorEditAdapter(vectorSource, foundationSource)
+  if orderless(): adapter.ruleDeclarations = nil
   for property in MappedSides:
     schema.nodes.add DesignSchemaNode(
       key: "classes.destination-card." & property,
@@ -71,7 +120,17 @@ proc main() =
       result = wanderlust.wanderlustPreviewHook(story, platform)
       if story.kind == skComponent and story.group == "DestinationCard":
         result.documentHtml = demoComponentDocument(foundationSource[],
-          result.title, result.bodyText),
+          result.title, result.bodyText).replace("border-radius:8px;",
+            if stripInline: "" else: "border-radius:8px;")
+        if afterStyle.len > 0:
+          result.documentHtml = result.documentHtml.replace("</style>",
+            "</style><script>" & afterStyle & "</script>")
+        if prefix.len > 0:
+          result.documentHtml = result.documentHtml.replace("<head><style>",
+            "<head><style>" & prefix)
+        if link.len > 0:
+          result.documentHtml = result.documentHtml.replace("<head>",
+            "<head><link rel=\"stylesheet\" href=\"" & link & "\">"),
     id = "wanderlust-shorthand-order",
     permissions = EditorWorkspacePermissions(readSource: true,
       writeSource: true),

@@ -1791,6 +1791,14 @@ test.describe("IsoNim packaged editor example", () => {
   test("e2e_box_model_edits_margin_and_padding_by_keyboard_and_pointer", async ({
     page,
   }) => {
+    // Long rather than slow: the case makes about a dozen automatic writes
+    // (each waits the ~900ms save debounce, then the preview's rebuild) and
+    // walks every one back by undo. A trace at load ~90 shows no dominant
+    // step -- the two page loads (~8s each) and the write round trips
+    // (Enter and Mod+Z, 3-6s each) spread over ~300 actions -- so it does
+    // not fit the default 30s on a loaded host (passes in 24-46s at load
+    // 20-130, 84s at load 90). The assertions are unchanged.
+    test.setTimeout(120_000);
     await page.setViewportSize(desktop);
     await openDestinationComponentEdit(page);
     await markPreviewSelected(page);

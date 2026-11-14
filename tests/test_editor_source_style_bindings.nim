@@ -76,6 +76,19 @@ suite "Compiler owned stylesheet capabilities":
       check binding["values"]["border-top-left-radius"].getStr() == expectedValue
       check binding["sourceDeclarations"]["padding-left"]["property"].getStr() == (if expectedOwner == "derived": "padding" else: "padding-left")
       check binding["sourceDeclarations"]["border-top-left-radius"]["property"].getStr() == (if expectedOwner == "derived": "border-radius" else: "border-top-left-radius")
+      # What the source browser reads into `PropertyInfo.sourceOwner`, which
+      # decides whether a shorthand edit moves the side at the act.
+      check nativeSideOwner(binding, "padding-left") == (if expectedOwner == "derived": "padding" else: "padding-left")
+      check nativeSideOwner(binding, "border-top-left-radius") == (if expectedOwner == "derived": "border-radius" else: "border-top-left-radius")
+      check nativeSideOwner(binding, "margin-left") == ""
+      # A refreshed catalog that no longer offers a side clears its owner
+      # with the other statements the catalog made about it.
+      var side = PropertyInfo(name: "padding-left", sourceOwner: "padding",
+        nativeRemovalStated: true, authoredValue: "4px")
+      side = side.withoutNativeStatements()
+      check side.sourceOwner == ""
+      check not side.nativeRemovalStated
+      check side.authoredValue == "4px"
     check patchCssQuad("padding","2px 4px","8px",1) == "2px 8px 2px 4px"
     check patchCssQuad("padding","2px 8px 2px 4px","4px",1,"2px 4px") == "2px 4px"
     check patchCssQuad("padding","6px 8px 2px 4px","4px",1,"2px 4px") == ""

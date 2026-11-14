@@ -150,11 +150,8 @@ proc attachSourceProject*(vm: EditorVM; base: EditorWorkspace; inspectorEditing 
           if property.nativeSourceOffered != isOffered:
             property.nativeSourceOffered = isOffered
             changed = true
-          if not isOffered and (property.nativeRemovalStated or property.nativeRemovalRefusal.len > 0 or
-              property.nativeEditRefusal.len > 0):
-            property.nativeRemovalStated = false
-            property.nativeRemovalRefusal = ""
-            property.nativeEditRefusal = ""
+          if not isOffered and property.withoutNativeStatements() != property:
+            property = property.withoutNativeStatements()
             changed = true
         for mapping in mappings:
           if mapping{"elementId"}.getStr() != element.id or mapping{"storyId"}.getStr() != storyId: continue
@@ -179,8 +176,16 @@ proc attachSourceProject*(vm: EditorVM; base: EditorWorkspace; inspectorEditing 
               property.sharedCount = mapping{"sharedCount"}.getInt()
               property.directStyleAllowed = false
               changed = true
-            if property.authoredValue != authored:
+            if property.authoredValue != authored or property.authoredFromCapture:
               property.authoredValue = authored
+              property.authoredFromCapture = false
+              changed = true
+            # Which declaration decides it in its rule: the side's own, or a
+            # later shorthand (the producer reads declaration order). A
+            # shorthand edit moves exactly the sides it owns (`withShorthandSides`).
+            let owner = nativeSideOwner(mapping, property.name)
+            if property.sourceOwner != owner:
+              property.sourceOwner = owner
               changed = true
             # The worker's removal statement for this declaration rides on the
             # property, as its authored value does, so Reset and Fill Delete

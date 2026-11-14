@@ -426,17 +426,23 @@ proc commitInspectorValue*(vm: EditorVM; property, rawValue: string;
     if reason.len > 0: return refusal(reason, scope)
   let normalized = normalizePrimitiveInputValue(property, rawValue)
 
+  # The shorthand sides this edit's rule decides, as the source renders
+  # them: returned by the edit itself, so the preview sets exactly the
+  # values this commit produced.
+  var followers: seq[(string, string)] = @[]
   if scope == sskLocalInstance:
     let res = vm.editCssProperty(property, normalized, pesLocal, peoInspector)
     if res.status != pesAccepted:
       return refusal(firstDiagnosticMessage(res.diagnostics,
         "This edit to " & property & " was rejected."), scope)
+    followers = res.sideFollowers
   else:
     let res = vm.editSharedDesignProperty(property, normalized, scope)
     if res.status != pesAccepted:
       return refusal(firstDiagnosticMessage(res.diagnostics,
         "This scope has no source-backed writer in the project schema."),
         scope)
+    followers = res.sideFollowers
 
   # An accepted edit with no adapter is staged but unwritable. That is
   # a weaker condition than the two above — the journal is real and
@@ -460,10 +466,8 @@ proc commitInspectorValue*(vm: EditorVM; property, rawValue: string;
     # and a side set there wins in the CSSOM whatever the source's order: set
     # the sides the edited rule decides to what the source renders, in order
     # (`withRuleOrderedSides`).
-    let history = vm.inspector.undoStack.val
-    if history.len > 0 and history[^1].sourceEdit.property == property:
-      for (side, sideValue) in history[^1].sideFollowersAfter:
-        applyPreviewStyle(previewId, selected.domPath, side, sideValue, scope)
+    for (side, sideValue) in followers:
+      applyPreviewStyle(previewId, selected.domPath, side, sideValue, scope)
     # The write that follows must not reload the preview out from under this.
     vm.previewShowsPendingEdits.val = true
 

@@ -611,6 +611,25 @@ type
     name*: string         ## CSS property name (e.g. "padding")
     value*: string        ## Resolved/computed value (e.g. "16px")
     authoredValue*: string ## Optional exact declared value, kept distinct from geometry.
+    authoredFromCapture*: bool
+      ## ``authoredValue`` is what the preview's capture read off the deciding
+      ## block (a variable or function a computed value would hide), shown and
+      ## used to refuse a canvas drag, but no statement that the side is its
+      ## own declaration: a shorthand edit still moves the side where nothing
+      ## else says which declaration decides it.
+    decidingRule*: string
+      ## For a side of a simple shorthand (`padding-top`, a corner radius):
+      ## which declaration block decides the rendered value, as the preview's
+      ## capture measured it -- its at-rule conditions and selector
+      ## (`@media (max-width: 640px) .card`), `style` for the element's inline
+      ## style, `none` when nothing declares it, "" when not measured. A
+      ## writer's `ruleDeclarations` names its rule the same way, so an edit
+      ## of that rule moves only the sides it decides.
+    sourceOwner*: string
+      ## For a side of a simple shorthand in a native source project: the
+      ## property whose declaration decides it in its rule, as the catalog
+      ## reports it (`sourceDeclarations`) -- the side itself, or its
+      ## shorthand when the shorthand comes later. "" when not reported.
     nativeSourceShared*: bool ## Compiler binding owns a shared CSS rule, never a local override.
     nativeSourceToken*: bool ## Verified direct reference edits its declared literal token owner.
     nativeSourceOffered*: bool
@@ -808,6 +827,10 @@ type
     editor*: SharedDesignPropertyEditor
     sourceEdit*: SourceEditPlan
     diagnostics*: seq[PropertyEditDiagnostic]
+    sideFollowers*: seq[(string, string)]
+      ## The shorthand sides the accepted edit's rule decides, as the source
+      ## renders them (`CSSPropertyEditTransaction.sideFollowersAfter`), for
+      ## the preview to set after the edited declaration.
 
   CSSPropertyEditorVM* = object
     ## Headless property editor contract. Views may render controls from this.
@@ -1143,6 +1166,10 @@ type
     record*: EditRecord
     sourceEdit*: SourceEditPlan
     diagnostics*: seq[PropertyEditDiagnostic]
+    sideFollowers*: seq[(string, string)]
+      ## The shorthand sides the accepted edit's rule decides, as the source
+      ## renders them (`CSSPropertyEditTransaction.sideFollowersAfter`), for
+      ## the preview to set after the edited declaration.
 
   SelectionOrigin* = enum
     ## Where a selection came from. The editor has exactly one selection
@@ -1163,6 +1190,11 @@ type
     id*: string            ## Stable source-backed element identity
     sourceKey*: string     ## Source/schema key shared by DOM, tree rows, breadcrumbs
     domPath*: string       ## DOM path used as a fallback browser selector
+    matchedRules*: seq[string]
+      ## Every style rule matching the element in the preview when it was
+      ## captured, named as `PropertyInfo.decidingRule` names a rule. A
+      ## writer's rule whose name is not among them is one the capture's
+      ## measurements cannot speak for. Empty when not measured.
     schemaKey*: string     ## Primary editable source schema entry
     tag*: string           ## e.g. "div", "span", "button"
     sourceFile*: string
@@ -1695,6 +1727,10 @@ type
 
   WorkspaceRuleDeclarations* = object
     ok*: bool          ## False: the writer cannot say (no such rule, …).
+    rule*: string
+      ## The rule as the preview's capture names it (`PropertyInfo.
+      ## decidingRule`): its at-rule conditions and selector, whitespace
+      ## collapsed. "" when the writer cannot say.
     declarations*: seq[WorkspaceRuleDeclaration]
 
   # --- Design-system schema and source ownership ---

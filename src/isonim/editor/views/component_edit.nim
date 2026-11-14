@@ -814,6 +814,391 @@ __ISONIM_SCENE_GRAPH_WALK__
     crumb.style.top = Math.min(window.innerHeight - 30, rect.bottom + 8) + 'px';
     crumb.hidden = false;
   }
+  // Which declaration block decides each side of a simple shorthand, measured
+  // rather than inferred, without changing what the preview renders.
+  //
+  // The element's inline style is judged, not probed: it decides a side it
+  // declares unless a matching rule declares the side `!important` over a
+  // normal inline declaration (then the rules are probed). Writing it would
+  // also hand every MutationObserver on the element a record.
+  //
+  // A rule is probed: given a probe value for the side, the one whose probe
+  // moves the computed side is the one the cascade uses -- importance,
+  // layers, specificity and order included. A rule is probed only when its
+  // declarations round-trip exactly through their own text (re-parsed in a
+  // scratch, unattached sheet: the same cssText, and every longhand with the
+  // same value and priority), because putting it back is setting that text.
+  // A `var()` shorthand partly overridden by a side does not round-trip --
+  // Chromium serialises its other longhands as `padding-right: ;` -- so such
+  // a rule is not touched and its sides stay unmeasured. Transitions are
+  // switched off for the probe by an adopted, unattached sheet (no DOM
+  // mutation), and the element's style is read back once more before it is
+  // removed, so no transition starts from a probe value.
+  //
+  // A rule is named by its conditions (`@media`, `@supports`, `@container`,
+  // `@layer`, `@scope`) and selector, as a writer's `ruleDeclarations` names
+  // it. A name two matching rules share (the same selector in two sheets) is
+  // ambiguous and reported unmeasured. One `side<TAB>rule[<TAB>specified]`
+  // line per side -- `specified` being the deciding block's text for the side
+  // when it is not a plain length (read into `authoredValue`, so a field and a
+  // canvas handle see `var(--space)` rather than the `16px` it resolves to);
+  // the rule is `style` for the inline style, `none` when nothing declares
+  // the side. And one
+  // `@matched<TAB>names` line with every matching rule's name, separated by
+  // U+001F, so the editor can tell a writer's rule the capture does not know
+  // from one that decides nothing. Read by `previewDomElementRef`.
+  const ISONIM_SHORTHAND_SIDES = {
+    'padding': ['padding-top', 'padding-right', 'padding-bottom', 'padding-left'],
+    'margin': ['margin-top', 'margin-right', 'margin-bottom', 'margin-left'],
+    'border-radius': ['border-top-left-radius', 'border-top-right-radius',
+      'border-bottom-right-radius', 'border-bottom-left-radius']
+  };
+  function ruleIdentity(rule) {
+    const parts = [rule.selectorText];
+    for (let parent = rule.parentRule; parent; parent = parent.parentRule) {
+      const kind = parent.constructor && parent.constructor.name;
+      if (kind === 'CSSMediaRule') parts.unshift('@media ' + parent.conditionText);
+      else if (kind === 'CSSSupportsRule') parts.unshift('@supports ' + parent.conditionText);
+      else if (kind === 'CSSContainerRule') parts.unshift('@container ' + parent.conditionText);
+      else if (kind === 'CSSLayerBlockRule') parts.unshift('@layer ' + parent.name);
+      else if (kind === 'CSSScopeRule') parts.unshift('@scope (' + (parent.start || '') + ')' +
+        (parent.end ? ' to (' + parent.end + ')' : ''));
+      else if (kind === 'CSSStyleRule') parts.unshift(parent.selectorText);
+      else parts.unshift('@' + (kind || 'unknown'));
+    }
+    return parts.join(' ').replace(/\s+/g, ' ').trim();
+  }
+  function matchingStyleRules(el, skip) {
+    // `found.unreadable` counts the sheets whose rules could not be read (a
+    // cross-origin sheet): their declarations are invisible here.
+    const found = [];
+    found.unreadable = 0;
+    function visit(rules) {
+      for (const rule of rules) {
+        if (rule.type === CSSRule.MEDIA_RULE) {
+          let holds = false;
+          try { holds = matchMedia(rule.conditionText).matches; } catch (e) {}
+          if (holds) visit(rule.cssRules);
+        } else if (rule.type === CSSRule.STYLE_RULE) {
+          let matches = false;
+          try { matches = el.matches(rule.selectorText); } catch (e) {}
+          if (matches) found.push(rule);
+          if (rule.cssRules && rule.cssRules.length) visit(rule.cssRules);
+        } else if (rule.cssRules) {
+          visit(rule.cssRules);
+        }
+      }
+    }
+    const sheets = [...document.styleSheets, ...(document.adoptedStyleSheets || [])];
+    for (const sheet of sheets) {
+      if (sheet.disabled || sheet === skip) continue;
+      let rules = null;
+      try { rules = sheet.cssRules; } catch (e) { found.unreadable++; continue; }
+      visit(rules);
+    }
+    return found;
+  }
+  function blockSnapshot(style) {
+    const longhands = [];
+    for (let i = 0; i < style.length; i++) {
+      const name = style[i];
+      longhands.push(name + ':' + style.getPropertyValue(name) + '!' + style.getPropertyPriority(name));
+    }
+    return style.cssText + '\n' + longhands.join(';');
+  }
+  function roundTrips(style) {
+    try {
+      const scratch = new CSSStyleSheet();
+      scratch.replaceSync('x{' + style.cssText + '}');
+      return blockSnapshot(scratch.cssRules[0].style) === blockSnapshot(style);
+    } catch (e) { return false; }
+  }
+  window.__isonimShorthandBlockSnapshot = blockSnapshot;
+  // Whether every condition a rule sits under is known to hold: `@media`
+  // rules that do not hold are never collected, `@supports` is asked, and a
+  // `@container` (or any other at-rule) condition is not known here.
+  function conditionsHold(rule) {
+    for (let parent = rule.parentRule; parent; parent = parent.parentRule) {
+      const kind = parent.constructor && parent.constructor.name;
+      if (kind === 'CSSMediaRule' || kind === 'CSSLayerBlockRule' || kind === 'CSSStyleRule') continue;
+      if (kind === 'CSSSupportsRule') {
+        let holds = false;
+        try { holds = CSS.supports(parent.conditionText); } catch (e) {}
+        if (holds) continue;
+      }
+      return false;
+    }
+    return true;
+  }
+  // What a rule's own source text declares for ``side``, for a side whose
+  // CSSOM value is pending substitution (`padding: var(--s)` reads back as an
+  // empty `padding-right`, and a partly overridden one loses its text
+  // altogether). Read from the text of the `<style>` element that holds the
+  // rule, when exactly one block there has the rule's selector: the side's
+  // own declaration if it wins there, otherwise a single-value shorthand.
+  // Whether any custom property declared where it could reach ``element``
+  // uses ``name``. Custom properties inherit only from ancestors, so a rule
+  // counts when its selector matches the element or one of its ancestors
+  // (`:root` included), or cannot be judged (a selector `matches` rejects,
+  // a pseudo-element); the element's and its ancestors' inline styles count;
+  // and an unreadable sheet counts as one that might. Memoised per variable
+  // for one capture (`aliasMemo`, set by `decidingSideRules`).
+  let aliasMemo = null;
+  function customPropertyUses(name, element) {
+    if (aliasMemo && aliasMemo.has(name)) return aliasMemo.get(name);
+    const answer = customPropertyUsesUncached(name, element);
+    if (aliasMemo) aliasMemo.set(name, answer);
+    return answer;
+  }
+  function customPropertyUsesUncached(name, element) {
+    const chain = [];
+    for (let node = element; node && node.nodeType === 1; node = node.parentElement) chain.push(node);
+    // Shadow DOM: a custom property can reach a shadow host from its shadow
+    // tree (`:host`), and a slotted element inherits from its slot inside
+    // another tree, whose sheets (adopted ones included) are not scanned
+    // here. Such an element cannot be judged.
+    if (element.getRootNode() !== document ||
+        chain.some((node) => node.shadowRoot || node.assignedSlot)) return true;
+    const reaches = (selector) => {
+      if (!selector || selector.indexOf('::') >= 0) return true;
+      try {
+        return chain.some((node) => node.matches(selector));
+      } catch (e) { return true; }
+    };
+    const uses = new RegExp('var\\(\\s*' + name.replace(/[-]/g, '\\-') + '\\s*[,)]');
+    const declares = (style) => {
+      for (let i = 0; i < style.length; i++) {
+        const property = style[i];
+        if (property.startsWith('--') && uses.test(style.getPropertyValue(property))) return true;
+      }
+      return false;
+    };
+    let found = false;
+    const visit = (rules) => {
+      for (const rule of rules) {
+        if (found) return;
+        // A rule nested in a style rule (its selector is relative to the
+        // parent's, `&` explicit or implicit) or under `@scope` cannot be
+        // judged by its own selector.
+        let nested = false;
+        for (let parent = rule.parentRule; parent; parent = parent.parentRule) {
+          const kind = parent.constructor && parent.constructor.name;
+          if (kind === 'CSSStyleRule' || kind === 'CSSScopeRule') nested = true;
+        }
+        if (rule.style && declares(rule.style) &&
+            (nested || rule.selectorText === undefined || reaches(rule.selectorText))) found = true;
+        if (rule.cssRules && rule.cssRules.length) visit(rule.cssRules);
+      }
+    };
+    const sheets = [...document.styleSheets, ...(document.adoptedStyleSheets || [])];
+    for (const sheet of sheets) {
+      let rules = null;
+      try { rules = sheet.cssRules; } catch (e) { return true; }
+      visit(rules);
+      if (found) return true;
+    }
+    for (const node of chain) {
+      if (declares(node.style)) return true;
+    }
+    return false;
+  }
+  function sourceSpecified(rule, shorthand, side, element) {
+    try {
+      const node = rule.parentStyleSheet && rule.parentStyleSheet.ownerNode;
+      const raw = node && node.textContent;
+      if (!raw || rule.parentRule) return '';
+      // Comments out, so a selector or an unbalanced brace in one is not
+      // read as a rule.
+      const text = raw.replace(/\/\*[\s\S]*?\*\//g, (comment) => ' '.repeat(comment.length));
+      const selector = rule.selectorText;
+      // Top-level occurrences only (the rule has no parent): one inside an
+      // at-rule block is another rule.
+      const depthAt = (at) => {
+        let depth = 0;
+        for (let i = 0; i < at; i++) {
+          if (text[i] === '{') depth++;
+          else if (text[i] === '}') depth--;
+        }
+        return depth;
+      };
+      const starts = [];
+      for (let at = text.indexOf(selector); at >= 0; at = text.indexOf(selector, at + 1)) {
+        const after = text.slice(at + selector.length).match(/^\s*\{/);
+        const before = at === 0 ? '' : text[at - 1];
+        if (after && (before === '' || /[\s};]/.test(before)) && depthAt(at) === 0) {
+          starts.push(at + selector.length + after[0].length);
+        }
+      }
+      if (starts.length !== 1) return '';
+      const body = text.slice(starts[0], text.indexOf('}', starts[0]));
+      const declarations = [];
+      let depth = 0, current = '';
+      for (const c of body + ';') {
+        if (c === '(') depth++;
+        if (c === ')') depth--;
+        if (c === ';' && depth === 0) { declarations.push(current); current = ''; }
+        else current += c;
+      }
+      let winner = null;
+      for (const declaration of declarations) {
+        const colon = declaration.indexOf(':');
+        if (colon < 0) continue;
+        const name = declaration.slice(0, colon).trim().toLowerCase();
+        if (name !== side && name !== shorthand) continue;
+        let value = declaration.slice(colon + 1).trim();
+        const important = /!\s*important\s*$/i.test(value);
+        value = value.replace(/\s*!\s*important\s*$/i, '');
+        if (!winner || important || !winner.important) winner = {name, value, important};
+      }
+      if (!winner) return '';
+      const value = winner.name === side ? winner.value :
+        (/\s/.test(winner.value.replace(/\([^()]*\)/g, '')) ? '' : winner.value);
+      if (!value) return '';
+      // The <style> text does not see CSSOM edits made since it was parsed,
+      // and a pending side's live value cannot be read back (the CSSOM keeps
+      // no text for it), so the text is not trusted; it is checked against
+      // what renders. A pending side comes only from a substitution, so only
+      // a `var(--name)` value is taken, and only when the side is measured to
+      // depend on that very property: with `--name` given a probe value on
+      // the element (an adopted sheet, scoped to it, no DOM mutation), the
+      // side's computed value moves. Another property of the same value, a
+      // different value, or a block changed by any route fails this.
+      const reference = value.match(/^var\(\s*(--[\w-]+)\s*(,[^()]*)?\)$/);
+      if (!reference) return '';
+      const before = getComputedStyle(element).getPropertyValue(side);
+      const probe = new CSSStyleSheet();
+      probe.replaceSync('[data-isonim-selected="true"] { ' + reference[1] + ': 12345px !important; }');
+      document.adoptedStyleSheets = [...document.adoptedStyleSheets, probe];
+      let depends = false;
+      try {
+        depends = getComputedStyle(element).getPropertyValue(side) !== before;
+      } finally {
+        document.adoptedStyleSheets = document.adoptedStyleSheets.filter((sheet) => sheet !== probe);
+      }
+      if (!depends) return '';
+      // Depending on `--name` is not being `var(--name)`: `calc(var(--name) *
+      // 3)` depends on it too. The side must render exactly what `--name`
+      // gives a side of its type -- measured the same way, the side set to
+      // `var(--name)` on the element -- or the text is not the block's.
+      const own = new CSSStyleSheet();
+      own.replaceSync('[data-isonim-selected="true"] { ' + side + ': ' + value + ' !important; }');
+      document.adoptedStyleSheets = [...document.adoptedStyleSheets, own];
+      let given = '';
+      try {
+        given = getComputedStyle(element).getPropertyValue(side);
+      } finally {
+        document.adoptedStyleSheets = document.adoptedStyleSheets.filter((sheet) => sheet !== own);
+      }
+      if (given !== before) return '';
+      // And not through an alias: a custom property defined as `var(--name)`
+      // (or using it) renders the same and depends on it, so wherever one is
+      // declared -- any readable rule, the element's or an ancestor's inline
+      // style -- which variable the block names cannot be told; nor while a
+      // sheet cannot be read, which could declare one.
+      if (customPropertyUses(reference[1], element)) return '';
+      return value;
+    } catch (e) { return ''; }
+  }
+  function decidingSideRules(el) {
+    const lines = [];
+    let calm = null;
+    aliasMemo = new Map();
+    try {
+      // Transitions are switched off on the measured element only (it carries
+      // `data-isonim-selected` while it is captured): a transition running on
+      // another element of the page keeps running.
+      calm = new CSSStyleSheet();
+      calm.replaceSync('[data-isonim-selected="true"], [data-isonim-selected="true"]::before, ' +
+        '[data-isonim-selected="true"]::after { transition: none !important; }');
+      document.adoptedStyleSheets = [...document.adoptedStyleSheets, calm];
+      const rules = matchingStyleRules(el, calm);
+      const names = rules.map(ruleIdentity);
+      const counts = {};
+      for (const name of names) counts[name] = (counts[name] || 0) + 1;
+      lines.push('@matched\t' + names.join('\u001f'));
+      for (const shorthand of Object.keys(ISONIM_SHORTHAND_SIDES)) {
+        for (const side of ISONIM_SHORTHAND_SIDES[shorthand]) {
+          // A side a `var()` shorthand sets is listed, pending substitution,
+          // with an empty value.
+          const declares = (style) => style.getPropertyValue(side) !== '' ||
+            style.getPropertyValue(shorthand) !== '' ||
+            Array.prototype.indexOf.call(style, side) >= 0;
+          const important = (style) => style.getPropertyPriority(side) === 'important' ||
+            style.getPropertyPriority(shorthand) === 'important';
+          const declaring = rules.filter((rule) => declares(rule.style));
+          let decided = '';
+          if (declares(el.style) &&
+              (important(el.style) || !declaring.some((rule) => important(rule.style)))) {
+            decided = 'style';
+          } else if (!declaring.length) {
+            decided = 'none';
+          } else if (declaring.length === 1 && !declares(el.style) &&
+              !rules.unreadable && conditionsHold(declaring[0])) {
+            // The one block that declares the side decides it; no probe --
+            // only when every sheet could be read, since a sheet that cannot
+            // (cross-origin) may declare the side too.
+            const name = ruleIdentity(declaring[0]);
+            decided = counts[name] > 1 ? '' : name;
+          } else {
+            const before = getComputedStyle(el).getPropertyValue(side);
+            let unsafe = false;
+            for (const rule of declaring) {
+              const style = rule.style;
+              if (!roundTrips(style)) { unsafe = true; continue; }
+              const saved = style.cssText;
+              const snapshot = blockSnapshot(style);
+              style.setProperty(side, '12345px', important(style) ? 'important' : '');
+              const moved = getComputedStyle(el).getPropertyValue(side) !== before;
+              style.cssText = saved;
+              if (blockSnapshot(style) !== snapshot) {
+                // Cannot happen for a block that round-trips; never trust a
+                // measurement that did not put its block back.
+                unsafe = true;
+                break;
+              }
+              if (moved) {
+                const name = ruleIdentity(rule);
+                decided = counts[name] > 1 ? '' : name;
+                break;
+              }
+            }
+            if (!decided && unsafe) decided = '';
+          }
+          // What the deciding block specifies for the side, when it is not a
+          // plain length: a variable, function or keyword the computed value
+          // has already resolved (`var(--space)` reads back as `16px`). The
+          // side's own declaration, or a single-value shorthand's.
+          let specified = '';
+          const block = decided === 'style' ? el.style :
+            (rules.find((rule) => decided && ruleIdentity(rule) === decided) || {}).style;
+          if (block) {
+            specified = block.getPropertyValue(side).trim();
+            if (!specified) {
+              const whole = block.getPropertyValue(shorthand).trim();
+              if (whole && !/\s/.test(whole.replace(/\([^()]*\)/g, ''))) specified = whole;
+            }
+            if (!specified && block !== el.style) {
+              const rule = rules.find((candidate) => ruleIdentity(candidate) === decided);
+              if (rule) specified = sourceSpecified(rule, shorthand, side, el);
+            }
+            if (/^-?(\d+\.?\d*|\.\d+)(px|rem|em|%|vw|vh|vmin|vmax|ch|ex|pt|cm|mm|in|pc)?$/i.test(specified)) {
+              specified = '';
+            }
+          }
+          if (decided) lines.push(side + '\t' + decided + (specified ? '\t' + specified : ''));
+        }
+      }
+      // Read back with transitions still off, so the next style change is
+      // computed from the restored values, not from a probe value.
+      getComputedStyle(el).getPropertyValue('padding-top');
+    } catch (e) {
+    } finally {
+      aliasMemo = null;
+      if (calm) document.adoptedStyleSheets =
+        document.adoptedStyleSheets.filter((sheet) => sheet !== calm);
+    }
+    return lines.join('\n');
+  }
   function selectElement(target) {
     const el = target;
     if (!el || el === document.documentElement || el === document.body) return;
@@ -898,7 +1283,8 @@ __ISONIM_SCENE_GRAPH_WALK__
           computedStyles: ISONIM_EDITABLE_PROPS
             .map(function (p) {
               return p + '=' + (style.getPropertyValue(p) || '');
-            }).join(';')
+            }).join(';'),
+          sideRules: decidingSideRules(el)
       };
     } finally {
       chromeSheet.disabled = chromeDisabled;
@@ -1478,6 +1864,17 @@ proc editablePreviewDocument*(documentHtml: string;
     'overflow-x': ['overflow'], 'overflow-y': ['overflow']
   };
 
+  // Each shorthand's longhands (the inverse of SHORTHANDS, and the corners).
+  var LONGHANDS = {
+    'border-radius': ['border-top-left-radius', 'border-top-right-radius',
+      'border-bottom-right-radius', 'border-bottom-left-radius']
+  };
+  Object.keys(SHORTHANDS).forEach(function (longhand) {
+    SHORTHANDS[longhand].forEach(function (shorthand) {
+      (LONGHANDS[shorthand] = LONGHANDS[shorthand] || []).push(longhand);
+    });
+  });
+
   // The rule the cascade is actually using for this element and property.
   //
   // Resolved from the browser's own view rather than supplied by the editor:
@@ -1521,6 +1918,17 @@ proc editablePreviewDocument*(documentHtml: string;
               Array.prototype.indexOf.call(rule.style, name) >= 0) {
             winner = rule;
             break;
+          }
+        }
+        // A `var()` shorthand that a later side partly overrides is not
+        // listed, and cannot be serialised: the block lists only its
+        // longhands, pending substitution (an empty value). Such a longhand
+        // is the shorthand's own declaration in this rule.
+        var parts = LONGHANDS[property] || [];
+        for (var q = 0; q < parts.length && winner !== rule; q++) {
+          if (Array.prototype.indexOf.call(rule.style, parts[q]) >= 0 &&
+              rule.style.getPropertyValue(parts[q]) === '') {
+            winner = rule;
           }
         }
       }
@@ -1700,7 +2108,7 @@ proc editablePreviewDocument*(documentHtml: string;
     var importance = priority(style);
     // A value may name its own priority (a shorthand side the source
     // declares `!important`, re-applied after its shorthand).
-    var stated = /\s*!important\s*$/i;
+    var stated = /\s*!\s*important\s*$/i;
     if (stated.test(value)) {
       value = value.replace(stated, '');
       importance = 'important';
@@ -1767,7 +2175,7 @@ proc installPreviewSelectionBridge*[R, E](r: R; frame: E; vm: EditorVM) =
         color, padding, margin, width, height, borderRadius, borderWidth,
         borderStyle, borderColor, fontSize, fontWeight, lineHeight, boxShadow,
         opacity, rectWidth, rectHeight, textContent, layerTreeJson,
-        styleBindings, computedStyles: cstring) =
+        styleBindings, computedStyles, sideRules: cstring) =
       let line =
         try: parseInt($sourceLine)
         except ValueError: 0
@@ -1807,7 +2215,8 @@ proc installPreviewSelectionBridge*[R, E](r: R; frame: E; vm: EditorVM) =
         $ancestorIds,
         $layerTreeJson,
         $styleBindings,
-        $computedStyles)
+        $computedStyles,
+        $sideRules)
       # SGR: selecting does NOT republish the tree. `selectInspectorElement`
       # re-flags the rows the scene-graph reader already published, which is
       # the same tree walked from the same source. Publishing a second one
@@ -1840,7 +2249,7 @@ proc installPreviewSelectionBridge*[R, E](r: R; frame: E; vm: EditorVM) =
             d.lineHeight || '', d.boxShadow || '', d.opacity || '',
             d.rectWidth || '', d.rectHeight || '', d.textContent || '',
             d.layerTree || '', d.styleBindings || '',
-            d.computedStyles || ''
+            d.computedStyles || '', d.sideRules || ''
           );
       });
     """].}
