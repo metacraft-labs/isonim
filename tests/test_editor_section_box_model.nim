@@ -1784,3 +1784,42 @@ suite "canvas margin and padding handles":
       check vm.stacks == (0, 0)
       check foundation[] == DemoFoundationInitialSource
       dispose()
+
+suite "the preview reload an unshown edit needs":
+  test "an unshown edit keeps its reload across a write that fails after the patch stage":
+    # Editor spec "Saving": an edit the preview could not show is shown by the
+    # next write's reload, even when other edits written with it were shown.
+    # Here the first write fails at formatting, after its files were patched;
+    # the edits stay pending, and the write that then succeeds must still
+    # reload the preview although a later commit was shown. The failure is
+    # injected through the example writer's own `formatFiles` step (no mock:
+    # the writer, the journal and the pipeline are the real ones).
+    createRoot proc(dispose: proc()) =
+      let foundation = new(string)
+      foundation[] = DemoFoundationInitialSource
+      let vm = boxVm(foundation)
+      var failFormat = true
+      vm.workspaceEditAdapter.formatFiles = proc(files: seq[string]): WorkspaceOperationResult =
+        if failFormat:
+          WorkspaceOperationResult(ok: false, message: "The formatter refused.")
+        else:
+          WorkspaceOperationResult(ok: true)
+      check commitInspectorValue(vm, "padding", "20px", sskSharedClass).ok
+      # As `commitInspectorValue` records a commit the preview could not show.
+      vm.previewMissesPendingEdits.val = true
+      let generation = vm.livePreviewReloadGeneration.val
+      let failed = vm.applyWorkspaceFileEdits()
+      check not failed.ok
+      check vm.inspector.pendingSourceEdits.val.len == 1
+      check vm.previewMissesPendingEdits.val
+      check vm.livePreviewReloadGeneration.val == generation
+      # A later commit the preview did show, then the write that succeeds.
+      check commitInspectorValue(vm, "margin", "6px", sskSharedClass).ok
+      check vm.previewShowsPendingEdits.val
+      failFormat = false
+      check vm.applyWorkspaceFileEdits().ok
+      check vm.inspector.pendingSourceEdits.val.len == 0
+      check vm.livePreviewReloadGeneration.val == generation + 1
+      check not vm.previewMissesPendingEdits.val
+      check not vm.previewShowsPendingEdits.val
+      dispose()

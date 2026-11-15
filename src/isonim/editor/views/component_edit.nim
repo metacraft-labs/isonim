@@ -12,7 +12,7 @@
 import isonim/editor/views/view_lifecycle
 import std/[strutils, math, strformat]
 
-import isonim/core/[signals, computation, owner]
+import isonim/core/[signals, computation, owner, batch]
 import isonim/dsl/ui
 import isonim/editor/viewmodels
 import isonim/editor/preview_identity
@@ -550,6 +550,40 @@ __ISONIM_SCENE_GRAPH_WALK__
       property + ': ' + value + ' !important; }';
     renderBoxPreviews();
   }
+  // While a release commits (`commitOutcome`), whether every declaration the
+  // commit set could be shown (`__isonimDeclarationOutcome`, from the
+  // runtime). One that could not -- the preview cannot tell which rule the
+  // edit belongs in -- leaves the drag's preview in place, `kept`, holding
+  // that declaration (property, writer's rule, condition), so the box does
+  // not snap back to the old value. It is released by whatever comes next
+  // for it: the write's reload replaces the document; a later declaration of
+  // the same property (its shorthand or a longhand included) in the same rule
+  // and condition -- an edit or an undo -- takes over; and a write that does
+  // not reload the preview (a failed write, a staging-only project) releases
+  // every hold (`isonim-preview-release-held`), since no result is coming.
+  let commitOutcome = null;
+  window.__isonimDeclarationOutcome = function (property, shown, rule, condition, touches) {
+    if (commitOutcome) {
+      if (!shown && !commitOutcome.unshown) {
+        commitOutcome.unshown = true;
+        commitOutcome.held = { property: property, rule: rule || '', condition: condition || '' };
+      }
+      return;
+    }
+    const names = touches || [property];
+    for (const [owner, entry] of Array.from(boxPreviews.entries())) {
+      if (entry.kept && entry.held && names.indexOf(entry.held.property) >= 0 &&
+          entry.held.rule === (rule || '') && entry.held.condition === (condition || '')) {
+        clearBoxPreview(owner);
+      }
+    }
+  };
+  bindParent('isonim-preview-release-held', function () {
+    for (const [owner, entry] of Array.from(boxPreviews.entries())) {
+      if (entry.kept) clearBoxPreview(owner);
+    }
+    if (window.__isonimSelectedElement) placeHandles(window.__isonimSelectedElement);
+  });
   function clearBoxPreview(owner) {
     const entry = boxPreviews.get(owner);
     if (!entry) return;
@@ -601,15 +635,28 @@ __ISONIM_SCENE_GRAPH_WALK__
         // The preview stays until the editor has answered: a native project
         // answers later, and the commit's own preview replaces it.
         let settled = false;
+        const outcome = { unshown: false };
         const settle = function (ok, message) {
           if (settled) return;
           settled = true;
-          clearBoxPreview(owner);
+          const entry = boxPreviews.get(owner);
+          if (ok && outcome.unshown && entry) {
+            entry.kept = true;
+            entry.held = outcome.held;
+          }
+          else clearBoxPreview(owner);
           if (window.__isonimSelectedElement !== selected) return;
           placeHandles(selected);
           if (!ok && message) showBoxMessage(selected, String(message));
         };
-        if (!boxDragRequest({ phase: 'commit', settle: settle })) settle(true, '');
+        commitOutcome = outcome;
+        let reply = '';
+        try {
+          reply = boxDragRequest({ phase: 'commit', settle: settle });
+        } finally {
+          commitOutcome = null;
+        }
+        if (!reply) settle(true, '');
       }
     });
   }
@@ -1723,7 +1770,7 @@ __ISONIM_SCENE_GRAPH_WALK__
       if (pending) {
         Object.keys(pending).forEach(function (key) {
           const d = pending[key];
-          window.__isonimSetDeclaration(d.id, d.path, d.property, d.value, d.scope, d.condition || '');
+          window.__isonimSetDeclaration(d.id, d.path, d.property, d.value, d.scope, d.condition || '', d.rule || '');
         });
       }
     } catch (e) {}
@@ -1732,11 +1779,14 @@ __ISONIM_SCENE_GRAPH_WALK__
   // runs before this document is painted. This is only the channel.
   bindParent('isonim-preview-set-declaration', function (event) {
     const d = event.detail || {};
+    // Whether it could be shown is handed back on the event: the editor
+    // skips its post-write preview reload only for a preview that shows it.
     try {
-      window.__isonimSetDeclaration(String(d.id || ''), String(d.path || ''),
+      const shown = window.__isonimSetDeclaration(String(d.id || ''), String(d.path || ''),
                                     String(d.property || ''),
                                     String(d.value == null ? '' : d.value), String(d.scope || 'sskLocalInstance'),
-                                    String(d.condition || ''));
+                                    String(d.condition || ''), String(d.rule || '')) === true;
+      d.applied = d.applied === true || shown;
     } catch (e) {}
   });
 
@@ -1875,90 +1925,462 @@ proc editablePreviewDocument*(documentHtml: string;
     });
   });
 
-  // The rule the cascade is actually using for this element and property.
+  // Which declaration block the cascade uses for this element and property.
   //
   // Resolved from the browser's own view rather than supplied by the editor:
   // it already knows which rules match and which media conditions hold at this
-  // width, and asking it needs no project knowledge. The same question is
-  // answered in Nim (`editTargetAtWidth`) to decide where the FILE is patched,
-  // so the instant path and the durable one agree by construction.
+  // width, and asking it needs no project knowledge.
   //
-  // Last match wins, because equal specificity is broken by document order. A
-  // rule that sets the property through a shorthand counts: a longhand written
-  // anywhere earlier would be reset by it.
-  function governingRule(el, property) {
-    var resetters = [property].concat(SHORTHANDS[property] || []);
-    var winner = null, fallback = null;
-    function visit(rules, holds) {
+  // The matching rules that declare the property -- through a shorthand that
+  // sets it too, since a longhand written anywhere earlier would be reset by
+  // it -- are ordered the way the cascade orders them
+  // (https://www.w3.org/TR/css-cascade-5/#cascade-sort): importance, then
+  // cascade layer (later layers win for normal declarations, earlier ones for
+  // `!important`, and declarations outside every layer count as the last
+  // layer), then selector specificity, then order of appearance. Only rules
+  // whose conditions hold take part: `@media` and `@supports` are asked, and a
+  // sheet's own `media` is too.
+  //
+  // A sheet whose rules cannot be read (cross-origin, such as a web font's
+  // stylesheet linked without `crossorigin`) may declare the property too:
+  // the answer is then the best rule among the readable ones, marked
+  // `unread`, and the caller checks what the element renders
+  // (`__isonimSetDeclaration`).
+  //
+  // What the cascade does here that this cannot see makes the answer unsound,
+  // and an unsound answer is never used to pick a rule (`sound: false`):
+  //
+  //   * a declaring rule under a condition this cannot evaluate (`@container`,
+  //     `@scope`'s proximity, an unknown at-rule) or nested in another style
+  //     rule (its selector is relative to its parent's);
+  //   * a selector whose specificity cannot be computed here, or that the
+  //     browser cannot evaluate against the element (`matches` throws);
+  //   * an element in a shadow tree, a shadow host or a slotted element: rules
+  //     in another tree (`:host`, `::slotted`) can decide it;
+  //   * the element's inline style deciding the property, for an edit of a
+  //     shared rule: no rule decides it, so no rule is the edit's home.
+  //
+  // Rules that hold no declarations of an element's own style (`@font-face`,
+  // `@keyframes`, `@page`, `@property`, `@counter-style`, ...) are skipped.
+  //
+  // Returns `{ rule, sound, inline, unread }`: the deciding rule (or, when no
+  // rule declares the property, the matching rule the cascade ranks highest
+  // -- any home for a declaration nothing makes wins), whether that answer is
+  // sound, whether the inline style decides the property, and whether a
+  // sheet could not be read.
+  function isEditorSheet(sheet) {
+    var owner = null;
+    try { owner = sheet.ownerNode; } catch (e) {}
+    // The bridge injects `#isonim-editor-selection-style` to draw the
+    // selection outline; its `[data-isonim-selected="true"]` rule matches the
+    // selected element. A stylesheet the editor injected is never a home for
+    // a project edit.
+    return !!(owner && owner.id && owner.id.indexOf('isonim-editor') === 0);
+  }
+  function declaresIn(style, property) {
+    // Null when ``style`` does not declare ``property``, else its priority.
+    var names = [property].concat(SHORTHANDS[property] || []);
+    var declared = false, important = false;
+    for (var r = 0; r < names.length; r++) {
+      var name = names[r];
+      if (style.getPropertyValue(name) !== '' ||
+          Array.prototype.indexOf.call(style, name) >= 0) {
+        declared = true;
+        if (style.getPropertyPriority(name) === 'important') important = true;
+      }
+    }
+    // A `var()` shorthand that a later side partly overrides is not listed,
+    // and cannot be serialised: the block lists only its longhands, pending
+    // substitution (an empty value). Such a longhand is the shorthand's own
+    // declaration in this rule.
+    var parts = LONGHANDS[property] || [];
+    for (var q = 0; q < parts.length; q++) {
+      if (Array.prototype.indexOf.call(style, parts[q]) >= 0 &&
+          style.getPropertyValue(parts[q]) === '') {
+        declared = true;
+        if (style.getPropertyPriority(parts[q]) === 'important') important = true;
+      }
+    }
+    return declared ? { important: important } : null;
+  }
+  // Selector specificity, as [a, b, c], or null when it cannot be computed
+  // here (https://www.w3.org/TR/selectors-4/#specificity-rules).
+  function splitSelectorList(text) {
+    var parts = [], depth = 0, start = 0;
+    for (var i = 0; i < text.length; i++) {
+      var ch = text[i];
+      if (ch === '\\') { i++; continue; }
+      if (ch === '"' || ch === "'") {
+        for (i++; i < text.length && text[i] !== ch; i++) if (text[i] === '\\') i++;
+        continue;
+      }
+      if (ch === '(' || ch === '[') depth++;
+      else if (ch === ')' || ch === ']') depth--;
+      else if (ch === ',' && depth === 0) { parts.push(text.slice(start, i)); start = i + 1; }
+    }
+    parts.push(text.slice(start));
+    return parts.map(function (part) { return part.trim(); })
+      .filter(function (part) { return part.length > 0; });
+  }
+  function laterSpecificity(x, y) {
+    // True when ``x`` is greater than ``y``.
+    for (var i = 0; i < 3; i++) if (x[i] !== y[i]) return x[i] > y[i];
+    return false;
+  }
+  function listSpecificity(text) {
+    // The most specific selector of a list (`:is()`, `:not()`, `:has()`).
+    var best = [0, 0, 0];
+    var parts = splitSelectorList(text);
+    for (var i = 0; i < parts.length; i++) {
+      var one = selectorSpecificity(parts[i]);
+      if (!one) return null;
+      if (laterSpecificity(one, best)) best = one;
+    }
+    return best;
+  }
+  function selectorSpecificity(s) {
+    var a = 0, b = 0, c = 0, i = 0;
+    // A CSS escape (https://www.w3.org/TR/css-syntax-3/#consume-escaped-code-point)
+    // starting at the backslash ``s[at]``: up to six hex digits and one
+    // whitespace after them, or any one other code point. Chromium writes a
+    // class that starts with a digit this way (`2xl` is `.\32 xl`), so the
+    // whitespace is part of the name, not a descendant combinator.
+    function escapeEnd(at) {
+      at++;
+      if (at < s.length && /[0-9A-Fa-f]/.test(s[at])) {
+        for (var digits = 0; digits < 6 && at < s.length && /[0-9A-Fa-f]/.test(s[at]); digits++) at++;
+        if (at < s.length && /[ \t\n\r\f]/.test(s[at])) at++;
+        return at;
+      }
+      return at + 1;
+    }
+    function identEnd(at) {
+      while (at < s.length) {
+        var ch = s[at];
+        if (ch === '\\') { at = escapeEnd(at); continue; }
+        if (/[A-Za-z0-9_\-]/.test(ch) || ch.charCodeAt(0) > 127) { at++; continue; }
+        break;
+      }
+      return at;
+    }
+    function argumentsAt(at) {
+      // ``s[at]`` is `(`: the text up to the matching `)`, and the index after.
+      var depth = 0;
+      for (var j = at; j < s.length; j++) {
+        var ch = s[j];
+        if (ch === '\\') { j++; continue; }
+        if (ch === '"' || ch === "'") {
+          for (j++; j < s.length && s[j] !== ch; j++) if (s[j] === '\\') j++;
+          continue;
+        }
+        if (ch === '(') depth++;
+        else if (ch === ')' && --depth === 0) return [s.slice(at + 1, j), j + 1];
+      }
+      return null;
+    }
+    while (i < s.length) {
+      var ch = s[i];
+      if (/\s/.test(ch) || ch === '>' || ch === '+' || ch === '~' || ch === '*') { i++; continue; }
+      if (ch === '|') { i++; continue; }
+      if (ch === '#') { a++; i = identEnd(i + 1); continue; }
+      if (ch === '.') { b++; i = identEnd(i + 1); continue; }
+      if (ch === '[') {
+        b++;
+        for (i++; i < s.length && s[i] !== ']'; i++) {
+          if (s[i] === '\\') { i++; continue; }
+          if (s[i] === '"' || s[i] === "'") {
+            var quote = s[i];
+            for (i++; i < s.length && s[i] !== quote; i++) if (s[i] === '\\') i++;
+          }
+        }
+        i++;
+        continue;
+      }
+      if (ch === ':') {
+        var element = s[i + 1] === ':';
+        var nameStart = i + (element ? 2 : 1);
+        var nameEnd = identEnd(nameStart);
+        var name = s.slice(nameStart, nameEnd).toLowerCase();
+        i = nameEnd;
+        var inner = null;
+        if (s[i] === '(') {
+          var found = argumentsAt(i);
+          if (!found) return null;
+          inner = found[0];
+          i = found[1];
+        }
+        if (element) {
+          // A pseudo-element never matches an element; one taking a
+          // selector reaches into another tree.
+          if (name === 'slotted' || name === 'part') return null;
+          c++;
+          continue;
+        }
+        if (name === 'host' || name === 'host-context') return null;
+        if (inner === null) {
+          if (name === 'before' || name === 'after' || name === 'first-line' ||
+              name === 'first-letter') c++;
+          else b++;
+          continue;
+        }
+        if (name === 'is' || name === 'not' || name === 'has' || name === 'matches') {
+          var most = listSpecificity(inner);
+          if (!most) return null;
+          a += most[0]; b += most[1]; c += most[2];
+        } else if (name === 'where') {
+          // Zero, whatever it holds.
+        } else if (name === 'nth-child' || name === 'nth-last-child') {
+          b++;
+          var of = /\sof\s/i.exec(inner);
+          if (of) {
+            var nth = listSpecificity(inner.slice(of.index + of[0].length));
+            if (!nth) return null;
+            a += nth[0]; b += nth[1]; c += nth[2];
+          }
+        } else if (name === 'lang' || name === 'dir' || name === 'nth-of-type' ||
+                   name === 'nth-last-of-type' || name === 'state') {
+          b++;
+        } else {
+          return null;
+        }
+        continue;
+      }
+      if (ch === '&') return null;
+      if (/[A-Za-z_\-]/.test(ch) || ch.charCodeAt(0) > 127 || ch === '\\') {
+        var end = identEnd(i);
+        // `ns|type`: the namespace prefix is not a type selector.
+        if (s[end] === '|' && s[end + 1] !== '=') { i = end + 1; continue; }
+        c++;
+        i = end;
+        continue;
+      }
+      return null;
+    }
+    return [a, b, c];
+  }
+  function compareLayers(x, y) {
+    // A cascade layer's position as ordinals from the outermost layer down,
+    // with `Infinity` for the declarations directly in it (they come after
+    // its sublayers). Positive when ``x`` comes later.
+    for (var i = 0; i < Math.min(x.length, y.length); i++) {
+      if (x[i] !== y[i]) return x[i] > y[i] ? 1 : -1;
+    }
+    return x.length - y.length;
+  }
+  function cascadeWins(x, y) {
+    // True when candidate ``x`` beats candidate ``y`` for one property.
+    if (x.important !== y.important) return x.important;
+    var layers = compareLayers(x.layer, y.layer);
+    if (layers !== 0) return x.important ? layers < 0 : layers > 0;
+    if (laterSpecificity(x.specificity, y.specificity)) return true;
+    if (laterSpecificity(y.specificity, x.specificity)) return false;
+    return x.order > y.order;
+  }
+  var NOT_ELEMENT_STYLE = {
+    CSSFontFaceRule: true, CSSKeyframesRule: true, CSSKeyframeRule: true,
+    CSSPageRule: true, CSSMarginRule: true, CSSPropertyRule: true,
+    CSSCounterStyleRule: true, CSSFontFeatureValuesRule: true,
+    CSSFontPaletteValuesRule: true, CSSNamespaceRule: true,
+    CSSViewTransitionRule: true
+  };
+  function resolveRule(el, property, shared) {
+    var result = { rule: null, sound: true, inline: false, unread: false };
+    if (el.getRootNode() !== document || el.shadowRoot || el.assignedSlot) {
+      result.sound = false;
+    }
+    var ordinals = {}, counts = {}, anonymous = 0, order = 0;
+    var best = null, home = null;
+    function layerName(parent, name) {
+      // Registers a (possibly dotted) layer name, first appearance first, and
+      // returns its full name.
+      var full = parent;
+      var parts = name === '' ? ['\u0000anonymous' + (anonymous++)] : name.split('.');
+      for (var i = 0; i < parts.length; i++) {
+        var next = full ? full + '.' + parts[i].trim() : parts[i].trim();
+        if (!(next in ordinals)) {
+          ordinals[next] = counts[full] || 0;
+          counts[full] = ordinals[next] + 1;
+        }
+        full = next;
+      }
+      return full;
+    }
+    function layerPosition(full) {
+      var position = [];
+      if (full) {
+        var parts = full.split('.'), name = '';
+        for (var i = 0; i < parts.length; i++) {
+          name = name ? name + '.' + parts[i] : parts[i];
+          position.push(ordinals[name]);
+        }
+      }
+      position.push(Infinity);
+      return position;
+    }
+    function holds(test) {
+      try { return test(); } catch (e) { return null; }
+    }
+    function visit(rules, layer, unknown) {
       for (var i = 0; i < rules.length; i++) {
         var rule = rules[i];
-        // Branch on TYPE. Chrome defines `cssRules` on CSSStyleRule too, for
-        // CSS nesting, so duck-typing on it skips every style rule.
+        var kind = rule.constructor && rule.constructor.name;
+        if (rule.type === CSSRule.STYLE_RULE) {
+          var nested = rule.parentRule && rule.parentRule.type === CSSRule.STYLE_RULE;
+          var declared = declaresIn(rule.style, property);
+          var judged = !unknown && !nested && rule.selectorText;
+          var matching = [];
+          if (judged) {
+            var parts = splitSelectorList(rule.selectorText);
+            for (var p = 0; p < parts.length; p++) {
+              var matches = holds(function () { return el.matches(parts[p]); });
+              if (matches === null) { judged = false; break; }
+              if (matches) matching.push(parts[p]);
+            }
+          }
+          if (!judged) {
+            if (declared) result.sound = false;
+          } else if (matching.length) {
+            var specificity = null;
+            for (var m = 0; m < matching.length; m++) {
+              var one = selectorSpecificity(matching[m]);
+              if (!one) { specificity = null; break; }
+              if (!specificity || laterSpecificity(one, specificity)) specificity = one;
+            }
+            if (!specificity) {
+              if (declared) result.sound = false;
+            } else {
+              var candidate = { rule: rule, important: !!(declared && declared.important),
+                layer: layerPosition(layer), specificity: specificity, order: order++ };
+              if (declared && (!best || cascadeWins(candidate, best))) best = candidate;
+              var normal = { rule: rule, important: false, layer: candidate.layer,
+                specificity: specificity, order: candidate.order };
+              if (!home || cascadeWins(normal, home)) home = normal;
+            }
+          }
+          // Rules nested in this one: their selectors are relative to it.
+          if (rule.cssRules && rule.cssRules.length) visit(rule.cssRules, layer, true);
+          continue;
+        }
         if (rule.type === CSSRule.MEDIA_RULE) {
-          var m = false;
-          try { m = matchMedia(rule.conditionText).matches; } catch (e) {}
-          visit(rule.cssRules, holds && m);
+          var media = holds(function () { return matchMedia(rule.conditionText || rule.media.mediaText).matches; });
+          if (media === false) continue;
+          visit(rule.cssRules, layer, unknown || media === null);
           continue;
         }
         if (rule.type === CSSRule.SUPPORTS_RULE) {
-          visit(rule.cssRules, holds);
+          var supported = holds(function () { return CSS.supports(rule.conditionText); });
+          if (supported === false) continue;
+          visit(rule.cssRules, layer, unknown || supported === null);
           continue;
         }
-        if (rule.type !== CSSRule.STYLE_RULE || !rule.selectorText) continue;
-        if (!holds) continue;
-        var matches = false;
-        try { matches = el.matches(rule.selectorText); } catch (e) {}
-        if (!matches) continue;
-        // Any matching rule is a home for a declaration nothing currently
-        // makes; one that already decides the property is a better one.
-        fallback = rule;
-        for (var r = 0; r < resetters.length; r++) {
-          var name = resetters[r];
-          if (rule.style.getPropertyValue(name) !== '' ||
-              Array.prototype.indexOf.call(rule.style, name) >= 0) {
-            winner = rule;
-            break;
-          }
+        if (kind === 'CSSLayerStatementRule') {
+          var names = rule.nameList || [];
+          for (var n = 0; n < names.length; n++) layerName(layer, names[n]);
+          continue;
         }
-        // A `var()` shorthand that a later side partly overrides is not
-        // listed, and cannot be serialised: the block lists only its
-        // longhands, pending substitution (an empty value). Such a longhand
-        // is the shorthand's own declaration in this rule.
-        var parts = LONGHANDS[property] || [];
-        for (var q = 0; q < parts.length && winner !== rule; q++) {
-          if (Array.prototype.indexOf.call(rule.style, parts[q]) >= 0 &&
-              rule.style.getPropertyValue(parts[q]) === '') {
-            winner = rule;
-          }
+        if (kind === 'CSSLayerBlockRule') {
+          visit(rule.cssRules, layerName(layer, rule.name || ''), unknown);
+          continue;
         }
+        if (rule.type === CSSRule.IMPORT_RULE) {
+          var imported = null;
+          try { imported = rule.styleSheet && rule.styleSheet.cssRules; } catch (e) {}
+          if (!imported) { result.unread = true; continue; }
+          var importMedia = holds(function () {
+            return !rule.media.mediaText || matchMedia(rule.media.mediaText).matches;
+          });
+          if (importMedia === false) continue;
+          var importSupports = holds(function () {
+            return !rule.supportsText || CSS.supports('(' + rule.supportsText + ')') ||
+              CSS.supports(rule.supportsText);
+          });
+          if (importSupports === false) continue;
+          var importLayer = rule.layerName === null || rule.layerName === undefined
+            ? layer : layerName(layer, rule.layerName);
+          visit(imported, importLayer, unknown || importMedia === null || importSupports === null);
+          continue;
+        }
+        // `@starting-style` applies only before an element's first style, and
+        // these hold no declarations an element's own style takes (a font
+        // face's `font-weight`, a keyframe's `padding`, a page's margins).
+        if (kind === 'CSSStartingStyleRule' || NOT_ELEMENT_STYLE[kind]) continue;
+        // `@container`, `@scope` (proximity), and any grouping rule not known
+        // here: whether its rules apply cannot be told.
+        if (rule.cssRules) { visit(rule.cssRules, layer, true); continue; }
+        // A declaration block with no selector of its own (`CSSNestedDeclarations`).
+        if (rule.style && declaresIn(rule.style, property)) result.sound = false;
       }
     }
-    var sheets = document.styleSheets;
+    var sheets = [].slice.call(document.styleSheets).concat(document.adoptedStyleSheets || []);
     for (var s = 0; s < sheets.length; s++) {
-      // Skip the editor's own chrome.
-      //
-      // The bridge injects `#isonim-editor-selection-style` to draw the
-      // selection outline, and it is injected LAST -- so its
-      // `[data-isonim-selected="true"]` rule matches the selected element and
-      // wins the last-match contest against the rule the author wrote. The
-      // user's font-size went into the editor's outline rule, which is not
-      // theirs to edit and is not where the file write goes: the Nim side
-      // correctly chose `.tagline-clause` while this chose the outline. A
-      // stylesheet the editor injected is never a home for a project edit.
-      var owner = null;
-      try { owner = sheets[s].ownerNode; } catch (e) {}
-      if (owner && owner.id && owner.id.indexOf('isonim-editor') === 0) continue;
-      var rules;
-      try { rules = sheets[s].cssRules; } catch (e) { continue; }
-      visit(rules, true);
+      var sheet = sheets[s];
+      if (sheet.disabled || isEditorSheet(sheet)) continue;
+      var applies = holds(function () {
+        return !sheet.media || !sheet.media.mediaText || matchMedia(sheet.media.mediaText).matches;
+      });
+      if (applies === false) continue;
+      var rules = null;
+      try { rules = sheet.cssRules; } catch (e) { result.unread = true; continue; }
+      visit(rules, '', applies === null);
     }
-    return winner || fallback;
+    var inline = declaresIn(el.style, property);
+    if (inline && (inline.important || !best || !best.important)) {
+      result.inline = true;
+      if (shared) result.sound = false;
+    }
+    result.rule = best ? best.rule : home ? home.rule : null;
+    return result;
+  }
+  function governingRule(el, property) {
+    var resolved = resolveRule(el, property, false);
+    return resolved.sound ? resolved.rule : null;
+  }
+  // The name a writer gives the rule it writes (`WorkspaceRuleDeclarations.
+  // rule`, as the capture names a rule in `PropertyInfo.decidingRule`): its
+  // at-rule conditions and selector, whitespace collapsed.
+  function ruleIdentity(rule) {
+    var parts = [rule.selectorText];
+    for (var parent = rule.parentRule; parent; parent = parent.parentRule) {
+      var kind = parent.constructor && parent.constructor.name;
+      if (kind === 'CSSMediaRule') parts.unshift('@media ' + parent.conditionText);
+      else if (kind === 'CSSSupportsRule') parts.unshift('@supports ' + parent.conditionText);
+      else if (kind === 'CSSContainerRule') parts.unshift('@container ' + parent.conditionText);
+      else if (kind === 'CSSLayerBlockRule') parts.unshift('@layer ' + parent.name);
+      else if (kind === 'CSSScopeRule') parts.unshift('@scope (' + (parent.start || '') + ')' +
+        (parent.end ? ' to (' + parent.end + ')' : ''));
+      else if (kind === 'CSSStyleRule') parts.unshift(parent.selectorText);
+      else parts.unshift('@' + (kind || 'unknown'));
+    }
+    return parts.join(' ').replace(/\s+/g, ' ').trim();
+  }
+  window.__isonimRuleIdentity = ruleIdentity;
+  // The one rule named ``name`` that styles ``el``, or null when there is
+  // none, or more than one rule carries the name.
+  function namedRule(el, name) {
+    var found = [];
+    function visit(rules) {
+      for (var i = 0; i < rules.length; i++) {
+        var rule = rules[i];
+        if (rule.type === CSSRule.STYLE_RULE && ruleIdentity(rule) === name) found.push(rule);
+        if (rule.cssRules && rule.cssRules.length) visit(rule.cssRules);
+      }
+    }
+    var sheets = [].slice.call(document.styleSheets).concat(document.adoptedStyleSheets || []);
+    for (var s = 0; s < sheets.length; s++) {
+      if (isEditorSheet(sheets[s])) continue;
+      var rules = null;
+      try { rules = sheets[s].cssRules; } catch (e) { continue; }
+      visit(rules);
+    }
+    if (found.length !== 1) return null;
+    var rule = found[0];
+    if (rule.parentRule && rule.parentRule.type === CSSRule.STYLE_RULE) return null;
+    try { return el.matches(rule.selectorText) ? rule : null; } catch (e) { return null; }
   }
 
   // A normal inline declaration cannot win against an active important rule.
   // Local edits must refuse that owner instead of mutating its shared rule.
-  // This scans important precedence only, independently of the legacy last-match
-  // rule resolver. It does not attempt a general specificity/cascade solver.
+  // This scans important precedence only, independently of `resolveRule`.
   window.__isonimLocalDeclarationRefusal = function (id, path, property) {
     var el = null;
     if (id) el = document.querySelector('[data-isonim-element-id="' + CSS.escape(id) + '"]');
@@ -2046,7 +2468,18 @@ proc editablePreviewDocument*(documentHtml: string;
     return rule ? rule.style.getPropertyValue(property).trim() : '';
   };
 
-  window.__isonimSetDeclaration = function (id, path, property, value, scope, condition) {
+  // Sets ``property`` to ``value`` where the edit is written, and says
+  // whether it could: false leaves the preview as it was (see `applyPreviewStyle`:
+  // the write's own reload then shows the result).
+  //
+  // ``rule``, when the editor knows it, names the rule the project's writer
+  // writes (`WorkspaceRuleDeclarations.rule`): a shared edit is shown there, so
+  // the preview renders what the write will, whichever rule the cascade
+  // uses -- a rule another, more specific or more important rule overrides
+  // shows no change, as the written file will not. Otherwise the declaration
+  // goes to the rule the cascade uses (`resolveRule`), and nowhere when that
+  // cannot be told soundly.
+  function setDeclaration(id, path, property, value, scope, condition, rule) {
     if (!property) return false;
     if (condition) {
       var target = elementFor(id, path);
@@ -2071,8 +2504,9 @@ proc editablePreviewDocument*(documentHtml: string;
     }
     if (!el) return false;
     var local = !scope || scope === 'sskLocalInstance';
+    var tokenScope = scope === 'sskComponentToken' || scope === 'sskSemanticToken' ||
+      scope === 'sskGlobalPrimitiveToken';
     if (local && window.__isonimLocalDeclarationRefusal(id, path, property)) return false;
-    var rule = governingRule(el, property);
     function priority(style) {
       var names = [property].concat(SHORTHANDS[property] || []);
       for (var i = 0; i < names.length; i++) {
@@ -2084,25 +2518,50 @@ proc editablePreviewDocument*(documentHtml: string;
       var names = [property].concat(SHORTHANDS[property] || []);
       return names.some(function (name) { return style.getPropertyValue(name) !== ''; });
     }
+    var style = null, verify = false;
+    // What the element renders for the edited property (its longhands for a
+    // shorthand), read to verify an edit that a sheet the resolver could not
+    // read might override.
+    var watched = LONGHANDS[property] || [property];
     // A local edit of the winning inline owner must not change a discarded
     // lower rule or siblings. Retain its priority; never manufacture important.
     // An important stylesheet declaration still outranks normal inline style.
-    var style = rule ? rule.style : el.style;
     if (local && hasDeclaration(el.style)) {
       style = el.style;
+    } else if (tokenScope && /^var\(\s*(--[\w-]+)(?:\s*,[^)]*)?\s*\)$/.test(
+        el.style.getPropertyValue(property).trim())) {
+      // A token edit through an inline `var()` use-site: the inline style is
+      // read only for the variable it names, whose declaration is edited.
+      style = el.style;
+    } else {
+      if (!local && !tokenScope && rule) {
+        // The writer named its rule. Shown there or not at all: any other
+        // rule may be one the write does not touch.
+        var written = namedRule(el, String(rule));
+        if (!written) return false;
+        style = written.style;
+      } else {
+        var resolved = resolveRule(el, property, !local);
+        if (!resolved.sound) return false;
+        style = resolved.rule ? resolved.rule.style : el.style;
+        // A sheet that could not be read may decide the property: shown only
+        // if the element is then seen to render it (`verify`).
+        if (resolved.unread && resolved.rule) verify = true;
+      }
     }
     // Token edits retain their var() use-sites, including inline references.
     // Resolve the directly referenced root declaration rather than detaching
     // the selected element from the binding. Other shared scopes keep their
     // stylesheet declaration owner.
-    if (scope === 'sskComponentToken' || scope === 'sskSemanticToken' ||
-        scope === 'sskGlobalPrimitiveToken') {
+    if (tokenScope) {
       var declared = el.style.getPropertyValue(property) || style.getPropertyValue(property);
       var token = /^var\(\s*(--[\w-]+)(?:\s*,[^)]*)?\s*\)$/.exec(declared.trim());
       if (token) {
         property = token[1];
-        var tokenRule = governingRule(document.documentElement, property);
-        style = tokenRule ? tokenRule.style : document.documentElement.style;
+        var tokenRule = resolveRule(document.documentElement, property, false);
+        if (!tokenRule.sound) return false;
+        style = tokenRule.rule ? tokenRule.rule.style : document.documentElement.style;
+        if (tokenRule.unread && tokenRule.rule) verify = true;
       }
     }
     var importance = priority(style);
@@ -2113,10 +2572,67 @@ proc editablePreviewDocument*(documentHtml: string;
       value = value.replace(stated, '');
       importance = 'important';
     }
+    var saved = null, before = null, running = null;
+    if (verify) {
+      // Put back by its text, so only a block that survives being re-read from
+      // its own text is touched.
+      if (!roundTrips(style)) return false;
+      saved = style.cssText;
+      before = rendered(el, watched);
+      running = el.getAnimations ? el.getAnimations() : [];
+    }
     if (value === '') style.removeProperty(property);
     else style.setProperty(property, value, importance);
+    if (verify) {
+      var after = rendered(el, watched);
+      var moved = after.some(function (v, i) { return v !== before[i]; });
+      // A transition the edit started reads its start value: it moved.
+      if (!moved && el.getAnimations) {
+        moved = el.getAnimations().some(function (animation) {
+          return running.indexOf(animation) < 0 && animation.transitionProperty &&
+            (watched.indexOf(animation.transitionProperty) >= 0 ||
+             animation.transitionProperty === property || animation.transitionProperty === 'all');
+        });
+      }
+      if (!moved) {
+        style.cssText = saved;
+        rendered(el, watched);
+        return false;
+      }
+    }
     return true;
+  }
+  window.__isonimSetDeclaration = function (id, path, property, value, scope, condition, rule) {
+    var shown = setDeclaration(id, path, property, value, scope, condition, rule) === true;
+    // The editor's own frame script listens (a canvas drag's release keeps
+    // its preview while the edit it committed could not be shown).
+    try {
+      if (typeof window.__isonimDeclarationOutcome === 'function') {
+        window.__isonimDeclarationOutcome(property, shown, rule || '', condition || '',
+          [property].concat(LONGHANDS[property] || [], SHORTHANDS[property] || []));
+      }
+    } catch (e) {}
+    return shown;
   };
+  function rendered(el, names) {
+    var computed = getComputedStyle(el);
+    return names.map(function (name) { return computed.getPropertyValue(name); });
+  }
+  function blockText(style) {
+    var longhands = [];
+    for (var i = 0; i < style.length; i++) {
+      longhands.push(style[i] + ':' + style.getPropertyValue(style[i]) + '!' +
+        style.getPropertyPriority(style[i]));
+    }
+    return style.cssText + '\n' + longhands.join(';');
+  }
+  function roundTrips(style) {
+    try {
+      var scratch = new CSSStyleSheet();
+      scratch.replaceSync('x{' + style.cssText + '}');
+      return blockText(scratch.cssRules[0].style) === blockText(style);
+    } catch (e) { return false; }
+  }
 
   // The re-apply deliberately does NOT happen here, only the definition.
   //
@@ -2817,23 +3333,35 @@ proc renderComponentEditView*[R, E](r: R; vm: EditorVM): E =
   # fresh edit takes, so an undone value lands on the rule the cascade uses or
   # the cell it came from exactly as the original did.
   when isDomViewHost(E):
+    # A write that ends without reloading the preview (failed, or staged
+    # only) releases a canvas drag's held value in the frame: no reload is
+    # coming to replace it (`EditorVM.previewHoldRelease`).
+    var lastHoldRelease = untrack(proc(): int = vm.previewHoldRelease.val)
+    createRenderEffect proc() =
+      let release = vm.previewHoldRelease.val
+      if release == lastHoldRelease: return
+      lastHoldRelease = release
+      {.emit: "window.dispatchEvent(new CustomEvent('isonim-preview-release-held'));".}
     var lastPreviewRequest = 0
     createRenderEffect proc() =
       let request = vm.inspector.previewValueRequest.val
       if request.generation == 0 or request.generation == lastPreviewRequest:
         return
       lastPreviewRequest = request.generation
-      applyPreviewStyle(request.elementId, request.domPath,
+      var shown = applyPreviewStyle(request.elementId, request.domPath,
                         request.property, request.value, request.sourceScope,
-                        request.condition)
+                        request.condition, request.rule)
       # The shorthand sides the restored rule decides, as its source renders
       # them (`PreviewValueRequest.followers`).
       for (side, sideValue) in request.followers:
-        applyPreviewStyle(request.elementId, request.domPath, side, sideValue,
-                          request.sourceScope, request.condition)
+        if not applyPreviewStyle(request.elementId, request.domPath, side,
+            sideValue, request.sourceScope, request.condition, request.rule):
+          shown = false
       # The write that follows must not reload the preview out from under it,
-      # for the same reason a commit sets this.
-      vm.previewShowsPendingEdits.val = true
+      # for the same reason a commit sets this -- unless the preview could not
+      # show it, when that reload is what shows the result.
+      if shown: vm.previewShowsPendingEdits.val = true
+      else: vm.previewMissesPendingEdits.val = true
       # And schedule the write. An undo that only moves the preview and the
       # inspector leaves the file saying what the user just took back -- which
       # is how this looked before: the value returned to 40px on screen while

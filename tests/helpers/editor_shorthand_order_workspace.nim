@@ -12,6 +12,11 @@
 ## test's page before this script), so each case starts from the
 ## declaration order it is about.
 ##
+## The card is given the id `window.__isonimShorthandCardId` names, when
+## it names one, for the cases about a rule that selects it by id, and the
+## extra class `window.__isonimShorthandCardClass` names (`2xl`, which
+## Chromium serialises in a selector as `.\32 xl`).
+##
 ## The card's corners are mapped too, and the example document's inline
 ## `border-radius:8px` is left out of the preview unless
 ## `window.__isonimShorthandKeepInlineRadius` is set: an inline declaration
@@ -87,6 +92,8 @@ proc main() =
   # preview runtime (`window.__isonimShorthandAfterStyleScript`): a page
   # script whose CSSOM edits the runtime cannot have seen.
   let afterStyle = pageString("__isonimShorthandAfterStyleScript")
+  let cardId = pageString("__isonimShorthandCardId")
+  let cardClass = pageString("__isonimShorthandCardClass")
   let stripInline = not keepInlineRadius()
   exposeDemoSource(DemoFoundationSource, foundationSource[])
   let story = StoryRef(group: "DestinationCard", name: "Default",
@@ -94,6 +101,15 @@ proc main() =
   var schema = demoDesignSystemSchema()
   var adapter = demoVectorEditAdapter(vectorSource, foundationSource)
   if orderless(): adapter.ruleDeclarations = nil
+  # `window.__isonimShorthandStagingOnly`: a project that only stages edits
+  # (the write does not reload the preview); `window.__isonimShorthandFailWrites`:
+  # every file write fails, as a full disk or a locked file would.
+  if pageString("__isonimShorthandStagingOnly").len > 0:
+    adapter.stagingOnly = true
+  if pageString("__isonimShorthandFailWrites").len > 0:
+    adapter.writeFile = proc(file, content: string): WorkspaceOperationResult =
+      WorkspaceOperationResult(ok: false, message: "Could not write " & file &
+        ": the test host refuses every write.")
   for property in MappedSides:
     schema.nodes.add DesignSchemaNode(
       key: "classes.destination-card." & property,
@@ -125,6 +141,14 @@ proc main() =
         if afterStyle.len > 0:
           result.documentHtml = result.documentHtml.replace("</style>",
             "</style><script>" & afterStyle & "</script>")
+        if cardId.len > 0:
+          result.documentHtml = result.documentHtml.replace(
+            "<article class=\"destination-card",
+            "<article id=\"" & cardId & "\" class=\"destination-card")
+        if cardClass.len > 0:
+          result.documentHtml = result.documentHtml.replace(
+            "class=\"destination-card long-tail-card\"",
+            "class=\"destination-card long-tail-card " & cardClass & "\"")
         if prefix.len > 0:
           result.documentHtml = result.documentHtml.replace("<head><style>",
             "<head><style>" & prefix)

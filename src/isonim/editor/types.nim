@@ -831,6 +831,9 @@ type
       ## The shorthand sides the accepted edit's rule decides, as the source
       ## renders them (`CSSPropertyEditTransaction.sideFollowersAfter`), for
       ## the preview to set after the edited declaration.
+    previewRule*: string
+      ## The rule the project's writer writes for the accepted edit
+      ## (`CSSPropertyEditTransaction.previewRule`), or "".
 
   CSSPropertyEditorVM* = object
     ## Headless property editor contract. Views may render controls from this.
@@ -1170,6 +1173,9 @@ type
       ## The shorthand sides the accepted edit's rule decides, as the source
       ## renders them (`CSSPropertyEditTransaction.sideFollowersAfter`), for
       ## the preview to set after the edited declaration.
+    previewRule*: string
+      ## The rule the project's writer writes for the accepted edit
+      ## (`CSSPropertyEditTransaction.previewRule`), or "".
 
   SelectionOrigin* = enum
     ## Where a selection came from. The editor has exactly one selection
@@ -1426,6 +1432,13 @@ type
       ## The preview sets them, in order, after the edited declaration, so a
       ## CSSOM shorthand -- which resets every longhand in its block -- shows
       ## what the source renders. Empty for every other edit.
+    previewRule*: string
+      ## For a shared class edit whose writer reports the rule it writes
+      ## (`WorkspaceRuleDeclarations.rule`): that rule's name, as the
+      ## preview's capture names a rule. The preview shows the edit, its undo
+      ## and its redo in that rule, so it renders what the written file will
+      ## even where another rule decides the property (`applyPreviewStyle`).
+      ## "" when the writer cannot say.
     superseded*: bool
       ## A later edit to the same source slot replaced this entry's plan in
       ## the journal before it was written. Its effect is therefore not on

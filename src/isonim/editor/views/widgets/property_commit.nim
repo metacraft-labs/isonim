@@ -222,8 +222,9 @@ proc localPreviewRefusal(elementId, domPath, property: string): string =
     result = $reason
 
 proc applyPreviewStyle*(elementId, domPath, property, value: string;
-    sourceScope = sskLocalInstance; condition = "") =
-  ## Show the change in the preview, now.
+    sourceScope = sskLocalInstance; condition = ""; rule = ""): bool
+    {.discardable.} =
+  ## Show the change in the preview, now. True when the preview shows it.
   ##
   ## Without this the editor accepted a value, staged it, wrote it to source --
   ## and the thing you were looking at did not move. Every part of the pipeline
@@ -266,6 +267,17 @@ proc applyPreviewStyle*(elementId, domPath, property, value: string;
   ## element's rule repeated under that condition -- the rule is added to the
   ## preview's stylesheet when it has none yet -- and is recorded under its
   ## own key, beside the element's unconditional value.
+  ##
+  ## ``rule`` names the rule the project's writer writes, when the editor
+  ## knows it (`WorkspaceRuleDeclarations.rule`): a shared edit is shown in
+  ## that rule, so the preview renders what the written file will. Without
+  ## it the declaration is set on the rule the cascade uses -- importance,
+  ## layers, specificity and order -- and where that cannot be told soundly
+  ## (a sheet that cannot be read, a declaring rule under a condition the
+  ## preview cannot evaluate, a shadow tree, an inline style that decides
+  ## the property) nothing is set and this returns false: the preview is
+  ## not shown a value in a rule the write may not touch, and the caller
+  ## lets the write's reload show the result instead.
   if sourceScope == sskLocalInstance and condition.len == 0 and
       localPreviewRefusal(elementId, domPath, property).len > 0: return
   when defined(js):
@@ -286,9 +298,10 @@ proc applyPreviewStyle*(elementId, domPath, property, value: string;
     let writeCell = proc(sceneId: cstring): bool =
       if sceneId.len == 0: return false
       setEditableValue($sceneId, property, value)
-    {.emit: ["""
-      (function (writeCell) {
-      if (typeof document === 'undefined' || typeof window === 'undefined') return;
+    var applied = false
+    {.emit: [applied, """ = (function (writeCell) {
+      // No document (a test runner): no preview, nothing to disagree with.
+      if (typeof document === 'undefined' || typeof window === 'undefined') return true;
       const toJsString = (raw) => Array.isArray(raw)
         ? String.fromCharCode.apply(null, raw)
         : String(raw || '');
@@ -298,7 +311,8 @@ proc applyPreviewStyle*(elementId, domPath, property, value: string;
       const value = toJsString(""", value, """);
       const scope = toJsString(""", scopeName, """);
       const condition = toJsString(""", condition, """);
-      if (!id || !property) return;
+      const rule = toJsString(""", rule, """);
+      if (!id || !property) return false;
 
       // Resolve once, here, and hand the scene id to the cell registry.
       // `data-isonim-src` is the key the `ui` macro registered the cell under,
@@ -318,7 +332,7 @@ proc applyPreviewStyle*(elementId, domPath, property, value: string;
       }
       if (!condition && scope === 'sskLocalInstance' && target &&
           writeCell(target.getAttribute('data-isonim-src') || '')) {
-        return;
+        return true;
       }
 
       // No cell: the value lives in the stylesheet. Remember it as well as
@@ -329,19 +343,26 @@ proc applyPreviewStyle*(elementId, domPath, property, value: string;
         (window.__isonimPreviewDeclarations = {});
       const key = id + '|' + property + (condition ? '|' + condition : '');
       const record = { id: id, path: path, property: property, value: value,
-                       scope: scope, condition: condition };
+                       scope: scope, condition: condition, rule: rule };
       // An emptied override is recorded too: its removal has to be re-applied
       // to a frame rebuilt from a stylesheet that still declares it.
       if (value === '' && !condition) delete store[key];
       else store[key] = record;
+      // The frame's listener says whether it could show it (`applied`).
+      const detail = Object.assign({}, record);
       window.dispatchEvent(new CustomEvent('isonim-preview-set-declaration', {
-        detail: record
+        detail: detail
       }));
+      return detail.applied === true;
       })(""", writeCell, ");"].}
+    result = applied
   else:
+    # No preview to show it in, and nothing in one that could disagree.
     discard elementId
     discard property
     discard value
+    discard rule
+    result = true
 
 proc previewOverrideValue*(elementId, domPath, property,
     condition: string): string =
@@ -430,6 +451,8 @@ proc commitInspectorValue*(vm: EditorVM; property, rawValue: string;
   # them: returned by the edit itself, so the preview sets exactly the
   # values this commit produced.
   var followers: seq[(string, string)] = @[]
+  # The rule the writer writes, when it says (`previewRule`).
+  var rule = ""
   if scope == sskLocalInstance:
     let res = vm.editCssProperty(property, normalized, pesLocal, peoInspector)
     if res.status != pesAccepted:
@@ -443,6 +466,7 @@ proc commitInspectorValue*(vm: EditorVM; property, rawValue: string;
         "This scope has no source-backed writer in the project schema."),
         scope)
     followers = res.sideFollowers
+    rule = res.previewRule
 
   # An accepted edit with no adapter is staged but unwritable. That is
   # a weaker condition than the two above — the journal is real and
@@ -461,15 +485,21 @@ proc commitInspectorValue*(vm: EditorVM; property, rawValue: string;
     elif selected.sourceKey.len > 0: selected.sourceKey
     else: selected.schemaKey
   if previewId.len > 0:
-    applyPreviewStyle(previewId, selected.domPath, property, normalized, scope)
+    var shown = applyPreviewStyle(previewId, selected.domPath, property,
+      normalized, scope, rule = rule)
     # A shorthand set through the CSSOM resets every longhand in its block,
     # and a side set there wins in the CSSOM whatever the source's order: set
     # the sides the edited rule decides to what the source renders, in order
     # (`withRuleOrderedSides`).
     for (side, sideValue) in followers:
-      applyPreviewStyle(previewId, selected.domPath, side, sideValue, scope)
-    # The write that follows must not reload the preview out from under this.
-    vm.previewShowsPendingEdits.val = true
+      if not applyPreviewStyle(previewId, selected.domPath, side, sideValue,
+          scope, rule = rule):
+        shown = false
+    # The write that follows must not reload the preview out from under this
+    # -- unless the preview could not show it (`applyPreviewStyle`): then that
+    # reload is what shows the written result.
+    if shown: vm.previewShowsPendingEdits.val = true
+    else: vm.previewMissesPendingEdits.val = true
 
   # The edit is staged; the browser layer debounces it into a write. Placed
   # after every refusal so a rejected edit never schedules one.

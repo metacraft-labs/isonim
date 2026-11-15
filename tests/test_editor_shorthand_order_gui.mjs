@@ -9,6 +9,24 @@
  * (https://www.w3.org/TR/css-cascade-4/#cascade-sort). isonim-pm issue
  * 2026-10-23-a-shorthand-edit-is-shown-on-sides-a-later-longhand-still-overrides.
  *
+ * Cases 33 onwards: a preview edit lands on the declaration the cascade
+ * uses (importance, layers, specificity, order, conditions that hold), or,
+ * where the writer says which rule it writes, on that rule, so the preview
+ * renders what the written file will; where neither can be told soundly the
+ * preview is left alone and the write's reload shows the result. Editor spec
+ * "Saving" (an edit changes the one declaration that owns the property) and
+ * "Visual box model" (the preview shows the same values before the write and
+ * after it); https://www.w3.org/TR/css-cascade-5/#cascade-sort. isonim-pm
+ * issue 2026-11-14-a-preview-edit-lands-on-a-later-less-specific-rule-than-
+ * the-one-the-cascade-uses.
+ *
+ * Cases 46, 49 and 50 pause the editor's 900ms auto-save while they stage
+ * edits (`holdAutoSave`: the timer the editor sets is cleared as it is set)
+ * and then save with Mod+S, as a person can, so that what they exercise --
+ * several edits in one write, an edit before the write -- does not depend on
+ * how fast the host runs. Nothing is replaced: the save that follows is the
+ * editor's own.
+ *
  * No mocks. The host (`tests/helpers/editor_shorthand_order_workspace.nim`)
  * is the editor example with its real writer, preview document and browser
  * selection bridge, plus schema entries for the card's sides. The page is
@@ -29,14 +47,18 @@ const pub=mkdtempSync(path.join(process.env.ISONIM_POPUP_ARTIFACTS||tmpdir(),'sh
 copyFileSync(bundle,pub+'/editor.js');
 for(const [from,to] of [['node_modules/fabric/dist/index.min.js','fabric.min.js'],['node_modules/paper/dist/paper-core.min.js','paper-core.min.js'],['node_modules/svgo/dist/svgo.browser.js','svgo.browser.js']])copyFileSync(repo+'/'+from,pub+'/'+to);
 const index=readFileSync(repo+'/src/isonim/editor/index.html','utf8');
-const page=(rule)=>index.replace('<script src="editor.js"></script>','<script>window.__isonimShorthandCardRule='+JSON.stringify(rule)+';window.__isonimShorthandExtraCss='+JSON.stringify(extraCss)+';window.__isonimShorthandKeepInlineRadius='+JSON.stringify(keepInline)+';window.__isonimShorthandOrderless='+JSON.stringify(orderlessHost)+';window.__isonimShorthandPrefixCss='+JSON.stringify(prefixCss)+';window.__isonimShorthandLink='+JSON.stringify(linkHref)+';window.__isonimShorthandAfterStyleScript='+JSON.stringify(afterStyleScript)+';</script><script src="editor.js"></script>');
+const page=(rule)=>index.replace('<script src="editor.js"></script>','<script>window.__isonimShorthandCardRule='+JSON.stringify(rule)+';window.__isonimShorthandExtraCss='+JSON.stringify(extraCss)+';window.__isonimShorthandKeepInlineRadius='+JSON.stringify(keepInline)+';window.__isonimShorthandOrderless='+JSON.stringify(orderlessHost)+';window.__isonimShorthandPrefixCss='+JSON.stringify(prefixCss)+';window.__isonimShorthandLink='+JSON.stringify(linkHref)+';window.__isonimShorthandAfterStyleScript='+JSON.stringify(afterStyleScript)+';window.__isonimShorthandCardId='+JSON.stringify(cardId)+';window.__isonimShorthandCardClass='+JSON.stringify(cardClass)+';window.__isonimShorthandStagingOnly='+JSON.stringify(stagingOnly)+';window.__isonimShorthandFailWrites='+JSON.stringify(failWrites)+';</script><script src="editor.js"></script>');
 const types={'.js':'text/javascript','.html':'text/html'};
-let rule='',extraCss='',keepInline=false,orderlessHost=false,prefixCss='',linkHref='',afterStyleScript='';
+let rule='',extraCss='',keepInline=false,orderlessHost=false,prefixCss='',linkHref='',afterStyleScript='',cardId='',cardClass='',stagingOnly='',failWrites='';
 const server=createServer((req,res)=>{const url=new URL(req.url,'http://x');const name=url.pathname==='/'?'index.html':url.pathname.slice(1);
   if(name==='index.html'){res.writeHead(200,{'content-type':'text/html'});res.end(page(rule));return;}
   // A stylesheet served without CORS, linked from the other host name, so
   // the preview can apply it but not read its rules.
   if(name==='xorigin.css'){res.writeHead(200,{'content-type':'text/css'});res.end('.destination-card { padding-right: 40px !important; }');return;}
+  // The same, deciding every side; and a web font's stylesheet (only
+  // `@font-face`), linked without `crossorigin` as such sheets often are.
+  if(name==='xfull.css'){res.writeHead(200,{'content-type':'text/css'});res.end('.destination-card { padding: 40px !important; }');return;}
+  if(name==='xfont.css'){res.writeHead(200,{'content-type':'text/css'});res.end('@font-face { font-family: WlFont; src: local(Arial); }');return;}
   const file=path.join(pub,path.basename(name));if(!existsSync(file)){res.writeHead(404);res.end();return;}
   res.writeHead(200,{'content-type':types[path.extname(file)]||'application/octet-stream'});res.end(readFileSync(file));});
 await new Promise(resolve=>server.listen(0,'127.0.0.1',resolve));
@@ -58,8 +80,8 @@ try {
   const cardRule=async()=>(await source()).match(/\.destination-card \{[^}]*\}/)[0];
   const pending=()=>p.evaluate(()=>window.__isonimEditor.pendingSourceEdits());
   const field=(name)=>p.getByRole('textbox',{name,exact:true});
-  async function open(startRule,startCss='',inline=false,noOrder=false,prefix='',link='',script=''){
-    rule=startRule;extraCss=startCss;keepInline=inline;orderlessHost=noOrder;prefixCss=prefix;linkHref=link;afterStyleScript=script;await p.goto(origin+'/');
+  async function open(startRule,startCss='',inline=false,noOrder=false,prefix='',link='',script='',id='',cls='',host={}){
+    rule=startRule;extraCss=startCss;keepInline=inline;orderlessHost=noOrder;prefixCss=prefix;linkHref=link;afterStyleScript=script;cardId=id;cardClass=cls;stagingOnly=host.stagingOnly?'1':'';failWrites=host.failWrites?'1':'';await p.goto(origin+'/');
     await p.getByRole('button',{name:'Open Components section'}).click();
     await p.getByRole('button',{name:'Toggle DestinationCard stories'}).click();
     await p.getByRole('button',{name:'Select story DestinationCard / Default'}).click();
@@ -476,6 +498,425 @@ try {
   await assertPoll(()=>rendered('padding-'),['24px','16px','16px','16px'],'renders under the scoped alias');
   assert.equal(await field('Padding right').inputValue(),'16');
   cases.push('an alias in a rule under @scope counts as reaching the card');
+
+  // 33 onwards: which rule a preview edit lands on (isonim-pm issue
+  // 2026-11-14-a-preview-edit-lands-on-a-later-less-specific-rule-...). Every
+  // case reads each rule of the preview's stylesheets (named as the capture
+  // names a rule) and the card's inline style before the commit, right after
+  // it and after the write, and requires that only the rule the edit is
+  // written to changed.
+  const styleState=()=>card().evaluate((n)=>{const out=[];const visit=(rs)=>{for(const r of rs){if(r.style&&r.selectorText!==undefined)out.push(window.__isonimRuleIdentity(r)+' {'+r.style.cssText+'}');if(r.cssRules)visit(r.cssRules);}};for(const sh of document.styleSheets){const o=sh.ownerNode;if(o&&o.id&&o.id.startsWith('isonim-editor'))continue;try{visit(sh.cssRules);}catch(e){}}return {rules:out,inline:n.getAttribute('style')};});
+  const onlyChanged=(before,after,target,what)=>{
+    const strip=(state)=>({rules:state.rules.filter(r=>!r.startsWith(target+' {')),inline:state.inline});
+    assert.deepEqual(strip(after),strip(before),what+': a rule other than `'+target+'` (or the inline style) changed');
+  };
+  const ruleText=async(name)=>(await styleState()).rules.filter(r=>r.startsWith(name+' {'));
+  const settleWrite=async(expectedRule)=>{await settle(expectedRule);await p.waitForTimeout(1500);};
+  // What the preview showed when the commit's declaration reached it, read in
+  // the editor page's own listener for it (registered after the preview's,
+  // so it runs right after the preview handled it, and long before the
+  // automatic write can reload the preview): the rules, the card's inline
+  // style, the card's computed `props`, and whether the preview showed it.
+  const armCapture=(props)=>p.evaluate((props)=>{
+    if(window.__isonimCaptureListener)window.removeEventListener('isonim-preview-set-declaration',window.__isonimCaptureListener);
+    window.__isonimCaptured=[];
+    const f=document.querySelector('iframe[title="Editable component preview"]');
+    window.__isonimCaptureListener=(e)=>{const w=f.contentWindow,d=f.contentDocument;const n=d.querySelector('[data-testid="component-edit-preview"]');const out=[];
+      const visit=(rs)=>{for(const r of rs){if(r.style&&r.selectorText!==undefined)out.push(w.__isonimRuleIdentity(r)+' {'+r.style.cssText+'}');if(r.cssRules)visit(r.cssRules);}};
+      for(const sh of d.styleSheets){const o=sh.ownerNode;if(o&&o.id&&o.id.startsWith('isonim-editor'))continue;try{visit(sh.cssRules);}catch(x){}}
+      const cs=w.getComputedStyle(n);window.__isonimCaptured.push({property:e.detail.property,applied:e.detail.applied===true,state:{rules:out,inline:n.getAttribute('style')},values:props.map(q=>cs.getPropertyValue(q))});};
+    window.addEventListener('isonim-preview-set-declaration',window.__isonimCaptureListener);},props);
+  const captured=async()=>{await assertPoll(()=>p.evaluate(()=>(window.__isonimCaptured||[]).length>0),true,'the commit reached the preview');return p.evaluate(()=>window.__isonimCaptured[0]);};
+  const sides=['top','right','bottom','left'].map(x=>'padding-'+x);
+  // The editor's auto-save timer, paused (`true`: each timer it sets is
+  // cleared at once) or let run again and the pending edits saved now.
+  const holdAutoSave=async(on)=>{
+    await p.evaluate((on)=>{
+      if(!window.__isonimSaveHoldInstalled){let t=null;window.__isonimSaveHoldInstalled=true;
+        Object.defineProperty(window,'__isonimAutoSaveTimer',{configurable:true,get(){return t;},set(v){if(window.__isonimHoldSave&&v){clearTimeout(v);t=null;}else t=v;}});}
+      window.__isonimHoldSave=on;},on);
+    if(!on){await p.evaluate(()=>document.activeElement?.blur());await p.keyboard.press('ControlOrMeta+s');}
+  };
+
+
+  const dragHeld=async(host={},hold=false)=>{
+    await open('padding: 18px;','body { container-type: inline-size; }\n@container (min-width: 99999px) { .long-tail-card { padding-top: 30px; } }\n',false,true,'','','','','',host);
+    if(hold)await holdAutoSave(true);
+    const handle=frame().getByLabel('Adjust padding top',{exact:true});
+    const box=await handle.boundingBox();assert(box,'the padding top handle has no box');
+    await p.mouse.move(box.x+box.width/2,box.y+box.height/2);await p.mouse.down();
+    await p.mouse.move(box.x+box.width/2,box.y+box.height/2+12,{steps:3});
+    const dragged=await computed('padding-top');
+    assert.notEqual(dragged,'18px','the drag previews a new value');
+    await p.mouse.up();
+    return dragged;
+  };
+  const heldRules=()=>card().evaluate(()=>{const s=document.getElementById('isonim-editor-box-drag-preview');return s?s.textContent.trim():'';});
+
+  // 33. The card's own id rule decides its padding, ahead of the class rule
+  // the writer writes and a later class rule. The edit is written to the
+  // card rule, which the id rule overrides, so the preview -- like the
+  // written file -- shows no change, and neither the id rule nor the later
+  // class rule gains the value.
+  await open('padding: 18px;','#wl-card { padding: 10px; }\n.long-tail-card { padding: 30px; }\n',false,false,'','','','wl-card');
+  await assertPoll(()=>rendered('padding-'),['10px','10px','10px','10px'],'the id rule decides');
+  const before33=await styleState();
+  await commit('Padding, all sides','20');
+  await assertPoll(async()=>(await ruleText('.destination-card')),['.destination-card {padding: 20px;}'],'preview: the edit is in the card rule');
+  assert.deepEqual(await rendered('padding-'),['10px','10px','10px','10px'],'preview right after the commit: the id rule still decides');
+  onlyChanged(before33,await styleState(),'.destination-card','right after the commit');
+  assert.equal(await field('Padding top').inputValue(),'10');
+  await settleWrite('.destination-card { padding: 20px; }');
+  assert.deepEqual(await rendered('padding-'),['10px','10px','10px','10px'],'preview after the write');
+  onlyChanged(before33,await styleState(),'.destination-card','after the write');
+  cases.push('an edit the writer puts in a rule an id rule overrides is previewed in that rule, with no change, before and after the write');
+  // The same document, asked without the writer's rule (the issue's own
+  // probe, on the genuine preview): the id rule is the one the cascade uses,
+  // not the later class rule.
+  const before33b=await styleState();
+  const direct33=await card().evaluate((n)=>{const ok=window.__isonimSetDeclaration(n.getAttribute('data-isonim-element-id')||'','article[data-testid="component-edit-preview"]','padding','26px','sskSharedClass','');return {ok,right:getComputedStyle(n).paddingRight};});
+  assert.deepEqual(direct33,{ok:true,right:'26px'},'without the writer\'s rule the edit lands on the id rule');
+  assert.deepEqual(await ruleText('#wl-card'),['#wl-card {padding: 26px;}']);
+  onlyChanged(before33b,await styleState(),'#wl-card','the cascade-resolved edit');
+  cases.push('without the writer\'s rule an edit lands on the id rule the cascade uses, not on a later class rule');
+
+  // 34. An `!important` declaration in an earlier rule decides the padding
+  // over the card rule the writer writes, which comes later. The edit is
+  // previewed in the card rule, with no change, as the written file shows
+  // it; asked without the writer's rule, the resolver takes the important
+  // rule, not the later one.
+  await open('padding: 18px;','',false,false,'.long-tail-card { padding: 10px !important; }\n');
+  await assertPoll(()=>rendered('padding-'),['10px','10px','10px','10px'],'the important rule decides');
+  const before34=await styleState();
+  await commit('Padding, all sides','20');
+  await assertPoll(async()=>(await ruleText('.destination-card')),['.destination-card {padding: 20px;}'],'preview: the edit is in the card rule');
+  assert.deepEqual(await rendered('padding-'),['10px','10px','10px','10px'],'preview right after the commit');
+  onlyChanged(before34,await styleState(),'.destination-card','right after the commit');
+  await settleWrite('.destination-card { padding: 20px; }');
+  assert.deepEqual(await rendered('padding-'),['10px','10px','10px','10px'],'preview after the write');
+  onlyChanged(before34,await styleState(),'.destination-card','after the write');
+  const before34b=await styleState();
+  const direct34=await card().evaluate((n)=>{const ok=window.__isonimSetDeclaration(n.getAttribute('data-isonim-element-id')||'','article[data-testid="component-edit-preview"]','padding','26px','sskSharedClass','');return {ok,right:getComputedStyle(n).paddingRight};});
+  assert.deepEqual(direct34,{ok:true,right:'26px'},'without the writer\'s rule the edit lands on the important rule');
+  assert((await ruleText('.long-tail-card')).includes('.long-tail-card {padding: 26px !important;}'));
+  onlyChanged(before34b,await styleState(),'.long-tail-card','the cascade-resolved edit');
+  cases.push('an !important rule earlier in the sheet decides: the writer\'s later rule shows no change, and the resolver takes the important rule');
+
+  // 35. `@layer` order: the card rule sits in a layer declared after the
+  // later rule's, so it decides although it comes first.
+  await open('padding: 18px;','}\n@layer low { .long-tail-card { padding: 30px; } }\n',false,true,'@layer low, card; @layer card {');
+  await assertPoll(()=>rendered('padding-'),['18px','18px','18px','18px'],'the later layer decides');
+  const before35=await styleState();
+  await commit('Padding, all sides','20');
+  await assertPoll(()=>rendered('padding-'),['20px','20px','20px','20px'],'preview right after the commit');
+  assert.deepEqual(await ruleText('@layer card .destination-card'),['@layer card .destination-card {padding: 20px;}']);
+  onlyChanged(before35,await styleState(),'@layer card .destination-card','right after the commit');
+  await settleWrite('.destination-card { padding: 20px; }');
+  assert.deepEqual(await rendered('padding-'),['20px','20px','20px','20px'],'preview after the write');
+  onlyChanged(before35,await styleState(),'@layer card .destination-card','after the write');
+  cases.push('a rule in a later cascade layer takes the edit, not a later rule in an earlier layer');
+
+  // 36. Conditions that do not hold: a later rule under `@supports` and one
+  // under `@media` that do not apply are not the edit's home.
+  await open('padding: 18px;','@supports (display: no-such-display) { .long-tail-card { padding: 30px; } }\n@media (max-width: 1px) { .long-tail-card { padding: 31px; } }\n',false,true);
+  const before36=await styleState();
+  await commit('Padding, all sides','20');
+  await assertPoll(()=>rendered('padding-'),['20px','20px','20px','20px'],'preview right after the commit');
+  onlyChanged(before36,await styleState(),'.destination-card','right after the commit');
+  await settleWrite('.destination-card { padding: 20px; }');
+  assert.deepEqual(await rendered('padding-'),['20px','20px','20px','20px'],'preview after the write');
+  onlyChanged(before36,await styleState(),'.destination-card','after the write');
+  cases.push('a later rule under a condition that does not hold does not take the edit');
+
+  // 37. The card's inline corners decide its radius, and the writer does not
+  // say which rule it writes: no rule is the edit's home, so the preview is
+  // left alone (no rule and not the inline style changes) and still shows
+  // the inline corners after the write.
+  await open('padding: 18px; border-radius: 14px;','',true,true);
+  const appearance37=p.locator('[data-inspector-section-header="appearance"]');
+  if((await appearance37.getAttribute('aria-expanded'))!=='true')await appearance37.click();
+  const radius37=p.locator('[data-inspector-section-body="appearance"] [data-property-row-css-property="border-radius"] [data-property-row-input]');
+  const corners37=async()=>{const out=[];for(const c of ['top-left','top-right','bottom-right','bottom-left'])out.push(await computed('border-'+c+'-radius'));return out;};
+  const before37=await styleState();
+  await armCapture(['border-top-left-radius','border-top-right-radius','border-bottom-right-radius','border-bottom-left-radius']);
+  await radius37.click();await radius37.press('ControlOrMeta+A');await p.keyboard.type('12');await radius37.press('Enter');
+  const at37=await captured();
+  assert.equal(at37.property,'border-radius');
+  assert.equal(at37.applied,false,'the preview did not show it');
+  assert.deepEqual(at37.values,['8px','8px','8px','8px'],'preview right after the commit');
+  onlyChanged(before37,at37.state,'','right after the commit');
+  await settleWrite('.destination-card { padding: 18px; border-radius: 12px; }');
+  await assertPoll(corners37,['8px','8px','8px','8px'],'preview after the write');
+  await assertPoll(async()=>(await ruleText('.destination-card')),['.destination-card {padding: 18px; border-radius: 12px;}'],'the written rule after the write');
+  onlyChanged(before37,await styleState(),'.destination-card','after the write');
+  cases.push('an edit the inline style overrides changes no rule in the preview, and the write shows the inline value still');
+
+  // 38. A sheet the preview cannot read (cross-origin) decides the right
+  // padding, and the writer does not say which rule it writes. The edit is
+  // set on the best readable rule and kept because the card is seen to
+  // render it: three sides move at once, the unread rule keeps the fourth.
+  await open('padding: 18px;','',false,true,'',otherOrigin+'/xorigin.css');
+  await assertPoll(()=>rendered('padding-'),['18px','40px','18px','18px'],'the cross-origin rule applies');
+  const before38=await styleState();
+  await armCapture(sides);
+  await commit('Padding, all sides','20');
+  const at38=await captured();
+  assert.equal(at38.property,'padding');
+  assert.equal(at38.applied,true,'the preview showed it');
+  assert.deepEqual(at38.values,['20px','40px','20px','20px'],'preview right after the commit');
+  onlyChanged(before38,at38.state,'.destination-card','right after the commit');
+  await settleWrite('.destination-card { padding: 20px; }');
+  assert.deepEqual(await rendered('padding-'),['20px','40px','20px','20px'],'preview after the write');
+  onlyChanged(before38,await styleState(),'.destination-card','after the write');
+  cases.push('with a sheet the preview cannot read, an edit the card is seen to render is shown at once');
+
+  // 38b. The unread sheet decides every side: set on the readable rule, the
+  // edit moves nothing, so it is taken back and the preview is left as it
+  // was; the write's reload shows the result (still the unread rule's).
+  await open('padding: 18px;','',false,true,'',otherOrigin+'/xfull.css');
+  await assertPoll(()=>rendered('padding-'),['40px','40px','40px','40px'],'the cross-origin rule decides');
+  const before38b=await styleState();
+  await armCapture(sides);
+  await commit('Padding, all sides','20');
+  const at38b=await captured();
+  assert.equal(at38b.applied,false,'the preview did not show it');
+  assert.deepEqual(at38b.values,['40px','40px','40px','40px'],'preview right after the commit: left alone');
+  onlyChanged(before38b,at38b.state,'','right after the commit (the readable rule was put back)');
+  await settle('.destination-card { padding: 20px; }');
+  await assertPoll(async()=>(await ruleText('.destination-card')),['.destination-card {padding: 20px;}'],'the reload shows the written rule');
+  assert.deepEqual(await rendered('padding-'),['40px','40px','40px','40px'],'preview after the write');
+  onlyChanged(before38b,await styleState(),'.destination-card','after the write');
+  cases.push('with a sheet the preview cannot read deciding every side, the edit is taken back and the reload shows the result');
+
+  // 39. The same fallback for a declaring rule under `@container`, a
+  // condition the preview cannot evaluate.
+  await open('padding: 18px;','body { container-type: inline-size; }\n@container (min-width: 99999px) { .long-tail-card { padding: 30px; } }\n',false,true);
+  const before39=await styleState();
+  await armCapture(sides);
+  await commit('Padding, all sides','20');
+  const at39=await captured();
+  assert.equal(at39.property,'padding');
+  assert.equal(at39.applied,false,'the preview did not show it');
+  assert.deepEqual(at39.values,['18px','18px','18px','18px'],'preview right after the commit: left alone');
+  onlyChanged(before39,at39.state,'','right after the commit');
+  await settle('.destination-card { padding: 20px; }');
+  await assertPoll(()=>rendered('padding-'),['20px','20px','20px','20px'],'preview after the write: the written result');
+  onlyChanged(before39,await styleState(),'.destination-card','after the write');
+  cases.push('with a declaring rule under @container, the preview is left alone until the write shows the result');
+
+  // 40. A class that starts with a digit (Tailwind's `2xl:`), which a
+  // selector writes as the escape `.\32 xl`: one class, not a class and a
+  // type selector, so the card rule after it decides (same specificity,
+  // later) and takes the edit.
+  await open('padding: 18px;','',false,true,'.\\32 xl { padding: 10px; }\n','','','','2xl');
+  await assertPoll(()=>rendered('padding-'),['18px','18px','18px','18px'],'the later card rule decides');
+  const before40=await styleState();
+  await armCapture(sides);
+  await commit('Padding, all sides','20');
+  const at40=await captured();
+  assert.equal(at40.applied,true,'the preview showed it');
+  assert.deepEqual(at40.values,['20px','20px','20px','20px'],'preview right after the commit');
+  onlyChanged(before40,at40.state,'.destination-card','right after the commit');
+  await settleWrite('.destination-card { padding: 20px; }');
+  assert.deepEqual(await rendered('padding-'),['20px','20px','20px','20px'],'preview after the write');
+  onlyChanged(before40,await styleState(),'.destination-card','after the write');
+  cases.push('a selector with a hex escape is ranked as one class');
+
+  // 41. At-rules that hold no declarations of an element's own style --
+  // `@keyframes` (which animates padding), `@font-face`, `@page` -- do not
+  // stop the preview from showing the edit.
+  await open('padding: 18px;','@keyframes wl-pad { from { padding: 1px; } to { padding: 2px; } }\n@font-face { font-family: WlProbe; font-weight: 700; src: local(Arial); }\n@page { margin: 1cm; }\n',false,true);
+  const before41=await styleState();
+  await armCapture(sides);
+  await commit('Padding, all sides','20');
+  const at41=await captured();
+  assert.equal(at41.applied,true,'the preview showed it');
+  assert.deepEqual(at41.values,['20px','20px','20px','20px'],'preview right after the commit');
+  onlyChanged(before41,at41.state,'.destination-card','right after the commit');
+  await settleWrite('.destination-card { padding: 20px; }');
+  assert.deepEqual(await rendered('padding-'),['20px','20px','20px','20px'],'preview after the write');
+  cases.push('@keyframes, @font-face and @page do not stop the preview');
+
+  // 42. A web font's cross-origin stylesheet (only `@font-face`, rules not
+  // readable): the edit is shown at once, the card being seen to render it.
+  await open('padding: 18px;','',false,true,'',otherOrigin+'/xfont.css');
+  assert.equal(await card().evaluate(()=>[...document.styleSheets].some(s=>{try{s.cssRules;return false;}catch(e){return true;}})),true,'one sheet is unreadable');
+  const before42=await styleState();
+  await armCapture(sides);
+  await commit('Padding, all sides','20');
+  const at42=await captured();
+  assert.equal(at42.applied,true,'the preview showed it');
+  assert.deepEqual(at42.values,['20px','20px','20px','20px'],'preview right after the commit');
+  onlyChanged(before42,at42.state,'.destination-card','right after the commit');
+  await settleWrite('.destination-card { padding: 20px; }');
+  assert.deepEqual(await rendered('padding-'),['20px','20px','20px','20px'],'preview after the write');
+  onlyChanged(before42,await styleState(),'.destination-card','after the write');
+  cases.push('a web font\'s unreadable stylesheet does not stop the preview');
+
+  // 43. `!important` reverses layer order: an important declaration in a
+  // layer beats an unlayered important one, even a more specific, later one.
+  // The writer's card rule shows no change before or after the write; asked
+  // without the writer's rule, the resolver takes the layered rule.
+  await open('padding: 18px;','article.destination-card { padding: 30px !important; }\n',false,false,'@layer low { .long-tail-card { padding: 10px !important; } }\n');
+  await assertPoll(()=>rendered('padding-'),['10px','10px','10px','10px'],'the layered important rule decides');
+  const before43=await styleState();
+  await commit('Padding, all sides','20');
+  await assertPoll(async()=>(await ruleText('.destination-card')),['.destination-card {padding: 20px;}'],'preview: the edit is in the card rule');
+  assert.deepEqual(await rendered('padding-'),['10px','10px','10px','10px'],'preview right after the commit');
+  onlyChanged(before43,await styleState(),'.destination-card','right after the commit');
+  await settleWrite('.destination-card { padding: 20px; }');
+  assert.deepEqual(await rendered('padding-'),['10px','10px','10px','10px'],'preview after the write');
+  onlyChanged(before43,await styleState(),'.destination-card','after the write');
+  const before43b=await styleState();
+  const direct43=await card().evaluate((n)=>{const ok=window.__isonimSetDeclaration(n.getAttribute('data-isonim-element-id')||'','article[data-testid="component-edit-preview"]','padding','26px','sskSharedClass','');return {ok,right:getComputedStyle(n).paddingRight};});
+  assert.deepEqual(direct43,{ok:true,right:'26px'},'without the writer\'s rule the edit lands on the layered important rule');
+  assert.deepEqual(await ruleText('@layer low .long-tail-card'),['@layer low .long-tail-card {padding: 26px !important;}']);
+  onlyChanged(before43b,await styleState(),'@layer low .long-tail-card','the cascade-resolved edit');
+  cases.push('an !important declaration in a layer beats an unlayered !important one');
+
+  // 44. The writer names its rule (`.destination-card`) but the preview has
+  // no rule by that name (here it sits in a layer the preview's page wraps
+  // it in): the preview does not guess another rule, it is left alone and
+  // the write's reload shows the result.
+  await open('padding: 18px;','}\n',false,false,'@layer card {');
+  const before44=await styleState();
+  await armCapture(sides);
+  await commit('Padding, all sides','20');
+  const at44=await captured();
+  assert.equal(at44.applied,false,'the preview did not show it');
+  assert.deepEqual(at44.values,['18px','18px','18px','18px'],'preview right after the commit: left alone');
+  onlyChanged(before44,at44.state,'','right after the commit');
+  await settle('.destination-card { padding: 20px; }');
+  await assertPoll(()=>rendered('padding-'),['20px','20px','20px','20px'],'preview after the write: the written result');
+  onlyChanged(before44,await styleState(),'@layer card .destination-card','after the write');
+  cases.push('a writer\'s rule the preview cannot find leaves the preview to the write\'s reload');
+
+  // 45. A canvas drag whose commit the preview cannot show (a declaring rule
+  // under `@container`): on release the box keeps the dragged value until the
+  // write's reload shows it, rather than snapping back.
+  await open('padding: 18px;','body { container-type: inline-size; }\n@container (min-width: 99999px) { .long-tail-card { padding-top: 30px; } }\n',false,true);
+  const handle45=frame().getByLabel('Adjust padding top',{exact:true});
+  const box45=await handle45.boundingBox();assert(box45,'the padding top handle has no box');
+  await p.mouse.move(box45.x+box45.width/2,box45.y+box45.height/2);await p.mouse.down();
+  await p.mouse.move(box45.x+box45.width/2,box45.y+box45.height/2+12,{steps:3});
+  const dragged45=await computed('padding-top');
+  assert.notEqual(dragged45,'18px','the drag previews a new value');
+  // Every style change the frame makes from the release on, with the top
+  // padding it then renders, recorded in the editor page (the reload
+  // replaces the frame's window).
+  await card().evaluate((n)=>{parent.__isonimDragTops=[];const o=new MutationObserver(()=>{parent.__isonimDragTops.push(getComputedStyle(n).paddingTop);});o.observe(document.head,{childList:true,subtree:true,characterData:true});o.observe(n,{attributes:true});});
+  await p.mouse.up();
+  await settle('.destination-card { padding: 18px; padding-top: '+dragged45+'; }');
+  const tops45=await p.evaluate(()=>window.__isonimDragTops);
+  assert.deepEqual(tops45.filter(t=>t!==dragged45),[],'the box snapped back after the release: '+JSON.stringify(tops45));
+  await assertPoll(()=>computed('padding-top'),dragged45,'preview after the write');
+  cases.push('a drag whose commit the preview cannot show keeps its value until the write shows it');
+
+  // 46. A commit the preview cannot show, then one it can, written together:
+  // the write still reloads the preview, so both show.
+  await open('padding: 18px;','body { container-type: inline-size; }\n@container (min-width: 99999px) { .long-tail-card { padding: 30px; } }\n',false,true);
+  await armCapture(sides);
+  await holdAutoSave(true);
+  await commit('Padding, all sides','20');
+  await commit('Margin, all sides','6');
+  assert.equal(await pending(),2,'both edits wait for one write');
+  await holdAutoSave(false);
+  await settle('.destination-card { padding: 20px; margin: 6px; }');
+  const events46=await p.evaluate(()=>window.__isonimCaptured.map(c=>c.property+':'+c.applied));
+  assert.deepEqual(events46.slice(0,2),['padding:false','margin:true'],'one commit not shown, one shown');
+  await assertPoll(()=>rendered('padding-'),['20px','20px','20px','20px'],'preview after the write: the unshown edit');
+  assert.equal(await computed('margin-top'),'6px');
+  cases.push('an unshown commit followed by a shown one before the write still gets the write\'s reload');
+
+  // 47. The verified path with a transition on the card: the edit starts a
+  // transition, so the computed value still reads the old one at the commit
+  // -- that is a change being rendered, and the edit is kept.
+  await open('padding: 18px;','article.destination-card { transition: padding 1.5s linear; }\n',false,true,'',otherOrigin+'/xfont.css');
+  await armCapture(sides);
+  await commit('Padding, all sides','20');
+  const at47=await captured();
+  assert.equal(at47.applied,true,'the preview showed it');
+  await assertPoll(()=>rendered('padding-'),['20px','20px','20px','20px'],'the transition ends at the edit');
+  await settleWrite('.destination-card { padding: 20px; }');
+  assert.deepEqual(await rendered('padding-'),['20px','20px','20px','20px'],'preview after the write');
+  cases.push('with a sheet the preview cannot read, an edit that starts a transition is kept');
+
+  // 48. The verified path on a block that does not survive being re-read from
+  // its own text (a var() shorthand a later side partly overrides): it could
+  // not be put back exactly, so it is not touched; the unread sheet decides
+  // every side, and the write's reload shows the result.
+  await open('padding: var(--wl-space-card); padding-top: 4px;','',false,true,'',otherOrigin+'/xfull.css');
+  await assertPoll(()=>rendered('padding-'),['40px','40px','40px','40px'],'the cross-origin rule decides');
+  const before48=await styleState();
+  await armCapture(sides);
+  await commit('Padding, all sides','20');
+  const at48=await captured();
+  assert.equal(at48.applied,false,'the preview did not show it');
+  onlyChanged(before48,at48.state,'','right after the commit (the block was not touched)');
+  await settle('.destination-card { padding: 20px; padding-top: 4px; }');
+  await assertPoll(async()=>(await ruleText('.destination-card')),['.destination-card {padding: 4px 20px 20px;}'],'the reload shows the written rule');
+  assert.deepEqual(await rendered('padding-'),['40px','40px','40px','40px'],'preview after the write');
+  cases.push('with a sheet the preview cannot read, a block that does not round-trip is not touched');
+
+  // 49-52. A drag held because its commit could not be shown (case 45's
+  // setup), and what releases it.
+  // 49. Another property's edit does not release the hold.
+  const dragged49=await dragHeld({},true);
+  await armCapture(['padding-top','margin-top']);
+  await commit('Margin, all sides','6');
+  const at49=await captured();
+  assert.equal(at49.property,'margin');
+  assert.deepEqual(at49.values,[dragged49,'6px'],'the held top survives a margin edit');
+  assert.equal(await pending(),2,'nothing written yet');
+  await holdAutoSave(false);
+  await settle('.destination-card { padding: 18px; padding-top: '+dragged49+'; margin: 6px; }');
+  await assertPoll(()=>computed('padding-top'),dragged49,'after the write');
+  cases.push('a held drag survives an edit of another property');
+
+  // 50. Undoing the held edit releases it (no write follows an undo that
+  // withdraws a pending edit).
+  const dragged50=await dragHeld({},true);
+  assert.equal(await pending(),1,'the drag waits for its write');
+  await armCapture(['padding-top']);
+  await undoRedo(false);
+  const at50=await captured();
+  assert.equal(at50.property,'padding-top');
+  assert.deepEqual(at50.values,['18px'],'the undo released the held top (dragged '+dragged50+')');
+  await assertPoll(pending,0,'nothing pending');
+  await p.evaluate(()=>{window.__isonimHoldSave=false;});
+  assert.equal(await heldRules(),'');
+  assert.equal(await computed('padding-top'),'18px');
+  cases.push('undoing a held drag releases it');
+
+  // 51. A project that only stages edits: the write does not reload, so the
+  // hold is released when it ends.
+  const dragged51=await dragHeld({stagingOnly:true});
+  await assertPoll(pending,0,'the edit is staged');
+  await assertPoll(()=>computed('padding-top'),'18px','the hold is released after a write with no reload (dragged '+dragged51+')');
+  assert.equal(await heldRules(),'');
+  cases.push('a staging-only write releases a held drag');
+
+  // 52. A write that fails: no reload, the hold is released.
+  const dragged52=await dragHeld({failWrites:true});
+  await p.locator('[data-save-error]').waitFor({state:'visible'});
+  await assertPoll(()=>computed('padding-top'),'18px','the hold is released after a failed write (dragged '+dragged52+')');
+  assert.equal(await heldRules(),'');
+  cases.push('a failed write releases a held drag');
+
+  // 53. A declaration of the held property in another condition (a
+  // responsive override's `@media` block) or another rule does not release
+  // the hold; one in the same rule and condition does. Sent on the channel
+  // every preview declaration takes (`isonim-preview-set-declaration`, as
+  // `applyPreviewStyle` and the undo request dispatch it).
+  const dragged53=await dragHeld({},true);
+  const declare53=(detail)=>card().evaluate((n,detail)=>{parent.dispatchEvent(new CustomEvent('isonim-preview-set-declaration',{detail:Object.assign({id:n.getAttribute('data-isonim-element-id')||'',path:'article[data-testid="component-edit-preview"]',property:'padding-top',value:'5px',scope:'sskSharedClass',condition:'',rule:''},detail)}));return getComputedStyle(n).paddingTop;},detail);
+  assert.equal(await declare53({condition:'@media (max-width: 1px)'}),dragged53,'a responsive override of the top leaves the hold');
+  assert.equal(await declare53({rule:'.no-such-rule'}),dragged53,'the top in another rule leaves the hold');
+  assert.notEqual(await heldRules(),'');
+  assert.equal(await declare53({}),'18px','the top in the same rule and condition releases the hold');
+  assert.equal(await heldRules(),'');
+  await p.evaluate(()=>{window.__isonimHoldSave=false;});
+  cases.push('a held drag is released only by its own property in the same rule and condition');
 
   assert.deepEqual(errors,[]);
   console.log('Shorthand order GUI passed:',pub,cases.length);

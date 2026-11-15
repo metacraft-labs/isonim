@@ -126,6 +126,9 @@ type
       ## (`SourceEditPlan.breakpointCondition`): the value is shown in the
       ## element's rule repeated under that condition, not in the rule the
       ## cascade uses at the preview width. Empty for every other edit.
+    rule*: string
+      ## The rule the project's writer writes, when the editor knows it
+      ## (`CSSPropertyEditTransaction.previewRule`); "" otherwise.
 
   BoxCanvasDraft* = object
     ## A drag of a canvas margin or padding handle that has not been released
@@ -560,6 +563,19 @@ type
       ## recompiled yet, so it would replace a frame showing the new value with
       ## one showing the old -- and the user would watch their edit flash away
       ## a second after making it.
+    previewMissesPendingEdits*: Signal[bool]
+      ## Set by any commit, undo or redo since the last write whose value the
+      ## preview could not show (`applyPreviewStyle` returned false), and
+      ## cleared only by that write: it forces the write's reload, which is
+      ## what shows such an edit. A separate flag rather than
+      ## `previewShowsPendingEdits` going false, because the next commit the
+      ## preview does show must not take the reload back -- a padding edit the
+      ## preview could not show and a margin edit it could, written together,
+      ## would otherwise leave the padding unshown.
+    previewHoldRelease*: Signal[int]
+      ## Bumped when a write ends without reloading the preview (it failed, or
+      ## the project only stages edits): the preview releases a canvas drag's
+      ## held value (see `component_edit`), since no reload will replace it.
     previewRenderedWidth*: Signal[int]
       ## The width in CSS pixels the preview iframe is ACTUALLY laid out at,
       ## or 0 before anything has measured it.
@@ -5308,6 +5324,7 @@ proc editInspectorProperty*(editor: EditorVM;
             line: plan.line, property: plan.property)])
       else:
         prepared.outcome.sideFollowers = prepared.transaction.sideFollowersAfter
+        prepared.outcome.previewRule = prepared.transaction.previewRule
   result = prepared.outcome
   if result.status == pesAccepted:
     editor.inspector.acceptPreparedPropertyEdit(prepared)
@@ -5661,7 +5678,8 @@ proc supersedePendingBelow(inspector: InspectorVM; plan: SourceEditPlan) =
 proc requestPreviewValue(inspector: InspectorVM; element: ElementRef;
                          property, value: string;
                          sourceScope = sskLocalInstance; condition = "";
-                         followers: seq[(string, string)] = @[]) =
+                         followers: seq[(string, string)] = @[];
+                         rule = "") =
   ## Ask the preview view to show `value`. See `PreviewValueRequest`.
   let elementId =
     if element.id.len > 0: element.id
@@ -5672,7 +5690,7 @@ proc requestPreviewValue(inspector: InspectorVM; element: ElementRef;
     generation: inspector.previewValueRequest.val.generation + 1,
     elementId: elementId, domPath: element.domPath,
     property: property, value: value, sourceScope: sourceScope,
-    followers: followers, condition: condition)
+    followers: followers, condition: condition, rule: rule)
 
 proc refuseHistoryStep(inspector: InspectorVM; step: InspectorHistoryStep) =
   inspector.editDiagnostics.val = @[PropertyEditDiagnostic(
@@ -5729,7 +5747,7 @@ proc undoCssPropertyEdit*(inspector: InspectorVM): bool {.discardable.} =
   inspector.requestPreviewValue(txn.beforeElement, txn.sourceEdit.property,
                                 txn.sourceEdit.oldValue, txn.sourceEdit.sourceScope,
                                 txn.sourceEdit.breakpointCondition,
-                                txn.sideFollowersBefore)
+                                txn.sideFollowersBefore, txn.previewRule)
   true
 
 proc redoCssPropertyEdit*(inspector: InspectorVM): bool {.discardable.} =
@@ -5771,7 +5789,7 @@ proc redoCssPropertyEdit*(inspector: InspectorVM): bool {.discardable.} =
   inspector.requestPreviewValue(txn.afterElement, txn.sourceEdit.property,
                                 txn.sourceEdit.newValue, txn.sourceEdit.sourceScope,
                                 txn.sourceEdit.breakpointCondition,
-                                txn.sideFollowersAfter)
+                                txn.sideFollowersAfter, txn.previewRule)
   true
 
 proc nextWriteReceipt(inspector: InspectorVM;
@@ -8088,6 +8106,7 @@ proc editSharedDesignProperty*(editor: EditorVM; property, newValue: string;
     return SharedDesignEditResult(status: pesRejected, editor: result.editor,
       diagnostics: @[refused])
   result.sideFollowers = transaction.sideFollowersAfter
+  result.previewRule = transaction.previewRule
   editor.inspector.selectedElement.val = transaction.afterElement
   editor.inspector.journalSourceEdit(plan)
   editor.inspector.undoStack.update proc(prev: seq[CSSPropertyEditTransaction]): seq[
@@ -10290,6 +10309,8 @@ proc failWorkspaceEdit(editor: EditorVM; diagnostics: seq[WorkspaceEditDiagnosti
     if diagnostics.len > 0: "bridge-error:" & diagnostics[0].message
     else: "bridge-error:workspace edit failed"
   editor.recordEditorTiming(epbkSaveReload, 1, detail)
+  # No reload follows a failed write: a canvas drag's held value goes.
+  editor.previewHoldRelease.val = editor.previewHoldRelease.val + 1
   editor.workspaceEditStage.val = stage
   editor.workspaceEditDiagnostics.val = diagnostics
   editor.workspaceBridgeRecovered.val = false
@@ -10686,10 +10707,15 @@ proc withRuleOrderedSides(editor: EditorVM;
   ## Left as `withShorthandSides` made it when the writer cannot say: no
   ## `ruleDeclarations`, a native source project (its catalog reports each
   ## side's owner), a responsive override, a shorthand that does not expand.
+  ##
+  ## Also records, for any shared class edit, the rule the writer writes
+  ## (`CSSPropertyEditTransaction.previewRule`), so the preview shows the
+  ## edit in that rule and renders what the written file will.
   let plan = transaction.sourceEdit
   let group = shorthandGroup(plan.property)
-  if not group.found or editor.hasAsyncSourceProject or
-      plan.breakpointCondition.len > 0:
+  if editor.hasAsyncSourceProject or plan.breakpointCondition.len > 0:
+    return
+  if not group.found and plan.sourceScope != sskSharedClass:
     return
   let adapter = editor.workspaceEditAdapter
   if adapter.isNil or adapter.ruleDeclarations.isNil or
@@ -10717,9 +10743,13 @@ proc withRuleOrderedSides(editor: EditorVM;
     if not read.ok:
       return
     beforeContent = read.content
-  let beforeRule = adapter.ruleDeclarations(plan, beforeContent,
-    drafted.patch.schema)
   let afterRule = adapter.ruleDeclarations(plan, afterContent,
+    drafted.patch.schema)
+  if afterRule.ok and plan.sourceScope == sskSharedClass:
+    transaction.previewRule = afterRule.rule
+  if not group.found:
+    return
+  let beforeRule = adapter.ruleDeclarations(plan, beforeContent,
     drafted.patch.schema)
   if not beforeRule.ok or not afterRule.ok:
     return
@@ -11122,8 +11152,12 @@ proc applyWorkspaceFileEdits*(editor: EditorVM): WorkspaceEditResult {.discardab
   # commit time, in about 4ms -- long before this write. When it did, the
   # preview is current and reloading it is not merely redundant but harmful,
   # for the reason on `previewShowsPendingEdits`.
-  let previewIsUpToDate = editor.previewShowsPendingEdits.val
-  editor.previewShowsPendingEdits.val = false
+  # Read here, cleared only once the write has succeeded (below): a format,
+  # regenerate, compile or reload stage that fails leaves the edits pending,
+  # and an edit the preview could not show must still get the reload of the
+  # write that finally succeeds.
+  let previewIsUpToDate = editor.previewShowsPendingEdits.val and
+    not editor.previewMissesPendingEdits.val
 
   if adapter.formatFiles != nil:
     editor.workspaceEditStage.val = wesFormatting
@@ -11198,8 +11232,12 @@ proc applyWorkspaceFileEdits*(editor: EditorVM): WorkspaceEditResult {.discardab
   # recompiles. Measured: it replaced a frame that had just been given the new
   # stylesheet with one carrying the old one, and the value the user had just
   # replaced flashed back for ~30ms before the swap was re-applied.
+  editor.previewShowsPendingEdits.val = false
+  editor.previewMissesPendingEdits.val = false
   if not adapter.stagingOnly and not previewIsUpToDate:
     editor.livePreviewReloadGeneration.val = editor.livePreviewReloadGeneration.val + 1
+  else:
+    editor.previewHoldRelease.val = editor.previewHoldRelease.val + 1
   editor.recordEditorTiming(epbkSaveReload, 1,
     if fullReload: "preview-reload:full" else: "preview-reload:affected")
   WorkspaceEditResult(
@@ -14891,6 +14929,8 @@ proc createEditorVM*(): EditorVM =
   let previewControlsRevealed = createSignal(false)
   let responsiveBreakpoints = createSignal[seq[ResponsiveBreakpoint]](@[])
   let previewShowsPendingEdits = createSignal(false)
+  let previewMissesPendingEdits = createSignal(false)
+  let previewHoldRelease = createSignal(0)
   let previewRenderedWidth = createSignal(0)
   # The width every breakpoint question is asked at: what the preview is
   # really laid out at when that is known, and the chip's nominal width until
@@ -15029,6 +15069,8 @@ proc createEditorVM*(): EditorVM =
     controlOperations: initTable[string, JsonNode](),
     responsiveBreakpoints: responsiveBreakpoints,
     previewShowsPendingEdits: previewShowsPendingEdits,
+    previewMissesPendingEdits: previewMissesPendingEdits,
+    previewHoldRelease: previewHoldRelease,
     previewRenderedWidth: previewRenderedWidth,
     activeBreakpoint: activeBreakpoint,
     workspacePermissions: workspacePermissions,
