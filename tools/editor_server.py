@@ -238,11 +238,14 @@ def signal_owned_session(session_id, signum, ps_executable=None, known_groups=No
 
 
 # The preflight proves that `ps` exists and enumerates; it does not measure the
-# host. On a 24-core host at load 150-200, `ps -e` took over the 1 s
-# enumeration limit and the launcher refused to start (2026-11-13). The
-# preflight is bounded by the supervisor margin instead, which still refuses a
-# hung `ps`; owned shutdown enumeration is bounded by ShutdownBudget.
-PS_PREFLIGHT_SECONDS = max(SHUTDOWN_POLICY["supervisor_margin_seconds"], SHUTDOWN_POLICY["enumeration_seconds"])
+# host. On a 24-core host, `ps -e` took over the 1 s enumeration limit at load
+# 150-200 (2026-11-13), and a preflight then bounded by the 5 s supervisor
+# margin timed out after 5.29 s at load about 185 (2026-11-16). Either way the
+# launcher refused to start. The preflight runs before anything is owned, so
+# it is not part of any shutdown budget; it gets three supervisor margins
+# (15 s with the shipped policy), which still refuses a hung `ps` in bounded
+# time. Owned shutdown enumeration is bounded separately by ShutdownBudget.
+PS_PREFLIGHT_SECONDS = 3 * max(SHUTDOWN_POLICY["supervisor_margin_seconds"], SHUTDOWN_POLICY["enumeration_seconds"])
 
 
 @contextmanager

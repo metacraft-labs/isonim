@@ -16,7 +16,9 @@ real `ps`, placed first on PATH. Host load cannot be produced on demand, and the
 launcher only observes how long `ps` takes, so the wrapper changes timing only;
 the enumeration it returns is the real one; the slow-final-ps test's wrapper
 is fast for its first two calls (preflight, SIGTERM round) and slow after, as
-on a host whose load rises during shutdown. The scope-bound, late-group,
+on a host whose load rises during shutdown, and the slow-preflight test's
+wrapper is slow only on its first call, so only the preflight sees the load.
+The scope-bound, late-group,
 supervisor-margin and slow-final-ps tests lower the loaded module's
 DAEMON_SHUTDOWN_SECONDS (to 6 s, 8 s and nominal + margin), because a real
 daemon that ignores SIGTERM or finishes late would otherwise hold each test for
@@ -53,6 +55,21 @@ import unittest
 
 ROOT = Path(__file__).resolve().parents[1]
 LAUNCHER = ROOT / 'tools/editor_server.py'
+
+
+def _policy_launcher():
+    spec = importlib.util.spec_from_file_location('editor_launcher_policy', LAUNCHER)
+    module = importlib.util.module_from_spec(spec); spec.loader.exec_module(module)
+    return module
+
+
+# A launcher that owns a process runs its `ps` preflight before it serves, and
+# that preflight may take up to PS_PREFLIGHT_SECONDS on a loaded host. On top
+# of it the launcher gets one supervisor margin to start and answer.
+_POLICY_LAUNCHER = _policy_launcher()
+READY_PREFLIGHT_SECONDS = _POLICY_LAUNCHER.PS_PREFLIGHT_SECONDS
+READY_STARTUP_MARGIN_SECONDS = _POLICY_LAUNCHER.SHUTDOWN_POLICY['supervisor_margin_seconds']
+READY_SECONDS = READY_PREFLIGHT_SECONDS + READY_STARTUP_MARGIN_SECONDS
 
 
 def free_port():
@@ -162,15 +179,22 @@ class LauncherTests(unittest.TestCase):
         return child, port, output
 
     def wait_ready(self, child, port, output):
-        for _ in range(100):
+        deadline = time.monotonic() + READY_SECONDS
+        last = 'no response'
+        while time.monotonic() < deadline:
             if child.poll() is not None:
                 output.seek(0)
                 self.fail(output.read())
             try:
-                if request(port)[0] == 200: return
-            except OSError: pass
+                status = request(port)[0]
+                if status == 200: return
+                last = f'HTTP {status}'
+            except OSError as error:
+                last = repr(error)
             time.sleep(.05)
-        self.fail('editor did not become ready')
+        self.fail(f'editor launcher did not answer GET / with 200 on 127.0.0.1:{port} within '
+                  f'{READY_SECONDS} s (ps preflight {READY_PREFLIGHT_SECONDS} s + startup margin '
+                  f'{READY_STARTUP_MARGIN_SECONDS} s); last result: {last}')
 
     def external(self, extra=()):
         child, port, output = self.launch(('--daemon-url', f'http://127.0.0.1:{self.peer.server_port}', *extra))
@@ -591,6 +615,63 @@ class LauncherTests(unittest.TestCase):
             self.assertIsNotNone(child.poll(), 'owned child survived cleanup')
         finally:
             os.environ['PATH'] = original
+
+    def test_preflight_ps_slower_than_the_supervisor_margin_still_launches(self):
+        # At load about 185 a preflight `ps` took 5.29 s, past the 5 s
+        # supervisor margin. Only the first call is slow here, so the
+        # shutdown that follows runs at normal speed.
+        spec = importlib.util.spec_from_file_location('editor_launcher', LAUNCHER)
+        launcher = importlib.util.module_from_spec(spec); spec.loader.exec_module(launcher)
+        delay = launcher.SHUTDOWN_POLICY['supervisor_margin_seconds'] + 1.5
+        self.assertLess(delay, launcher.PS_PREFLIGHT_SECONDS)
+        real_ps = shutil.which('ps')
+        counter = self.directory / 'preflight-calls'; counter.write_text('0')
+        bin_dir = self.directory / 'first-slow-bin'; bin_dir.mkdir()
+        (bin_dir / 'ps').write_text('#!'+sys.executable+'\nimport os,sys,time,pathlib\n'
+            'c=pathlib.Path('+repr(str(counter))+'); n=int(c.read_text())+1; c.write_text(str(n))\n'
+            'if n==1: time.sleep('+repr(delay)+')\n'
+            'os.execv('+repr(real_ps)+',['+repr(real_ps)+']+sys.argv[1:])\n')
+        (bin_dir / 'ps').chmod(0o755)
+        marker = self.directory / 'launched'
+        original = os.environ['PATH']
+        os.environ['PATH'] = str(bin_dir) + os.pathsep + original
+        try:
+            started = time.monotonic()
+            try:
+                with contextlib.redirect_stderr(io.StringIO()):
+                    with launcher.owned_process([sys.executable, '-c',
+                            'from pathlib import Path;import time;Path('+repr(str(marker))+').touch();time.sleep(60)']) as child:
+                        self.assertGreaterEqual(time.monotonic() - started, delay, 'slow preflight ps was not used')
+                        deadline = time.monotonic() + 10
+                        while not marker.exists() and time.monotonic() < deadline:
+                            time.sleep(0.05)
+                        self.assertTrue(marker.exists(), 'launched child did not run')
+            except RuntimeError as error:
+                self.fail(f'preflight ps slower than the supervisor margin refused the launch: {error}')
+            self.assertIsNotNone(child.poll(), 'owned child survived cleanup')
+        finally:
+            os.environ['PATH'] = original
+
+    def test_hung_preflight_ps_is_refused_in_bounded_time(self):
+        spec = importlib.util.spec_from_file_location('editor_launcher', LAUNCHER)
+        launcher = importlib.util.module_from_spec(spec); spec.loader.exec_module(launcher)
+        hung = self.directory / 'hung-preflight'; hung.mkdir()
+        (hung / 'ps').write_text('#!'+sys.executable+'\nimport time;time.sleep(300)\n')
+        (hung / 'ps').chmod(0o755)
+        marker = self.directory / 'must-not-launch'
+        original = os.environ['PATH']
+        os.environ['PATH'] = str(hung)
+        try:
+            started = time.monotonic()
+            with self.assertRaisesRegex(RuntimeError, 'POSIX ps preflight failed: .*timed out'):
+                with launcher.owned_process([sys.executable, '-c',
+                        'from pathlib import Path;Path('+repr(str(marker))+').touch()']):
+                    self.fail('hung ps preflight launched a child')
+            elapsed = time.monotonic() - started
+        finally:
+            os.environ['PATH'] = original
+        self.assertFalse(marker.exists())
+        self.assertLess(elapsed, launcher.PS_PREFLIGHT_SECONDS + 2, f'refusal took {elapsed:.1f} s')
 
     def _group_descendant(self, name):
         # A descendant that moves to its own process group of the session,
