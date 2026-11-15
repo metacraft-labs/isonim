@@ -133,7 +133,49 @@ def shutdown_signals():
             signal.signal(signum, handler)
 
 
-def owned_session_groups(session_id, ps_executable=None, known_groups=None):
+class ShutdownBudget:
+    """The wall-clock bound of one owned scope's shutdown.
+
+    The scope's shutdown starts when its `finally` runs, and the known groups
+    get SIGTERM at once. The graceful wait lasts until DAEMON_SHUTDOWN_SECONDS
+    after that SIGTERM, so the daemon keeps its whole budget, supervisor
+    margin included. Every `ps` enumeration of the scope draws on one shared
+    allowance of supervisor_margin_seconds and is limited to what is left of
+    it; once it is spent, enumeration is skipped and only the known groups are
+    signalled. The SIGTERM round's `ps` runs inside the graceful window. If
+    the daemon exits gracefully, the final reclaim `ps` is further limited to
+    the larger of enumeration_seconds and the time left in the graceful
+    window. If it does not, the SIGKILL rounds' `ps` runs after the window on
+    the whole unspent allowance, so they can still reach a process group
+    created after SIGTERM.
+
+    After a graceful exit one scope therefore finishes within
+    DAEMON_SHUTDOWN_SECONDS + enumeration_seconds (76 s with the shipped
+    policy); after a forced one, within DAEMON_SHUTDOWN_SECONDS +
+    supervisor_margin_seconds (80 s). Both add the reap of a `ps` killed at
+    its limit, and the forced case the reap of the killed leader. When `ps`
+    returns promptly the excess over DAEMON_SHUTDOWN_SECONDS is only the time
+    `ps` actually takes. Scopes do not share a budget: a scope nested in
+    another (the frontend in the daemon's scope) shuts down first, so N nested
+    scopes finish within N times that bound.
+    """
+
+    def __init__(self):
+        self.graceful_deadline = time.monotonic() + DAEMON_SHUTDOWN_SECONDS
+        self.enumeration_remaining = SHUTDOWN_POLICY["supervisor_margin_seconds"]
+        self.exited_gracefully = False
+
+    def graceful_wait(self):
+        return max(0.0, self.graceful_deadline - time.monotonic())
+
+    def enumeration_limit(self):
+        if self.exited_gracefully:
+            return min(self.enumeration_remaining,
+                       max(SHUTDOWN_POLICY["enumeration_seconds"], self.graceful_wait()))
+        return self.enumeration_remaining
+
+
+def owned_session_groups(session_id, ps_executable=None, known_groups=None, budget=None, enumerate=True):
     # Enumerate only numeric PIDs; kernel session identities cover child PGs
     # created by Repro while excluding other editors and detached services.
     groups = set()
@@ -151,11 +193,23 @@ def owned_session_groups(session_id, ps_executable=None, known_groups=None):
             identities.setdefault(session_id, set()).add(session_id)
     except ProcessLookupError:
         pass
+    if not enumerate:
+        return groups
+    limit = SHUTDOWN_POLICY["enumeration_seconds"] if budget is None else budget.enumeration_limit()
+    if limit <= 0:
+        print(f"Owned session {session_id}: shutdown enumeration allowance of "
+              f"{SHUTDOWN_POLICY['supervisor_margin_seconds']} s spent; signalling known groups without enumeration",
+              file=sys.stderr)
+        return groups
+    started = time.monotonic()
     try:
-        pids = subprocess.check_output([ps_executable or "ps", "-e", "-o", "pid="], text=True, timeout=SHUTDOWN_POLICY["enumeration_seconds"])
+        pids = subprocess.check_output([ps_executable or "ps", "-e", "-o", "pid="], text=True, timeout=limit)
     except (OSError, subprocess.CalledProcessError, subprocess.TimeoutExpired) as error:
         print(f"Owned session {session_id}: process enumeration failed; signalling known groups: {error}", file=sys.stderr)
         return groups
+    finally:
+        if budget is not None:
+            budget.enumeration_remaining -= time.monotonic() - started
     for item in pids.split():
         try:
             pid = int(item)
@@ -172,13 +226,23 @@ def owned_session_groups(session_id, ps_executable=None, known_groups=None):
     return groups
 
 
-def signal_owned_session(session_id, signum, ps_executable=None, known_groups=None):
-    groups = owned_session_groups(session_id, ps_executable, known_groups)
-    for group in groups:
+def signal_owned_session(session_id, signum, ps_executable=None, known_groups=None, budget=None, enumerate=True,
+                         already_signalled=frozenset()):
+    groups = owned_session_groups(session_id, ps_executable, known_groups, budget, enumerate)
+    for group in groups - already_signalled:
         try:
             os.killpg(group, signum)
         except ProcessLookupError:
             pass
+    return groups
+
+
+# The preflight proves that `ps` exists and enumerates; it does not measure the
+# host. On a 24-core host at load 150-200, `ps -e` took over the 1 s
+# enumeration limit and the launcher refused to start (2026-11-13). The
+# preflight is bounded by the supervisor margin instead, which still refuses a
+# hung `ps`; owned shutdown enumeration is bounded by ShutdownBudget.
+PS_PREFLIGHT_SECONDS = max(SHUTDOWN_POLICY["supervisor_margin_seconds"], SHUTDOWN_POLICY["enumeration_seconds"])
 
 
 @contextmanager
@@ -187,7 +251,7 @@ def owned_process(args, require_clean_exit=False, **kwargs):
     if not ps_executable:
         raise RuntimeError("Owned editor processes require the POSIX ps executable")
     try:
-        subprocess.run([ps_executable, "-e", "-o", "pid="], check=True, stdout=subprocess.DEVNULL, timeout=SHUTDOWN_POLICY["enumeration_seconds"])
+        subprocess.run([ps_executable, "-e", "-o", "pid="], check=True, stdout=subprocess.DEVNULL, timeout=PS_PREFLIGHT_SECONDS)
     except (OSError, subprocess.SubprocessError) as error:
         raise RuntimeError(f"POSIX ps preflight failed: {error}") from error
     known_groups = {}
@@ -197,16 +261,22 @@ def owned_process(args, require_clean_exit=False, **kwargs):
     finally:
         # A graceful daemon shutdown also closes the independently owned Harbor
         # group. Kill the wrapper group only if graceful shutdown cannot finish.
-        signal_owned_session(process.pid, signal.SIGTERM, ps_executable, known_groups)
+        # The known groups get SIGTERM before `ps` runs, so a slow enumeration
+        # delays only the groups it discovers.
+        budget = ShutdownBudget()
+        terminated = signal_owned_session(process.pid, signal.SIGTERM, ps_executable, known_groups, enumerate=False)
+        signal_owned_session(process.pid, signal.SIGTERM, ps_executable, known_groups, budget,
+                             already_signalled=terminated)
         try:
-            process.wait(timeout=DAEMON_SHUTDOWN_SECONDS)
+            process.wait(timeout=budget.graceful_wait())
+            budget.exited_gracefully = True
         except subprocess.TimeoutExpired:
             print("Owned editor process exceeded shutdown budget; provider closure is unconfirmed", file=sys.stderr)
-            signal_owned_session(process.pid, signal.SIGKILL, ps_executable, known_groups)
+            signal_owned_session(process.pid, signal.SIGKILL, ps_executable, known_groups, budget)
             process.wait()
         finally:
             # Command wrappers may exit before descendants; reclaim their group.
-            signal_owned_session(process.pid, signal.SIGKILL, ps_executable, known_groups)
+            signal_owned_session(process.pid, signal.SIGKILL, ps_executable, known_groups, budget)
         if require_clean_exit and process.returncode != 0:
             raise RuntimeError(f"Owned editor daemon did not exit cleanly: {process.returncode}")
 

@@ -58,11 +58,15 @@ const shutdownPolicy = JSON.parse(
     join(projectRoot, "tools/editor_shutdown.json"),
   ),
 );
+// The launcher's documented bound after a graceful daemon exit
+// (tools/editor_server.py, ShutdownBudget): DAEMON_SHUTDOWN_SECONDS for the
+// graceful window plus at most enumeration_seconds for the final reclaim `ps`.
 const shutdownMs =
   1000 *
   (2 * shutdownPolicy.http_request_seconds +
     shutdownPolicy.harbor_teardown_seconds +
-    shutdownPolicy.supervisor_margin_seconds);
+    shutdownPolicy.supervisor_margin_seconds +
+    shutdownPolicy.enumeration_seconds);
 async function bounded(promise, milliseconds, label) {
   let timer;
   try {

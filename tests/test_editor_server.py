@@ -10,7 +10,18 @@ Copied real ps executables and actual missing/nonzero/hung replacements exercise
 preflight and cleanup failure at real process/filesystem boundaries. The delayed
 REST peer proves ownership and shutdown budgets, not provider behavior. A cache
 fixture uses real foreign process identities to represent stale numeric IDs
-without forcing kernel PID reuse; all ownership checks remain real.
+without forcing kernel PID reuse; all ownership checks remain real. A loaded
+host is represented by a slow `ps`: a wrapper that sleeps and then execs the
+real `ps`, placed first on PATH. Host load cannot be produced on demand, and the
+launcher only observes how long `ps` takes, so the wrapper changes timing only;
+the enumeration it returns is the real one; the slow-final-ps test's wrapper
+is fast for its first two calls (preflight, SIGTERM round) and slow after, as
+on a host whose load rises during shutdown. The scope-bound, late-group,
+supervisor-margin and slow-final-ps tests lower the loaded module's
+DAEMON_SHUTDOWN_SECONDS (to 6 s, 8 s and nominal + margin), because a real
+daemon that ignores SIGTERM or finishes late would otherwise hold each test for
+the full 75 s budget; the bound is computed from that attribute, so the
+arithmetic under test is the same.
 
 Source catalog reads run the real `isonim-review source-project --snapshot`
 against a real built copy of examples/source_project. A busy project is real
@@ -326,8 +337,16 @@ class LauncherTests(unittest.TestCase):
                 else:
                     # Real upgrade byte forwarding to the established GPUI
                     # route, using a controlled TCP peer only for the bridge.
+                    # The consumer's bridge table fixes 8103; it reads no
+                    # port override. SO_REUSEADDR: the GPUI upgrade test just
+                    # before this one leaves its 8103 connections in TIME_WAIT.
                     with socket.socket() as listener:
-                        listener.bind(('127.0.0.1', 8103)); listener.listen()
+                        listener.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
+                        try:
+                            listener.bind(('127.0.0.1', 8103))
+                        except OSError as error:
+                            self.fail(f'GPUI bridge port 8103 is held by another listener: {error}')
+                        listener.listen()
                         captured = []
                         def upgrade_peer():
                             stream, _ = listener.accept()
@@ -532,6 +551,333 @@ class LauncherTests(unittest.TestCase):
             with self.assertRaisesRegex(RuntimeError, 'require.*ps'):
                 with launcher.owned_process([python, '-c', 'raise Exception("must not launch")']):
                     self.fail('missing dependency launched a child')
+        finally:
+            os.environ['PATH'] = original
+
+    def _slow_ps(self, delay):
+        real_ps = shutil.which('ps')
+        bin_dir = self.directory / 'slow-bin'; bin_dir.mkdir(exist_ok=True)
+        wrapper = bin_dir / 'ps'
+        wrapper.write_text('#!'+sys.executable+'\nimport os,sys,time\ntime.sleep('+repr(delay)+')\n'
+                           'os.execv('+repr(real_ps)+',['+repr(real_ps)+']+sys.argv[1:])\n')
+        wrapper.chmod(0o755)
+        return bin_dir
+
+    def test_slow_ps_on_a_loaded_host_still_launches(self):
+        # `ps` slower than the shutdown enumeration limit is how a loaded host
+        # looks to the launcher. The preflight must still start the child, and
+        # cleanup must still reap it through its degraded known-group path.
+        spec = importlib.util.spec_from_file_location('editor_launcher', LAUNCHER)
+        launcher = importlib.util.module_from_spec(spec); spec.loader.exec_module(launcher)
+        delay = launcher.SHUTDOWN_POLICY['enumeration_seconds'] + 1
+        self.assertLess(delay, launcher.PS_PREFLIGHT_SECONDS)
+        bin_dir = self._slow_ps(delay)
+        original = os.environ['PATH']
+        marker = self.directory / 'launched'
+        os.environ['PATH'] = str(bin_dir) + os.pathsep + original
+        try:
+            started = time.monotonic()
+            try:
+                with contextlib.redirect_stderr(io.StringIO()):
+                    with launcher.owned_process([sys.executable, '-c',
+                            'from pathlib import Path;import time;Path('+repr(str(marker))+').touch();time.sleep(60)']) as child:
+                        self.assertGreaterEqual(time.monotonic() - started, delay, 'slow ps wrapper was not used')
+                        deadline = time.monotonic() + 10
+                        while not marker.exists() and time.monotonic() < deadline:
+                            time.sleep(0.05)
+                        self.assertTrue(marker.exists(), 'launched child did not run')
+            except RuntimeError as error:
+                self.fail(f'slow but working ps refused the launch: {error}')
+            self.assertIsNotNone(child.poll(), 'owned child survived cleanup')
+        finally:
+            os.environ['PATH'] = original
+
+    def _group_descendant(self, name):
+        # A descendant that moves to its own process group of the session,
+        # records its PID, and records SIGTERM before exiting on it.
+        record = self.directory / name
+        terminated = self.directory / (name + '-term')
+        script = self.directory / (name + '.py')
+        script.write_text('import os,signal,sys,time\n'
+            'os.setpgid(0,0)\n'
+            'def term(*_):\n'
+            ' open(%r,"w").close(); sys.exit(0)\n'
+            'signal.signal(signal.SIGTERM,term)\n'
+            'open(%r,"w").write(str(os.getpid())); os.rename(%r,%r)\n'
+            'time.sleep(120)\n' % (str(terminated), str(record)+'.tmp', str(record)+'.tmp', str(record)))
+        return record, terminated, script
+
+    def _wait_gone(self, pid, seconds=5):
+        deadline = time.monotonic() + seconds
+        while time.monotonic() < deadline:
+            try:
+                os.kill(pid, 0)
+                with open(f'/proc/{pid}/stat') as stat:
+                    if stat.read().split()[2] == 'Z': return True
+            except (ProcessLookupError, FileNotFoundError):
+                return True
+            time.sleep(0.05)
+        return False
+
+    def test_slow_ps_at_shutdown_still_reaps_a_descendant_in_another_group(self):
+        # A descendant that moved to its own process group (as Repro action
+        # workers do) is reachable only through enumeration: it is not in the
+        # leader's group and nothing cached it. With `ps` slower than the
+        # 1 s enumeration limit, shutdown must still find and signal it.
+        spec = importlib.util.spec_from_file_location('editor_launcher', LAUNCHER)
+        launcher = importlib.util.module_from_spec(spec); spec.loader.exec_module(launcher)
+        delay = launcher.SHUTDOWN_POLICY['enumeration_seconds'] + 1
+        self.assertLess(delay, launcher.SHUTDOWN_POLICY['supervisor_margin_seconds'])
+        bin_dir = self._slow_ps(delay)
+        original = os.environ['PATH']
+        record, terminated, script = self._group_descendant('descendant')
+        child_code = ('import subprocess,sys,time\n'
+            'subprocess.Popen([sys.executable,'+repr(str(script))+'])\n'
+            'time.sleep(120)\n')
+        descendant = None
+        os.environ['PATH'] = str(bin_dir) + os.pathsep + original
+        try:
+            diagnostics = io.StringIO()
+            with contextlib.redirect_stderr(diagnostics):
+                with launcher.owned_process([sys.executable, '-c', child_code]) as child:
+                    deadline = time.monotonic() + 20
+                    while not record.exists() and time.monotonic() < deadline:
+                        time.sleep(0.05)
+                    self.assertTrue(record.exists(), 'descendant did not start')
+                    descendant = int(record.read_text())
+                    self.assertEqual(os.getsid(descendant), child.pid)
+                    self.assertNotEqual(os.getpgid(descendant), child.pid)
+            self.assertIsNotNone(child.poll())
+            if not self._wait_gone(descendant):
+                self.fail('descendant in another process group survived shutdown: ' + diagnostics.getvalue())
+            # Found by enumeration in the SIGTERM round, not only killed later.
+            self.assertTrue(terminated.exists(), 'descendant was never sent SIGTERM: ' + diagnostics.getvalue())
+        finally:
+            os.environ['PATH'] = original
+            if descendant is not None:
+                with contextlib.suppress(ProcessLookupError): os.kill(descendant, signal.SIGKILL)
+
+    def test_graceful_exit_with_a_slow_final_ps_stays_within_one_enumeration_limit(self):
+        # A daemon exits cleanly just inside its graceful window and `ps`
+        # turns slow only after the SIGTERM round (load rising during
+        # shutdown). The final reclaim `ps` may use the rest of the window or
+        # enumeration_seconds, whichever is larger, not the whole allowance.
+        spec = importlib.util.spec_from_file_location('editor_launcher', LAUNCHER)
+        launcher = importlib.util.module_from_spec(spec); spec.loader.exec_module(launcher)
+        margin = launcher.SHUTDOWN_POLICY['supervisor_margin_seconds']
+        limit = launcher.SHUTDOWN_POLICY['enumeration_seconds']
+        launcher.DAEMON_SHUTDOWN_SECONDS = 1 + margin
+        exit_after, slow = launcher.DAEMON_SHUTDOWN_SECONDS - 0.5, margin - 1
+        real_ps = shutil.which('ps')
+        counter = self.directory / 'ps-calls'; counter.write_text('0')
+        bin_dir = self.directory / 'rising-bin'; bin_dir.mkdir()
+        (bin_dir / 'ps').write_text('#!'+sys.executable+'\nimport os,sys,time,pathlib\n'
+            'c=pathlib.Path('+repr(str(counter))+'); n=int(c.read_text())+1; c.write_text(str(n))\n'
+            'if n>2: time.sleep('+repr(slow)+')\n'
+            'os.execv('+repr(real_ps)+',['+repr(real_ps)+']+sys.argv[1:])\n')
+        (bin_dir / 'ps').chmod(0o755)
+        ready = self.directory / 'daemon-ready'
+        daemon = ('import signal,sys,time\n'
+            'got=[]\n'
+            'signal.signal(signal.SIGTERM,lambda *_: got.append(time.monotonic()))\n'
+            'open('+repr(str(ready))+',"w").close()\n'
+            'while not got: time.sleep(0.01)\n'
+            'while time.monotonic() < got[0] + '+repr(exit_after)+': time.sleep(0.01)\n'
+            'sys.exit(0)\n')
+        original = os.environ['PATH']
+        os.environ['PATH'] = str(bin_dir) + os.pathsep + original
+        try:
+            diagnostics = io.StringIO()
+            with contextlib.redirect_stderr(diagnostics):
+                with launcher.owned_process([sys.executable, '-c', daemon], require_clean_exit=True) as child:
+                    deadline = time.monotonic() + 20
+                    while not ready.exists() and time.monotonic() < deadline:
+                        time.sleep(0.05)
+                    self.assertTrue(ready.exists(), 'daemon did not start')
+                    started = time.monotonic()
+            elapsed = time.monotonic() - started
+        finally:
+            os.environ['PATH'] = original
+        self.assertEqual(child.returncode, 0)
+        self.assertGreaterEqual(int(counter.read_text()), 3, 'final reclaim ps did not run')
+        self.assertLess(elapsed, launcher.DAEMON_SHUTDOWN_SECONDS + limit + 0.75,
+                        f'graceful shutdown took {elapsed:.2f} s: ' + diagnostics.getvalue())
+
+    def test_group_created_after_sigterm_is_reaped_by_the_kill_round(self):
+        # A leader that ignores SIGTERM and, on it, starts a descendant in its
+        # own process group (a provider spawned during shutdown). Only a `ps`
+        # in the SIGKILL rounds can find that group, so the graceful wait must
+        # leave the unspent enumeration allowance before the deadline.
+        spec = importlib.util.spec_from_file_location('editor_launcher', LAUNCHER)
+        launcher = importlib.util.module_from_spec(spec); spec.loader.exec_module(launcher)
+        launcher.DAEMON_SHUTDOWN_SECONDS = 8
+        record, _, script = self._group_descendant('late')
+        ready = self.directory / 'late-ready'
+        leader = ('import signal,subprocess,sys,time\n'
+            'got=[]\n'
+            'signal.signal(signal.SIGTERM,lambda *_: got.append(1))\n'
+            'open('+repr(str(ready))+',"w").close()\n'
+            'while not got: time.sleep(0.05)\n'
+            'time.sleep(1.5)\n'
+            'subprocess.Popen([sys.executable,'+repr(str(script))+'])\n'
+            'while True: time.sleep(1)\n')
+        descendant = None
+        try:
+            diagnostics = io.StringIO()
+            with contextlib.redirect_stderr(diagnostics):
+                with launcher.owned_process([sys.executable, '-c', leader]) as child:
+                    deadline = time.monotonic() + 20
+                    while not ready.exists() and time.monotonic() < deadline:
+                        time.sleep(0.05)
+                    self.assertTrue(ready.exists(), 'leader did not start')
+                    started = time.monotonic()
+            elapsed = time.monotonic() - started
+            self.assertIsNotNone(child.poll())
+            self.assertTrue(record.exists(), 'leader did not start its late descendant before the kill round')
+            descendant = int(record.read_text())
+            if not self._wait_gone(descendant, 2):
+                self.fail('process group created after SIGTERM survived shutdown: ' + diagnostics.getvalue())
+            self.assertLess(elapsed, launcher.DAEMON_SHUTDOWN_SECONDS + 1, f'scope took {elapsed:.1f} s')
+        finally:
+            if descendant is not None:
+                with contextlib.suppress(ProcessLookupError): os.kill(descendant, signal.SIGKILL)
+
+    def test_exhausted_enumeration_names_the_limit_it_hit(self):
+        spec = importlib.util.spec_from_file_location('editor_launcher', LAUNCHER)
+        launcher = importlib.util.module_from_spec(spec); spec.loader.exec_module(launcher)
+        with launcher.owned_process([sys.executable, '-c', 'import time;time.sleep(60)']) as child:
+            budget = launcher.ShutdownBudget()
+            budget.enumeration_remaining = 0
+            spent = io.StringIO()
+            with contextlib.redirect_stderr(spent):
+                groups = launcher.owned_session_groups(child.pid, budget=budget)
+        self.assertEqual(groups, {child.pid})
+        margin = launcher.SHUTDOWN_POLICY['supervisor_margin_seconds']
+        self.assertIn(f'enumeration allowance of {margin} s spent', spent.getvalue())
+
+    def test_hung_ps_at_shutdown_stays_within_the_supervisor_margin(self):
+        # All enumerations of one shutdown share the supervisor margin, so a
+        # `ps` that hangs after a good preflight cannot stretch the shutdown
+        # by one full limit per signal round.
+        spec = importlib.util.spec_from_file_location('editor_launcher', LAUNCHER)
+        launcher = importlib.util.module_from_spec(spec); spec.loader.exec_module(launcher)
+        margin = launcher.SHUTDOWN_POLICY['supervisor_margin_seconds']
+        controlled = self.directory / 'hung-bin'; controlled.mkdir()
+        ps = controlled / 'ps'
+        shutil.copyfile(shutil.which('ps'), ps); ps.chmod(0o755)
+        original = os.environ['PATH']
+        os.environ['PATH'] = str(controlled)
+        try:
+            diagnostics = io.StringIO()
+            with contextlib.redirect_stderr(diagnostics):
+                with launcher.owned_process([sys.executable, '-c', 'import time;time.sleep(60)']) as child:
+                    ps.unlink()
+                    ps.write_text('#!'+sys.executable+'\nimport time;time.sleep(60)\n'); ps.chmod(0o755)
+                    started = time.monotonic()
+            elapsed = time.monotonic() - started
+            self.assertIsNotNone(child.poll())
+            self.assertIn('signalling known groups', diagnostics.getvalue())
+            self.assertLess(elapsed, margin + 2, f'shutdown spent {elapsed:.1f} s enumerating')
+        finally:
+            os.environ['PATH'] = original
+
+    def test_hung_ps_and_slow_daemon_stay_within_one_scope_budget(self):
+        # A daemon that outlives its budget and a `ps` that hangs after a good
+        # preflight. The known groups must get SIGTERM before `ps` runs, and
+        # the SIGTERM round's `ps` must run inside the graceful window, so the
+        # allowance it spends is not added on top of the wait.
+        spec = importlib.util.spec_from_file_location('editor_launcher', LAUNCHER)
+        launcher = importlib.util.module_from_spec(spec); spec.loader.exec_module(launcher)
+        launcher.DAEMON_SHUTDOWN_SECONDS = 6
+        margin = launcher.SHUTDOWN_POLICY['supervisor_margin_seconds']
+        self.assertLess(margin, launcher.DAEMON_SHUTDOWN_SECONDS)
+        controlled = self.directory / 'hung-bin'; controlled.mkdir()
+        ps = controlled / 'ps'
+        shutil.copyfile(shutil.which('ps'), ps); ps.chmod(0o755)
+        original = os.environ['PATH']
+        record = self.directory / 'term-received'
+        ready = self.directory / 'daemon-ready'
+        daemon = ('import signal,time\n'
+            'def term(*_):\n'
+            ' open('+repr(str(record))+',"w").write(repr(time.monotonic()))\n'
+            'signal.signal(signal.SIGTERM,term)\n'
+            'open('+repr(str(ready))+',"w").close()\n'
+            'while True: time.sleep(1)\n')
+        os.environ['PATH'] = str(controlled)
+        try:
+            diagnostics = io.StringIO()
+            with contextlib.redirect_stderr(diagnostics):
+                with launcher.owned_process([sys.executable, '-c', daemon]) as child:
+                    deadline = time.monotonic() + 20
+                    while not ready.exists() and time.monotonic() < deadline:
+                        time.sleep(0.05)
+                    self.assertTrue(ready.exists(), 'daemon did not start')
+                    ps.unlink()
+                    ps.write_text('#!'+sys.executable+'\nimport time;time.sleep(60)\n'); ps.chmod(0o755)
+                    started = time.monotonic()
+            elapsed = time.monotonic() - started
+            self.assertIsNotNone(child.poll())
+            self.assertIn('exceeded shutdown budget', diagnostics.getvalue())
+            self.assertTrue(record.exists(), 'daemon never received SIGTERM')
+            term_delay = float(record.read_text()) - started
+            self.assertLess(term_delay, 1, f'SIGTERM waited {term_delay:.1f} s for ps')
+            # The hung `ps` spends the whole allowance inside the graceful
+            # window; the SIGKILL rounds then skip enumeration.
+            self.assertLess(elapsed, launcher.DAEMON_SHUTDOWN_SECONDS + 1,
+                            f'one scope took {elapsed:.1f} s to shut down')
+        finally:
+            os.environ['PATH'] = original
+
+    def test_daemon_finishing_inside_the_supervisor_margin_exits_cleanly(self):
+        # The daemon's own worst case is 2 * http_request_seconds +
+        # harbor_teardown_seconds; the supervisor margin on top of it is the
+        # daemon's slack too. A daemon that finishes 2 s past its nominal
+        # budget, inside the margin, must not be killed.
+        spec = importlib.util.spec_from_file_location('editor_launcher', LAUNCHER)
+        launcher = importlib.util.module_from_spec(spec); spec.loader.exec_module(launcher)
+        margin = launcher.SHUTDOWN_POLICY['supervisor_margin_seconds']
+        nominal, overshoot = 3, 2
+        self.assertLess(overshoot, margin)
+        launcher.DAEMON_SHUTDOWN_SECONDS = nominal + margin
+        ready = self.directory / 'daemon-ready'
+        daemon = ('import signal,sys,time\n'
+            'got=[]\n'
+            'signal.signal(signal.SIGTERM,lambda *_: got.append(time.monotonic()))\n'
+            'open('+repr(str(ready))+',"w").close()\n'
+            'while not got: time.sleep(0.01)\n'
+            'while time.monotonic() < got[0] + '+repr(nominal + overshoot)+': time.sleep(0.01)\n'
+            'sys.exit(0)\n')
+        diagnostics = io.StringIO()
+        try:
+            with contextlib.redirect_stderr(diagnostics):
+                with launcher.owned_process([sys.executable, '-c', daemon], require_clean_exit=True) as child:
+                    deadline = time.monotonic() + 20
+                    while not ready.exists() and time.monotonic() < deadline:
+                        time.sleep(0.05)
+                    self.assertTrue(ready.exists(), 'daemon did not start')
+        except RuntimeError as error:
+            self.fail(f'daemon inside the supervisor margin was killed: {error} | {diagnostics.getvalue()}')
+        self.assertEqual(child.returncode, 0)
+
+    def test_missing_or_failing_ps_is_refused_with_a_clear_error(self):
+        spec = importlib.util.spec_from_file_location('editor_launcher', LAUNCHER)
+        launcher = importlib.util.module_from_spec(spec); spec.loader.exec_module(launcher)
+        original = os.environ['PATH']
+        marker = self.directory / 'must-not-launch'
+        command = [sys.executable, '-c', 'from pathlib import Path;Path('+repr(str(marker))+').touch()']
+        empty = self.directory / 'no-ps'; empty.mkdir()
+        failing = self.directory / 'failing-ps'; failing.mkdir()
+        (failing / 'ps').write_text('#!'+sys.executable+'\nimport sys;sys.exit(19)\n')
+        (failing / 'ps').chmod(0o755)
+        cases = ((empty, 'Owned editor processes require the POSIX ps executable'),
+                 (failing, r'POSIX ps preflight failed: .*exit status 19'))
+        try:
+            for directory, message in cases:
+                os.environ['PATH'] = str(directory)
+                with self.assertRaisesRegex(RuntimeError, message):
+                    with launcher.owned_process(command):
+                        self.fail('broken ps preflight launched a child')
+                self.assertFalse(marker.exists())
         finally:
             os.environ['PATH'] = original
 
