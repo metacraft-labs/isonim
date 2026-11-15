@@ -135,6 +135,8 @@ suite "Compiler owned stylesheet capabilities":
     let manifest = %*{"editableStyleSources":[{"file":"styles.nim","const":"styles","properties":["padding","border-radius"]}]}
     for tail in ["padding:4px; padding:8px; border-radius:4px; border-radius:8px;",
         "padding:8px !important; border-radius:8px !IMPORTANT;",
+        # CSS allows whitespace between `!` and `important`: still a priority.
+        "padding:8px ! important; border-radius:8px !\tIMPORTANT;",
         "padding:4px; border-radius:4px; } @media (max-width:800px) { .panel { padding:8px; border-radius:8px;"]:
       writeFile(source,"const styles* = \"\"\".panel { padding-left:2px; border-top-left-radius:2px; " & tail & " }\"\"\"")
       let catalog = pageCatalog("<div class='panel'></div>", readFile(source))

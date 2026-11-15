@@ -181,6 +181,13 @@ proc compiledStyleBindings*(catalog, manifest: JsonNode; readSource: SourceReade
   ## sides that the same conditions leave free, as an authored shorthand
   ## does; a value typed for a side is that side's own declaration.
   result = newJArray()
+  # A declaration with a priority is not offered (editor spec "Native
+  # project source capabilities": declarations with `!important` require an
+  # appropriate source capability). CSS allows whitespace between `!` and
+  # `important` (`8px ! important`), so the text is read as the writer reads
+  # it (`cssPrioritySuffix`), not searched for `!important`.
+  func important(value: string): bool =
+    "!important" in value.toLowerAscii() or value.cssPrioritySuffix().len > 0
   if manifest{"editableStyleSources"} == nil: return
   if manifest["editableStyleSources"].kind != JArray:
     raise newException(ValueError, "Editable stylesheet declarations must be an array.")
@@ -238,9 +245,9 @@ proc compiledStyleBindings*(catalog, manifest: JsonNode; readSource: SourceReade
         if shorthand in rule.blockedProperties: blockedShorthands.add shorthand
       for declaration in rule.values:
         if declaration.property in ["padding","border-radius"] and
-            "!important" in declaration.value.toLowerAscii(): blockedShorthands.add declaration.property
+            declaration.value.important: blockedShorthands.add declaration.property
       for declaration in rule.values:
-        if "!important" in declaration.value.toLowerAscii(): continue
+        if declaration.value.important: continue
         if ("padding" in blockedShorthands and declaration.property.startsWith("padding-")) or
             ("border-radius" in blockedShorthands and declaration.property in
               ["border-top-left-radius","border-top-right-radius","border-bottom-right-radius","border-bottom-left-radius"]): continue
@@ -276,14 +283,14 @@ proc compiledStyleBindings*(catalog, manifest: JsonNode; readSource: SourceReade
         if location.property == "background": backgroundPosition = location.position
         if location.property == "background-color": colorPosition = location.position
       let backgroundBlocked = "background" in rule.blockedProperties or
-        (values{"background"} != nil and "!important" in values["background"].getStr().toLowerAscii())
+        (values{"background"} != nil and values["background"].getStr().important)
       # Priority declarations were withheld above, so inspect the projection too.
       var backgroundPriority = false
       var colorPriority = false
       for declaration in rule.values:
-        if declaration.property == "background" and "!important" in declaration.value.toLowerAscii():
+        if declaration.property == "background" and declaration.value.important:
           backgroundPriority = true
-        if declaration.property == "background-color" and "!important" in declaration.value.toLowerAscii():
+        if declaration.property == "background-color" and declaration.value.important:
           colorPriority = true
       if backgroundBlocked or backgroundPriority or colorPriority or "background-color" in rule.blockedProperties:
         if values{"background-color"} != nil: values.delete("background-color")

@@ -241,21 +241,33 @@ func demoDeclarations(content, property: string): seq[tuple[start, stop: int;
     value: string]] =
   ## Every `property: value;` declaration of ``property`` in ``content``:
   ## where it starts, one past its `;`, and its value. A name is matched
-  ## whole (`padding` is not inside `--wl-padding` or `padding-top`).
+  ## whole (`padding` is not inside `--wl-padding` or `padding-top`), and
+  ## text inside a comment, string or unquoted `url(...)` is never a name or
+  ## a `;` (`css_patch.skipCssOpaque`, CSS Syntax's reading).
   const nameChars = {'A'..'Z', 'a'..'z', '0'..'9', '-', '_'}
   if property.len == 0: return
-  var at = content.find(property)
-  while at >= 0:
-    let startsName = at == 0 or content[at - 1] notin nameChars
-    var colon = at + property.len
-    while colon < content.len and content[colon] in {' ', '\t'}: inc colon
-    if startsName and colon < content.len and content[colon] == ':':
-      let semicolon = content.find(';', colon)
-      let lineEnd = content.find('\n', colon)
-      if semicolon > 0 and (lineEnd < 0 or semicolon < lineEnd):
-        result.add (start: at, stop: semicolon + 1,
-          value: content[colon + 1 ..< semicolon].strip())
-    at = content.find(property, at + 1)
+  var at = 0
+  while at < content.len:
+    let past = content.skipCssOpaque(at)
+    if past > at:
+      at = past
+      continue
+    if content[at] == property[0] and
+        content.continuesWith(property, at) and
+        (at == 0 or content[at - 1] notin nameChars):
+      var colon = at + property.len
+      while colon < content.len and content[colon] in {' ', '\t'}: inc colon
+      if colon < content.len and content[colon] == ':':
+        var semicolon = colon + 1
+        while semicolon < content.len and content[semicolon] notin {';', '\n', '}'}:
+          let skipped = content.skipCssOpaque(semicolon)
+          semicolon = if skipped > semicolon: skipped else: semicolon + 1
+        if semicolon < content.len and content[semicolon] == ';':
+          result.add (start: at, stop: semicolon + 1,
+            value: content[colon + 1 ..< semicolon].strip())
+          at = semicolon + 1
+          continue
+    inc at
 
 func demoRuleSelector(schema: WorkspaceEditableSchemaEntry): string =
   ## The class rule a `classes.<name>.<property>` entry owns, as `.<name>`,
@@ -281,6 +293,12 @@ func demoRules(content, selector: string): seq[DemoRule] =
   var blockSelector = ""
   var bodyStart = -1
   while at < content.len:
+    # A brace or `;` inside a comment, string or unquoted `url(...)` is
+    # text (`css_patch.skipCssOpaque`).
+    let past = content.skipCssOpaque(at)
+    if past > at:
+      at = past
+      continue
     case content[at]
     of ';':
       if depth == 0: segment = at + 1
@@ -323,7 +341,8 @@ func setDemoOverride(plan: SourceEditPlan; content: string;
     selector, plan.property, value)
   if not patched.ok:
     return refuse(wedPatchFailed, patched.message)
-  if plan.expectedOldValue.len > 0 and patched.oldValue != plan.expectedOldValue:
+  if plan.expectedOldValue.len > 0 and
+      not patched.oldValue.cssValueMatches(plan.expectedOldValue):
     return refuse(wedSourceConflict, file & " declares " & plan.property &
       ": " & (if patched.oldValue.len > 0: patched.oldValue else: "nothing") &
       " there, not " & plan.expectedOldValue & ".")
@@ -379,11 +398,15 @@ func setDemoDeclaration(plan: SourceEditPlan; content: string;
   if found.len == 1:
     let declaration = found[0]
     if plan.expectedOldValue.len > 0 and
-        declaration.value != plan.expectedOldValue:
+        not declaration.value.cssValueMatches(plan.expectedOldValue):
       return refuse(wedSourceConflict, file & " declares " & plan.property &
         ": " & declaration.value & ", not " & plan.expectedOldValue & ".")
+    # The value changes; the declaration keeps its `!important`, as the
+    # preview keeps it, and gains none (`css_patch.cssValueEdit`).
+    let edit = declaration.value.cssValueEdit(value)
+    if edit.refusal.len > 0: return refuse(wedPatchFailed, edit.refusal)
     let colon = body.find(':', declaration.start)
-    next = content[0 ..< rule.bodyStart + colon + 1] & " " & value &
+    next = content[0 ..< rule.bodyStart + colon + 1] & " " & edit.text &
       content[rule.bodyStart + declaration.stop - 1 .. ^1]
   else:
     if plan.expectedOldValue.len > 0:

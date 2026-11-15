@@ -945,6 +945,121 @@ suite "shorthand sides follow the rule's declaration order":
       check vm.followers[0] == ("padding-top", "24px !important")
       dispose()
 
+  test "a value edit keeps the declaration's !important in the file; undo and redo restore it exactly":
+    ## isonim-pm issue 2026-11-15-a-value-edit-writes-the-declaration-without-
+    ## its-important-while-the-preview-keeps-it. The preview keeps the
+    ## declaration's priority and adds none, so the written file does too
+    ## (editor spec "Visual box model": the preview shows the same values
+    ## before the write and after it, and through undo and redo).
+    createRoot proc(dispose: proc()) =
+      let r = MockRenderer()
+      let foundation = new(string)
+      # The shorthand, important; a side, important with a spaced, upper-case
+      # priority; a side with none.
+      let declared = withCardRule("padding: 18px !important; " &
+        "padding-left: 6px ! IMPORTANT; margin-top: 4px;")
+      foundation[] = declared
+      var element = boxElement()
+      for prop in element.properties.mitems:
+        if prop.name == "padding-left": prop.value = "6px"
+      let vm = boxVm(foundation, element = element)
+      let panel = renderInspectorPanel[MockRenderer, MockNode](r, vm)
+      r.commitField(panel, "Padding, all sides", "20")
+      vm.write()
+      let shorthand = withCardRule("padding: 20px !important; " &
+        "padding-left: 6px ! IMPORTANT; margin-top: 4px;")
+      check foundation[] == shorthand
+      r.commitField(panel, "Padding left", "9")
+      vm.write()
+      let longhand = withCardRule("padding: 20px !important; " &
+        "padding-left: 9px ! IMPORTANT; margin-top: 4px;")
+      check foundation[] == longhand
+      # No priority is manufactured on a declaration that has none.
+      r.commitField(panel, "Margin top", "7")
+      vm.write()
+      let plain = withCardRule("padding: 20px !important; " &
+        "padding-left: 9px ! IMPORTANT; margin-top: 7px;")
+      check foundation[] == plain
+      # Undo, written each time, puts back exactly what each write replaced.
+      check vm.runEditorCommand(eckUndo).status == ecsSucceeded
+      vm.write()
+      check foundation[] == longhand
+      check vm.runEditorCommand(eckUndo).status == ecsSucceeded
+      vm.write()
+      check foundation[] == shorthand
+      check vm.runEditorCommand(eckUndo).status == ecsSucceeded
+      vm.write()
+      check foundation[] == declared
+      # Redo, written each time, puts every edit back with its priority.
+      for expected in [shorthand, longhand, plain]:
+        check vm.runEditorCommand(eckRedo).status == ecsSucceeded
+        vm.write()
+        check foundation[] == expected
+      dispose()
+
+  test "the example writer reads an unquoted url() whole and refuses an unterminated comment":
+    ## Round-2 review residual R5: `url(a/*b)` is one token in CSS Syntax, so
+    ## an edit replaces it whole, and a value whose comment never closes is
+    ## refused at the writer with the reason, nothing written.
+    ## (Round 3, R6: such a comment runs to the end of the file, so the rule
+    ## it sits in is not a closed rule and the writer says so.)
+    let vector = new(string)
+    vector[] = "<svg/>"
+    let foundation = new(string)
+    let adapter = demoVectorEditAdapter(vector, foundation)
+    var entry: WorkspaceEditableSchemaEntry
+    for candidate in adapter.schema:
+      if candidate.key == "classes.destination-card.padding": entry = candidate
+    check entry.key.len > 0
+    let plan = SourceEditPlan(file: DemoFoundationSource, property: "padding",
+      schemaKey: entry.key, newValue: "url(c)")
+    let url = adapter.patchFile(plan, withCardRule("padding: url(a/*b) !important;"), entry)
+    check url.ok
+    check url.patch.afterContent == withCardRule("padding: url(c) !important;")
+    let open = adapter.patchFile(plan, withCardRule("padding: 18px /* open;"), entry)
+    check not open.ok
+    check open.diagnostics.len == 1
+    # The comment never closes, so it runs to the end of the file and
+    # swallows the rule's `}` (CSS Syntax): there is no closed rule to write.
+    check "has no .destination-card rule" in open.diagnostics[0].message
+    check "No source was changed." in open.diagnostics[0].message
+
+  test "the example writer finds its rule and declarations past a }, ; or name inside a comment, string or url()":
+    ## Round-3 review R6: the example writer's own rule finder read a `}` in
+    ## a comment, string or unquoted url() as the rule's end, so a value set
+    ## with no expected old value (as after Reset) was written inside the
+    ## comment or string. It now reads them as CSS Syntax does
+    ## (`css_patch.skipCssOpaque`).
+    let vector = new(string)
+    vector[] = "<svg/>"
+    let foundation = new(string)
+    let adapter = demoVectorEditAdapter(vector, foundation)
+    var entry: WorkspaceEditableSchemaEntry
+    for candidate in adapter.schema:
+      if candidate.key == "classes.destination-card.padding": entry = candidate
+    let plan = SourceEditPlan(file: DemoFoundationSource, property: "padding",
+      schemaKey: entry.key, newValue: "20px")
+    for (before, after) in [
+        ("/* } */ padding: 18px;", "/* } */ padding: 20px;"),
+        ("content: \"}\"; padding: 18px;", "content: \"}\"; padding: 20px;"),
+        ("background: url(a}b); padding: 18px;", "background: url(a}b); padding: 20px;"),
+        ("content: \"padding: 1px;\"; padding: 18px;", "content: \"padding: 1px;\"; padding: 20px;"),
+        # The append path, as after Reset: no padding declared yet.
+        ("/* } */ color: red;", "/* } */ color: red; padding: 20px;"),
+        ("content: \"}\";", "content: \"}\"; padding: 20px;"),
+        ("background: url(a}b);", "background: url(a}b); padding: 20px;")]:
+      let written = adapter.patchFile(plan, withCardRule(before), entry)
+      check written.ok
+      check written.patch.afterContent == withCardRule(after)
+    # Reset removes the one real declaration, not a name inside a string.
+    var reset = plan
+    reset.planKind = cspPropertyRemoval
+    reset.newValue = ""
+    let removed = adapter.patchFile(reset,
+      withCardRule("content: \"padding: 1px;\"; padding: 18px;"), entry)
+    check removed.ok
+    check removed.patch.afterContent == withCardRule("content: \"padding: 1px;\";")
+
   test "without writer order, a side whose value the capture read still follows the shorthand":
     ## Approved wording: "Without either, every side follows the shorthand."
     ## A capture that read `var(--wl-space-card)` off the preview keeps it as

@@ -547,6 +547,55 @@ class NativeDeclarationRemovalTests(InspectorSourceTransactionTests):
     def manifest_path(self):
         return self.project / ".isonim/source-project.json"
 
+    def test_an_important_declaration_is_shown_without_its_priority_and_keeps_it_when_written(self):
+        # isonim-pm issue 2026-11-15-a-value-edit-writes-the-declaration-without-
+        # its-important-while-the-preview-keeps-it, review residual R1. A
+        # declared editableStyles entry is the project's explicit capability
+        # for that declaration (editor spec "Native project source
+        # capabilities": declarations with `!important` require an
+        # appropriate source capability), so it stays editable: its field
+        # shows the value without the priority, as the field takes a value
+        # (a typed `!important` is refused), and the write keeps the
+        # declaration's priority as written ("Saving": an edit changes the
+        # one declaration that owns the property).
+        declared = self.original.replace(b"#secondary-action { width:160px; height:52px; padding:12px;",
+                                         b"#secondary-action { width:160px; height:52px; padding:12px ! IMPORTANT;")
+        self.assertNotEqual(declared, self.original)
+        self.source.write_bytes(declared)
+        row = next(row for row in self.metadata() if row["key"] == "style.secondary-action")
+        self.assertEqual(row["values"]["padding"], "12px")
+        self.assertEqual(row["edits"]["padding"], "")
+        # A stale value is still refused, and nothing moves.
+        stale = self.request("secondary-action", "padding", "16px")
+        stale["expectedValue"] = "11px"
+        self.assertEqual(self.operate(stale, expected=4)["diagnostic"], "Authored property changed before this edit.")
+        self.assertEqual(self.source.read_bytes(), declared)
+        # The edit writes the value and keeps the priority exactly as written.
+        result = self.operate(self.request("secondary-action", "padding", "16px"))
+        self.assertTrue(result["ok"], result)
+        self.assertEqual(result["sourceEdit"], {"before": "12px", "after": "16px"})
+        edited = declared.replace(b"padding:12px ! IMPORTANT;", b"padding:16px ! IMPORTANT;")
+        self.assertEqual(self.source.read_bytes(), edited)
+        row = next(row for row in result["editableStyles"] if row["key"] == "style.secondary-action")
+        self.assertEqual(row["values"]["padding"], "16px")
+        rendered = next(story["documentHtml"] for story in result["catalog"]["stories"]
+                        if story["group"] + " / " + story["name"] == row["storyId"])
+        self.assertIn("padding:16px ! IMPORTANT;", rendered)
+        # The same value again is no change; Reset removes the whole
+        # declaration, priority included, and its undo puts it back exactly.
+        same = self.operate(self.request("secondary-action", "padding", "16px"))
+        self.assertTrue(same["sourceEdit"]["unchanged"])
+        self.assertEqual(self.source.read_bytes(), edited)
+        reset_request = self.request("secondary-action", "padding", "")
+        removed = self.operate(reset_request)
+        self.assertTrue(removed["ok"], removed)
+        self.assertEqual(removed["sourceEdit"]["before"], "16px")
+        self.assertNotIn(b"padding:16px", self.source.read_bytes())
+        self.assertNotIn(b"IMPORTANT", self.source.read_bytes())
+        restored = self.undo_removal(reset_request, removed)
+        self.assertTrue(restored["ok"], restored)
+        self.assertEqual(self.source.read_bytes(), edited)
+
     def test_each_editable_declaration_states_whether_it_can_be_removed(self):
         self.assertIn(self.ACTION_LINE, self.original)
         # #action declares padding and border-radius together with all four

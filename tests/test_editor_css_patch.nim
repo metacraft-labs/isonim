@@ -233,6 +233,384 @@ suite "css_patch: not matching the wrong text":
     check not r.ok
     check r.outcome == cpoRuleNotFound
 
+suite "css_patch: a value edit keeps the declaration's priority":
+  ## isonim-pm issue 2026-11-15-a-value-edit-writes-the-declaration-without-
+  ## its-important-while-the-preview-keeps-it. Editor spec "Saving" (an edit
+  ## changes the one declaration that owns the property) and "Visual box
+  ## model" (the preview shows the same values before the write and after
+  ## it): the preview keeps a declaration's `!important` and never adds one,
+  ## and the inspector field takes a value without one, so the written file
+  ## keeps the priority as written and gains none. CSS allows whitespace and
+  ## comments between `!` and `important`, in either case
+  ## (https://www.w3.org/TR/css-syntax-3/#consume-declaration).
+
+  const issueCss = ".destination-card { padding: 18px !important; }\n" &
+    ".long-tail-card { padding: 30px; }\n"
+
+  test "the issue's case: a shorthand keeps its !important; the old value is reported as written":
+    let r = patchCssDeclaration(issueCss, ".destination-card", "padding", "20px")
+    check r.ok
+    check r.outcome == cpoReplaced
+    check r.oldValue == "18px !important"
+    check r.content == ".destination-card { padding: 20px !important; }\n" &
+      ".long-tail-card { padding: 30px; }\n"
+
+  test "a longhand keeps its !important, and a neighbour without one gains none":
+    let css = ".card { padding: 18px; padding-top: 24px !important; margin:0; }"
+    let r = patchCssDeclaration(css, ".card", "padding-top", "30px")
+    check r.content == ".card { padding: 18px; padding-top: 30px !important; margin:0; }"
+    let s = patchCssDeclaration(css, ".card", "padding", "20px")
+    check s.content == ".card { padding: 20px; padding-top: 24px !important; margin:0; }"
+
+  test "no priority is manufactured: a plain declaration and an inserted one stay plain":
+    let css = ".card { padding: 18px; }"
+    check patchCssDeclaration(css, ".card", "padding", "20px").content ==
+      ".card { padding: 20px; }"
+    check patchCssDeclaration(css, ".card", "margin", "4px").content ==
+      ".card { padding: 18px; margin:4px; }"
+    let under = patchCssDeclarationUnder(css, "@media (max-width: 640px)",
+      ".card", "padding", "6px")
+    check under.ok
+    check "important" notin under.content
+
+  test "whitespace, case and comments in the priority are kept as written":
+    for (declared, written) in [
+        ("18px ! important", "20px ! important"),
+        ("18px !IMPORTANT", "20px !IMPORTANT"),
+        ("18px!important", "20px!important"),
+        ("18px !\timportant", "20px !\timportant"),
+        ("18px ! /* keep */ important", "20px ! /* keep */ important"),
+        ("18px !important /* why */", "20px !important /* why */"),
+        ("18px /* note */ !important", "20px /* note */ !important")]:
+      let css = ".card { padding: " & declared & "; }"
+      let r = patchCssDeclaration(css, ".card", "padding", "20px")
+      check r.ok
+      check r.outcome == cpoReplaced
+      check r.content == ".card { padding: " & written & "; }"
+
+  test "a word that only ends in important, or a value that names it, is not a priority":
+    check cssPrioritySuffix("url(unimportant)") == ""
+    check cssPrioritySuffix("'important'") == ""
+    check cssPrioritySuffix("x important") == ""
+    check cssPrioritySuffix("18px ! IMPORTANT ") == " ! IMPORTANT"
+    check patchCssDeclaration(".a { content: 'important'; }", ".a", "content",
+      "'x'").content == ".a { content: 'x'; }"
+
+  test "the same value without its priority is no change; a value that states one replaces it":
+    let unchanged = patchCssDeclaration(issueCss, ".destination-card", "padding", "18px")
+    check unchanged.outcome == cpoUnchanged
+    check unchanged.content == issueCss
+    # A value that states its own priority is written as given (an undo that
+    # puts back the text a write replaced).
+    let plain = ".card { padding: 20px; }"
+    check patchCssDeclaration(plain, ".card", "padding", "18px !important").content ==
+      ".card { padding: 18px !important; }"
+
+  test "an edit and its undo restore the declaration byte for byte":
+    let css = ".card { padding: 18px ! IMPORTANT; }"
+    let forward = patchCssDeclaration(css, ".card", "padding", "20px")
+    check forward.content == ".card { padding: 20px ! IMPORTANT; }"
+    # Undo writes the old value back, as the field shows it or as written.
+    let undone = patchCssDeclaration(forward.content, ".card", "padding", "18px")
+    check undone.content == css
+    let undoneWritten = patchCssDeclaration(forward.content, ".card", "padding",
+      forward.oldValue)
+    check undoneWritten.content == css
+    let redone = patchCssDeclaration(undone.content, ".card", "padding", "20px")
+    check redone.content == forward.content
+
+  test "the breakpoint-aware and override writers keep it too":
+    let media = ".x { padding: 1px; }\n@media (max-width: 1080px) { .x { padding: 2px !important; } }\n"
+    let at = patchCssDeclarationAt(media, ".x", "padding", "5px", 850)
+    check at.ok
+    check at.oldValue == "2px !important"
+    check at.content == ".x { padding: 1px; }\n@media (max-width: 1080px) { .x { padding:5px !important; } }\n"
+    check patchCssDeclarationAt(media, ".x", "padding", "2px", 850).outcome == cpoUnchanged
+    let under = patchCssDeclarationUnder(media, "@media (max-width: 1080px)",
+      ".x", "padding", "6px")
+    check under.ok
+    check under.oldValue == "2px !important"
+    check under.content == ".x { padding: 1px; }\n@media (max-width: 1080px) { .x { padding: 6px !important; } }\n"
+    # Removing the override removes its priority with it.
+    check "important" notin patchCssDeclarationUnder(media,
+      "@media (max-width: 1080px)", ".x", "padding", "").content
+
+  test "inside a Nim const, the native writer keeps it":
+    let module = "const styles* = \"\"\".panel { padding:8px !important; }\"\"\"\n"
+    let r = patchCssInNimConstAt(module, "styles", ".panel", "padding", "10px", 1440)
+    check r.ok
+    check r.oldValue == "8px !important"
+    check r.content == "const styles* = \"\"\".panel { padding:10px !important; }\"\"\"\n"
+
+  # Round-1 review residuals R2-R4 (isonim-pm issue 2026-11-15-a-value-edit-
+  # writes-the-declaration-without-its-important-...): comments are read as
+  # CSS reads them (https://www.w3.org/TR/css-syntax-3/#consume-comment): one
+  # runs from `/*` to the FIRST `*/` and does not nest, and `/*` inside a
+  # quoted string is text.
+  proc edit(declared, newValue: string): CssPatchResult =
+    patchCssDeclaration(".card { padding: " & declared & "; }", ".card",
+      "padding", newValue)
+  proc written(r: CssPatchResult): string =
+    r.content[".card { padding: ".len ..< r.content.len - "; }".len]
+
+  test "R2: a comment holding `/*` after the priority does not hide it":
+    check cssPrioritySuffix("18px !important /* a /* b */") ==
+      " !important /* a /* b */"
+    let r = edit("18px !important /* a /* b */", "20px")
+    check r.outcome == cpoReplaced
+    check r.oldValue == "18px !important"
+    check r.written == "20px !important /* a /* b */"
+    # A priority written only inside a comment is not one, whatever the
+    # comment holds.
+    check cssPrioritySuffix("18px /* x !important /* */") == ""
+    check edit("18px /* x !important /* */", "20px").written ==
+      "20px /* x !important /* */"
+    check cssPrioritySuffix("18px /* !important */") == ""
+    check edit("18px /* !important */", "20px").written == "20px /* !important */"
+
+  test "R2: what the reviewer's detection probe reads as a priority, and what not":
+    for (value, suffix) in [("\"!important\"", ""), ("\"a\" !important", " !important"),
+        ("url(a!important)", ""), ("18px ! /*c*/ important", " ! /*c*/ important"),
+        ("a!", ""), ("!", ""), ("a !ie", ""), ("!important", "!important"),
+        ("{!important}", ""), ("x/**/!/**/important/**/", "!/**/important/**/"),
+        ("'/* x' !important", " !important"), ("\"*/\" /* c */ !important", " !important")]:
+      check cssPrioritySuffix(value) == suffix
+    check edit("18px !", "20px").written == "20px"
+    check edit("18px !ie", "20px").written == "20px"
+    let custom = ".x { --v: a!; --w: b !important; }"
+    check patchCssDeclaration(custom, ".x", "--v", "c").content ==
+      ".x { --v: c; --w: b !important; }"
+    check patchCssDeclaration(custom, ".x", "--w", "c").content ==
+      ".x { --v: a!; --w: c !important; }"
+
+  test "R3: a new value that states its priority in any form is written as given, never doubled":
+    for given in ["20px ! important", "20px !important /* c */",
+        "20px ! /*c*/ important", "20px!IMPORTANT"]:
+      let r = edit("18px !important", given)
+      check r.outcome == cpoReplaced
+      check r.written == given
+
+  test "R3: the old value is the declaration as written, and writing it back is exact":
+    let original = "20px ! /*c*/ important"
+    let forward = edit(original, "18px")
+    check forward.oldValue == original
+    check forward.written == "18px ! /*c*/ important"
+    let back = patchCssDeclaration(forward.content, ".card", "padding",
+      forward.oldValue)
+    check back.written == original
+    for declared in ["18px !important /* a /* b */", "/* lead */ 18px !important",
+        "8px /* mid */ 4px !important", "8px /* mid */ 4px",
+        "18px /* note */ !important", "18px ! IMPORTANT"]:
+      let there = edit(declared, "30px")
+      check there.ok
+      let again = patchCssDeclaration(there.content, ".card", "padding",
+        there.oldValue)
+      check again.written == declared
+
+  test "R4: a comment before the value, or between its parts, stays out of the value":
+    let lead = edit("/* lead */ 18px !important", "20px")
+    check lead.oldValue == "18px !important"
+    check lead.written == "/* lead */ 20px !important"
+    check edit("/* lead */ 18px", "20px").written == "/* lead */ 20px"
+    let mid = edit("8px /* mid */ 4px !important", "20px")
+    check mid.oldValue == "8px /* mid */ 4px !important"
+    # The comment between the value's parts goes with the value it sat in;
+    # the old value holds it, so undo puts it back (the round-trip test).
+    check mid.written == "20px !important"
+    check edit("8px /* mid */ 4px", "20px").written == "20px"
+    check edit("8px /* mid */ 4px /* after */", "20px").written ==
+      "20px /* after */"
+    # The same value, comments aside, is no change.
+    check edit("8px /* mid */ 4px !important", "8px 4px").outcome == cpoUnchanged
+    check edit("/* lead */ 18px", "18px").outcome == cpoUnchanged
+
+  # Round-2 review residual R5: the value is read as CSS Syntax tokenizes it
+  # (https://www.w3.org/TR/css-syntax-3/#consume-url-token,
+  # #consume-escaped-code-point): an unquoted `url(...)` is one token, `/*`
+  # included; a backslash escapes the next character outside strings too;
+  # and a comment, string or `url(` that never closes is refused, because
+  # where the value ends cannot be told.
+  test "R5: every probe value, read and edited as CSS Syntax reads it":
+    for (declared, written) in [
+        ("url(a/*b) !important", "20px !important"),
+        ("url(a/*b*/c) !important", "20px !important"),
+        ("URL( a/*b ) !important", "20px !important"),
+        ("url(\"a/*b\") !important", "20px !important"),
+        ("\"a\\\"b /*\" !important", "20px !important"),
+        ("a\\\"b !important", "20px !important"),
+        ("a\\/*b*/ !important", "20px !important"),
+        ("a /\\* x */ !important", "20px !important"),
+        ("calc(var(--a, 1px) + 2px) !important", "20px !important"),
+        ("calc(1px/*c*/+2px) !important", "20px !important"),
+        ("rgb(0 0 0 / 50%) !important", "20px !important"),
+        ("\"/*\" !important", "20px !important"),
+        ("'x' /* a /* b */ !important /* c */", "20px /* a /* b */ !important /* c */"),
+        ("8px /* mid */ 4px", "20px"),
+        ("8px /* mid */ 4px ! /*p*/ important /* t */", "20px ! /*p*/ important /* t */"),
+        ("/* lead */ 18px ! IMPORTANT", "/* lead */ 20px ! IMPORTANT")]:
+      let edited = cssValueEdit(declared, "20px")
+      check edited.refusal == ""
+      check edited.text == written
+      # Writing the reported old value back restores the declaration.
+      check cssValueEdit(written, cssDeclarationValue(declared)).text == declared.strip()
+    check cssPrioritySuffix("url(a/*b) !important") == " !important"
+    check cssValueWithoutPriority("url(a/*b) !important") == "url(a/*b)"
+    check cssValueWithoutPriority("a\\/*b*/ !important") == "a\\/*b*/"
+    # The example writer's case: an unquoted url holding `/*`, edited.
+    check cssValueEdit("url(a/*b)", "url(c)").text == "url(c)"
+    check cssValueEdit("url(a/*b) !important", "url(c)").text == "url(c) !important"
+    # A function merely named like url is not a url token.
+    check cssPrioritySuffix("myurl(a) /* x */ !important") == " !important"
+
+  test "R5: a value with an unterminated comment, string or url( is refused, nothing written":
+    for declared in ["18px !important /* unterminated", "\"unterminated !important",
+        "'line\nbreak' !important", "url(a !important", "18px /* open"]:
+      let edited = cssValueEdit(declared, "20px")
+      check edited.refusal.len > 0
+      check "unterminated" in edited.refusal
+      check edited.text == ""
+    check "new value" in cssValueEdit("18px", "20px /* open").refusal
+    # Through the stylesheet writers: a string or comment that runs to the
+    # end of the sheet swallows the rule's `}`, so CSS (and the writers) have
+    # no closed `.card` rule; the refusal says what hides it.
+    for css in [".card { padding: \"unterminated !important; }",
+        ".card { padding: 18px !important /* open; }"]:
+      for r in [patchCssDeclaration(css, ".card", "padding", "20px"),
+          patchCssDeclarationAt(css, ".card", "padding", "20px", 1440)]:
+        check not r.ok
+        check "never closed" in r.message
+        check r.content == ""
+    let media = ".card { padding: 1px; }\n@media (max-width: 600px) { .card { padding: 'x !important; } }\n"
+    let under = patchCssDeclarationUnder(media, "@media (max-width: 600px)",
+      ".card", "padding", "6px")
+    check not under.ok
+    check under.outcome == cpoUnreadable
+
+  test "R5: an escaped quote outside a string does not swallow the declaration's end":
+    let css = ".card { background: a\\\"b !important; color: red; }"
+    let r = patchCssDeclaration(css, ".card", "background", "red")
+    check r.ok
+    check r.oldValue == "a\\\"b !important"
+    check r.content == ".card { background: red !important; color: red; }"
+    check patchCssDeclaration(r.content, ".card", "background", r.oldValue).content == css
+
+  # Round-3 gap: the stylesheet's rule scanners read comments, strings,
+  # escapes and unquoted urls by the same rules as the value
+  # (`skipCssOpaque`), so a rule holding one is found and edited instead of
+  # being refused as "rule not found".
+  test "rules holding /*, braces or ; inside a string, escape or url are found and edited":
+    for (css, property, written) in [
+        (".card { background: url(\"a/*b\") !important; }", "background",
+         ".card { background: red !important; }"),
+        (".card { background: \"/*\" !important; }", "background",
+         ".card { background: red !important; }"),
+        (".card { background: \"a\\\"b /*\" !important; }", "background",
+         ".card { background: red !important; }"),
+        (".card { background: url(a/*b) !important; }", "background",
+         ".card { background: red !important; }"),
+        (".card { background: url(a;b}c) !important; color: blue; }", "background",
+         ".card { background: red !important; color: blue; }"),
+        (".card { content: \"{ } ; /*\"; color: blue; }", "color",
+         ".card { content: \"{ } ; /*\"; color: red; }"),
+        (".card { content: 'a\\'}'; color: blue; }", "color",
+         ".card { content: 'a\\'}'; color: red; }"),
+        (".card { content: \\7B; color: blue; }", "color",
+         ".card { content: \\7B; color: red; }"),
+        ("[title=\"/*\"] { color: green; }\n.card { color: blue; }", "color",
+         "[title=\"/*\"] { color: green; }\n.card { color: red; }")]:
+      let r = patchCssDeclaration(css, ".card", property, "red")
+      check r.ok
+      check r.outcome == cpoReplaced
+      check r.content == written
+      # And back, byte for byte, through the reported old value.
+      check patchCssDeclaration(r.content, ".card", property, r.oldValue).content == css
+
+  # Round-3 review R7: CSS Syntax closes at the end of the sheet whatever is
+  # still open there, and a browser applies what came before as written
+  # (checked in Chromium: `.x` keeps its padding in each sheet below except
+  # the stray-apostrophe one, whose bad string swallows `.a`'s `}`, so `.x`
+  # is not a top-level rule there). Only a write at or after the start of
+  # what the end closes is refused; the catalog offers nothing there.
+  test "R7: sheets a browser reads past an unclosed end are edited before it, never inside it":
+    const rule = ".x { padding: 1px; }"
+    for css in [
+        rule & "\n.b { color: red;",                         # block closed by EOF
+        rule & "\n/* trailing",                              # comment closed by EOF
+        rule & "\n.z { content: x\\",                        # escape at EOF
+        rule & "\n.z { background: url(a",                   # url( closed by EOF
+        rule & "\n.z { content: 'open",                       # string closed by EOF
+        "// don't do this\n.a { color: red; }\n" & rule,      # bad string ends at newline
+        ".q { content: 'a\n; }\n" & rule,                     # the same inside a rule
+        rule & "\n@media (min-width:100px) { #other { width:60px; }"]:
+      let r = patchCssDeclaration(css, ".x", "padding", "9px")
+      check r.ok
+      check r.content == css.replace(rule, ".x { padding: 9px; }")
+      check patchCssDeclarationAt(css, ".x", "padding", "9px", 1440).ok
+      check removeCssDeclaration(css, ".x", "padding").ok
+      check cssUnconditionalLiterals(css, @["padding"]).len == 1
+      # A new override goes at the end of the sheet: inside what only the
+      # end closes, when anything is open there.
+      let under = patchCssDeclarationUnder(css, "@media (max-width: 900px)",
+        ".x", "padding", "9px")
+      if css.cssOpenTail().at >= 0:
+        check not under.ok
+        check under.outcome == cpoUnreadable
+        check "never closed" in under.message
+        check under.content == ""
+      else:
+        check under.ok
+
+  test "R7: a rule inside what only the end of the sheet closes is neither edited nor offered":
+    # The bad string in `it's` swallows `.a`'s `}` (Chromium drops `.x`).
+    let stray = ".a { color: red; it's: x; }\n.x { padding: 1px; }"
+    let r = patchCssDeclaration(stray, ".x", "padding", "9px")
+    check not r.ok
+    check r.content == ""
+    check cssUnconditionalLiterals(stray, @["padding"]).len == 0
+    # An insertion into the rule that the end of the sheet closes.
+    let open = ".x { padding: 1px; }\n.b { color: red;"
+    let into = patchCssDeclarationUnder(open & " } .c { color: blue;", "@media (max-width: 900px)",
+      ".x", "padding", "9px")
+    check not into.ok
+    check patchCssDeclaration(open, ".b", "padding", "2px").ok == false
+    check cssUnconditionalLiterals(open, @["color"]).len == 0
+    # Inside a nested block the end closes: a conditional override there is
+    # neither found nor added.
+    let badString = ".card { padding: 1px; }\n@media (max-width: 600px) { .card { padding: 'x !important; } }\n"
+    check patchCssDeclaration(badString, ".card", "padding", "5px").ok
+    check not patchCssDeclarationUnder(badString, "@media (max-width: 600px)",
+      ".card", "padding", "6px").ok
+
+  test "the breakpoint and override writers find rules past such text too":
+    let css = ".card { background: url(\"x/*\"); padding: 1px; }\n" &
+      "@media (max-width: 600px) { .card { content: \"}\"; padding: 2px !important; } }\n"
+    let at = patchCssDeclarationAt(css, ".card", "padding", "5px", 500)
+    check at.ok
+    check at.oldValue == "2px !important"
+    check at.content == css.replace("padding: 2px !important", "padding:5px !important")
+    let under = patchCssDeclarationUnder(css, "@media (max-width: 600px)",
+      ".card", "padding", "6px")
+    check under.ok
+    check under.content == css.replace("padding: 2px !important", "padding: 6px !important")
+    let base = patchCssDeclaration(css, ".card", "padding", "3px")
+    check base.ok
+    check base.content == css.replace("padding: 1px", "padding: 3px")
+
+  test "a value shown without its priority, as the native fields show it":
+    check cssValueWithoutPriority("8px !important") == "8px"
+    check cssValueWithoutPriority("8px ! /*c*/ IMPORTANT /* why */") == "8px"
+    check cssValueWithoutPriority("/* lead */ 8px 4px") == "8px 4px"
+    check cssValueWithoutPriority("8px") == "8px"
+    check cssValueMatches("8px ! /*c*/ important", "8px")
+    check cssValueMatches("/* lead */ 8px /* mid */ 4px", "8px 4px")
+
+  test "a declared value matches the value the inspector shows, priority aside":
+    check cssValueMatches("18px !important", "18px")
+    check cssValueMatches("18px ! IMPORTANT", "18px")
+    check cssValueMatches("18px !important", "18px !important")
+    check not cssValueMatches("18px", "18px !important")
+    check not cssValueMatches("18px !important", "20px")
+
 suite "css_patch: refusals":
 
   test "an empty selector or property is refused":

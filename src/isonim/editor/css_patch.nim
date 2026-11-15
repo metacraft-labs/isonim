@@ -36,6 +36,8 @@ type
     cpoRuleNotFound      ## No top-level rule with that selector.
     cpoAmbiguous         ## More than one top-level rule with that selector.
     cpoRemoved           ## The one owning declaration was removed.
+    cpoUnreadable        ## The value holds an unterminated comment, string
+                         ## or `url(`; refused, nothing written.
 
   CssPatchResult* = object
     ok*: bool
@@ -96,6 +98,228 @@ func splitCssPriority*(value: string): tuple[value: string; important: bool] =
       return (text[0 ..< at].strip(), true)
   (text, false)
 
+type CssValueParts = object
+  ## A declaration's text between its `:` and its `;`, cut where CSS reads
+  ## it (https://www.w3.org/TR/css-syntax-3/): a comment runs from `/*` to
+  ## the FIRST `*/` and does not nest; `/*` inside a quoted string is text.
+  ## The parts, concatenated, are the text as written.
+  lead: string       ## whitespace and comments before the first token
+  value: string      ## first token .. last token before the priority
+  gap: string        ## whitespace and comments between value and `!`
+  priority: string   ## `!` .. `important`, with whatever it holds
+  trail: string      ## whitespace and comments after the last token
+  important: bool
+
+type CssValueLex = object
+  tokens: seq[int]    ## indices that are part of a token
+  comments: seq[tuple[first, last: int]]  ## each comment, inclusive
+  unterminated: string  ## "" or what runs to the end unclosed
+
+func lexCssValue(text: string): CssValueLex =
+  ## Read a declaration's value as CSS Syntax does
+  ## (https://www.w3.org/TR/css-syntax-3/#tokenization): a comment runs from
+  ## `/*` to the FIRST `*/` and does not nest; a quoted string, and an
+  ## unquoted `url(...)`, are one token whatever they hold (`/*` included);
+  ## a backslash escapes the character after it, inside a string or not.
+  ## A comment, string or `url(` with no end is reported, not guessed at:
+  ## a writer cannot tell where such a value stops.
+  var i = 0
+  template escape() =
+    result.tokens.add i
+    if i + 1 < text.len: result.tokens.add i + 1
+    i += 2
+  while i < text.len:
+    let c = text[i]
+    if c == '\\':
+      escape()
+    elif c in {'"', '\''}:
+      result.tokens.add i
+      inc i
+      var closed = false
+      while i < text.len:
+        if text[i] == '\\': escape(); continue
+        if text[i] == '\n': break            # a newline ends a bad string
+        result.tokens.add i
+        inc i
+        if text[i - 1] == c:
+          closed = true
+          break
+      if not closed: result.unterminated = "string"
+    elif c == '/' and i + 1 < text.len and text[i + 1] == '*':
+      let close = text.find("*/", i + 2)
+      if close < 0:
+        result.comments.add (first: i, last: text.high)
+        result.unterminated = "comment"
+        i = text.len
+      else:
+        result.comments.add (first: i, last: close + 1)
+        i = close + 2
+    elif c in Whitespace:
+      inc i
+    elif c in {'u', 'U'} and i + 3 < text.len and
+        text[i .. i + 3].toLowerAscii() == "url(" and
+        (i == 0 or not (text[i - 1].isAlphaNumeric or text[i - 1] in {'-', '_', '\\'})):
+      var j = i + 4
+      while j < text.len and text[j] in Whitespace: inc j
+      for k in i .. i + 3: result.tokens.add k
+      i += 4
+      if j < text.len and text[j] in {'"', '\''}:
+        continue                             # url("..."): a function
+      # An unquoted url: one token up to its `)`.
+      var closed = false
+      while i < text.len:
+        if text[i] == '\\': escape(); continue
+        if text[i] notin Whitespace: result.tokens.add i
+        inc i
+        if text[i - 1] == ')':
+          closed = true
+          break
+      if not closed: result.unterminated = "url("
+    else:
+      result.tokens.add i
+      inc i
+
+func scanCssValue(text: string): seq[int] =
+  ## The indices of ``text`` that are part of a token (`lexCssValue`).
+  text.lexCssValue().tokens
+
+func commentSpans(text: string): seq[tuple[first, last: int]] =
+  ## Where each comment of ``text`` is (`first` .. `last` inclusive).
+  text.lexCssValue().comments
+
+func cssValueParts(text: string): CssValueParts =
+  let tokens = text.scanCssValue()
+  if tokens.len == 0:
+    result.lead = text
+    return
+  result.lead = text[0 ..< tokens[0]]
+  const word = "important"
+  let n = tokens.len
+  var valueEnd = tokens[^1]           # inclusive
+  if n >= word.len + 1 and tokens[^1] - tokens[n - word.len] == word.high and
+      text[tokens[n - word.len] .. tokens[^1]].toLowerAscii() == word and
+      text[tokens[n - word.len - 1]] == '!':
+    let bang = tokens[n - word.len - 1]
+    result.important = true
+    result.priority = text[bang .. tokens[^1]]
+    if n > word.len + 1:
+      valueEnd = tokens[n - word.len - 2]
+      result.value = text[tokens[0] .. valueEnd]
+      result.gap = text[valueEnd + 1 ..< bang]
+    else:
+      result.lead = text[0 ..< bang]
+  else:
+    result.value = text[tokens[0] .. valueEnd]
+  result.trail = text[tokens[^1] + 1 .. ^1]
+
+func withoutCssComments(text: string): string =
+  ## ``text`` with its comments removed; a comment between two tokens leaves
+  ## one space, as CSS reads it, and no run of spaces is left behind.
+  var at = 0
+  for span in text.commentSpans():
+    result.add text[at ..< span.first]
+    var next = span.last + 1
+    let before = result.len > 0 and result[^1] notin Whitespace
+    while next < text.len and text[next] in Whitespace: inc next
+    if before and next < text.len: result.add ' '
+    at = next
+  result.add text[at .. ^1]
+  result = result.strip()
+
+func cssDeclarationValue*(existing: string): string =
+  ## A declaration's value as written, with its priority: the text between
+  ## its `:` and its `;` without the whitespace and comments around it. It
+  ## is what a patch reports as `oldValue`, and writing it back with
+  ## `cssValueEdit` restores the declaration byte for byte.
+  let parts = existing.cssValueParts()
+  (parts.value & parts.gap & parts.priority).strip()
+
+func cssValueWithoutPriority*(declared: string): string =
+  ## ``declared``'s value as an inspector field shows it: `cssDeclarationValue`
+  ## without its `!important`. The field takes a value without a priority (a
+  ## typed `!important` is refused) and a value edit keeps the declaration's
+  ## priority (`cssValueEdit`), so the shown value is what can be committed
+  ## back.
+  let parts = declared.strip().cssValueParts()
+  if parts.important: parts.value.strip() else: declared.cssDeclarationValue()
+
+func cssPrioritySuffix*(value: string): string =
+  ## The `!important` that ends ``value``, exactly as written: from the
+  ## whitespace before its `!` to the end, with any comment inside or after
+  ## it (`" !important"`, `" ! IMPORTANT"`, `" !important /* why */"`), or ""
+  ## when the value states no priority. CSS allows whitespace and comments
+  ## between `!` and `important`, and either case
+  ## (https://www.w3.org/TR/css-syntax-3/#consume-declaration).
+  let parts = value.cssValueParts()
+  if not parts.important: return
+  var gap = parts.gap
+  # Only the whitespace right before `!` belongs to the suffix; a comment
+  # before that is the value's.
+  var k = gap.len
+  while k > 0 and gap[k - 1] in Whitespace: dec k
+  if parts.value.len == 0: gap = "" else: gap = gap[k .. ^1]
+  (gap & parts.priority & parts.trail).strip(leading = false)
+
+func cssValueEdit*(existing, newValue: string):
+    tuple[unchanged: bool; text, refusal: string] =
+  ## The text a value edit writes in place of a declaration's ``existing``
+  ## text (between its `:` and its `;`), without surrounding whitespace.
+  ##
+  ## * The declaration keeps its `!important` as written (spacing, case,
+  ##   comments) when ``newValue`` states no priority, and gains none when
+  ##   it has none. Why: a value edit changes the value, not the priority.
+  ##   The inspector shows and takes a value without its priority (a typed
+  ##   `!important` is refused), and the preview applies the edit keeping
+  ##   the declaration's priority and adding none; a writer that dropped it
+  ##   would write a file whose cascade differs from what the preview shows
+  ##   (editor spec "Visual box model": the preview shows the same values
+  ##   before the write and after it; "Saving": an edit changes the one
+  ##   declaration that owns the property).
+  ## * A ``newValue`` that states a priority (an undo putting back text a
+  ##   write replaced, `cssDeclarationValue`) is written as given.
+  ## * Comments before the value, between it and its priority, inside the
+  ##   priority and after it stay where they are: such a comment explains
+  ##   the DECLARATION, not the old number, and dropping it on every edit
+  ##   would strip the stylesheet's reasoning one property at a time. A
+  ##   comment between the parts of the value (`8px /* mid */ 4px`) is part
+  ##   of the value being replaced and goes with it; the old value reported
+  ##   for undo (`cssDeclarationValue`) holds it, so an undo puts it back
+  ##   exactly.
+  ## * ``unchanged`` when the result says what ``existing`` says, comments
+  ##   aside.
+  ## * ``refusal`` says why nothing may be written when either value holds
+  ##   a comment, string or `url(` that is never closed (`lexCssValue`):
+  ##   where such a value ends cannot be told, and a write around it could
+  ##   leave the file with an unterminated comment.
+  let given = newValue.strip()
+  for (which, text) in [("declaration's value", existing), ("new value", given)]:
+    let open = text.lexCssValue().unterminated
+    if open.len > 0:
+      result.refusal = "The " & which & " `" & text.strip() & "` holds an " &
+        "unterminated " & (if open == "url(": "`url(`" else: open) &
+        ", so where it ends cannot be told. Nothing was written; edit the " &
+        "stylesheet directly."
+      return
+  let parts = existing.strip().cssValueParts()
+  let stated = given.cssValueParts()
+  var body = given
+  if not stated.important and parts.important:
+    body.add parts.gap & parts.priority
+  result.text = parts.lead & body & parts.trail
+  result.unchanged = result.text == existing.strip() or
+    result.text.withoutCssComments() == existing.strip().withoutCssComments()
+
+func cssValueMatches*(declared, expected: string): bool =
+  ## Whether a declaration whose text is ``declared`` holds the value
+  ## ``expected``: the same value, comments aside, or -- for an ``expected``
+  ## that states no priority, as the inspector shows a value -- the same
+  ## value once ``declared``'s `!important` is set aside.
+  let want = expected.withoutCssComments()
+  if declared.cssDeclarationValue().withoutCssComments() == want: return true
+  let parts = declared.cssValueParts()
+  parts.important and not expected.cssValueParts().important and
+    parts.value.withoutCssComments() == want
+
 func isIdentChar(c: char): bool =
   c.isAlphaNumeric or c in {'-', '_'}
 
@@ -106,6 +330,100 @@ type RuleSpan = object
   selector: string
   bodyStart: int
   bodyEnd: int
+
+func scanCssOpaque(css: string; at: int; limit = -1):
+    tuple[past: int; closed: bool] =
+  ## Past the comment, quoted string, escaped character or unquoted
+  ## `url(...)` token that starts at ``at`` (``past`` is ``at`` when none
+  ## does): text in which a `{`, `}`, `;`, quote or `/*` is not syntax. The
+  ## rules are `lexCssValue`'s, CSS Syntax's: a comment ends at the first
+  ## `*/`, a newline ends a (bad) string, a backslash escapes the next
+  ## character. ``closed`` is false when the construct runs to ``limit`` (the
+  ## end of ``css`` by default) without its end, as CSS lets one run to the
+  ## end of the sheet.
+  let stop = if limit < 0: css.len else: limit
+  let c = css[at]
+  if c == '\\':
+    return (min(at + 2, stop), true)
+  if c in {'"', '\''}:
+    var i = at + 1
+    while i < stop:
+      if css[i] == '\\': i += 2; continue
+      if css[i] == c: return (i + 1, true)
+      if css[i] == '\n': return (i, true)    # a bad string ends here
+      inc i
+    return (stop, false)
+  if c == '/' and at + 1 < stop and css[at + 1] == '*':
+    let close = css.find("*/", at + 2)
+    return if close < 0 or close + 2 > stop: (stop, false) else: (close + 2, true)
+  if c in {'u', 'U'} and at + 3 < stop and
+      css[at .. at + 3].toLowerAscii() == "url(" and
+      (at == 0 or not (css[at - 1].isAlphaNumeric or css[at - 1] in {'-', '_', '\\'})):
+    var i = at + 4
+    while i < stop and css[i] in Whitespace: inc i
+    if i < stop and css[i] in {'"', '\''}: return (at, true)  # url("..."): a function
+    while i < stop:
+      if css[i] == '\\': i += 2; continue
+      if css[i] == ')': return (i + 1, true)
+      inc i
+    return (stop, false)
+  (at, true)
+
+func skipCssOpaque*(css: string; at: int; limit = -1): int =
+  ## `scanCssOpaque`'s end alone.
+  css.scanCssOpaque(at, limit).past
+
+func cssOpenTail*(css: string): tuple[at: int; what: string] =
+  ## Where the part of stylesheet ``css`` that only its end closes begins,
+  ## or ``at`` = -1. CSS Syntax closes at the end of the sheet whatever is
+  ## still open there -- blocks, a comment, a string, a `url(` -- and a
+  ## browser applies what came before it as written. So the sheet is read
+  ## that way, and only a write AT or AFTER that point is ambiguous: it would
+  ## land inside the construct the end of the sheet closes, where the
+  ## author's text does not say what it belongs to (`cssWriteRefusal`).
+  var open: seq[int] = @[]
+  var i = 0
+  while i < css.len:
+    let scanned = css.scanCssOpaque(i)
+    if scanned.past > i:
+      if not scanned.closed:
+        let what =
+          if css[i] in {'"', '\''}: "string"
+          elif css[i] == '/': "comment"
+          else: "`url(`"
+        return (at: (if open.len > 0: open[0] else: i),
+          what: (if open.len > 0: "block" else: what))
+      i = scanned.past
+      continue
+    if css[i] == '{': open.add i
+    elif css[i] == '}' and open.len > 0: discard open.pop()
+    inc i
+  if open.len > 0: return (at: open[0], what: "block")
+  (at: -1, what: "")
+
+func cssWriteRefusal(css: string; patched: CssPatchResult): CssPatchResult =
+  ## ``patched`` unless its write changes ``css`` at or after the point only
+  ## the end of the sheet closes (`cssOpenTail`); then a refusal with the
+  ## reason. A write before that point is the one a browser reads as written.
+  if patched.ok and patched.content == css: return patched
+  if not patched.ok and patched.outcome != cpoRuleNotFound: return patched
+  let tail = css.cssOpenTail()
+  if tail.at < 0: return patched
+  if not patched.ok:
+    # Not found: say what may be hiding it.
+    return CssPatchResult(ok: false, outcome: cpoRuleNotFound,
+      message: patched.message & " The stylesheet has a " & tail.what &
+        " that is never closed (only the end of the sheet closes it); a " &
+        "rule after its start is inside it, so it is not edited here.")
+  var first = 0
+  while first < css.len and first < patched.content.len and
+      css[first] == patched.content[first]: inc first
+  if first < tail.at: return patched
+  CssPatchResult(ok: false, outcome: cpoUnreadable,
+    message: "This write would land inside a " & tail.what & " that is " &
+      "never closed in the stylesheet (only the end of the sheet closes it), " &
+      "so what the new text would belong to cannot be told. Nothing was " &
+      "written; close the " & tail.what & " in the stylesheet first.")
 
 iterator topLevelRules(css: string): RuleSpan =
   ## Every rule at brace depth 0, with its selector text.
@@ -121,10 +439,11 @@ iterator topLevelRules(css: string): RuleSpan =
   var pendingSelector = ""
   var bodyStart = -1
   while i < css.len:
-    # Comments are scanned first: a `{`, `}` or `;` inside one is text.
-    if i + 1 < css.len and css[i] == '/' and css[i + 1] == '*':
-      let close = css.find("*/", i + 2)
-      i = if close < 0: css.len else: close + 2
+    # Comments, strings, escapes and unquoted urls are scanned first: a
+    # `{`, `}` or `;` inside one is text (`skipCssOpaque`).
+    let past = css.skipCssOpaque(i)
+    if past > i:
+      i = past
       continue
     case css[i]
     of '{':
@@ -159,11 +478,14 @@ func withoutComments(text: string): string =
   ## so `.tagline`'s raw selector text is "/* STRUCTURAL */\n\n  .tagline".
   ## The grip pilot comments nearly every rule that way, which is why this
   ## was invisible in a fixture and total in the real file.
+  ## A `/*` inside a string or an unquoted url (`[title="/*"]`) is text.
   var i = 0
   while i < text.len:
-    if i + 1 < text.len and text[i] == '/' and text[i + 1] == '*':
-      let close = text.find("*/", i + 2)
-      i = if close < 0: text.len else: close + 2
+    let past = text.skipCssOpaque(i)
+    if past > i:
+      if not (text[i] == '/' and i + 1 < text.len and text[i + 1] == '*'):
+        result.add text[i ..< past]
+      i = past
     else:
       result.add text[i]
       i += 1
@@ -184,15 +506,6 @@ type DeclSpan = object
   valueStart: int  ## first byte after the `:`
   valueEnd: int    ## exclusive; the `;` or the closing `}`
 
-func skipCssQuotedValue(css: string; at, limit: int): int =
-  let quote = css[at]
-  result = at + 1
-  while result < limit:
-    if css[result] == '\\': result += 2
-    elif css[result] == quote: return result + 1
-    else: inc result
-  result = min(result,limit)
-
 func findDeclaration(css: string; body: RuleSpan;
                      property: string): DeclSpan =
   ## Locate `property`'s value inside a rule body, or return `valueStart < 0`.
@@ -204,12 +517,10 @@ func findDeclaration(css: string; body: RuleSpan;
   result = DeclSpan(nameStart: -1, valueStart: -1, valueEnd: -1)
   var i = body.bodyStart
   while i < body.bodyEnd:
-    if css[i] in {'\'', '"'}:
-      i = css.skipCssQuotedValue(i,body.bodyEnd)
-      continue
-    if i + 1 < css.len and css[i] == '/' and css[i + 1] == '*':
-      let close = css.find("*/", i + 2)
-      i = if close < 0 or close > body.bodyEnd: body.bodyEnd else: close + 2
+    # Comments, strings, escapes and unquoted urls are never a name.
+    let past = css.skipCssOpaque(i, body.bodyEnd)
+    if past > i:
+      i = past
       continue
     if css[i] == property[0] and i + property.len <= body.bodyEnd and
        css[i ..< i + property.len] == property:
@@ -223,27 +534,12 @@ func findDeclaration(css: string; body: RuleSpan;
         if j < body.bodyEnd and css[j] == ':':
           var valueEnd = j + 1
           while valueEnd < body.bodyEnd and css[valueEnd] != ';':
-            if css[valueEnd] in {'\'', '"'}:
-              valueEnd = css.skipCssQuotedValue(valueEnd,body.bodyEnd)
-              continue
-            # A comment inside the value is part of the value's span but must
-            # not hide a `;` that follows it.
-            if valueEnd + 1 < css.len and css[valueEnd] == '/' and
-               css[valueEnd + 1] == '*':
-              let close = css.find("*/", valueEnd + 2)
-              valueEnd = if close < 0: body.bodyEnd else: close + 2
-              continue
-            valueEnd += 1
+            # A comment, string, escape or unquoted url inside the value is
+            # part of the value's span; a `;` inside one does not end it.
+            let past = css.skipCssOpaque(valueEnd, body.bodyEnd)
+            valueEnd = if past > valueEnd: past else: valueEnd + 1
           return DeclSpan(nameStart: i, valueStart: j + 1, valueEnd: valueEnd)
     i += 1
-
-func trailingComment(text: string): string =
-  ## The `/* ... */` a declaration's value carries after it, if any. It is
-  ## kept when the value is replaced: the comment explains the DECLARATION,
-  ## not the old number, and dropping it on every edit would strip the
-  ## stylesheet's reasoning one property at a time.
-  let open = text.find("/*")
-  if open < 0: "" else: text[open .. ^1]
 
 const shorthandsFor: seq[(string, seq[string])] = @[
   # Longhand -> the shorthands that set it, and therefore reset it.
@@ -334,9 +630,9 @@ iterator allRules(css: string): NestedRule =
   var open: seq[tuple[selector, prelude: string; bodyStart: int]] = @[]
   var selectorStart = 0
   while i < css.len:
-    if i + 1 < css.len and css[i] == '/' and css[i + 1] == '*':
-      let close = css.find("*/", i + 2)
-      i = if close < 0: css.len else: close + 2
+    let past = css.skipCssOpaque(i)   # comments, strings, escapes, urls
+    if past > i:
+      i = past
       continue
     case css[i]
     of '{':
@@ -581,7 +877,8 @@ func shadowingDeclaration*(css, selector, property: string): CssShadow =
                          condition: rule.condition, selector: rule.selector)
   CssShadow(found: false)
 
-proc patchCssDeclaration*(css, selector, property, newValue: string):
+proc patchCssDeclarationUnguarded(css, selector, property,
+    newValue: string):
     CssPatchResult =
   ## Set `property` to `newValue` inside the top-level rule for `selector`.
   ##
@@ -616,25 +913,22 @@ proc patchCssDeclaration*(css, selector, property, newValue: string):
 
   if decl.valueStart >= 0:
     let existing = css[decl.valueStart ..< decl.valueEnd]
-    let comment = existing.trailingComment()
-    let current = (if comment.len > 0: existing[0 ..< existing.find("/*")]
-                   else: existing).strip()
-    if current == newValue.strip():
+    let current = existing.cssDeclarationValue()
+    # The value changes; its priority and the comments around it stay
+    # (`cssValueEdit`). The whitespace outside `valueStart .. valueEnd` is
+    # untouched, so a multi-line rule keeps its alignment.
+    let edit = existing.cssValueEdit(newValue)
+    if edit.refusal.len > 0:
+      return CssPatchResult(ok: false, outcome: cpoUnreadable,
+        message: edit.refusal)
+    if edit.unchanged:
       return CssPatchResult(ok: true, outcome: cpoUnchanged, content: css,
                             oldValue: current)
-    # One leading space, the value, then whatever comment was there. The
-    # surrounding whitespace outside `valueStart .. valueEnd` is untouched,
-    # so a multi-line rule keeps its alignment.
-    var replacement = newValue.strip()
-    if comment.len > 0:
-      let gap = existing[existing.find("/*") - 1]
-      replacement.add (if gap in {' ', '\t'}: " " else: "")
-      replacement.add comment
     return CssPatchResult(ok: true, outcome: cpoReplaced,
       oldValue: current,
       content: css[0 ..< decl.valueStart] & (
         if css[decl.valueStart] in {' ', '\t'}: " " else: "") &
-        replacement & css[decl.valueEnd .. ^1])
+        edit.text & css[decl.valueEnd .. ^1])
 
   # Insert. Placed just after the last existing declaration so the new one
   # reads as part of the rule rather than as an afterthought wedged against
@@ -664,8 +958,14 @@ proc patchCssDeclaration*(css, selector, property, newValue: string):
     content: css[0 ..< insertAt] & (if needsSemicolon: ";" else: "") & sep &
       property & ":" & newValue.strip() & ";" & css[insertAt .. ^1])
 
-proc patchCssDeclarationAt*(css, selector, property, newValue: string;
-                            width: int): CssPatchResult =
+proc patchCssDeclaration*(css, selector, property, newValue: string):
+    CssPatchResult =
+  ## `patchCssDeclarationUnguarded`, refused when its write would land inside
+  ## what only the end of the sheet closes (`cssWriteRefusal`).
+  css.cssWriteRefusal(patchCssDeclarationUnguarded(css, selector, property, newValue))
+
+proc patchCssDeclarationAtUnguarded(css, selector, property,
+    newValue: string; width: int): CssPatchResult =
   ## `patchCssDeclaration`, but into the rule that governs `property` at
   ## `width` -- which may be inside an `@media` block.
   ##
@@ -694,15 +994,17 @@ proc patchCssDeclarationAt*(css, selector, property, newValue: string;
   let decl = css.findDeclaration(body, property)
   if decl.valueStart >= 0:
     let existing = css[decl.valueStart ..< decl.valueEnd]
-    let comment = existing.trailingComment()
-    let current = (if comment.len > 0: existing[0 ..< existing.find("/*")]
-                   else: existing).strip()
-    if current == newValue:
+    let current = existing.cssDeclarationValue()
+    # The value changes; its priority and comments stay (`cssValueEdit`).
+    let edit = existing.cssValueEdit(newValue)
+    if edit.refusal.len > 0:
+      return CssPatchResult(ok: false, outcome: cpoUnreadable,
+        message: edit.refusal)
+    if edit.unchanged:
       return CssPatchResult(ok: true, outcome: cpoUnchanged, content: css,
                             oldValue: current)
     return CssPatchResult(ok: true, outcome: cpoReplaced,
-      content: css[0 ..< decl.valueStart] & newValue &
-        (if comment.len > 0: " " & comment else: "") &
+      content: css[0 ..< decl.valueStart] & edit.text &
         css[decl.valueEnd .. ^1],
       oldValue: current)
 
@@ -740,6 +1042,13 @@ proc patchCssDeclarationAt*(css, selector, property, newValue: string;
 #  Responsive overrides: a declaration written under a named breakpoint.
 # ---------------------------------------------------------------------------
 
+proc patchCssDeclarationAt*(css, selector, property, newValue: string;
+    width: int): CssPatchResult =
+  ## `patchCssDeclarationAtUnguarded`, refused when its write would land inside
+  ## what only the end of the sheet closes (`cssWriteRefusal`).
+  css.cssWriteRefusal(patchCssDeclarationAtUnguarded(css, selector, property,
+    newValue, width))
+
 func collapsedCondition(condition: string): string =
   ## An at-rule prelude compared without its incidental whitespace, so the
   ## stylesheet's `@media (max-width: 980px)` and a caller's copy of it with a
@@ -756,9 +1065,9 @@ iterator topLevelAtBlocks(css: string): tuple[prelude: string;
   var prelude = ""
   var bodyStart = -1
   while i < css.len:
-    if i + 1 < css.len and css[i] == '/' and css[i + 1] == '*':
-      let close = css.find("*/", i + 2)
-      i = if close < 0: css.len else: close + 2
+    let past = css.skipCssOpaque(i)   # comments, strings, escapes, urls
+    if past > i:
+      i = past
       continue
     case css[i]
     of '{':
@@ -780,8 +1089,8 @@ iterator topLevelAtBlocks(css: string): tuple[prelude: string;
     else: discard
     i += 1
 
-proc patchCssDeclarationUnder*(css, condition, selector, property,
-                               newValue: string): CssPatchResult =
+proc patchCssDeclarationUnderUnguarded(css, condition, selector,
+    property, newValue: string): CssPatchResult =
   ## Set `property` for `selector` inside the `@media` block `condition` --
   ## a responsive override -- leaving every rule outside that block alone.
   ##
@@ -848,9 +1157,7 @@ proc patchCssDeclarationUnder*(css, condition, selector, property,
             "` declares `" & property & "` more than once, so the one this " &
             "override owns cannot be identified.")
       let existing = css[decl.valueStart ..< decl.valueEnd]
-      let comment = existing.trailingComment()
-      let current = (if comment.len > 0: existing[0 ..< existing.find("/*")]
-                     else: existing).strip()
+      let current = existing.cssDeclarationValue()
       if value.len == 0:
         var start = decl.nameStart
         var stop = decl.valueEnd
@@ -867,13 +1174,17 @@ proc patchCssDeclarationUnder*(css, condition, selector, property,
           while stop < rule.bodyEnd and css[stop] in {' ', '\t'}: inc stop
         return CssPatchResult(ok: true, outcome: cpoRemoved, oldValue: current,
           content: css[0 ..< start] & css[stop .. ^1])
-      if current == value:
+      # The value changes; its priority and comments stay (`cssValueEdit`).
+      let edit = existing.cssValueEdit(value)
+      if edit.refusal.len > 0:
+        return CssPatchResult(ok: false, outcome: cpoUnreadable,
+          message: edit.refusal)
+      if edit.unchanged:
         return CssPatchResult(ok: true, outcome: cpoUnchanged, content: css,
                               oldValue: current)
       let lead = if css[decl.valueStart] in {' ', '\t'}: " " else: ""
       return CssPatchResult(ok: true, outcome: cpoReplaced, oldValue: current,
-        content: css[0 ..< decl.valueStart] & lead & value &
-          (if comment.len > 0: " " & comment else: "") &
+        content: css[0 ..< decl.valueStart] & lead & edit.text &
           css[decl.valueEnd .. ^1])
     if value.len == 0:
       return CssPatchResult(ok: false, outcome: cpoRuleNotFound,
@@ -938,6 +1249,13 @@ proc patchCssDeclarationUnder*(css, condition, selector, property,
   if head.len > 0 and not head.endsWith("\n"): head.add "\n"
   CssPatchResult(ok: true, outcome: cpoInserted, oldValue: "",
     content: head & condition.strip() & " {\n  " & ruleText & "\n}\n")
+
+proc patchCssDeclarationUnder*(css, condition, selector, property,
+    newValue: string): CssPatchResult =
+  ## `patchCssDeclarationUnderUnguarded`, refused when its write would land inside
+  ## what only the end of the sheet closes (`cssWriteRefusal`).
+  css.cssWriteRefusal(patchCssDeclarationUnderUnguarded(css, condition,
+    selector, property, newValue))
 
 func nimConstBody*(nimSource, constName: string): string =
   ## The raw-string body of `const <constName> = """..."""`, or "".
@@ -1063,7 +1381,8 @@ func removalOverlaps(property: string): seq[string] =
   if property == "border-radius":
     for side in radiusLonghands: result.add side
 
-proc removeCssDeclaration*(css, selector, property: string): CssPatchResult =
+proc removeCssDeclarationUnguarded(css, selector, property: string):
+    CssPatchResult =
   ## Remove the ONE declaration of `property` that the rule for `selector`
   ## owns, leaving every other byte where it was.
   ##
@@ -1133,9 +1452,7 @@ proc removeCssDeclaration*(css, selector, property: string): CssPatchResult =
             "it to its class, token or inherited value. Edit the " &
             "stylesheet directly.")
   let existing = css[hit.decl.valueStart ..< hit.decl.valueEnd]
-  let comment = existing.trailingComment()
-  let current = (if comment.len > 0: existing[0 ..< existing.find("/*")]
-                 else: existing).strip()
+  let current = existing.cssDeclarationValue()
   var start = hit.decl.nameStart
   var stop = hit.decl.valueEnd
   if stop < hit.body.bodyEnd and css[stop] == ';': inc stop
@@ -1152,6 +1469,11 @@ proc removeCssDeclaration*(css, selector, property: string): CssPatchResult =
     while stop < hit.body.bodyEnd and css[stop] in {' ', '\t'}: inc stop
   CssPatchResult(ok: true, outcome: cpoRemoved, oldValue: current,
     content: css[0 ..< start] & css[stop .. ^1])
+
+proc removeCssDeclaration*(css, selector, property: string): CssPatchResult =
+  ## `removeCssDeclarationUnguarded`, refused when its write would land inside
+  ## what only the end of the sheet closes (`cssWriteRefusal`).
+  css.cssWriteRefusal(removeCssDeclarationUnguarded(css, selector, property))
 
 proc removeCssInNimConst*(nimSource, constName, selector,
                           property: string): CssPatchResult =
@@ -1254,8 +1576,13 @@ proc cssUnconditionalLiterals*(css: string; properties: seq[string]): seq[CssLit
   ## than presenting a guessed viewport/state value as source authority.
   var rules: seq[NestedRule]
   for rule in css.allRules(): rules.add rule
+  # A rule inside what only the end of the sheet closes is never offered:
+  # the writers refuse to write there (`cssWriteRefusal`), and a browser may
+  # not apply it as a top-level rule at all. It still counts as an owner.
+  let tail = css.cssOpenTail()
   for base in rules:
     if base.condition.len > 0: continue
+    if tail.at >= 0 and base.bodyStart > tail.at: continue
     for member in base.selector.withoutComments().split(','):
       let selector = member.strip()
       var owners = 0
@@ -1287,8 +1614,9 @@ proc cssUnconditionalLiterals*(css: string; properties: seq[string]): seq[CssLit
           literal.blockedProperties.add property
           continue
         let existing = css[declaration.valueStart ..< declaration.valueEnd]
-        let comment = existing.trailingComment()
-        let value = (if comment.len > 0: existing[0 ..< existing.find("/*")] else: existing).strip()
+        # As the writers report it (`oldValue`), so a native edit's
+        # expected value is the value the patch then finds.
+        let value = existing.cssDeclarationValue()
         if value.len > 0:
           literal.values.add((property, value))
           literal.declarationPositions.add((property,declaration.valueStart))

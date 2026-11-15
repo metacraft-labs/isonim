@@ -918,6 +918,47 @@ try {
   await p.evaluate(()=>{window.__isonimHoldSave=false;});
   cases.push('a held drag is released only by its own property in the same rule and condition');
 
+  // 54. A value edit of an `!important` declaration: the preview keeps the
+  // priority (and never adds one), and so does the written file, so the two
+  // agree before the write, after it and through undo and redo -- on the host
+  // that reports the writer's rule order and on one that does not. A later
+  // normal rule (`.long-tail-card { padding: 30px }`) shows which: without
+  // the priority the written rules would render 30px. isonim-pm issue
+  // 2026-11-15-a-value-edit-writes-the-declaration-without-its-important-
+  // while-the-preview-keeps-it; editor spec "Saving" and "Visual box model".
+  // What the written rules render on their own, for the card's classes.
+  const fileRenders=async()=>{const cls=await card().evaluate(n=>n.className);return p.evaluate(([css,cls])=>{const f=document.createElement('iframe');document.body.appendChild(f);f.contentDocument.body.innerHTML='<style>'+css+'</style><article class="'+cls+'">x</article>';const cs=f.contentWindow.getComputedStyle(f.contentDocument.querySelector('article'));const v=['top','right','bottom','left'].map(x=>cs.getPropertyValue('padding-'+x));f.remove();return v;},[(await cardRule())+'\n.long-tail-card { padding: 30px; }',cls]);};
+  for(const noOrder of [false,true]){
+    const what=noOrder?' (writer reports no rule order)':' (writer reports its rule order)';
+    await open('padding: 18px !important;','.long-tail-card { padding: 30px; }\n',false,noOrder);
+    await assertPoll(()=>rendered('padding-'),['18px','18px','18px','18px'],'the important card rule decides'+what);
+    await armCapture(sides);
+    await commit('Padding, all sides','20');
+    const at54=await captured();
+    assert.deepEqual(at54.values,['20px','20px','20px','20px'],'preview at the commit'+what);
+    assert.deepEqual(at54.state.rules.filter(r=>r.startsWith('.destination-card {')),['.destination-card {padding: 20px !important;}'],'the preview keeps the priority'+what);
+    await settleWrite('.destination-card { padding: 20px !important; }');
+    assert.deepEqual(await rendered('padding-'),['20px','20px','20px','20px'],'preview after the write'+what);
+    assert.deepEqual(await fileRenders(),['20px','20px','20px','20px'],'the written file renders what the preview shows'+what);
+    await undoRedo(false);
+    await settleWrite('.destination-card { padding: 18px !important; }');
+    assert.deepEqual(await rendered('padding-'),['18px','18px','18px','18px'],'preview after undo'+what);
+    assert.deepEqual(await fileRenders(),['18px','18px','18px','18px'],'the file after undo'+what);
+    await undoRedo(true);
+    await settleWrite('.destination-card { padding: 20px !important; }');
+    assert.deepEqual(await rendered('padding-'),['20px','20px','20px','20px'],'preview after redo'+what);
+    assert.deepEqual(await fileRenders(),['20px','20px','20px','20px'],'the file after redo'+what);
+    cases.push('a value edit of an !important declaration keeps its priority in the preview and the file, through undo and redo'+what);
+  }
+  // No priority is manufactured: the same edit of a plain declaration.
+  await open('padding: 18px;','.long-tail-card { padding: 30px; }\n');
+  await assertPoll(()=>rendered('padding-'),['30px','30px','30px','30px'],'the later rule decides');
+  await commit('Padding, all sides','20');
+  await settleWrite('.destination-card { padding: 20px; }');
+  assert.deepEqual(await rendered('padding-'),['30px','30px','30px','30px'],'preview after the write: no priority was added');
+  assert.deepEqual(await fileRenders(),['30px','30px','30px','30px']);
+  cases.push('a value edit of a plain declaration adds no priority to the preview or the file');
+
   assert.deepEqual(errors,[]);
   console.log('Shorthand order GUI passed:',pub,cases.length);
 } finally {

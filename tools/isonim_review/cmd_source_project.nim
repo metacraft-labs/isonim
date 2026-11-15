@@ -161,7 +161,10 @@ proc describeEditableStyles(root: string; manifest: JsonNode; overrideFile = "";
       let probe = patchCssInNimConstAt(source, entry{"const"}.getStr(),
         entry{"selector"}.getStr(), property.getStr(), "0", 0)
       if probe.ok:
-        values[property.getStr()] = %probe.oldValue
+        # Shown without its `!important`, as the field takes a value; the
+        # write keeps the declaration's priority (`cssValueEdit`), and the
+        # act compares with the priority set aside (`cssValueMatches`).
+        values[property.getStr()] = %probe.oldValue.cssValueWithoutPriority()
         removals[property.getStr()] = %removalStatement(source, entry, property.getStr())
         edits[property.getStr()] = %editStatement(source, entry, property.getStr())
     result.add(%* {"key": entry{"key"}.getStr(), "elementId": entry{"elementId"}.getStr(),
@@ -345,7 +348,7 @@ proc cmdSourceProject*(args: seq[string]): int =
           raise newException(ValueError, refused)
         let inverse = removeCssInNimConst(restored.content, literalMap{"const"}.getStr(),
           literalMap{"selector"}.getStr(), property)
-        if not inverse.ok or inverse.content != current or inverse.oldValue != request["value"].getStr():
+        if not inverse.ok or inverse.content != current or not inverse.oldValue.cssValueMatches(request["value"].getStr()):
           raise newException(ValueError, refused)
         nativeProperty = property
         nativeAfter = request["value"].getStr()
@@ -410,7 +413,7 @@ proc cmdSourceProject*(args: seq[string]): int =
         let validated = patchCssInNimConstAt(source, literalMap{"const"}.getStr(),
           literalMap{"selector"}.getStr(), nativeProperty, nativeAfter,
           request{"viewportWidth"}.getInt())
-        if not validated.ok or validated.oldValue != nativeBefore:
+        if not validated.ok or not validated.oldValue.cssValueMatches(nativeBefore):
           raise newException(ValueError, "Source declaration changed or cannot be safely patched.")
         echo $(%* {"ok": true, "sourceEdit": {"before": nativeBefore,
           "after": nativeBefore, "unchanged": true}})
@@ -489,7 +492,7 @@ proc cmdSourceProject*(args: seq[string]): int =
       if inspectorEdit and removal:
         let removed = removeCssInNimConst(content, literalMap{"const"}.getStr(),
           literalMap{"selector"}.getStr(), nativeProperty)
-        if not removed.ok or removed.oldValue != nativeBefore:
+        if not removed.ok or not removed.oldValue.cssValueMatches(nativeBefore):
           return WorkspacePatchResult(ok: false, diagnostics: @[WorkspaceEditDiagnostic(
             kind: wedSourceConflict, message: if removed.ok:
               "Source declaration changed or cannot be safely removed." else: removed.message)])
@@ -501,7 +504,7 @@ proc cmdSourceProject*(args: seq[string]): int =
         let patched = patchCssInNimConstAt(content, literalMap{"const"}.getStr(),
           literalMap{"selector"}.getStr(), nativeProperty, nativeAfter,
           request{"viewportWidth"}.getInt())
-        if not patched.ok or patched.oldValue != nativeBefore:
+        if not patched.ok or not patched.oldValue.cssValueMatches(nativeBefore):
           return WorkspacePatchResult(ok: false, diagnostics: @[WorkspaceEditDiagnostic(
             kind: wedSourceConflict, message: "Source declaration changed or cannot be safely patched.")])
         return WorkspacePatchResult(ok: true, patch: WorkspaceFilePatch(file: schema.file,
