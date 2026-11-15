@@ -405,7 +405,7 @@ async function openEditor(launcher, observeWire = false) {
       registration.result,
       "actual scoped browser registration must succeed",
     );
-    return { page, context };
+    return { page, context, registration: registration.result };
   } catch (error) {
     try {
       await bounded(
@@ -491,6 +491,214 @@ test("e2e_editor_chat_panel_hello_streams_response_from_daemon", async (t) => {
           .getAttribute("aria-selected"),
         "true",
       );
+    } finally {
+      await bounded(
+        context.close(),
+        30000,
+        "Owned editor context shutdown",
+        launcher.artifacts,
+      );
+    }
+  } finally {
+    await stopEditor(launcher);
+  }
+});
+
+// A loaded host can starve the tab's poll loop past its browser lease. The
+// first request after the stall is then the chat session itself, and it must
+// be admitted on the tab's own browser credential rather than refused as a
+// disconnected instance. The stall is a real busy loop on the page's main
+// thread, and Send is clicked in the same task so no overdue poll can renew
+// the lease first; nothing is substituted.
+test("e2e_editor_chat_session_survives_a_main_thread_stall_past_the_lease", async (t) => {
+  if (skipIfPrereqsMissing(t)) return;
+  const stallMs = Number(process.env.ISONIM_CHAT_TEST_STALL_MS || 11000);
+  let launcher;
+  try {
+    launcher = await startEditor();
+    const { page, context } = await openEditor(launcher);
+    try {
+      const input = page.locator("textarea[aria-label='Agent prompt']");
+      await input.waitFor({ state: "visible", timeout: 10_000 });
+      await input.fill("hello");
+      const panel = page.locator(".editor-chat[data-chat-local-id]");
+      const polls = [];
+      const sessionRequests = [];
+      page.on("request", (request) => {
+        const pathname = new URL(request.url()).pathname;
+        if (
+          pathname === "/api/editor/rpc" &&
+          request.postDataJSON()?.method === "editor.poll"
+        )
+          polls.push(Date.now());
+        if (pathname === "/api/agent/sessions" && request.method() === "POST")
+          sessionRequests.push(Date.now());
+      });
+      // The poll loop must be live before the stall, or the gap below would
+      // not show that this stall is what let the lease expire.
+      await page.waitForRequest(
+        (request) =>
+          new URL(request.url()).pathname === "/api/editor/rpc" &&
+          request.postDataJSON()?.method === "editor.poll",
+        { timeout: 10_000 },
+      );
+      const createdPromise = page.waitForResponse(
+        (response) =>
+          new URL(response.url()).pathname === "/api/agent/sessions" &&
+          response.request().method() === "POST",
+        { timeout: 30000 + stallMs },
+      );
+      const promptPromise = page.waitForRequest(
+        (request) =>
+          new URL(request.url()).pathname === "/api/agent/prompts" &&
+          request.method() === "POST",
+        { timeout: 30000 + stallMs },
+      );
+      // Handled now; awaited one at a time so a refused session fails at its
+      // status assertion, not at the prompt wait that a refusal never reaches.
+      createdPromise.catch(() => {});
+      promptPromise.catch(() => {});
+      await page.evaluate((ms) => {
+        const end = Date.now() + ms;
+        while (Date.now() < end);
+        document.querySelector("[aria-label='Send agent prompt']").click();
+      }, stallMs);
+      const created = await createdPromise;
+      const sessionAt = sessionRequests[0];
+      const lastPoll = Math.max(...polls.filter((at) => at <= sessionAt));
+      // Positive control: no poll reached the server inside the lease window
+      // before the session request, so only the session request could renew it.
+      assert.ok(
+        sessionAt - lastPoll > 10_000,
+        `the stall must outlast the 10 s lease (gap ${sessionAt - lastPoll} ms)`,
+      );
+      const createdBody = await created.text();
+      assert.equal(created.status(), 200, createdBody);
+      const session = JSON.parse(createdBody);
+      assert.ok(session.sessionId, "daemon must create an actual session");
+      launcher.sessions.push(session.sessionId);
+      const promptRequest = await promptPromise;
+      assert.equal(promptRequest.postDataJSON().sessionId, session.sessionId);
+      await page.waitForFunction(
+        () =>
+          Array.from(
+            document.querySelectorAll(
+              '.editor-chat [data-chat-role="arAssistant"] [data-chat-markdown="paragraph"]',
+            ),
+          ).some((node) => node.textContent === "M4_HTTP_HELLO_REPLY"),
+        null,
+        { timeout: 10_000 },
+      );
+      // Admission involves no client retry: one Send, one session request.
+      assert.equal(sessionRequests.length, 1, "exactly one session request");
+      assert.ok(await panel.isVisible());
+    } finally {
+      await bounded(
+        context.close(),
+        30000,
+        "Owned editor context shutdown",
+        launcher.artifacts,
+      );
+    }
+  } finally {
+    await stopEditor(launcher);
+  }
+});
+
+// A workspace switch makes the tab leave its identity. The bridge's
+// editor.disconnect for it is fire-and-forget; here it is dropped with
+// route.abort, as a lost request would be. The re-registration must still
+// retire the old identity, so it can neither be renewed nor used, while the new
+// identity works. The shipped editor has no project-switch control: a host app
+// switches through applyWorkspace, which sets vm.workspaceId, the field the
+// bridge's poll compares against its registered scope. The test sets that same
+// field on the live VM; every request after it is the production client's own.
+test("e2e_editor_lost_switch_disconnect_still_retires_the_old_identity", async (t) => {
+  if (skipIfPrereqsMissing(t)) return;
+  let launcher;
+  try {
+    launcher = await startEditor();
+    const { page, context, registration: old } = await openEditor(launcher);
+    try {
+      assert.ok(old.browserToken && old.controlToken, "first registration credentials");
+      const dropped = [];
+      await page.route("**/api/editor/rpc", (route) => {
+        const body = route.request().postDataJSON();
+        if (body?.method === "editor.disconnect") {
+          dropped.push(body.params);
+          return route.abort();
+        }
+        return route.continue();
+      });
+      const switched = "lease-switch-" + old.workspace;
+      const reregistered = page.waitForResponse(
+        (response) =>
+          new URL(response.url()).pathname === "/api/editor/rpc" &&
+          response.request().postDataJSON()?.method === "editor.register",
+        { timeout: 30000 },
+      );
+      reregistered.catch(() => {});
+      const vmFound = await page.evaluate((workspace) => {
+        const vm = globalThis.__isonimEditorVm;
+        if (!vm) return false;
+        vm.workspaceId = Array.from(new TextEncoder().encode(workspace));
+        return true;
+      }, switched);
+      assert.ok(vmFound, "the mounted editor VM must be reachable");
+      const response = await reregistered;
+      const claim = response.request().postDataJSON().params;
+      const fresh = (await response.json()).result;
+      // The disconnect really was lost, and the tab named what it left.
+      assert.equal(dropped.length, 1, "the switch's disconnect was dropped");
+      assert.equal(dropped[0].instance, old.instance);
+      assert.equal(claim.workspace, switched);
+      assert.equal(claim.replaces?.instance, old.instance);
+      assert.equal(claim.replaces?.epoch, old.epoch);
+      assert.equal(claim.replaces?.browserToken, old.browserToken);
+      assert.ok(fresh?.instance && fresh.instance !== old.instance, "a new identity");
+      assert.equal(fresh.workspace, switched);
+      await page.unroute("**/api/editor/rpc");
+      const call = (path, body, token) =>
+        page.evaluate(
+          async ([path, body, token]) => {
+            const r = await fetch(path, {
+              method: "POST",
+              credentials: "omit",
+              headers: { "Content-Type": "application/json", "X-IsoNim-Control": token },
+              body: JSON.stringify(body),
+            });
+            return { status: r.status, body: await r.json() };
+          },
+          [path, body, token],
+        );
+      const rpc = (method, params, token) =>
+        call("/api/editor/rpc", { jsonrpc: "2.0", id: 1, method, params }, token);
+      const scope = (r) => ({ workspace: r.workspace, instance: r.instance, epoch: r.epoch });
+      const command = (r) => ({
+        ...scope(r),
+        command: "viewport",
+        viewport: "phone",
+        commandId: "lease-switch-op",
+        expectedRevision: 0,
+      });
+      // The old identity cannot be renewed (poll, session) or used (agent).
+      const oldPoll = await rpc("editor.poll", scope(old), old.browserToken);
+      assert.equal(oldPoll.body.error?.message, "disconnected_instance");
+      const oldSession = await call("/api/agent/sessions", { editor: scope(old) }, old.browserToken);
+      assert.equal(oldSession.status, 403);
+      assert.equal(oldSession.body.error, "disconnected_instance");
+      const oldAgent = await rpc("editor.command", command(old), old.controlToken);
+      assert.equal(oldAgent.body.error?.message, "disconnected_instance");
+      // The new identity works: poll, session admission and agent command.
+      const freshPoll = await rpc("editor.poll", scope(fresh), fresh.browserToken);
+      assert.ok(freshPoll.body.result, JSON.stringify(freshPoll.body));
+      const freshSession = await call("/api/agent/sessions", { editor: scope(fresh) }, fresh.browserToken);
+      assert.equal(freshSession.status, 200, JSON.stringify(freshSession.body));
+      assert.ok(freshSession.body.sessionId);
+      launcher.sessions.push(freshSession.body.sessionId);
+      const freshAgent = await rpc("editor.command", command(fresh), fresh.controlToken);
+      assert.ok(freshAgent.body.result?.operationId || freshAgent.body.result?.status,
+        JSON.stringify(freshAgent.body));
     } finally {
       await bounded(
         context.close(),

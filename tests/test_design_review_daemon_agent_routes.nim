@@ -359,3 +359,66 @@ test "shutdown registry rejects new drafts and late backend admission":
   expect HarborError:
     discard registry.runAgentTurn(draft, @[], nil)
   check registry.getState(draft.sessionId).isNone
+
+# --------------------------------------------------------------------------- #
+#  Browser lease at session admission.                                        #
+# --------------------------------------------------------------------------- #
+
+# The real daemon's control registry and session route over real HTTP. The
+# registrations, credentials and the expired lease are all real; the lease is
+# made to expire by waiting it out, not by editing registry state.
+import isonim/editor/design_review/control_routes as lease_routes
+
+proc controlRpc(f: AgentRoutesFixture; name: string; params: JsonNode;
+    token: string): JsonNode =
+  let (code, body) = f.agentPost(lease_routes.ControlRoute,
+    $(%* {"jsonrpc": "2.0", "id": 1, "method": name, "params": params}),
+    control = token)
+  check code == 200
+  parseJson(body)
+
+proc leaseTarget(registration: JsonNode): JsonNode =
+  %* {"workspace": registration["workspace"], "instance": registration["instance"],
+    "epoch": registration["epoch"]}
+
+proc agentCommand(registration: JsonNode): JsonNode =
+  result = leaseTarget(registration)
+  result["command"] = %"viewport"
+  result["viewport"] = %"phone"
+  result["commandId"] = %"lease-op"
+  result["expectedRevision"] = %0
+
+test "test_post_sessions_renews_an_expired_lease_only_for_the_exact_tab":
+  let bootstrap = "lease-browser-bootstrap"
+  let f = startAgentDaemon(extraEnv = [("ISONIM_EDITOR_BROWSER_BOOTSTRAP", bootstrap)])
+  defer: f.shutdown()
+  proc register(): JsonNode =
+    f.controlRpc("editor.register", %* {"workspace": "lease", "state": {"revision": 0}},
+      bootstrap)["result"]
+  let tab = register()
+  let other = register()
+  let closed = register()
+  check f.controlRpc("editor.disconnect", leaseTarget(closed),
+    closed["browserToken"].getStr())["result"]["disconnected"].getBool
+  sleep(int(lease_routes.BrowserLeaseSeconds * 1000) + 200)
+  proc admit(registration: JsonNode; token: string): tuple[code: int; body: string] =
+    f.agentPost("/api/agent/sessions", $(%* {"editor": leaseTarget(registration)}),
+      control = token)
+  # Another tab's browser credential and the tab's own agent credential are
+  # refused, and neither renews the lease.
+  for token in [other["browserToken"].getStr(), tab["controlToken"].getStr(), ""]:
+    let (code, body) = admit(tab, token)
+    check code == 403
+    check parseJson(body)["error"].getStr() == "browser_credential_required"
+  check f.controlRpc("editor.command", agentCommand(tab),
+    tab["controlToken"].getStr())["error"]["message"].getStr() == "disconnected_instance"
+  # A disconnected tab stays refused even with its own exact credential.
+  let (closedCode, closedBody) = admit(closed, closed["browserToken"].getStr())
+  check closedCode == 403
+  check parseJson(closedBody)["error"].getStr() == "disconnected_instance"
+  # The exact tab's credential admits the session and renews the lease.
+  let (code, body) = admit(tab, tab["browserToken"].getStr())
+  check code == 200
+  check parseJson(body){"sessionId"}.getStr("").len > 0
+  check f.controlRpc("editor.command", agentCommand(tab),
+    tab["controlToken"].getStr())["result"]["status"].getStr() == "queued"

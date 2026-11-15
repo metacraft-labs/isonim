@@ -121,11 +121,13 @@ proc shutdown*(f: AgentRoutesFixture) =
   if failure != nil: raise failure
 
 proc agentPost*(f: AgentRoutesFixture; path, body: string;
-                timeoutMs = 10_000):
+                timeoutMs = 10_000; control = ""):
     tuple[code: int; body: string] =
+  ## ``control`` is sent as the ``X-IsoNim-Control`` credential when set.
   let client = newHttpClient(timeout = timeoutMs)
   defer: client.close()
   let headers = newHttpHeaders([("Content-Type", "application/json")])
+  if control.len > 0: headers["X-IsoNim-Control"] = control
   let resp = client.request(f.baseUrl & path, httpMethod = HttpPost,
                             body = body, headers = headers)
   (code: parseInt(resp.status.split(' ')[0]), body: resp.body)

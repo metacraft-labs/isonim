@@ -83,13 +83,51 @@ proc agentAuthorized(reg: EditorControlRegistry; instance: ControlInstance;
       result.epoch != instance.scope.epoch:
     raise newException(ControlError, "credential_scope_mismatch")
 
-proc validateBrowserScope*(reg: EditorControlRegistry; node: JsonNode; token: string): ControlScope =
+proc validateBrowserScope*(reg: EditorControlRegistry; node: JsonNode; token: string;
+    renewLease = false): ControlScope =
+  ## Admits a browser-originated agent route for the tab that holds ``node``'s
+  ## instance. By default the tab's lease must be live.
+  ##
+  ## ``renewLease`` is for session admission only (``handleSessions``): a
+  ## request carrying the tab's exact browser credential is as much proof of a
+  ## live, mounted tab as its poll, so it renews an expired lease the way
+  ## ``editor.poll`` does. Renewal happens only after the workspace, epoch and
+  ## browser credential all match, and never for an explicitly disconnected,
+  ## replaced or retired instance. An agent or another tab's credential is
+  ## refused before the lease is touched. Other browser routes must not pass it.
   acquire(reg.lock)
   try:
-    let instance = reg.requireInstance(node)
+    let instance = reg.requireInstance(node, allowExpiredLease = renewLease)
     instance.browserAuthorized(token)
+    if renewLease: instance.touched = getMonoTime()
     result = instance.scope
   finally: release(reg.lock)
+
+proc retire(reg: EditorControlRegistry; instance: ControlInstance) =
+  ## Revokes an instance for good: it can no longer be polled, renewed or
+  ## targeted, and every agent credential scoped to it is withdrawn.
+  instance.connected = false
+  var tokens: seq[string]
+  for key, scope in reg.tokens:
+    if scope.instance == instance.scope.instance: tokens.add key
+  for key in tokens: reg.tokens.del(key)
+
+proc retireReplaced(reg: EditorControlRegistry; replaced: JsonNode) =
+  ## A tab that re-registers names the identity it leaves (``replaces``), with
+  ## that identity's browser credential. Retiring it here makes the switch
+  ## final even if the tab's fire-and-forget ``editor.disconnect`` was lost, so
+  ## the tab cannot later renew an identity it has left. Only the exact
+  ## credential retires an instance; anything else is ignored rather than
+  ## refused, so a stale or unknown identity never blocks the new registration.
+  if replaced == nil or replaced.kind != JObject: return
+  let id = replaced{"instance"}.getStr()
+  if id.len == 0 or not reg.instances.hasKey(id): return
+  let instance = reg.instances[id]
+  let token = replaced{"browserToken"}.getStr()
+  if token.len == 0 or token != instance.browserToken or
+      replaced{"workspace"}.getStr() != instance.scope.workspace or
+      replaced{"epoch"}.getStr() != instance.scope.epoch: return
+  reg.retire(instance)
 
 proc bindConversation*(reg: EditorControlRegistry; scope: ControlScope; conversation: string): ControlScope =
   acquire(reg.lock)
@@ -149,6 +187,7 @@ proc rpcDispatch*(reg: EditorControlRegistry; request: JsonNode; token: string):
         raise newException(ControlError, "browser_bootstrap_required")
       let workspace = params{"workspace"}.getStr()
       if workspace.len == 0: raise newException(ControlError, "missing_workspace")
+      reg.retireReplaced(params{"replaces"})
       var scope = ControlScope(workspace: workspace, instance: credential(), epoch: credential())
       scope.token = credential()
       let browserToken = credential()
@@ -161,8 +200,11 @@ proc rpcDispatch*(reg: EditorControlRegistry; request: JsonNode; token: string):
         "browserToken": browserToken, "controlToken": scope.token, "leaseSeconds": BrowserLeaseSeconds}
     else:
       # A still-mounted tab may renew an expired transport lease with its exact
-      # browser credential. Explicit disconnect/replacement remains revoked;
-      # agents cannot renew leases and remain denied until a successful poll.
+      # browser credential (here by poll; ``validateBrowserScope`` with
+      # ``renewLease`` by session admission). No other browser method renews an
+      # expired lease; ``editor.ack`` only refreshes a live one. Explicit
+      # disconnect/replacement remains revoked; agents cannot renew leases and
+      # remain denied until the tab renews it.
       let instance = reg.requireInstance(params, allowExpiredLease = methodName == "editor.poll")
       if methodName in ["editor.poll", "editor.ack", "editor.disconnect", "editor.preference", "editor.approve", "editor.source-authorize", "editor.inspector-source", "editor.bindings-source"]:
         instance.browserAuthorized(token)
@@ -334,11 +376,7 @@ proc rpcDispatch*(reg: EditorControlRegistry; request: JsonNode; token: string):
         instance.touched = getMonoTime()
         instance.publishSnapshot(params{"state"})
       of "editor.disconnect":
-        instance.connected = false
-        var tokens: seq[string]
-        for key, scope in reg.tokens:
-          if scope.instance == instance.scope.instance: tokens.add key
-        for key in tokens: reg.tokens.del(key)
+        reg.retire(instance)
         output = %* {"disconnected": true}
       # These methods are intentionally UI-only. Delivery of approved state still
       # goes through the same browser ACK path; an agent token cannot call either.

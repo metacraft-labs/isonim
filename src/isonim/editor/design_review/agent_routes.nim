@@ -928,7 +928,7 @@ proc handleSessions*(reg: AgentRegistry; req: Request)
       if node{"editor"} != nil:
         if reg.controlRegistry == nil: raise newException(ControlError, "control_unavailable")
         scope = reg.controlRegistry.validateBrowserScope(node["editor"],
-          req.headers.getOrDefault("X-IsoNim-Control"))
+          req.headers.getOrDefault("X-IsoNim-Control"), renewLease = true)
         if (cwd.len > 0 and cwd != reg.workspaceRoot) or
             (projectRoot.len > 0 and projectRoot != reg.workspaceRoot):
           raise newException(ControlError, "scoped_workspace_root_mismatch")
@@ -948,7 +948,7 @@ proc handleSessions*(reg: AgentRegistry; req: Request)
       if scope.instance.len > 0:
         let node = parseJson(req.body)
         scope = reg.controlRegistry.validateBrowserScope(node["editor"],
-          req.headers.getOrDefault("X-IsoNim-Control"))
+          req.headers.getOrDefault("X-IsoNim-Control"), renewLease = true)
     var state: AgentSessionState
     {.cast(gcsafe).}:
       state = createAcpSession(reg,

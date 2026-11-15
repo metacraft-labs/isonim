@@ -331,7 +331,15 @@ proc installControlBridge*(vm: EditorVM; root: Element): BrowserControlBridge =
   proc register() =
     if registering or bridge.disposed: return
     registering = true
-    bridge.fetchRpc("editor.register", %* {"workspace": vm.workspaceId, "state": vm.controlSnapshot()},
+    var params = %* {"workspace": vm.workspaceId, "state": vm.controlSnapshot()}
+    # Name the identity this tab leaves, with its credential, so the server
+    # retires it even if the fire-and-forget disconnect was lost. Kept on every
+    # retry until a registration succeeds and replaces it.
+    if bridge.browserToken.len > 0 and bridge.scopeJson.len > 0:
+      var replaces = bridge.scope()
+      replaces["browserToken"] = %bridge.browserToken
+      params["replaces"] = replaces
+    bridge.fetchRpc("editor.register", params,
       proc(reply: JsonNode) =
         registering = false
         let registration = reply{"result"}

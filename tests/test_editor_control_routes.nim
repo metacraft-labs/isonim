@@ -14,6 +14,13 @@ proc register(reg: EditorControlRegistry; workspace = "work"): JsonNode =
   rpc(reg, "editor.register", %* {"workspace": workspace, "state": {"revision": 0}}, "browser-bootstrap")["result"]
 proc target(registration: JsonNode): JsonNode =
   %* {"workspace": registration["workspace"], "instance": registration["instance"], "epoch": registration["epoch"]}
+proc scopeOf(registration: JsonNode): ControlScope =
+  ControlScope(workspace: registration["workspace"].getStr, instance: registration["instance"].getStr,
+    epoch: registration["epoch"].getStr)
+proc refusal(body: proc()): string =
+  ## The ControlError message ``body`` raises, or "" when it is admitted.
+  try: body()
+  except ControlError as error: return error.msg
 proc command(registration: JsonNode; id = "op1"): JsonNode =
   result = target(registration)
   result["command"] = %"viewport"
@@ -230,6 +237,113 @@ suite "Editor JSON-RPC scopes and acknowledgement":
     check rpc(reg, "editor.command", command(browser), browser["controlToken"].getStr())["error"]["message"].getStr == "disconnected_instance"
     check rpc(reg, "editor.poll", target(browser), browser["browserToken"].getStr())["result"]["commands"].len == 0
     check rpc(reg, "editor.command", command(browser), browser["controlToken"].getStr())["result"]["status"].getStr == "queued"
+
+  test "the exact tab's session admission renews its expired lease":
+    # A stalled tab's first request after the stall may be a chat session
+    # rather than a poll. Its browser credential renews the lease just as a
+    # poll does, with the same identity and scoped agent authority.
+    let reg = newEditorControlRegistry("browser-bootstrap")
+    let browser = register(reg)
+    sleep(int(BrowserLeaseSeconds * 1000) + 100)
+    check rpc(reg, "editor.command", command(browser), browser["controlToken"].getStr())["error"]["message"].getStr == "disconnected_instance"
+    let scope = reg.validateBrowserScope(target(browser), browser["browserToken"].getStr(), renewLease = true)
+    check scope.instance == browser["instance"].getStr and scope.epoch == browser["epoch"].getStr
+    check reg.bindConversation(scope, "chat").token.len > 0
+    check rpc(reg, "editor.command", command(browser), browser["controlToken"].getStr())["result"]["status"].getStr == "queued"
+
+  test "another tab, an agent or a stale identity cannot renew or use an expired lease":
+    let reg = newEditorControlRegistry("browser-bootstrap")
+    let first = register(reg)
+    let second = register(reg)
+    sleep(int(BrowserLeaseSeconds * 1000) + 100)
+    # The second tab is live again; its credential still has no authority over the first.
+    check rpc(reg, "editor.poll", target(second), second["browserToken"].getStr())["result"]["commands"].len == 0
+    check refusal(proc() = discard reg.validateBrowserScope(target(first), second["browserToken"].getStr(), renewLease = true)) == "browser_credential_required"
+    check refusal(proc() = discard reg.validateBrowserScope(target(first), first["controlToken"].getStr(), renewLease = true)) == "browser_credential_required"
+    check refusal(proc() = discard reg.validateBrowserScope(target(first), "", renewLease = true)) == "browser_credential_required"
+    check refusal(proc() = discard reg.validateBrowserScope(target(second), first["browserToken"].getStr(), renewLease = true)) == "browser_credential_required"
+    var crossed = target(first)
+    crossed["epoch"] = second["epoch"]
+    check refusal(proc() = discard reg.validateBrowserScope(crossed, first["browserToken"].getStr(), renewLease = true)) == "stale_connection_epoch"
+    crossed = target(first)
+    crossed["workspace"] = %"other"
+    check refusal(proc() = discard reg.validateBrowserScope(crossed, first["browserToken"].getStr(), renewLease = true)) == "wrong_workspace"
+    crossed = target(first)
+    crossed["instance"] = %"forged"
+    check refusal(proc() = discard reg.validateBrowserScope(crossed, first["browserToken"].getStr(), renewLease = true)) == "stale_instance"
+    # None of those attempts renewed the first tab's lease.
+    check rpc(reg, "editor.command", command(first), first["controlToken"].getStr())["error"]["message"].getStr == "disconnected_instance"
+    check refusal(proc() = discard reg.bindConversation(scopeOf(first), "chat")) == "disconnected_instance"
+
+  test "a gone tab stays refused: no renewal keeps it expired and disconnection is final":
+    let reg = newEditorControlRegistry("browser-bootstrap")
+    let silent = register(reg)
+    let closed = register(reg)
+    check rpc(reg, "editor.disconnect", target(closed), closed["browserToken"].getStr())["result"]["disconnected"].getBool
+    sleep(int(BrowserLeaseSeconds * 1000) + 100)
+    # A tab that sends nothing renews nothing: agents and new chats are refused.
+    check rpc(reg, "editor.command", command(silent), silent["controlToken"].getStr())["error"]["message"].getStr == "disconnected_instance"
+    check refusal(proc() = discard reg.bindConversation(scopeOf(silent), "chat")) == "disconnected_instance"
+    # A disconnected tab cannot be revived by its own exact browser credential.
+    check refusal(proc() = discard reg.validateBrowserScope(target(closed), closed["browserToken"].getStr(), renewLease = true)) == "disconnected_instance"
+    check refusal(proc() = discard reg.bindConversation(scopeOf(closed), "chat")) == "disconnected_instance"
+
+  test "a non-renewing browser route still refuses an expired lease and does not renew it":
+    # Renewal is opt-in for session admission. Any other caller of
+    # validateBrowserScope keeps requiring a live lease.
+    let reg = newEditorControlRegistry("browser-bootstrap")
+    let browser = register(reg)
+    sleep(int(BrowserLeaseSeconds * 1000) + 100)
+    check refusal(proc() = discard reg.validateBrowserScope(target(browser), browser["browserToken"].getStr())) == "disconnected_instance"
+    check rpc(reg, "editor.command", command(browser), browser["controlToken"].getStr())["error"]["message"].getStr == "disconnected_instance"
+    check refusal(proc() = discard reg.bindConversation(scopeOf(browser), "chat")) == "disconnected_instance"
+
+  test "re-registration retires the identity it replaces even when the disconnect was lost":
+    let reg = newEditorControlRegistry("browser-bootstrap")
+    let old = register(reg, "a")
+    let chat = reg.bindConversation(reg.validateBrowserScope(target(old), old["browserToken"].getStr()), "chat")
+    # The workspace switch's disconnect never arrives; the new registration names the old identity.
+    var replaces = target(old)
+    replaces["browserToken"] = old["browserToken"]
+    let fresh = rpc(reg, "editor.register", %* {"workspace": "b", "state": {"revision": 0}, "replaces": replaces},
+      "browser-bootstrap")["result"]
+    check fresh["instance"] != old["instance"]
+    check refusal(proc() = discard reg.validateBrowserScope(target(old), old["browserToken"].getStr(), renewLease = true)) == "disconnected_instance"
+    check rpc(reg, "editor.poll", target(old), old["browserToken"].getStr())["error"]["message"].getStr == "disconnected_instance"
+    check rpc(reg, "editor.command", command(old), chat.token)["error"]["message"].getStr == "disconnected_instance"
+    # Its scoped agent credentials are withdrawn, as by an explicit disconnect.
+    check refusal(proc() = discard reg.rebindConversation(chat, "resurrected")) == "revoked_control_scope"
+    check rpc(reg, "editor.poll", target(fresh), fresh["browserToken"].getStr())["result"]["commands"].len == 0
+
+  test "only the replaced identity's exact credential retires it; a bad claim never blocks registration":
+    let reg = newEditorControlRegistry("browser-bootstrap")
+    let victim = register(reg)
+    let other = register(reg)
+    let exact = victim["browserToken"].getStr()
+    # Only an exact, whole credential retires: empty, missing, truncated, a
+    # prefix and a non-string are each a bad claim. An agent can hold the
+    # bootstrap and its tab's identity, so this comparison is what keeps it
+    # from retiring that tab.
+    for (field, value) in [("browserToken", other["browserToken"]), ("browserToken", victim["controlToken"]),
+        ("browserToken", %""), ("browserToken", %exact[0 ..< exact.len - 1]), ("browserToken", %exact[0 ..< 1]),
+        ("browserToken", %(exact & "0")), ("browserToken", %0), ("browserToken", newJNull()),
+        ("epoch", other["epoch"]), ("workspace", %"elsewhere")]:
+      var claim = target(victim)
+      claim["browserToken"] = victim["browserToken"]
+      claim[field] = value
+      let fresh = rpc(reg, "editor.register", %* {"workspace": "work", "state": {"revision": 0}, "replaces": claim},
+        "browser-bootstrap")
+      check fresh{"result"}{"instance"}.getStr.len > 0
+    block missingToken:
+      let claim = target(victim)
+      let fresh = rpc(reg, "editor.register", %* {"workspace": "work", "state": {"revision": 0}, "replaces": claim},
+        "browser-bootstrap")
+      check fresh{"result"}{"instance"}.getStr.len > 0
+    for claim in [%"not-an-object", %* {"instance": "unknown", "browserToken": "x"}]:
+      check rpc(reg, "editor.register", %* {"workspace": "work", "state": {"revision": 0}, "replaces": claim},
+        "browser-bootstrap"){"result"}{"instance"}.getStr.len > 0
+    check rpc(reg, "editor.poll", target(victim), victim["browserToken"].getStr())["result"]["commands"].len == 0
+    check rpc(reg, "editor.command", command(victim), victim["controlToken"].getStr())["result"]["status"].getStr == "queued"
 
   test "unknown request fields never enter stored operation activity":
     let reg = newEditorControlRegistry("browser-bootstrap")
@@ -499,3 +613,55 @@ suite "browser-origin binding metadata admission":
     poll["state"]["selection"] = %"another-element"
     discard rpc(registry,"editor.poll",poll,credential)
     check rpc(registry,"editor.source-authorize",authorization,credential)["error"]["message"].getStr() == "stale_inspector_source_target"
+
+# Reviewer-authored adversarial checks for session-admission renewal (UX-M3
+# lease review), adopted unchanged except that the session-admission calls
+# now opt into renewal explicitly.
+suite "reviewer: lease renewal at session admission":
+  test "a conversation-bound agent token cannot renew an expired lease":
+    let reg = newEditorControlRegistry("browser-bootstrap")
+    let tab = register(reg)
+    let bound = reg.bindConversation(reg.validateBrowserScope(target(tab), tab["browserToken"].getStr(), renewLease = true), "chat")
+    sleep(int(BrowserLeaseSeconds * 1000) + 100)
+    check refusal(proc() = discard reg.validateBrowserScope(target(tab), bound.token, renewLease = true)) == "browser_credential_required"
+    check rpc(reg, "editor.command", command(tab), bound.token)["error"]["message"].getStr == "disconnected_instance"
+
+  test "bootstrap credential cannot renew an expired lease":
+    let reg = newEditorControlRegistry("browser-bootstrap")
+    let tab = register(reg)
+    sleep(int(BrowserLeaseSeconds * 1000) + 100)
+    check refusal(proc() = discard reg.validateBrowserScope(target(tab), "browser-bootstrap", renewLease = true)) == "browser_credential_required"
+    check rpc(reg, "editor.command", command(tab), tab["controlToken"].getStr())["error"]["message"].getStr == "disconnected_instance"
+
+  test "workspace switch: old identity disconnected, new one live; old creds cannot revive old":
+    let reg = newEditorControlRegistry("browser-bootstrap")
+    let old = register(reg, "a")
+    check rpc(reg, "editor.disconnect", target(old), old["browserToken"].getStr())["result"]["disconnected"].getBool
+    let fresh = register(reg, "b")
+    sleep(int(BrowserLeaseSeconds * 1000) + 100)
+    check refusal(proc() = discard reg.validateBrowserScope(target(old), old["browserToken"].getStr(), renewLease = true)) == "disconnected_instance"
+    # The old tab credential cannot reach the new identity either.
+    check refusal(proc() = discard reg.validateBrowserScope(target(fresh), old["browserToken"].getStr(), renewLease = true)) == "browser_credential_required"
+    var mixed = target(fresh)
+    mixed["workspace"] = %"a"
+    check refusal(proc() = discard reg.validateBrowserScope(mixed, fresh["browserToken"].getStr(), renewLease = true)) == "wrong_workspace"
+    # The new tab's own credential renews only its own identity.
+    discard reg.validateBrowserScope(target(fresh), fresh["browserToken"].getStr(), renewLease = true)
+    check rpc(reg, "editor.command", command(fresh), fresh["controlToken"].getStr())["result"]["status"].getStr == "queued"
+
+  test "disconnect landing between admission and binding refuses the binding":
+    let reg = newEditorControlRegistry("browser-bootstrap")
+    let tab = register(reg)
+    sleep(int(BrowserLeaseSeconds * 1000) + 100)
+    let scope = reg.validateBrowserScope(target(tab), tab["browserToken"].getStr(), renewLease = true)
+    check rpc(reg, "editor.disconnect", target(tab), tab["browserToken"].getStr())["result"]["disconnected"].getBool
+    check refusal(proc() = discard reg.bindConversation(scope, "chat")) == "disconnected_instance"
+    check refusal(proc() = discard reg.validateBrowserScope(target(tab), tab["browserToken"].getStr(), renewLease = true)) == "disconnected_instance"
+
+  test "renewal does not extend other browser RPCs past expiry by itself (ack still needs live lease or renewal)":
+    let reg = newEditorControlRegistry("browser-bootstrap")
+    let tab = register(reg)
+    sleep(int(BrowserLeaseSeconds * 1000) + 100)
+    check rpc(reg, "editor.preference", target(tab), tab["browserToken"].getStr()){"error"}{"message"}.getStr == "disconnected_instance"
+    discard reg.validateBrowserScope(target(tab), tab["browserToken"].getStr(), renewLease = true)
+    check rpc(reg, "editor.preference", target(tab), tab["browserToken"].getStr()){"error"}{"message"}.getStr != "disconnected_instance"
