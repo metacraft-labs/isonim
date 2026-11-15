@@ -4376,11 +4376,10 @@ proc renderPreviewZoomCluster[R, E](r: R; vm: EditorVM): E =
          display = "none", align_items = "center",
          gap = "4px", flex_shrink = "0",
          transition = "opacity 0.15s",
-         # PSZ-M3: pinned to the trailing edge of the scrolling chrome bar, so
-         # the readout and the zoom buttons stay in view when the bar's other
-         # controls overflow a narrow pane. The trough is opaque, so the
-         # controls scrolling beneath it do not show through.
-         position = "sticky", right = "0", z_index = "2",
+         # The cluster is an ordinary item of the chrome bar's row: it is not
+         # pinned over the row (PSZ-M3 had it sticky at the trailing edge), so
+         # it never covers the viewport strip or any other control. When the
+         # row does not fit, the row scrolls, as for every other control.
          background_color = "#22232e", border_radius = "6px",
          padding = "2px")
   proc textControl(label, glyph: string; action: proc() {.closure.}): E =
@@ -4797,16 +4796,16 @@ proc renderPreviewChromeBar*[R, E](r: R; vm: EditorVM;
   # Outer wrapper — the cluster surface the test harness resolves via
   # ``data-toolbar-cluster="viewport"``. Position: relative so the
   # popup can anchor against it.
-  # PSZ-M3: the cluster may shrink, so that at a narrow chrome bar the current
-  # size's label truncates with an ellipsis (browser.nim) rather than running
-  # under the sticky zoom trough, which is opaque and sits at the bar's edge.
+  # The cluster does not shrink below its content: a shrunk cluster let its
+  # pills overflow its box and run under the zoom cluster beside it, which
+  # then took their clicks. When the row does not fit, the row scrolls.
   let viewportClusterWrapper = ui(r):
     tdiv(`data-edge-strip` = "viewport",
          `data-toolbar-cluster` = "viewport",
          `data-preview-edge-group` = "viewport",
          `data-preview-viewport-strip` = "true",
          display = "inline-flex", align_items = "center",
-         gap = "4px", flex_shrink = "1", min_width = "0",
+         gap = "4px", flex_shrink = "0",
          position = "relative")
 
   # Inner host — the strip (``mountSegmentedChoice`` mounts here). Kept
@@ -5205,9 +5204,8 @@ proc renderPreviewChromeBar*[R, E](r: R; vm: EditorVM;
     "⛶", proc() = vm.setPreviewFullScreen(true))
   r.setAttribute(fullScreenButton, "data-preview-fullscreen-toggle", "true")
   r.appendChild(toolbar, fullScreenButton)
-  # PSZ-M3: the zoom cluster is the last control before the trailing spacer,
-  # and it is pinned to the bar's trailing edge (see renderPreviewZoomCluster).
-  # At a narrow pane the bar scrolls, so an unpinned readout went out of view.
+  # PSZ-M3: the zoom cluster is the last control before the trailing spacer.
+  # It is not pinned over the row (see renderPreviewZoomCluster).
   let zoomCluster = renderPreviewZoomCluster[R, E](r, vm)
   r.appendChild(toolbar, zoomCluster)
   createRenderEffect proc() =

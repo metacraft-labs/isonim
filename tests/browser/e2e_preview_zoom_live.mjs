@@ -23,6 +23,21 @@
 //     axes). In a 1600x1000 window only the horizontal bar shows (the area is
 //     920 px tall, so the 900 px frame fits vertically), and the test asserts
 //     only that bar there. At Fit the frame fits and both gutters are 0.
+//   * e2e_preview_zoom_cluster_never_covers_viewport_chips: with the zoom
+//     cluster shown, nothing is drawn on top of any control of the chrome bar:
+//     the viewport strip's pills (or its compact selector at a narrow chrome
+//     bar), the Full screen button and the zoom cluster between them, and
+//     every other button in the row. The window
+//     is swept from 1000 to 2400 px wide, with both sidebars shown and with
+//     each one hidden, so the chrome bar runs from overflowing (it scrolls)
+//     to roomy. At each width every visible chrome-bar control is scrolled into
+//     view the way a pointer user or Playwright would, and five points of it
+//     (its centre and four corners inset by 2 px) must hit the control itself
+//     in `elementFromPoint`; the viewport cluster's box must not intersect the
+//     zoom cluster's, and the strip's content must not spill out of its box.
+//     At a narrow, a middle and a wide window a viewport pill is then pressed
+//     with the real pointer and another with the keyboard, and the zoom
+//     cluster's 100% and Fit are pressed with the pointer.
 //
 // Scrollbar browser: Playwright launches headless Chromium with
 // `--hide-scrollbars` by default, which makes every scrollbar zero-width (a
@@ -51,7 +66,8 @@ const isonimRoot = join(__dirname, "..", "..");
 const editorBuildDir = join(isonimRoot, "build", "editor");
 const daemonBinary = join(isonimRoot, "build", "bin", "isonim-review");
 
-const PAGE_PORT = 18661;
+// ISONIM_BROWSER_PORT_OFFSET shifts the port, as in playwright.config.ts.
+const PAGE_PORT = 18661 + Number(process.env.ISONIM_BROWSER_PORT_OFFSET ?? 0);
 // The openPreview wait requires the story's document in the srcdoc iframe; the
 // empty-state fallback panel is not accepted. viewport=desktop selects the
 // Desktop preset (1440x900) explicitly.
@@ -444,5 +460,170 @@ test("e2e_preview_zoom_scrollbars_at_100", async () => {
     }
   } finally {
     await fit.ctx.close();
+  }
+});
+
+// Every visible control of the chrome bar (the viewport strip's pills, its
+// overflow chevron or compact selector, Full screen, the zoom cluster and the
+// rest of the row), each scrolled into view and hit-tested at five points. Returns one line per control that is
+// covered, naming what is on top, plus the cluster geometry.
+async function chromeHitReport(page) {
+  return page.evaluate(() => {
+    const bar = document.querySelector("[data-preview-chrome-bar]");
+    const viewport = bar.querySelector('[data-toolbar-cluster="viewport"]');
+    const zoom = bar.querySelector('[data-preview-zoom-cluster="true"]');
+    const describe = (n) => {
+      if (!n) return "nothing";
+      const owner = n.closest("[data-toolbar-cluster]");
+      const label = n.closest("[aria-label]");
+      return `${owner ? owner.getAttribute("data-toolbar-cluster") : n.tagName}` +
+        `${label ? " / " + label.getAttribute("aria-label") : ""}`;
+    };
+    const controls = (root) => [...root.querySelectorAll('button, [role="button"]')]
+      .filter((n) => n.getClientRects().length > 0 &&
+        getComputedStyle(n).visibility !== "hidden" &&
+        !n.closest('[role="listbox"], [data-compact-choice-overflow-popup]'));
+    const covered = [];
+    const checked = [];
+    for (const control of controls(bar)) {
+      const owner = control.closest("[data-toolbar-cluster]");
+      const cluster = owner ? owner.getAttribute("data-toolbar-cluster") : "bar";
+      {
+        control.scrollIntoView({ block: "nearest", inline: "nearest" });
+        const r = control.getBoundingClientRect();
+        const name = control.getAttribute("aria-label") || control.textContent.trim();
+        checked.push(`${cluster}:${name}`);
+        const inset = Math.min(2, r.width / 4, r.height / 4);
+        const points = [[r.left + r.width / 2, r.top + r.height / 2],
+          [r.left + inset, r.top + inset], [r.right - inset, r.top + inset],
+          [r.left + inset, r.bottom - inset], [r.right - inset, r.bottom - inset]];
+        for (const [x, y] of points) {
+          const hit = document.elementFromPoint(x, y);
+          if (!hit || !(hit === control || control.contains(hit))) {
+            covered.push(`${cluster} control "${name}" at (${x.toFixed(1)}, ${y.toFixed(1)}) ` +
+              `is covered by ${describe(hit)}`);
+            break;
+          }
+        }
+      }
+    }
+    bar.scrollLeft = 0;
+    const v = viewport.getBoundingClientRect();
+    const z = zoom.getBoundingClientRect();
+    return {
+      barWidth: bar.clientWidth,
+      barScrollWidth: bar.scrollWidth,
+      zoomShown: getComputedStyle(zoom).display !== "none",
+      viewportBox: [v.left, v.right],
+      zoomBox: [z.left, z.right],
+      boxesIntersect: v.left < z.right - 0.5 && z.left < v.right - 0.5 &&
+        v.top < z.bottom - 0.5 && z.top < v.bottom - 0.5,
+      viewportSpill: viewport.scrollWidth - viewport.clientWidth,
+      checked,
+      covered,
+    };
+  });
+}
+
+async function setSidebars(page, { left, right }) {
+  for (const [name, wanted, selector] of [
+    ["Toggle left sidebar", left, ".editor-sidebar"],
+    ["Toggle right sidebar", right, '[data-sidebar-content]'],
+  ]) {
+    const shown = await page.evaluate((sel) => [...document.querySelectorAll(sel)]
+      .some((n) => n.getClientRects().length > 0 && n.getBoundingClientRect().width > 0), selector);
+    if (shown !== wanted) {
+      await page.locator(`[data-preview-chrome-bar] [aria-label="${name}"]`).click();
+      await page.waitForFunction(({ sel, want }) => [...document.querySelectorAll(sel)]
+        .some((n) => n.getClientRects().length > 0 && n.getBoundingClientRect().width > 0) === want,
+        { sel: selector, want: wanted }, { timeout: 5000 });
+    }
+  }
+}
+
+test("e2e_preview_zoom_cluster_never_covers_viewport_chips", async () => {
+  const { ctx, page } = await openPreview("", { viewport: { width: 1280, height: 900 } });
+  try {
+    let checks = 0;
+    const barWidths = new Set();
+    for (const sidebars of [{ left: true, right: true }, { left: false, right: true },
+      { left: true, right: false }]) {
+      await page.setViewportSize({ width: 1600, height: 900 });
+      await setSidebars(page, sidebars);
+      for (let width = 1000; width <= 2400; width += 40) {
+        await page.setViewportSize({ width, height: 900 });
+        // Two frames: the container queries and the flex layout settle.
+        await page.evaluate(() => new Promise((resolve) =>
+          requestAnimationFrame(() => requestAnimationFrame(resolve))));
+        const report = await chromeHitReport(page);
+        const where = `window ${width}px, sidebars ${JSON.stringify(sidebars)}, ` +
+          `chrome bar ${report.barWidth}px (content ${report.barScrollWidth}px)`;
+        assert.ok(report.zoomShown, `the zoom cluster is shown (${where})`);
+        assert.ok(report.checked.some((c) => c.startsWith("viewport:")),
+          `a viewport control is visible (${where})`);
+        for (const name of ["Full screen preview", "Show preview at 100%",
+          "Toggle left sidebar", "Toggle right sidebar"]) {
+          assert.ok(report.checked.some((c) => c.endsWith(`:${name}`)),
+            `"${name}" is among the hit-tested controls (${where})`);
+        }
+        assert.deepEqual(report.covered, [], `nothing covers a chrome control (${where})`);
+        assert.ok(!report.boxesIntersect,
+          `the viewport cluster ${report.viewportBox} and the zoom cluster ` +
+          `${report.zoomBox} overlap (${where})`);
+        assert.ok(report.viewportSpill <= 1,
+          `the viewport strip's content spills ${report.viewportSpill}px out of its box (${where})`);
+        barWidths.add(report.barWidth);
+        checks++;
+      }
+    }
+    console.log(`zoom/viewport overlap sweep: ${checks} layouts, chrome bar ` +
+      `${Math.min(...barWidths)}..${Math.max(...barWidths)}px`);
+    // The sweep must have covered an overflowing bar and a roomy one.
+    assert.ok(Math.min(...barWidths) < 640 && Math.max(...barWidths) > 1300,
+      `the sweep covered chrome bars of ${Math.min(...barWidths)}..${Math.max(...barWidths)}px only`);
+
+    // Real pointer and keyboard presses at a narrow, a middle and a wide window.
+    await page.setViewportSize({ width: 1600, height: 900 });
+    await setSidebars(page, { left: true, right: true });
+    const pill = (label) => page.locator('[data-toolbar-cluster="viewport"]')
+      .getByRole("button", { name: `Preview viewport ${label}`, exact: true });
+    const chevron = page.locator('[data-toolbar-cluster="viewport"] [data-preview-viewport-overflow]');
+    for (const width of [1100, 1366, 2200]) {
+      await page.setViewportSize({ width, height: 900 });
+      const where = `window ${width}px`;
+      if (await pill("Tablet").isVisible()) {
+        // The pointer press must land on the pill itself: a short timeout, so
+        // a covered pill fails here rather than at the test's budget.
+        await pill("Tablet").click({ timeout: 5000 });
+        await page.waitForFunction(() => location.search.includes("viewport=tablet"),
+          null, { timeout: 5000 });
+        assert.equal(await pill("Tablet").getAttribute("aria-pressed"), "true", where);
+        await pill("Phone").focus();
+        await page.keyboard.press("Enter");
+        await page.waitForFunction(() => location.search.includes("viewport=phone"),
+          null, { timeout: 5000 });
+        assert.equal(await pill("Phone").getAttribute("aria-pressed"), "true", where);
+        await pill("Desktop").click({ timeout: 5000 });
+        await page.waitForFunction(() => location.search.includes("viewport=desktop"),
+          null, { timeout: 5000 });
+      } else {
+        // The compact selector: the chevron opens the list with the pointer,
+        // and the keyboard reaches it too.
+        await chevron.click({ timeout: 5000 });
+        assert.equal(await chevron.getAttribute("aria-expanded"), "true", where);
+        await page.keyboard.press("Escape");
+        await chevron.focus();
+        await page.keyboard.press("Enter");
+        assert.equal(await chevron.getAttribute("aria-expanded"), "true", `${where} (keyboard)`);
+        await page.keyboard.press("Escape");
+      }
+      await page.locator('[aria-label="Show preview at 100%"]').click({ timeout: 5000 });
+      assert.equal(await readout(page), "100%", where);
+      await page.locator('[aria-label="Fit preview to the area"]').click({ timeout: 5000 });
+      await page.waitForFunction(() => location.search.includes("zoom=fit"),
+        null, { timeout: 5000 });
+    }
+  } finally {
+    await ctx.close();
   }
 });

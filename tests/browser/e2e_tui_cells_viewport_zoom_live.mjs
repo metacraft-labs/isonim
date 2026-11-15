@@ -53,9 +53,11 @@ import {
   stopPageServer,
 } from "./psz_live_harness.mjs";
 
-const EDITOR_PORT = 18664;
-const PROXY_PORT = 18665;
-const LAUNCHER_PORT = 18666;
+// ISONIM_BROWSER_PORT_OFFSET shifts every port, as in playwright.config.ts.
+const PORT_OFFSET = Number(process.env.ISONIM_BROWSER_PORT_OFFSET ?? 0);
+const EDITOR_PORT = 18664 + PORT_OFFSET;
+const PROXY_PORT = 18665 + PORT_OFFSET;
+const LAUNCHER_PORT = 18666 + PORT_OFFSET;
 const LAUNCHER = process.env.PSZ_M3_TUI_LAUNCHER || "";
 const CAPTURE_DIR = process.env.PSZ_M3_CAPTURE_DIR || "";
 // The TUI 80x24 viewport on a page story. The streamed page preview takes its
@@ -351,25 +353,28 @@ test("e2e_tui_cells_viewport_zoom", async () => {
     console.log("[tui fit narrow glyphs]", JSON.stringify(glyphs));
     assert.ok(glyphs.glyphRight <= glyphs.frameRight - BORDER + 0.5,
       `the rightmost glyph ${glyphs.glyphRight} must be inside the frame's border (frame right ${glyphs.frameRight})`);
-    // The readout is fully visible in the chrome bar's visible box: the bar
-    // scrolls, so the readout's right edge must sit inside the bar's right edge.
+    // The readout is reachable in the chrome bar: the bar scrolls when its
+    // controls do not fit, so once the readout is scrolled into view (as focus
+    // or a pointer user would) it sits wholly inside the bar's visible box.
     const readoutBox = await narrow.page.evaluate(() => {
       const ro = document.querySelector("[data-preview-zoom-level]");
       const bar = document.querySelector("[data-preview-chrome-bar]");
       if (!ro || !bar) return null;
+      ro.scrollIntoView({ block: "nearest", inline: "nearest" });
       const r = ro.getBoundingClientRect();
       const b = bar.getBoundingClientRect();
-      return { left: r.left, right: r.right, barRight: b.right, barLeft: b.left };
+      const box = { left: r.left, right: r.right, barRight: b.right, barLeft: b.left };
+      bar.scrollLeft = 0;
+      return box;
     });
     assert.ok(readoutBox, "the readout and the chrome bar are measured");
     console.log("[tui fit narrow readout]", JSON.stringify(readoutBox));
     assert.ok(readoutBox.left >= readoutBox.barLeft && readoutBox.right <= readoutBox.barRight,
       `the zoom readout ${readoutBox.left}..${readoutBox.right} must be visible in the bar ${readoutBox.barLeft}..${readoutBox.barRight}`);
-    // The zoom trough is opaque and sticky at the bar's trailing edge. In this
-    // narrow chrome the bar overflows, so the viewport cluster must shrink to
-    // stay clear of it: the size label truncates (ellipsis, to nothing at this
-    // width) and the overflow chevron, the one control that names the size and
-    // opens the list, must end before the trough begins.
+    // In this narrow chrome the bar overflows. The zoom cluster is an ordinary
+    // item of the row (not pinned over it), so the viewport cluster -- its
+    // current-size label and the overflow chevron that opens the size list --
+    // ends before the zoom trough begins.
     const label = await narrow.page.evaluate(() => {
       const l = document.querySelector("[data-preview-viewport-current]");
       const c = document.querySelector("[data-preview-viewport-overflow]");
