@@ -9,6 +9,16 @@
 ## spec "Native project source capabilities"); that case uses no adapter at
 ## all, and its browser half is `tests/test_editor_inline_preview_gui.mjs`.
 ##
+## Edits written together to a rule that holds every declaration on one line
+## undo one by one (isonim-pm issue 2026-10-23-undo-is-refused-after-a-
+## batched-write-to-a-single-line-rule), in the orders the issue names, with
+## Resets, and in 400 seeded random batches compared byte for byte with
+## writing each edit separately. Those suites use no mock writer: the editor
+## example's production adapter (`demo_workspace.demoVectorEditAdapter`)
+## writes the example's real foundation source held in memory, exactly as
+## `main.nim` mounts it. The browser half is
+## `tests/test_editor_undo_batch_gui.mjs`.
+##
 ## Mock justification: the workspace adapter below keeps the project files in
 ## memory instead of on disk. IsoNim cannot depend on the consumer that owns
 ## the real writer (metacraft-web), and this test must also execute under the
@@ -25,12 +35,13 @@
 ## `e2e_canvas_resize_spacing_reorder_and_inline_text` and
 ## `e2e_canvas_context_menu_commands_are_selection_safe`.
 
-import std/[options, strutils, tables, unittest]
+import std/[options, random, strutils, tables, unittest]
 
 import isonim/core/[computation, owner, signals]
 import isonim/editor/types
 import isonim/editor/viewmodels
 import isonim/editor/workspace
+import isonim/editor/demo_workspace
 import isonim/editor/views/widgets/property_commit
 
 const ComponentFile = "components.schema"
@@ -352,9 +363,9 @@ suite "A write keeps component, foundation and vector history":
       dispose()
 
   test "two edits to one property written together undo one at a time":
-    ## The second edit replaces the first's plan before it is written, so only
-    ## the second reaches disk. Undoing it must not leave the model showing
-    ## the first value while the file holds the original.
+    ## Both choices are written in history order, each as its own write, as
+    ## if each had been written on its own. Undoing the second must not leave
+    ## the model showing the first value while the file holds the original.
     createRoot proc(dispose: proc()) =
       let project = MemoryProject()
       let vm = newEditor(project)
@@ -374,10 +385,11 @@ suite "A write keeps component, foundation and vector history":
       check project.files[ComponentFile] == ComponentOriginal
       dispose()
 
-  test "undoing an unwritten edit stages and schedules the one it replaced":
-    ## Two choices inside the debounce: the second replaces the first's plan.
-    ## Undoing the second before anything is written makes the first current
-    ## again, so its value has to be staged -- and written -- again.
+  test "undoing an unwritten edit leaves the one before it staged and scheduled":
+    ## Two choices inside the debounce: each keeps its own plan, in history
+    ## order (isonim-pm issue 2026-10-23-undo-is-refused-after-a-batched-
+    ## write-to-a-single-line-rule). Undoing the second before anything is
+    ## written withdraws only its plan; the first stays staged and is written.
     createRoot proc(dispose: proc()) =
       let project = MemoryProject()
       let vm = newEditor(project)
@@ -385,7 +397,7 @@ suite "A write keeps component, foundation and vector history":
         "success").status == pesAccepted
       check vm.editComponentProperty("StatusBadge", "default", "tone",
         "warning").status == pesAccepted
-      check vm.inspector.pendingSourceEdits.val.len == 1
+      check vm.inspector.pendingSourceEdits.val.len == 2
       let generation = vm.autoSaveGeneration.val
       check vm.runEditorCommand(eckUndo).status == ecsSucceeded
       check vm.tone == "success"
@@ -636,3 +648,263 @@ suite "Redo after a write":
       check project.files[ComponentFile] ==
         ComponentOriginal.replace("tone=neutral", "tone=danger")
       dispose()
+
+proc wanderlustVm(foundation: ref string): EditorVM =
+  ## The editor example exactly as `main.nim` mounts it: its production
+  ## writer over its foundation source, whose `.long-tail-card` rule holds
+  ## every declaration on one line.
+  let vector = new(string)
+  vector[] = "<svg/>"
+  result = createEditorVM(newEditorWorkspace(
+    title = "Wanderlust batched write",
+    storyGroups = @[StoryGroup(name: "DestinationCard", kind: skComponent,
+      expanded: true, items: @[StoryItem(name: "Default", kind: skComponent,
+        group: "DestinationCard")])],
+    initialStory = some(StoryRef(group: "DestinationCard", name: "Default",
+      kind: skComponent, index: 0)),
+    foundationTokens = demoFoundationTokens(),
+    designSystemSchema = demoDesignSystemSchema(),
+    permissions = EditorWorkspacePermissions(readSource: true,
+      writeSource: true),
+    editAdapter = demoVectorEditAdapter(vector, foundation)))
+  check result.selectInspectorElement(demoInspectorElement())
+
+func longTailWith(edits: openArray[(string, string)]): string =
+  ## The example's source with each `(property, value)` set in the
+  ## `.long-tail-card` rule, in place (value "" removes the declaration).
+  ## A property is never set again after it is removed here.
+  result = DemoFoundationInitialSource
+  var current = initTable[string, string]()
+  for (p, v) in DemoLongTailValues:
+    current[p] = v
+  for (property, value) in edits:
+    result = result.replace(" " & property & ": " & current[property] & ";",
+      if value.len == 0: "" else: " " & property & ": " & value & ";")
+    current[property] = value
+
+template walkBatchedEdits(batch: seq[(string, string)];
+    writeEachStep: bool) =
+  ## Commit ``edits`` inside one debounce window, write once, then undo each
+  ## one and redo each one. Every step must leave the file exactly where
+  ## writing each edit separately would.
+  ## A template, so its checks belong to the test that expands it.
+  let edits = batch
+  createRoot proc(dispose: proc()) =
+    let foundation = new(string)
+    foundation[] = DemoFoundationInitialSource
+    let vm = wanderlustVm(foundation)
+    for (property, value) in edits:
+      let committed = vm.commitInspectorValue(property, value, sskSharedClass)
+      check committed.ok
+      check committed.message == ""
+    vm.save()
+    # The file after the first k edits, applied in history order, so a later
+    # edit of the same property wins.
+    var states: seq[string] = @[]
+    for k in 0 .. edits.len:
+      states.add longTailWith(edits[0 ..< k])
+    check foundation[] == states[^1]
+    for k in countdown(edits.len - 1, 0):
+      let undone = vm.runEditorCommand(eckUndo)
+      check undone.status == ecsSucceeded
+      check undone.diagnostic == ""
+      if writeEachStep or k == 0:
+        vm.save()
+        check foundation[] == states[k]
+    check foundation[] == DemoFoundationInitialSource
+    for k in 1 .. edits.len:
+      let redone = vm.runEditorCommand(eckRedo)
+      check redone.status == ecsSucceeded
+      check redone.diagnostic == ""
+      if writeEachStep or k == edits.len:
+        vm.save()
+        check foundation[] == states[k]
+    check foundation[] == states[^1]
+    # And the history stays walkable back to the start after the redo.
+    for k in countdown(edits.len - 1, 0):
+      check vm.runEditorCommand(eckUndo).status == ecsSucceeded
+      vm.save()
+      check foundation[] == states[k]
+    check foundation[] == DemoFoundationInitialSource
+    dispose()
+
+suite "Edits written together undo one by one on a one-line rule":
+  ## isonim-pm issue 2026-10-23-undo-is-refused-after-a-batched-write-to-a-
+  ## single-line-rule; editor spec "Saving": undoing an edit already written
+  ## stages an edit that restores exactly the lines that write replaced, and
+  ## edits made within one debounce window undo one by one, as they do when
+  ## each is written separately.
+  const orders = [
+    @[("overflow", "hidden"), ("flex-wrap", "wrap"), ("overflow", "scroll")],
+    @[("flex-wrap", "wrap"), ("overflow", "hidden"), ("overflow", "scroll")],
+    @[("overflow", "hidden"), ("overflow", "scroll"), ("flex-wrap", "wrap")]]
+  for order in orders:
+    test "batched " & $order & ", a write after each undo and redo":
+      walkBatchedEdits(order, writeEachStep = true)
+    test "batched " & $order & ", one write after all undos and redos":
+      walkBatchedEdits(order, writeEachStep = false)
+
+  test "a Reset between two edits of the same property, batched":
+    walkBatchedEdits(@[("overflow", "hidden"), ("flex-wrap", "wrap"),
+      ("overflow", ""), ("aspect-ratio", "4 / 3")], writeEachStep = true)
+
+  test "a Reset replacing a batched edit, then another edit, batched":
+    walkBatchedEdits(@[("flex-wrap", "wrap"), ("overflow", "hidden"),
+      ("flex-wrap", ""), ("overflow", "scroll")], writeEachStep = true)
+
+  test "later edits that put values back, batched":
+    # Review residual R3: the third and fourth edits put back the values the
+    # first and second replaced.
+    walkBatchedEdits(@[("overflow", "hidden"), ("aspect-ratio", "4 / 3"),
+      ("aspect-ratio", "auto"), ("overflow", "visible")], writeEachStep = true)
+    walkBatchedEdits(@[("overflow", "hidden"), ("aspect-ratio", "4 / 3"),
+      ("aspect-ratio", "auto"), ("overflow", "visible")], writeEachStep = false)
+
+  test "a written Reset, then the property set twice in one batch":
+    # Review residual R4: the second value used to be checked against the
+    # first, which was never written, and the write was refused.
+    createRoot proc(dispose: proc()) =
+      let foundation = new(string)
+      foundation[] = DemoFoundationInitialSource
+      let vm = wanderlustVm(foundation)
+      check vm.commitInspectorValue("aspect-ratio", "", sskSharedClass).ok
+      vm.save()
+      let reset = DemoFoundationInitialSource.replace(" aspect-ratio: auto;", "")
+      check foundation[] == reset
+      check vm.commitInspectorValue("aspect-ratio", "4 / 3", sskSharedClass).ok
+      check vm.commitInspectorValue("aspect-ratio", "auto", sskSharedClass).ok
+      vm.save()
+      # Inserted before the rule's closing brace, then rewritten in place,
+      # exactly as two separate writes leave it.
+      let set = reset.replace(" background-repeat: repeat; }",
+        " background-repeat: repeat; aspect-ratio: auto; }")
+      check foundation[] == set
+      for want in [set.replace("aspect-ratio: auto", "aspect-ratio: 4 / 3"),
+          reset, DemoFoundationInitialSource]:
+        check vm.runEditorCommand(eckUndo).status == ecsSucceeded
+        vm.save()
+        check foundation[] == want
+      for want in [reset, set.replace("aspect-ratio: auto",
+          "aspect-ratio: 4 / 3"), set]:
+        check vm.runEditorCommand(eckRedo).status == ecsSucceeded
+        vm.save()
+        check foundation[] == want
+      dispose()
+
+# --- Randomized batches -------------------------------------------------
+#
+# Ported from the review of this fix (a seeded comparison of batched writes
+# against writing each edit separately). Each case commits three to five
+# shared-class edits or Resets of four `.long-tail-card` declarations, with
+# random writes between them, then undoes every edit and redoes every edit,
+# writing after each step or only at the end. The oracle is the same
+# commits made and written one at a time, and every step must leave exactly
+# its bytes, with no undo, redo, commit or write refused.
+
+const RandomProps = [("overflow", @["hidden", "scroll", "visible", ""]),
+  ("flex-wrap", @["wrap", "nowrap", ""]),
+  ("aspect-ratio", @["4 / 3", "auto", ""]),
+  ("letter-spacing", @["1px", "0px", ""])]
+
+type RandomOutcome = ref object
+  counts: CountTable[string]
+  failures: seq[string]
+
+proc randomCase(outcome: RandomOutcome; edits: seq[(string, string)];
+    cuts: seq[bool]; writeEachStep: bool; tag: string) =
+  # The oracle: every edit written on its own. An edit the editor refuses
+  # there, or one that leaves the file as it was, is dropped from the case.
+  var states: seq[string] = @[]
+  var accepted: seq[(string, string)] = @[]
+  createRoot proc(dispose: proc()) =
+    let foundation = new(string)
+    foundation[] = DemoFoundationInitialSource
+    let vm = wanderlustVm(foundation)
+    states.add foundation[]
+    for edit in edits:
+      if not vm.commitInspectorValue(edit[0], edit[1], sskSharedClass).ok:
+        continue
+      if vm.inspector.pendingSourceEdits.val.len > 0:
+        discard vm.runEditorCommand(eckSave)
+      if foundation[] == states[^1]:
+        continue
+      accepted.add edit
+      states.add foundation[]
+    dispose()
+  if accepted.len < 2:
+    outcome.counts.inc "skipped"
+    return
+  proc fail(what: string) =
+    outcome.failures.add tag & " " & $accepted & " cuts=" & $cuts &
+      " writeEachStep=" & $writeEachStep & ": " & what
+  proc same(got, want: string; step: string): bool =
+    ## Byte for byte: each entry is written in history order, so a batch
+    ## leaves exactly the file the separate writes leave.
+    if got == want: return true
+    fail(step & ": content differs\n  got  " & got & "\n  want " & want)
+    false
+  createRoot proc(dispose: proc()) =
+    let foundation = new(string)
+    foundation[] = DemoFoundationInitialSource
+    let vm = wanderlustVm(foundation)
+    proc write(step: string): bool =
+      if vm.inspector.pendingSourceEdits.val.len == 0: return true
+      let saved = vm.runEditorCommand(eckSave)
+      if saved.status != ecsSucceeded:
+        fail(step & ": write refused: " & saved.diagnostic)
+        return false
+      true
+    block walk:
+      for i, edit in accepted:
+        let committed = vm.commitInspectorValue(edit[0], edit[1], sskSharedClass)
+        if not committed.ok:
+          fail("commit " & $i & " refused: " & committed.message)
+          break walk
+        if i < cuts.len and cuts[i] and not write("write after commit " & $i):
+          break walk
+      if not write("batched write") or
+          not same(foundation[], states[^1], "batched write"):
+        break walk
+      for k in countdown(accepted.len - 1, 0):
+        let undone = vm.runEditorCommand(eckUndo)
+        if undone.status != ecsSucceeded:
+          fail("undo to state " & $k & " refused: " & undone.diagnostic)
+          break walk
+        if writeEachStep or k == 0:
+          if not write("undo to state " & $k) or
+              not same(foundation[], states[k], "undo"):
+            break walk
+      if foundation[] != DemoFoundationInitialSource:
+        fail("undoing every edit does not give back the exact original")
+        break walk
+      for k in 1 .. accepted.len:
+        let redone = vm.runEditorCommand(eckRedo)
+        if redone.status != ecsSucceeded:
+          fail("redo to state " & $k & " refused: " & redone.diagnostic)
+          break walk
+        if writeEachStep or k == accepted.len:
+          if not write("redo to state " & $k) or
+              not same(foundation[], states[k], "redo"):
+            break walk
+      outcome.counts.inc "walked"
+    dispose()
+
+suite "Randomized batches undo and redo like separate writes":
+  test "seeded batches of edits and Resets on the one-line rule":
+    var outcome = RandomOutcome(counts: initCountTable[string]())
+    var rng = initRand(20261115)
+    for i in 0 ..< 400:
+      let length = 3 + rng.rand(2)
+      var edits: seq[(string, string)] = @[]
+      for j in 0 ..< length:
+        let prop = RandomProps[rng.rand(RandomProps.high)]
+        edits.add (prop[0], prop[1][rng.rand(prop[1].high)])
+      var cuts: seq[bool] = @[]
+      for j in 0 ..< length: cuts.add rng.rand(3) == 0
+      outcome.randomCase(edits, cuts, writeEachStep = rng.rand(1) == 0,
+        tag = "case" & $i)
+    echo "    randomized batches: ", outcome.counts
+    for failure in outcome.failures:
+      echo "    ", failure
+    check outcome.failures.len == 0
+    check outcome.counts["walked"] > 300

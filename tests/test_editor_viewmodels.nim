@@ -2529,7 +2529,11 @@ suite "Editor ViewModels (M27 workspace file writes)":
       check vm.inspector.pendingSourceEdits.val.len == 0
 
       proc checkContextPlan(command: DirectCanvasContextCommand;
-          value: string) =
+          value: string; pending: int) =
+        # Each command is its own history entry, so it keeps its own plan,
+        # staged after the earlier ones: the write applies them in history
+        # order (isonim-pm issue 2026-10-23-undo-is-refused-after-a-batched-
+        # write-to-a-single-line-rule).
         let planned = vm.applyDirectCanvasOperation(DirectCanvasOperation(
           kind: dcokContextCommand, command: command, property: "width",
           value: value, oldValue: "360px", sourceKey: "card.root"))
@@ -2537,18 +2541,20 @@ suite "Editor ViewModels (M27 workspace file writes)":
         check planned.sourceEdit.schemaKey == "components.card.width"
         check planned.sourceEdit.originDetail.startsWith("direct-context:")
         check planned.sourceEdit.reversible
-        check vm.inspector.pendingSourceEdits.val.len == 1
+        check vm.inspector.pendingSourceEdits.val.len == pending
+        check vm.inspector.pendingSourceEdits.val[^1].historyId ==
+          vm.inspector.undoStack.val[^1].sourceEdit.historyId
         check vm.inspector.undoStack.val.len >= 1
 
-      checkContextPlan(dcccPasteStyles, "380px")
+      checkContextPlan(dcccPasteStyles, "380px", pending = 1)
       check vm.inspector.undoCssPropertyEdit()
       check vm.inspector.pendingSourceEdits.val.len == 0
       check vm.inspector.redoCssPropertyEdit()
       check vm.inspector.pendingSourceEdits.val.len == 1
-      checkContextPlan(dcccReset, "320px")
-      checkContextPlan(dcccDetach, "360px")
-      checkContextPlan(dcccPromote, "360px")
-      checkContextPlan(dcccWrap, "360px")
+      checkContextPlan(dcccReset, "320px", pending = 2)
+      checkContextPlan(dcccDetach, "360px", pending = 3)
+      checkContextPlan(dcccPromote, "360px", pending = 4)
+      checkContextPlan(dcccWrap, "360px", pending = 5)
 
       for command in [dcccCreateVariant, dcccDuplicate, dcccDelete,
           dcccOpenSource]:

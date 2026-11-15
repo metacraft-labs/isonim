@@ -4656,7 +4656,23 @@ func replacesJournaledPlan(plan, existing: SourceEditPlan): bool =
   ## a pending restoration of an already-written edit. That one removes text
   ## the file really contains; dropping it would leave the undone edit on
   ## disk while the model says it is gone.
-  plan.sameSourceJournalSlot(existing) and not existing.restoreWrite.recorded
+  ##
+  ## Nor does a plan replace one that belongs to a different history entry.
+  ## Each history entry's plan is written in history order, against the file
+  ## the plan before it left, exactly as if each edit had been written on its
+  ## own: the same `patchFile` call on the same bytes, so the same patch and
+  ## the same write receipt. Collapsing two entries into one write produces a
+  ## file no sequence of separate writes produces (a removal and a later
+  ## value become one in-place rewrite; a value is checked against one that
+  ## was never written), and undoing either entry then has to restore
+  ## against text that never existed. isonim-pm issue 2026-10-23-undo-is-
+  ## refused-after-a-batched-write-to-a-single-line-rule.
+  ##
+  ## Replacing stays for plans of one entry (an entry that re-journals its own
+  ## plan) and for plans no history entry owns.
+  plan.sameSourceJournalSlot(existing) and not existing.restoreWrite.recorded and
+    (plan.historyId == 0 or existing.historyId == 0 or
+      plan.historyId == existing.historyId)
 
 proc inheritUnwrittenExpectation(inspector: InspectorVM;
     plan: var SourceEditPlan)
@@ -4728,6 +4744,17 @@ proc journalSourceEdit*(inspector: InspectorVM; plan: SourceEditPlan;
   inspector.conflicts.val = @[]
   inspector.editDiagnostics.val = @[]
 
+func asNextHistoryEntry(inspector: InspectorVM;
+    plan: SourceEditPlan): SourceEditPlan =
+  ## ``plan`` with the identity `stampHistoryEntry` will give it, for the
+  ## act-time checks that draft the journal a commit will leave before the
+  ## commit is recorded. The identity decides which pending plans it
+  ## replaces (`replacesJournaledPlan`), so drafting it unstamped would
+  ## check a journal the commit does not leave.
+  result = plan
+  if result.historyId == 0:
+    result.historyId = inspector.lastHistoryId + 1
+
 proc stampHistoryEntry(inspector: InspectorVM; plan: var SourceEditPlan) =
   ## Give a new history entry's plan its identity. See `historyId`.
   if plan.historyId == 0:
@@ -4739,12 +4766,16 @@ proc inheritUnwrittenExpectation(inspector: InspectorVM;
   ## A value-verified plan that will replace a still-unwritten plan for the
   ## same slot is checked against what the FILE says -- which is what the
   ## replaced plan expected -- not against the value the replaced plan would
-  ## have written and never did. Without this, two choices made within the
-  ## auto-save debounce (``tone=success`` then ``tone=warning``) staged a plan
-  ## expecting ``success`` against a file still saying ``neutral``, and the
-  ## write was refused as a source conflict. Applied by `journalSourceEdit`
-  ## to every replacing plan; history-recording paths also call it first so
-  ## the entry they keep carries the same expectation as the journal.
+  ## have written and never did. Applied by `journalSourceEdit` to every
+  ## replacing plan; history-recording paths also call it, after stamping the
+  ## entry, so the entry they keep carries the same expectation as the
+  ## journal.
+  ##
+  ## Only a plan of the same history entry, or one no entry owns, replaces a
+  ## pending plan (`replacesJournaledPlan`). Two choices made within the
+  ## auto-save debounce (``tone=success`` then ``tone=warning``) are two
+  ## entries: both plans are written, in order, so the second's expectation
+  ## ``success`` is what the file says when it is written.
   plan = inspector.pendingSourceEdits.val.unwrittenExpectation(plan)
 
 proc dropPendingHistoryPlans(inspector: InspectorVM; historyId: int) =
@@ -5142,9 +5173,12 @@ proc acceptPreparedPropertyEdit*(inspector: InspectorVM; prepared: PreparedPrope
     saved = false; applySelection = true) =
   if prepared.outcome.status != pesAccepted: return
   var transaction = prepared.transaction
+  # Stamped first: the entry's identity decides which pending plan, if any,
+  # its plan replaces and so inherits an expectation from (see
+  # `replacesJournaledPlan`).
+  inspector.stampHistoryEntry(transaction.sourceEdit)
   if not saved:
     inspector.inheritUnwrittenExpectation(transaction.sourceEdit)
-  inspector.stampHistoryEntry(transaction.sourceEdit)
   # A completed source write belongs to its captured element. Changing selection
   # while a build runs must not write the result into the new element's controls.
   if applySelection and inspector.selectedElement.val.fallbackElementId() == transaction.beforeElement.fallbackElementId():
@@ -5660,21 +5694,6 @@ proc journalSupersededBelow(inspector: InspectorVM; plan: SourceEditPlan) =
         inspector.journalSourceEdit(stack[i].sourceEdit)
       return
 
-proc supersedePendingBelow(inspector: InspectorVM; plan: SourceEditPlan) =
-  ## Before an exact redo of an edit, withdraw a still-unwritten plan of the
-  ## previous edit to the same slot: the redo restores text written on top of
-  ## the state BEFORE that plan, and the redone edit wins the slot anyway.
-  var stack = inspector.undoStack.val
-  for i in countdown(stack.high, 0):
-    if stack[i].sourceEdit.sameSourceJournalSlot(plan):
-      let id = stack[i].sourceEdit.historyId
-      if id > 0 and inspector.pendingSourceEdits.val.anyIt(
-          it.historyId == id and not it.restoreWrite.recorded):
-        inspector.dropPendingHistoryPlans(id)
-        stack[i].superseded = true
-        inspector.undoStack.val = stack
-      return
-
 proc requestPreviewValue(inspector: InspectorVM; element: ElementRef;
                          property, value: string;
                          sourceScope = sskLocalInstance; condition = "";
@@ -5775,7 +5794,9 @@ proc redoCssPropertyEdit*(inspector: InspectorVM): bool {.discardable.} =
     else:
       inspector.removeJournaledSourceEdit(txn.sourceEdit)
   of ihsRestoreWrite:
-    inspector.supersedePendingBelow(txn.sourceEdit)
+    # The entries below keep any plan still pending: their writes come first
+    # in the batch, and this receipt was written on top of what they write
+    # (`replacesJournaledPlan`).
     inspector.journalSourceEdit(step.plan, replaceExisting = false)
   of ihsInvertPlan, ihsReplayPlan:
     inspector.journalSourceEdit(step.plan)
@@ -6009,20 +6030,6 @@ proc journalSupersededHistoryBelow[T](editor: EditorVM; stack: seq[T];
         editor.inspector.journalSourceEdit(below.sourceEdit)
         editor.workspaceEditStage.val = wesDirty
         editor.scheduleStagedWrite()
-      return
-
-proc withdrawPendingHistoryBelow[T](editor: EditorVM; stack: seq[T];
-    plan: SourceEditPlan) =
-  ## Before redoing an entry whose write is (or will again be) on disk,
-  ## withdraw a still-unwritten forward plan of the previous entry for the
-  ## same slot: the redone entry wins the slot, and that plan's expected old
-  ## value no longer describes the file.
-  for i in countdown(stack.high, 0):
-    if stack[i].sourceEdit.sameSourceJournalSlot(plan):
-      let id = stack[i].sourceEdit.historyId
-      if id > 0 and editor.inspector.pendingSourceEdits.val.anyIt(
-          it.historyId == id and not it.restoreWrite.recorded):
-        editor.inspector.dropPendingHistoryPlans(id)
       return
 
 proc actualConflictMatchesPlan(actual: CSSSourceConflict;
@@ -6638,8 +6645,8 @@ proc stageDirectCanvasPlan(editor: EditorVM; operation: DirectCanvasOperation;
     editOrigin: peoInspector,
     sourcePlanKind: plan.planKind)
   var plan = plan
-  editor.inspector.inheritUnwrittenExpectation(plan)
   editor.inspector.stampHistoryEntry(plan)
+  editor.inspector.inheritUnwrittenExpectation(plan)
   editor.inspector.selectedElement.val = afterElement
   editor.inspector.journalSourceEdit(plan)
   editor.inspector.undoStack.update proc(prev: seq[CSSPropertyEditTransaction]): seq[
@@ -8011,8 +8018,8 @@ proc commitResponsiveOverride*(editor: EditorVM; property, value,
       kind: pedSchemaViolation, message: planned.refusal, property: property)]
     return ResponsiveOverrideOutcome(ok: false, message: planned.refusal)
   var plan = planned.plan
-  editor.inspector.inheritUnwrittenExpectation(plan)
   editor.inspector.stampHistoryEntry(plan)
+  editor.inspector.inheritUnwrittenExpectation(plan)
   let beforeElement = editor.inspector.selectedElement.val
   var afterElement = beforeElement
   if editor.activeBreakpoint.val.condition == plan.breakpointCondition and
@@ -8063,8 +8070,8 @@ proc editSharedDesignProperty*(editor: EditorVM; property, newValue: string;
     return SharedDesignEditResult(status: pesRejected, editor: result.editor,
       diagnostics: @[refused])
   var plan = result.sourceEdit
-  editor.inspector.inheritUnwrittenExpectation(plan)
   editor.inspector.stampHistoryEntry(plan)
+  editor.inspector.inheritUnwrittenExpectation(plan)
   let beforeElement = editor.inspector.selectedElement.val
   var afterElement = beforeElement
   for i, prop in afterElement.properties:
@@ -9178,9 +9185,6 @@ proc redoFoundationTokenEdit*(editor: EditorVM): bool {.discardable.} =
       break
   let step = editor.inspector.sourceHistoryStep(
     editor.foundations.undoStack.val, editor.foundations.redoStack.val, redo = true)
-  if step.kind in {ihsDropPending, ihsRestoreWrite}:
-    editor.withdrawPendingHistoryBelow(editor.foundations.undoStack.val,
-      entry.sourceEdit)
   editor.foundations.tokens.val = updated
   editor.foundations.selectedTokenKey.val = entry.key
   editor.foundations.redoStack.val = stack[0 ..< stack.len - 1]
@@ -9214,8 +9218,8 @@ proc editFoundationToken*(editor: EditorVM; key, newValue: string): FoundationEd
     return FoundationEditResult(status: pesRejected, diagnostics: diagnostics)
 
   var plan = token.sourcePlan(newValue)
-  editor.inspector.inheritUnwrittenExpectation(plan)
   editor.inspector.stampHistoryEntry(plan)
+  editor.inspector.inheritUnwrittenExpectation(plan)
   var updatedTokens = editor.foundations.tokens.val
   updatedTokens[tokenIndex].value = newValue.strip()
   if newValue.strip().isTokenAliasValue:
@@ -9917,8 +9921,8 @@ proc addPendingComponentPlan(editor: EditorVM; plan: SourceEditPlan) =
 proc stageComponentVariantJournal(editor: EditorVM;
     beforeVariant, afterVariant: ComponentVariantDefinition;
     selectedBefore, selectedAfter: int; plan: var SourceEditPlan) =
-  editor.inspector.inheritUnwrittenExpectation(plan)
   editor.inspector.stampHistoryEntry(plan)
+  editor.inspector.inheritUnwrittenExpectation(plan)
   let staged = plan
   editor.addPendingComponentPlan(staged)
   editor.variants.undoStack.update proc(prev: seq[ComponentVariantEditHistoryEntry]): seq[
@@ -10255,9 +10259,6 @@ proc redoComponentVariantEdit*(editor: EditorVM): bool {.discardable.} =
   discard updated.replaceVariant(entry.afterVariant)
   let step = editor.inspector.sourceHistoryStep(
     editor.variants.undoStack.val, editor.variants.redoStack.val, redo = true)
-  if step.kind in {ihsDropPending, ihsRestoreWrite}:
-    editor.withdrawPendingHistoryBelow(editor.variants.undoStack.val,
-      entry.sourceEdit)
   editor.variants.variants.val = updated
   editor.variants.selectedVariant.val = entry.selectedAfter
   editor.variants.redoStack.val = stack[0 ..< stack.len - 1]
@@ -10547,19 +10548,6 @@ func stepJournal(pending: seq[SourceEditPlan]; step: InspectorHistoryStep;
   of ihsNone, ihsRefuse:
     pending
 
-func withdrawnBelow[T](pending: seq[SourceEditPlan]; undoStack: seq[T];
-    plan: SourceEditPlan): seq[SourceEditPlan] =
-  ## The journal after `withdrawPendingHistoryBelow` / `supersedePendingBelow`:
-  ## the nearest same-slot entry below loses its unwritten forward plan.
-  result = pending
-  for i in countdown(undoStack.high, 0):
-    if undoStack[i].sourceEdit.sameSourceJournalSlot(plan):
-      let id = undoStack[i].sourceEdit.historyId
-      if id > 0 and pending.anyIt(it.historyId == id and
-          not it.restoreWrite.recorded):
-        result = pending.withoutHistoryPlans(id)
-      return
-
 func restagedBelow[T](pending: seq[SourceEditPlan]; stackBelow: seq[T];
     plan: SourceEditPlan): seq[SourceEditPlan] =
   ## The journal after `journalSupersededHistoryBelow`: the nearest same-slot
@@ -10593,7 +10581,7 @@ func historyJournal[T](pending: seq[SourceEditPlan]; undoStack, redoStack: seq[T
   ## The journal the component-property, foundation or vector undo/redo
   ## leaves: the same steps, in the same order, as `undoFoundationTokenEdit`,
   ## `redoFoundationTokenEdit`, the component-property pair and the vector
-  ## pair (vector neither withdraws nor re-stages).
+  ## pair (vector does not re-stage).
   if not redo:
     let entry = undoStack[^1]
     result = pending.stepJournal(step, entry.sourceEdit, replaceExisting)
@@ -10602,17 +10590,14 @@ func historyJournal[T](pending: seq[SourceEditPlan]; undoStack, redoStack: seq[T
         entry.sourceEdit)
   else:
     let entry = redoStack[^1]
-    result = pending
-    if restagesBelow and step.kind in {ihsDropPending, ihsRestoreWrite}:
-      result = result.withdrawnBelow(undoStack, entry.sourceEdit)
-    result = result.stepJournal(step, entry.sourceEdit, replaceExisting)
+    result = pending.stepJournal(step, entry.sourceEdit, replaceExisting)
 
 proc journalAfterHistoryCommand(editor: EditorVM; redo: bool;
     step: InspectorHistoryStep): seq[SourceEditPlan] =
   ## The journal the next undo/redo command will leave, computed with the
   ## same journal rules (`journaledPlans`, `withoutHistoryPlans`, ...) in the
   ## same order as the command applies them -- including the earlier edit an
-  ## undo stages again and the plan a redo withdraws. Nothing changes.
+  ## undo stages again. Nothing changes.
   let pending = editor.inspector.pendingSourceEdits.val
   case editor.nextHistoryKind(redo)
   of ehkNone:
@@ -10626,11 +10611,7 @@ proc journalAfterHistoryCommand(editor: EditorVM; redo: bool;
         .restagedSupersededBelow(stack[0 ..< stack.high], txn.sourceEdit)
     else:
       let txn = inspector.redoStack.val[^1]
-      var journal = pending
-      if step.kind == ihsRestoreWrite:
-        journal = journal.withdrawnBelow(inspector.undoStack.val,
-          txn.sourceEdit)
-      journal.stepJournal(step, txn.sourceEdit, replaceExisting = true)
+      pending.stepJournal(step, txn.sourceEdit, replaceExisting = true)
   of ehkVector:
     pending.historyJournal(editor.vectorEditor.undoStack.val,
       editor.vectorEditor.redoStack.val, step, redo,
@@ -10664,8 +10645,8 @@ proc removalWriteRefusal(editor: EditorVM; plan: SourceEditPlan): string =
   let adapter = editor.workspaceEditAdapter
   if adapter.isNil or adapter.patchFile.isNil or adapter.readFile.isNil:
     return
-  let journal = editor.inspector.pendingSourceEdits.val.journaledPlans(plan,
-    replaceExisting = true).plans
+  let journal = editor.inspector.pendingSourceEdits.val.journaledPlans(
+    editor.inspector.asNextHistoryEntry(plan), replaceExisting = true).plans
   var drafts: seq[WorkspaceFileDraft] = @[]
   for i, pending in journal:
     let drafted = adapter.draftWorkspacePlan(drafts,
@@ -10728,7 +10709,8 @@ proc withRuleOrderedSides(editor: EditorVM;
       return
   var drafts: seq[WorkspaceFileDraft] = @[]
   var drafted: DraftedWorkspacePlan
-  for plan in pending.journaledPlans(plan, replaceExisting = true).plans:
+  for plan in pending.journaledPlans(editor.inspector.asNextHistoryEntry(plan),
+      replaceExisting = true).plans:
     drafted = adapter.draftWorkspacePlan(drafts, editor.stampedForWrite(plan))
     if not drafted.ok:
       return
@@ -10845,7 +10827,7 @@ proc inspectorHistoryRefusal(editor: EditorVM; redo: bool): PropertyEditDiagnost
   ## preview and source untouched. The write that follows the command is one
   ## transaction over the journal the command leaves, so the check computes
   ## that journal (`journalAfterHistoryCommand`: the step's own plan, the
-  ## earlier edit an undo stages again, the plans a redo withdraws) and drafts
+  ## earlier edit an undo stages again) and drafts
   ## it in memory, in order, with the write's own per-plan step
   ## (`draftWorkspacePlan`) after the write's journal-ownership check.
   ## Nothing is written.

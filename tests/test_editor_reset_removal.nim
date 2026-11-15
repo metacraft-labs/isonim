@@ -416,12 +416,14 @@ suite "removal is admitted per schema entry and refused at the act":
       let vm = demoVm(foundation)
       check vm.editSharedDesignProperty("padding", "24px",
         sskSharedClass).status == pesAccepted
-      # Still pending: the file still declares 18px, which the removal (that
-      # replaces the pending edit and inherits its expectation) removes.
+      # Still pending: the removal is its own history entry, written after
+      # the pending edit, so it removes the 24px declaration that edit writes
+      # (isonim-pm issue 2026-10-23-undo-is-refused-after-a-batched-write-to-
+      # a-single-line-rule).
       check vm.propertyResetRefusal("padding", sskSharedClass) == ""
       check vm.editSharedDesignProperty("padding", "",
         sskSharedClass).status == pesAccepted
-      check vm.inspector.pendingSourceEdits.val.len == 1
+      check vm.inspector.pendingSourceEdits.val.len == 2
       check vm.applyWorkspaceFileEdits().ok
       check foundation[] == DemoFoundationInitialSource.replace(
         DestinationRule, ".destination-card { }\n")

@@ -10,7 +10,9 @@
 ## expected old value appends one `# isonim-editor <key> <prop>=<value>` line;
 ## an expected old value is replaced only where it occurs exactly once, and is
 ## otherwise refused (whole-value matching is the consumer's own and is
-## tested in metacraft-web). Every other part -- EditorVM, the inspector history, the
+## tested in metacraft-web). A case can make it refuse writes
+## (`refuseWrites`), standing for a project whose write fails, so that an
+## accepted agent proposal's plan stays pending. Every other part -- EditorVM, the inspector history, the
 ## journal and the workspace transaction -- is the production code. The real
 ## consumer writer is exercised by metacraft-web's
 ## test_backoffice_editor_workspace.nim, and the real browser/bridge round
@@ -31,6 +33,7 @@ type MemoryProject = ref object
   content: string
   writes: int
   patchCalls: seq[SourceEditPlan]
+  refuseWrites: bool
 
 proc memoryAdapter(project: MemoryProject): WorkspaceEditAdapter =
   result = WorkspaceEditAdapter(bridgeLabel: "in-memory consumer writer",
@@ -40,6 +43,10 @@ proc memoryAdapter(project: MemoryProject): WorkspaceEditAdapter =
   result.readFile = proc(file: string): WorkspaceReadResult =
     WorkspaceReadResult(ok: file == SourceFile, content: project.content)
   result.writeFile = proc(file, content: string): WorkspaceOperationResult =
+    if project.refuseWrites:
+      return WorkspaceOperationResult(ok: false, diagnostics: @[
+        WorkspaceEditDiagnostic(kind: wedWriteFailed,
+          message: "write refused", file: file)])
     project.content = content
     inc project.writes
     WorkspaceOperationResult(ok: true)
@@ -286,8 +293,11 @@ suite "Inspector undo restores the lines its own write produced":
       vm.editPad("left", "6px")
       vm.editPad("left", "8px")
       vm.save()
-      # Only the later plan was written; the earlier one was superseded.
-      check project.content == Original & marker("left", "8px")
+      # Each edit is written in history order, as two separate writes would
+      # write them (isonim-pm issue 2026-10-23-undo-is-refused-after-a-
+      # batched-write-to-a-single-line-rule).
+      check project.content == Original & marker("left", "6px") &
+        marker("left", "8px")
       check vm.runEditorCommand(eckUndo).status == ecsSucceeded
       check vm.padValue("left") == "6px"
       vm.save()
@@ -373,3 +383,133 @@ suite "Source write receipts":
     check restoreSourceWrite(written, notUnique).content == duplicated
     # A value-only match is never a line match.
     check not restoreSourceWrite("padding-left=6px\n", receipt).ok
+
+  test "a restore is refused wherever only the declaration text identifies it":
+    # The review of isonim-pm issue 2026-10-23-undo-is-refused-after-a-
+    # batched-write-to-a-single-line-rule probed a declaration-granular
+    # fallback (since removed) with edits made outside the editor. Every one
+    # of these is identifiable only by its text, out of its rule or its
+    # line, so the restore is refused and the file is left as it is.
+    proc refusedUnchanged(now: string; receipt: SourceWriteReceipt) =
+      let restored = restoreSourceWrite(now, receipt)
+      check not restored.ok
+      check restored.content == now
+      check restored.message.startsWith("Undo refused")
+    # The written declaration's text is now only in another rule.
+    let a1Before = ".a { gap: 4px; color: red; }\n.b { gap: 2px; color: green; }\n"
+    let a1After = a1Before.replace("color: red", "color: blue")
+    refusedUnchanged(a1After.replace(".a { gap: 4px; color: blue;",
+      ".a { gap: 4px; color: black;").replace("color: green", "color: blue"),
+      sourceWriteReceipt(SourceFile, a1Before, a1After))
+    # A removal whose neighbour now sits only in another rule.
+    let a3Before = ".a { gap: 4px; overflow: visible; color: red; }\n.b { gap: 2px; }\n"
+    let a3After = a3Before.replace(" overflow: visible;", "")
+    refusedUnchanged(".a { gap: 8px; color: black; }\n.b { gap: 2px; color: red; }\n",
+      sourceWriteReceipt(SourceFile, a3Before, a3After))
+    # The written declaration's text survives only inside a comment.
+    let a4Before = ".a { gap: 4px; color: red; }\n"
+    let a4After = a4Before.replace("color: red", "color: blue")
+    refusedUnchanged(".a { gap: 8px; color: black; /* was; color: blue; */ }\n",
+      sourceWriteReceipt(SourceFile, a4Before, a4After))
+    # Minified: the text is now only in another rule.
+    let a7Before = ".a{gap:4px;color:red}.b{gap:4px;color:green}"
+    let a7After = a7Before.replace("color:red", "color:blue")
+    refusedUnchanged(a7After.replace(".b{gap:4px;color:green}",
+      ".b{gap:4px;color:green;color:blue}").replace(".a{gap:4px;color:blue}",
+      ".a{gap:4px;color:x}"), sourceWriteReceipt(SourceFile, a7Before, a7After))
+    # A whole-line removal whose only anchor left is a lone closing brace,
+    # in a rule since replaced by another.
+    let a9Before = ".a {\n  gap: 4px;\n  overflow: visible;\n}\n"
+    let a9After = a9Before.replace("  overflow: visible;\n", "")
+    refusedUnchanged(".z {\n  gap: 9px;\n}\n",
+      sourceWriteReceipt(SourceFile, a9Before, a9After))
+    # A key=value schema file: a removed line, the line after it changed.
+    let a12Before = "badge.tone=neutral\nbadge.label=Customers\n" &
+      "badge.loading=false\nbadge.gap=4px\n"
+    let a12After = a12Before.replace("badge.loading=false\n", "")
+    refusedUnchanged(a12After.replace("badge.gap=4px", "badge.gap=8px"),
+      sourceWriteReceipt(SourceFile, a12Before, a12After))
+    # A one-line rule whose line another edit changed: the line is what
+    # identifies the write, so this is refused too. The editor's own batched
+    # writes never produce it: each entry is written in history order, so an
+    # undo in history order always finds the file exactly as its write left
+    # it (tests/test_editor_save_pipeline.nim, the one-line-rule suites).
+    let lineBefore = ".card { gap: 4px; wrap: nowrap; overflow: visible; }\n"
+    let lineAfter = ".card { gap: 4px; wrap: wrap; overflow: visible; }\n"
+    refusedUnchanged(lineAfter.replace("overflow: visible", "overflow: hidden"),
+      sourceWriteReceipt(SourceFile, lineBefore, lineAfter))
+
+suite "Plans no history entry owns":
+  ## An accepted agent proposal journals plans that belong to no history
+  ## entry. They still replace a pending plan for the same slot, and a
+  ## history entry's plan still replaces a pending plan of theirs
+  ## (`replacesJournaledPlan`); only plans of two different entries are each
+  ## written as their own step (isonim-pm issue 2026-10-23-undo-is-refused-
+  ## after-a-batched-write-to-a-single-line-rule). The appending writer makes
+  ## the difference visible: one marker line per write.
+  proc proposal(vm: EditorVM; plan: SourceEditPlan): string =
+    vm.chat.addAgentEditProposal(AgentEditProposal(title: "Padding",
+      summary: "Set the left padding", sourceEdits: @[plan],
+      selectedEditIndexes: @[0], validity: aepvCurrent))
+
+  test "an accepted proposal replaces a pending edit's plan, and undo re-stages that edit":
+    createRoot proc(dispose: proc()) =
+      let project = MemoryProject(content: Original)
+      let vm = newTopbarEditor(project)
+      vm.editPad("left", "6px")
+      check vm.inspector.pendingSourceEdits.val.len == 1
+      var proposed = vm.inspector.pendingSourceEdits.val[0]
+      proposed.historyId = 0
+      proposed.oldValue = "6px"
+      proposed.newValue = "8px"
+      let accepted = vm.acceptAgentProposedEdit(vm.proposal(proposed))
+      check accepted.ok
+      # One write: the proposal's plan replaced the pending one.
+      check project.content == Original & marker("left", "8px")
+      check vm.inspector.pendingSourceEdits.val.len == 0
+      check vm.inspector.undoStack.val.len == 1
+      check vm.inspector.undoStack.val[0].superseded
+      vm.editPad("left", "10px")
+      vm.save()
+      check project.content == Original & marker("left", "8px") &
+        marker("left", "10px")
+      # Undoing the later edit makes the superseded one current again; its
+      # value is not on disk, so it is staged and written again.
+      check vm.runEditorCommand(eckUndo).status == ecsSucceeded
+      check vm.padValue("left") == "6px"
+      check vm.inspector.pendingSourceEdits.val.len == 2
+      vm.save()
+      check project.content == Original & marker("left", "8px") &
+        marker("left", "6px")
+      check not vm.inspector.undoStack.val[0].superseded
+      # It was written now, so its own write is undone exactly; the
+      # proposal's line, which no history entry owns, stays.
+      check vm.runEditorCommand(eckUndo).status == ecsSucceeded
+      vm.save()
+      check project.content == Original & marker("left", "8px")
+      dispose()
+
+  test "a later edit replaces a proposal's plan that is still pending":
+    createRoot proc(dispose: proc()) =
+      let project = MemoryProject(content: Original)
+      let vm = newTopbarEditor(project)
+      let plan = SourceEditPlan(file: SourceFile, line: 1,
+        property: "padding-left", oldValue: "0px", newValue: "8px",
+        schemaKey: "dom.component-topbar.padding-left",
+        conflictKey: SourceFile & ":1:padding-left", scope: pesLocal)
+      project.refuseWrites = true
+      check not vm.acceptAgentProposedEdit(vm.proposal(plan)).ok
+      check vm.inspector.pendingSourceEdits.val.len == 1
+      check vm.inspector.pendingSourceEdits.val[0].historyId == 0
+      check project.content == Original
+      project.refuseWrites = false
+      vm.editPad("left", "6px")
+      check vm.inspector.pendingSourceEdits.val.len == 1
+      check vm.inspector.pendingSourceEdits.val[0].historyId > 0
+      check vm.inspector.pendingSourceEdits.val[0].conflictKey == plan.conflictKey
+      vm.save()
+      check project.content == Original & marker("left", "6px")
+      check vm.runEditorCommand(eckUndo).status == ecsSucceeded
+      vm.save()
+      check project.content == Original
+      dispose()

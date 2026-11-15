@@ -386,33 +386,34 @@ suite "An unsafe undo is refused at the keystroke while another edit is pending"
       check project.files[ComponentFile] == external
       dispose()
 
-  test "foundation: an undo whose re-staged earlier edit cannot be written is refused":
-    ## Review R1. 16px -> 24px -> 32px inside the debounce: the second plan
-    ## replaces the first (which is marked superseded) and inherits its
-    ## expectation. After the write, undo restores the lines the 32px write
-    ## replaced AND stages the superseded 24px plan again, expecting 16px. An external comment quoting 16px makes that plan ambiguous, so
-    ## the write would refuse the whole transaction.
+  test "foundation: edits written together undo one at a time past an external change":
+    ## Review R1 of the act-time refusals, revisited for isonim-pm issue
+    ## 2026-10-23-undo-is-refused-after-a-batched-write-to-a-single-line-rule.
+    ## 16px -> 24px -> 32px inside the debounce used to collapse into one
+    ## write, and the undo re-staged the 24px plan expecting 16px, which an
+    ## external comment quoting 16px made ambiguous. Now each edit is its own
+    ## write, in history order: the undo restores exactly the line the 32px
+    ## write replaced, stages nothing else, and leaves the comment alone.
     createRoot proc(dispose: proc()) =
       let project = MemoryProject()
       let vm = newEditor(project)
       check vm.editFoundationToken("space.card", "24px").status == pesAccepted
       check vm.editFoundationToken("space.card", "32px").status == pesAccepted
-      check vm.inspector.pendingSourceEdits.val.len == 1
+      check vm.inspector.pendingSourceEdits.val.len == 2
       vm.save()
       check project.files[TokenFile] == "space.card=32px\n"
       project.files[TokenFile] = project.files[TokenFile] & "# was space.card=16px\n"
-      let external = project.files[TokenFile]
-      let refused = vm.runEditorCommand(eckUndo)
-      check refused.status == ecsFailed
-      check refused.diagnostic.contains("Undo refused")
-      check vm.token == "32px"
-      check vm.foundations.undoStack.val.len == 2
-      check vm.foundations.redoStack.val.len == 0
-      check vm.inspector.pendingSourceEdits.val.len == 0
-      check project.files[TokenFile] == external
+      check vm.runEditorCommand(eckUndo).status == ecsSucceeded
+      check vm.token == "24px"
+      check vm.inspector.pendingSourceEdits.val.len == 1
+      vm.save()
+      check project.files[TokenFile] == "space.card=24px\n# was space.card=16px\n"
+      check vm.runEditorCommand(eckUndo).status == ecsSucceeded
+      vm.save()
+      check project.files[TokenFile] == "space.card=16px\n# was space.card=16px\n"
       dispose()
 
-  test "foundation: the same undo with nothing ambiguous is written with the re-staged edit":
+  test "foundation: the same undo with nothing outside is written alone":
     createRoot proc(dispose: proc()) =
       let project = MemoryProject()
       let vm = newEditor(project)
@@ -421,12 +422,12 @@ suite "An unsafe undo is refused at the keystroke while another edit is pending"
       vm.save()
       check vm.runEditorCommand(eckUndo).status == ecsSucceeded
       check vm.token == "24px"
-      check vm.inspector.pendingSourceEdits.val.len == 2
+      check vm.inspector.pendingSourceEdits.val.len == 1
       vm.save()
       check project.files[TokenFile] == "space.card=24px\n"
       dispose()
 
-  test "inspector: an undo whose re-staged earlier edit cannot be written is refused":
+  test "inspector: edits written together undo one at a time past an external change":
     createRoot proc(dispose: proc()) =
       let project = MemoryProject()
       let vm = newEditor(project)
@@ -434,22 +435,20 @@ suite "An unsafe undo is refused at the keystroke while another edit is pending"
       check first.status == pesAccepted
       check first.sourceEdit.expectedOldValue.len > 0
       check vm.editCssProperty("gap", "12px", pesLocal).status == pesAccepted
-      check vm.inspector.pendingSourceEdits.val.len == 1
+      check vm.inspector.pendingSourceEdits.val.len == 2
       vm.save()
       check "topbar.gap=12px" in project.files[ComponentFile]
       project.files[ComponentFile] = project.files[ComponentFile] &
         "# was topbar.gap=4px\n"
-      let external = project.files[ComponentFile]
-      let refused = vm.runEditorCommand(eckUndo)
-      check refused.status == ecsFailed
-      check refused.diagnostic.contains("Undo refused")
-      check vm.value("gap") == "12px"
-      check vm.stacks == (2, 0)
-      check vm.inspector.pendingSourceEdits.val.len == 0
-      check project.files[ComponentFile] == external
+      check vm.runEditorCommand(eckUndo).status == ecsSucceeded
+      check vm.value("gap") == "8px"
+      check vm.stacks == (1, 1)
+      vm.save()
+      check project.files[ComponentFile] ==
+        ComponentOriginal.replace("gap=4px", "gap=8px") & "# was topbar.gap=4px\n"
       dispose()
 
-  test "inspector: the same undo with nothing ambiguous is written with the re-staged edit":
+  test "inspector: the same undo with nothing outside is written alone":
     createRoot proc(dispose: proc()) =
       let project = MemoryProject()
       let vm = newEditor(project)
@@ -463,11 +462,14 @@ suite "An unsafe undo is refused at the keystroke while another edit is pending"
         ComponentOriginal.replace("gap=4px", "gap=8px")
       dispose()
 
-  test "a redo is checked against the journal it leaves, after what it withdraws":
-    ## The check computes the journal exactly as the command changes it. A
-    ## redo of a written edit withdraws the unwritten forward plan of the
-    ## edit below it for the same slot; that plan is not in the write the
-    ## redo joins, so it cannot be a reason to refuse the redo.
+  test "a redo is checked against the journal it joins, including the plans below it":
+    ## The check computes the journal exactly as the command leaves it. A
+    ## redo no longer withdraws the pending plan of the edit below it: that
+    ## plan is written first, and the redo's receipt was written on top of
+    ## what it writes (isonim-pm issue 2026-10-23-undo-is-refused-after-a-
+    ## batched-write-to-a-single-line-rule). So a pending plan below that
+    ## cannot be written refuses the redo at the keystroke, with nothing
+    ## moved, like any command whose write would be refused.
     createRoot proc(dispose: proc()) =
       let project = MemoryProject()
       let vm = newEditor(project)
@@ -482,13 +484,14 @@ suite "An unsafe undo is refused at the keystroke while another edit is pending"
       # The edit below is staged again (for instance by an accepted proposal)
       # and cannot be written: its expected 16px is ambiguous now.
       vm.inspector.journalSourceEdit(vm.foundations.undoStack.val[^1].sourceEdit)
-      let redone = vm.runEditorCommand(eckRedo)
-      check redone.status == ecsSucceeded
-      check redone.diagnostic == ""
-      check vm.token == "32px"
+      let external = project.files[TokenFile]
+      let refused = vm.runEditorCommand(eckRedo)
+      check refused.status == ecsFailed
+      check refused.diagnostic.contains("Redo refused")
+      check vm.token == "24px"
+      check vm.foundations.redoStack.val.len == 1
       check vm.inspector.pendingSourceEdits.val.len == 1
-      vm.save()
-      check project.files[TokenFile] == "space.card=32px\n# 16px 16px\n"
+      check project.files[TokenFile] == external
       dispose()
 
   test "an undo that only withdraws an unwritten edit is never refused":
@@ -510,10 +513,11 @@ suite "An unsafe undo is refused at the keystroke while another edit is pending"
       check vm.inspector.pendingSourceEdits.val.len == 1
       dispose()
 
-  test "an inspector redo is not refused by the unwritable plan it withdraws":
-    ## Review round 2, probe P4. The redo of a written edit withdraws the
-    ## unwritten forward plan of the edit below it for the same slot; that
-    ## plan is not in the write the redo joins.
+  test "an inspector redo is refused by an unwritable plan below it":
+    ## Review round 2, probe P4, revisited: the redo of a written edit keeps
+    ## the pending forward plan of the edit below it for the same slot (it is
+    ## written first), so that plan being unwritable refuses the redo at the
+    ## keystroke, and nothing moves.
     createRoot proc(dispose: proc()) =
       let project = MemoryProject()
       let vm = newEditor(project)
@@ -530,10 +534,14 @@ suite "An unsafe undo is refused at the keystroke while another edit is pending"
       var below = vm.inspector.undoStack.val[^1].sourceEdit
       below.expectedOldValue = "# dup"
       vm.inspector.journalSourceEdit(below)
+      let external = project.files[ComponentFile]
       check vm.inspector.inspectorHistoryStep(redo = true).kind == ihsRestoreWrite
-      check vm.runEditorCommand(eckRedo).status == ecsSucceeded
-      check vm.value("border-radius") == "16px"
-      check vm.applyWorkspaceFileEdits().ok
+      let refused = vm.runEditorCommand(eckRedo)
+      check refused.status == ecsFailed
+      check refused.diagnostic.contains("Redo refused")
+      check vm.value("border-radius") == "12px"
+      check vm.inspector.pendingSourceEdits.val.len == 1
+      check project.files[ComponentFile] == external
       dispose()
 
 suite "The Foundations page Undo button is the shared undo command":
