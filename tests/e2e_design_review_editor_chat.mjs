@@ -48,11 +48,12 @@ const reviewBin = join(projectRoot, "build", "bin", "isonim-review");
 const fakeAcpBin = join(projectRoot, "build", "bin", "fake-acp-agent");
 
 const EDITOR_PORT = Number(process.env.ISONIM_CHAT_TEST_EDITOR_PORT || 0);
-let editorProc = null;
-let editorOrigin;
-let artifacts;
-let launcherExit;
-let actualSessions = [];
+// Each startEditor() returns its own launcher handle, carrying that test's
+// origin, artifacts and created sessions, and each test stops the handle it
+// started. Shared "current launcher" state is not enough: node:test ends a test
+// on an unhandled rejection while its body is still awaiting, so that body can
+// still run after the next test has started its own launcher.
+const liveLaunchers = new Set();
 const shutdownPolicy = JSON.parse(
   (await import("node:fs")).readFileSync(
     join(projectRoot, "tools/editor_shutdown.json"),
@@ -67,7 +68,7 @@ const shutdownMs =
     shutdownPolicy.harbor_teardown_seconds +
     shutdownPolicy.supervisor_margin_seconds +
     shutdownPolicy.enumeration_seconds);
-async function bounded(promise, milliseconds, label) {
+async function bounded(promise, milliseconds, label, artifacts) {
   let timer;
   try {
     return await Promise.race([
@@ -77,7 +78,8 @@ async function bounded(promise, milliseconds, label) {
           () =>
             reject(
               new Error(
-                `${label} exceeded ${milliseconds}ms; artifacts ${artifacts}`,
+                `${label} exceeded ${milliseconds}ms` +
+                  (artifacts ? `; artifacts ${artifacts}` : ""),
               ),
             ),
           milliseconds,
@@ -107,8 +109,7 @@ function skipIfPrereqsMissing(t) {
 }
 
 async function startEditor(providerEnv = {}) {
-  actualSessions = [];
-  artifacts = mkdtempSync(join(tmpdir(), "isonim-http-chat-"));
+  const artifacts = mkdtempSync(join(tmpdir(), "isonim-http-chat-"));
   const config = join(artifacts, "review.toml");
   writeFileSync(
     config,
@@ -117,7 +118,7 @@ async function startEditor(providerEnv = {}) {
       "\nargs = []\nprimer_enabled = false\n",
   );
   const log = createWriteStream(join(artifacts, "server.log"));
-  editorProc = spawn(
+  const editorProc = spawn(
     "python3",
     [
       join(projectRoot, "tools/editor_server.py"),
@@ -144,44 +145,150 @@ async function startEditor(providerEnv = {}) {
       stdio: ["ignore", "pipe", "pipe"],
     },
   );
-  launcherExit = once(editorProc, "exit");
+  const launcherExit = once(editorProc, "exit");
+  const launcher = {
+    proc: editorProc,
+    exit: launcherExit,
+    artifacts,
+    origin: null,
+    sessions: [],
+    stopping: null,
+  };
+  liveLaunchers.add(launcher);
   editorProc.stderr.pipe(log);
   console.log(`HTTP chat artifacts ${artifacts}`);
-  await bounded(
-    new Promise((resolve, reject) => {
-      let output = "";
-      editorProc.stdout.on("data", (chunk) => {
-        output += chunk;
-        const match = output.match(/Editor listening on (http:\/\/[^\s]+)\//);
-        if (match) {
-          editorOrigin = match[1];
-          resolve();
-        }
-      });
-      launcherExit.then(([code, signal]) =>
-        reject(new Error(`Launcher startup exit ${code}/${signal}`)),
-      );
-    }),
-    30000,
-    "Production launcher startup",
-  );
+  try {
+    await bounded(
+      new Promise((resolve, reject) => {
+        let output = "";
+        editorProc.stdout.on("data", (chunk) => {
+          output += chunk;
+          const match = output.match(/Editor listening on (http:\/\/[^\s]+)\//);
+          if (match) {
+            launcher.origin = match[1];
+            resolve();
+          }
+        });
+        launcherExit.then(([code, signal]) =>
+          reject(new Error(`Launcher startup exit ${code}/${signal}`)),
+        );
+      }),
+      30000,
+      "Production launcher startup",
+      artifacts,
+    );
+  } catch (error) {
+    // The caller never receives this handle, so it cannot stop it.
+    await reapLauncher(launcher).catch(() => {});
+    throw error;
+  }
+  return launcher;
 }
-async function stopEditor() {
-  if (!editorProc) return;
-  const processToStop = editorProc;
-  editorProc = null;
-  if (processToStop.exitCode === null && processToStop.signalCode === null)
-    processToStop.kill("SIGTERM");
-  const [code, signal] = await bounded(
-    launcherExit,
-    shutdownMs,
-    "Owned launcher/daemon/provider shutdown",
+function launcherRunning(launcher) {
+  return launcher.proc.exitCode === null && launcher.proc.signalCode === null;
+}
+function processTable() {
+  return execFileSync("ps", ["-eo", "pid=,ppid=,pgid=,sid="], {
+    encoding: "utf8",
+    env: { ...process.env, LC_ALL: "C" },
+    maxBuffer: 64 * 1024 * 1024,
+    timeout: 10000,
+  })
+    .split("\n")
+    .map((line) => line.trim().split(/\s+/).map(Number))
+    .filter((row) => row.length === 4 && row.every(Number.isInteger))
+    .map(([pid, parent, group, session]) => ({ pid, parent, group, session }));
+}
+// The bound on the SIGKILL fallback's reclaim of the launcher's process tree.
+const reclaimMs = 10000;
+// The launcher's SIGKILL fallback. The launcher starts the daemon in a session
+// of its own (tools/editor_server.py owned_process), so killing the launcher
+// alone can orphan the daemon and its provider. Like owned_process, reclaim by
+// session: every session a launcher descendant belongs to, except the one this
+// test runner shares with the launcher, whose members are killed by PID
+// instead. Bounded; survivors fail the caller.
+async function killLauncherTree(launcher) {
+  const root = launcher.proc.pid;
+  let rows = [];
+  try {
+    rows = processTable();
+  } catch {}
+  const shared = new Set(
+    rows
+      .filter((row) => row.pid === root || row.pid === process.pid)
+      .map((row) => row.session),
   );
+  const tree = new Set([root]);
+  for (let size = -1; size !== tree.size; ) {
+    size = tree.size;
+    for (const row of rows) if (tree.has(row.parent)) tree.add(row.pid);
+  }
+  const owned = rows.filter((row) => tree.has(row.pid));
+  const sessions = new Set(
+    owned.map((row) => row.session).filter((session) => !shared.has(session)),
+  );
+  const kill = (target) => {
+    try {
+      process.kill(target, "SIGKILL");
+    } catch {}
+  };
+  launcher.proc.kill("SIGKILL");
+  for (const row of owned) if (shared.has(row.session)) kill(row.pid);
+  const deadline = Date.now() + reclaimMs;
+  for (;;) {
+    let survivors;
+    try {
+      survivors = processTable().filter((row) => sessions.has(row.session));
+    } catch {
+      survivors = null;
+    }
+    if (survivors?.length === 0) break;
+    if (Date.now() >= deadline)
+      throw new Error(
+        `Launcher SIGKILL fallback left owned sessions ${[...sessions].join(",")} ` +
+          `after ${reclaimMs}ms: ` +
+          (survivors
+            ? survivors.map((row) => row.pid).join(",")
+            : "ps failed") +
+          `; artifacts ${launcher.artifacts}`,
+      );
+    for (const group of new Set((survivors ?? []).map((row) => row.group)))
+      kill(-group);
+    await new Promise((resolve) => setTimeout(resolve, 100));
+  }
+  await bounded(launcher.exit, reclaimMs, "Killed launcher exit");
+}
+// Stops one launcher exactly once and always leaves it gone: SIGTERM for the
+// launcher's owned teardown, then the SIGKILL fallback above if that teardown
+// misses its bound. Repeated calls share the first call's result.
+function reapLauncher(launcher) {
+  launcher.stopping ??= (async () => {
+    try {
+      if (launcherRunning(launcher)) launcher.proc.kill("SIGTERM");
+      return await bounded(
+        launcher.exit,
+        shutdownMs,
+        "Owned launcher/daemon/provider shutdown",
+        launcher.artifacts,
+      );
+    } finally {
+      try {
+        if (launcherRunning(launcher)) await killLauncherTree(launcher);
+      } finally {
+        liveLaunchers.delete(launcher);
+      }
+    }
+  })();
+  return launcher.stopping;
+}
+async function stopEditor(launcher) {
+  if (!launcher) return;
+  const [code, signal] = await reapLauncher(launcher);
   assert.equal(signal, null, "launcher must perform normal owned teardown");
   // shutdown_signals deliberately raises SystemExit(128 + SIGTERM); its
   // owned_process scope separately rejects any nonzero native daemon exit.
   assert.equal(code, 143, "launcher must complete its handled SIGTERM scope");
-  const log = readFileSync(join(artifacts, "server.log"), "utf8");
+  const log = readFileSync(join(launcher.artifacts, "server.log"), "utf8");
   assert.match(
     log,
     /isonim-review serve: exiting cleanly/,
@@ -191,7 +298,7 @@ async function stopEditor() {
     log,
     /exceeded shutdown budget|did not exit cleanly|closure is unconfirmed/,
   );
-  for (const session of actualSessions) {
+  for (const session of launcher.sessions) {
     const lines = log.split("\n");
     assert.ok(
       lines.some(
@@ -237,7 +344,7 @@ async function ensureBrowser() {
   return browser;
 }
 
-async function openEditor(observeWire = false) {
+async function openEditor(launcher, observeWire = false) {
   const b = await ensureBrowser();
   const context = await b.newContext({
     viewport: { width: 1440, height: 900 },
@@ -269,6 +376,8 @@ async function openEditor(observeWire = false) {
         response.request().postDataJSON()?.method === "editor.register",
       { timeout: 30000 },
     );
+    // Handled here so a failed goto cannot leave it unhandled; awaited below.
+    registered.catch(() => {});
     const evidence = [];
     page.on("pageerror", (error) =>
       evidence.push({ pageError: error.message }),
@@ -286,11 +395,11 @@ async function openEditor(observeWire = false) {
     );
     context.on("close", () =>
       writeFileSync(
-        join(artifacts, "browser-evidence.json"),
+        join(launcher.artifacts, "browser-evidence.json"),
         JSON.stringify(evidence, null, 2),
       ),
     );
-    await page.goto(editorOrigin);
+    await page.goto(launcher.origin);
     const registration = await (await registered).json();
     assert.ok(
       registration.result,
@@ -303,6 +412,7 @@ async function openEditor(observeWire = false) {
         context.close(),
         30000,
         "Failed editor startup context shutdown",
+        launcher.artifacts,
       );
     } catch (cleanup) {
       throw new AggregateError(
@@ -316,9 +426,10 @@ async function openEditor(observeWire = false) {
 
 test("e2e_editor_chat_panel_hello_streams_response_from_daemon", async (t) => {
   if (skipIfPrereqsMissing(t)) return;
+  let launcher;
   try {
-    await startEditor();
-    const { page, context } = await openEditor();
+    launcher = await startEditor();
+    const { page, context } = await openEditor(launcher);
     try {
       const input = page.locator("textarea[aria-label='Agent prompt']");
       await input.waitFor({ state: "visible", timeout: 10_000 });
@@ -347,7 +458,7 @@ test("e2e_editor_chat_panel_hello_streams_response_from_daemon", async (t) => {
       assert.equal(created.status(), 200);
       const session = await created.json();
       assert.ok(session.sessionId, "daemon must create an actual session");
-      actualSessions.push(session.sessionId);
+      launcher.sessions.push(session.sessionId);
       const submitted = promptRequest.postDataJSON();
       assert.equal(submitted.sessionId, session.sessionId);
       assert.equal(submitted.messages[0].content[0].text, "hello");
@@ -381,10 +492,15 @@ test("e2e_editor_chat_panel_hello_streams_response_from_daemon", async (t) => {
         "true",
       );
     } finally {
-      await bounded(context.close(), 30000, "Owned editor context shutdown");
+      await bounded(
+        context.close(),
+        30000,
+        "Owned editor context shutdown",
+        launcher.artifacts,
+      );
     }
   } finally {
-    await stopEditor();
+    await stopEditor(launcher);
   }
 });
 
@@ -433,8 +549,11 @@ echo $deliveredContext(input["wire"], input["previous"])
       .split("\n")
       .map((line) => JSON.parse(line));
   function ownedPeer() {
+    // The whole process table with full argv exceeds execFileSync's 1 MiB
+    // default buffer on a busy host (spawnSync ps ENOBUFS).
     const rows = execFileSync("ps", ["-eo", "pid=,ppid=,lstart=,args="], {
       encoding: "utf8",
+      maxBuffer: 64 * 1024 * 1024,
       env: { ...process.env, LC_ALL: "C" },
       timeout: 10000,
     })
@@ -447,7 +566,7 @@ echo $deliveredContext(input["wire"], input["previous"])
         started: match[3],
         args: match[4],
       }));
-    const owned = new Set([editorProc.pid]);
+    const owned = new Set([launcher.proc.pid]);
     for (let size = -1; size !== owned.size; ) {
       size = owned.size;
       for (const row of rows) if (owned.has(row.parent)) owned.add(row.pid);
@@ -595,9 +714,10 @@ echo $deliveredContext(input["wire"], input["previous"])
       previous = resolved;
     }
   }
+  let launcher;
   try {
-    await startEditor({ FAKE_ACP_CONTENT_LOG: peerLog });
-    const { page, context } = await openEditor();
+    launcher = await startEditor({ FAKE_ACP_CONTENT_LOG: peerLog });
+    const { page, context } = await openEditor(launcher);
     try {
       const errors = [];
       page.on("pageerror", (error) => errors.push(error.message));
@@ -636,9 +756,19 @@ echo $deliveredContext(input["wire"], input["previous"])
         null,
         { timeout: 10000 },
       );
-      assert.equal(
-        (await tiptap.textContent()).trim(),
-        "# Spec\n\nNo brief available for the selected story.",
+      // The build ships TipTap, which renders the empty-brief markdown as a
+      // heading and a paragraph; raw textContent would drop the markdown syntax.
+      assert.deepEqual(
+        await tiptap.evaluate((host) =>
+          Array.from(
+            host.querySelector(".ProseMirror")?.children ?? [],
+            (node) => [node.tagName, node.textContent],
+          ),
+        ),
+        [
+          ["H1", "Spec"],
+          ["P", "No brief available for the selected story."],
+        ],
       );
       const panel = page.locator(".editor-chat[data-chat-local-id]");
       const input = panel.locator("textarea[aria-label='Agent prompt']");
@@ -696,7 +826,7 @@ echo $deliveredContext(input["wire"], input["previous"])
           assert.equal(sessions[0].status(), 200);
           sessionId = (await sessions[0].json()).sessionId;
           assert.ok(sessionId);
-          actualSessions.push(sessionId);
+          launcher.sessions.push(sessionId);
         }
         assert.equal(request.sessionId, sessionId);
         const assistant = panel.locator(
@@ -826,7 +956,7 @@ echo $deliveredContext(input["wire"], input["previous"])
         );
       }
       assert.deepEqual(errors, []);
-      const log = readFileSync(join(artifacts, "server.log"), "utf8");
+      const log = readFileSync(join(launcher.artifacts, "server.log"), "utf8");
       assert.equal(
         log
           .split("\n")
@@ -848,7 +978,7 @@ echo $deliveredContext(input["wire"], input["previous"])
         2,
       );
       writeFileSync(
-        join(artifacts, "context-proof.json"),
+        join(launcher.artifacts, "context-proof.json"),
         JSON.stringify(
           {
             sessionId,
@@ -864,10 +994,15 @@ echo $deliveredContext(input["wire"], input["previous"])
         ),
       );
     } finally {
-      await bounded(context.close(), 30000, "Owned editor context shutdown");
+      await bounded(
+        context.close(),
+        30000,
+        "Owned editor context shutdown",
+        launcher.artifacts,
+      );
     }
   } finally {
-    await stopEditor();
+    await stopEditor(launcher);
   }
 });
 
@@ -879,12 +1014,13 @@ for (const newerDraft of [false, true]) {
         existsSync(join(editorDir, "editor.js")),
       "Required built runtime",
     );
+    let launcher;
     try {
-      await startEditor({
+      launcher = await startEditor({
         FAKE_ACP_STOP_REASON_ERROR_AT: "1",
         FAKE_ACP_SLOW_PROMPT_MS: "1000",
       });
-      const { page, context } = await openEditor(true);
+      const { page, context } = await openEditor(launcher, true);
       try {
         const input = page.locator("textarea[aria-label='Agent prompt']");
         const send = page.locator("[aria-label='Send agent prompt']");
@@ -892,7 +1028,9 @@ for (const newerDraft of [false, true]) {
         const draft = "  exact rejected draft\nsecond line  ";
         await input.fill(draft);
         const creation = page.waitForResponse(
-          (r) => new URL(r.url()).pathname === "/api/agent/sessions",
+          (r) =>
+            new URL(r.url()).pathname === "/api/agent/sessions" &&
+            r.request().method() === "POST",
         );
         const prompt = page.waitForResponse(
           (r) => new URL(r.url()).pathname === "/api/agent/prompts",
@@ -900,9 +1038,19 @@ for (const newerDraft of [false, true]) {
         const submitted = page.waitForRequest(
           (r) => new URL(r.url()).pathname === "/api/agent/prompts",
         );
+        // Each wait rejects on timeout or page close. Without a handler, a
+        // rejection nobody is awaiting yet ends this test early and leaves its
+        // body running. The awaits below still raise the failure here.
+        for (const wait of [creation, prompt, submitted]) wait.catch(() => {});
         await send.click();
-        const session = await (await creation).json();
-        actualSessions.push(session.sessionId);
+        const created = await creation;
+        assert.equal(
+          created.status(),
+          200,
+          `POST /api/agent/sessions must create a session: ${await created.text()}`,
+        );
+        const session = await created.json();
+        launcher.sessions.push(session.sessionId);
         const request = (await submitted).postDataJSON();
         assert.equal(request.messages[0].content[0].text, draft.trim());
         assert.equal(request.context.backend, "absAcp");
@@ -991,12 +1139,14 @@ for (const newerDraft of [false, true]) {
         );
       }
     } finally {
-      await stopEditor();
+      await stopEditor(launcher);
     }
   });
 }
 
 test.after(async () => {
+  // A test body that node:test abandoned may still own a launcher.
+  await Promise.allSettled([...liveLaunchers].map(reapLauncher));
   if (browser) {
     await bounded(browser.close(), 30000, "Owned browser shutdown");
     browser = null;
