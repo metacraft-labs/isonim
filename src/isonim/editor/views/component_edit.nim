@@ -96,13 +96,70 @@ const editablePreviewBridgeTemplate = block:
   let bridge = """
 <script>var ISONIM_EDITABLE_PROPS = """ & editablePropsJs & """;</script>
 <style id="isonim-editor-selection-paint-style">
-  [data-isonim-selected="true"] {
-    outline: 2px solid #3B82F6 !important;
-    outline-offset: 2px !important;
+  /* The selection and hover outlines are drawn by these overlays, each
+     placed on its element's border box, and not by the element: an outline
+     on the page's own element is a change to its style, so a page
+     `transition` on it animated the outline in and delivered `transitionrun`
+     and `transitionend` to page code whenever the pointer crossed an element.
+     The overlays draw the same outline the element used to (colour, style,
+     width, offset), above the page's content. */
+  #isonim-editor-selection-outline,
+  #isonim-editor-hover-outline {
+    position: fixed;
+    z-index: 2147483644;
+    pointer-events: none;
+    box-sizing: border-box;
+    margin: 0;
+    padding: 0;
+    border: 0;
+    background: transparent;
   }
-  [data-isonim-hovered="true"] {
-    outline: 1px dashed rgba(59,130,246,.75) !important;
-    outline-offset: 3px !important;
+  #isonim-editor-selection-outline {
+    outline: 2px solid #3B82F6;
+    outline-offset: 2px;
+  }
+  #isonim-editor-hover-outline {
+    outline: 1px dashed rgba(59,130,246,.75);
+    outline-offset: 3px;
+  }
+  /* The agent's highlight (`select --highlight` from the editor's control
+     CLI), drawn the same way. On an element that also shows the selection
+     or hover outline it moves out to 5px, so the indigo ring lies outside
+     the blue one rather than on it. */
+  #isonim-editor-agent-highlight {
+    position: fixed;
+    z-index: 2147483644;
+    pointer-events: none;
+    box-sizing: border-box;
+    margin: 0;
+    padding: 0;
+    border: 0;
+    background: transparent;
+    outline: 2px solid #818cf8;
+    outline-offset: 3px;
+  }
+  #isonim-editor-agent-highlight[data-beside-outline] {
+    outline-offset: 5px;
+  }
+  /* Every piece of the editor's chrome lives in this one element, added to
+     the page's body once, when the bridge starts: showing, moving and hiding
+     the chrome adds and removes nothing in the page's own nodes, so a page
+     MutationObserver sees no child-list change from a hover or a selection.
+     It has no box of its own (`contents`), so the page's layout does not
+     see it either. */
+  #isonim-editor-chrome {
+    display: contents !important;
+  }
+  /* The editor's chrome lives in the page's document, so the page's own
+     rules match it too (`* { transition: all .4s }`): a transition there
+     would animate the chrome as it follows the pointer and deliver its
+     transition events to the page's listeners on the document. */
+  #isonim-editor-selection-outline, #isonim-editor-hover-outline,
+  #isonim-editor-agent-highlight, #isonim-editor-hover-label, #isonim-editor-selection-handles,
+  #isonim-editor-selection-handles > span, #isonim-editor-selection-breadcrumb,
+  #isonim-editor-selection-breadcrumb > span, .isonim-editor-layout-guide {
+    transition: none !important;
+    animation: none !important;
   }
 </style>
 <style id="isonim-editor-selection-style">
@@ -276,11 +333,14 @@ __ISONIM_SCENE_GRAPH_WALK__
   const parentListeners = [];
   let bridgeDisposed = false;
   let releaseOwner = null;
+  // Watches the preview's own frame element (see the follow loop below).
+  let frameObserver = null;
   function disposeParentBridge() {
     if (bridgeDisposed) return;
     // A document that goes away mid-drag ends the drag without an edit.
     try { cancelHandleDrag(); } catch (error) {}
     bridgeDisposed = true;
+    if (frameObserver) { frameObserver.disconnect(); frameObserver = null; }
     for (const [type, listener] of parentListeners)
       parent.removeEventListener(type, listener);
     parentListeners.length = 0;
@@ -316,6 +376,11 @@ __ISONIM_SCENE_GRAPH_WALK__
   window.addEventListener('unload', disposeParentBridge);
   const editorIds = new Set([
     'isonim-editor-hover-label',
+    'isonim-editor-selection-outline',
+    'isonim-editor-hover-outline',
+    'isonim-editor-agent-highlight',
+    'isonim-editor-frame-probe',
+    'isonim-editor-chrome',
     'isonim-editor-selection-handles',
     'isonim-editor-selection-breadcrumb',
     'isonim-editor-gap-overlay',
@@ -418,13 +483,28 @@ __ISONIM_SCENE_GRAPH_WALK__
     }
     return state.chain[Math.max(state.index, 0)];
   }
+  // The element every piece of chrome is added to (see
+  // `#isonim-editor-chrome`). Page code that rewrites the body drops it; it
+  // is put back, at the end of the body, when the chrome next needs it.
+  let chromeContainer = null;
+  function chromeRoot() {
+    if (!chromeContainer) {
+      chromeContainer = document.createElement('div');
+      chromeContainer.id = 'isonim-editor-chrome';
+    }
+    if (chromeContainer.parentNode !== document.body) document.body.appendChild(chromeContainer);
+    return chromeContainer;
+  }
+  chromeRoot();
   function ensureHoverLabel() {
     let label = document.getElementById('isonim-editor-hover-label');
     if (!label) {
       label = document.createElement('div');
       label.id = 'isonim-editor-hover-label';
       label.hidden = true;
-      document.body.appendChild(label);
+      // Its text is one text node, rewritten in place (no child-list change).
+      label.appendChild(document.createTextNode(''));
+      chromeRoot().appendChild(label);
     }
     return label;
   }
@@ -524,13 +604,20 @@ __ISONIM_SCENE_GRAPH_WALK__
   // (https://www.w3.org/TR/css-transforms-1/#containing-block-for-all-descendants).
   // A probe at left/top 0 and 100px square says where that origin lands on
   // screen and how big one of its pixels is.
+  //
+  // The probe stays in the chrome, so measuring adds and removes nothing.
+  let frameProbe = null;
   function fixedFrame() {
-    const probe = document.createElement('div');
-    probe.style.cssText = 'position:fixed;left:0;top:0;width:100px;height:100px;' +
-      'visibility:hidden;pointer-events:none;margin:0;padding:0;border:0';
-    document.body.appendChild(probe);
-    const r = probe.getBoundingClientRect();
-    probe.remove();
+    if (!frameProbe) {
+      frameProbe = document.createElement('div');
+      frameProbe.id = 'isonim-editor-frame-probe';
+      frameProbe.setAttribute('aria-hidden', 'true');
+      frameProbe.style.cssText = 'position:fixed;left:0;top:0;width:100px;height:100px;' +
+        'visibility:hidden;pointer-events:none;margin:0;padding:0;border:0';
+    }
+    const root = chromeRoot();
+    if (frameProbe.parentNode !== root) root.appendChild(frameProbe);
+    const r = frameProbe.getBoundingClientRect();
     return {
       x: r.left, y: r.top,
       sx: r.width > 0 ? r.width / 100 : 1,
@@ -545,6 +632,237 @@ __ISONIM_SCENE_GRAPH_WALK__
     if (width !== undefined) node.style.width = (width / frame.sx) + 'px';
     if (height !== undefined) node.style.height = (height / frame.sy) + 'px';
   }
+  // The selection and hover outlines: one overlay each, on the border box of
+  // the element carrying `data-isonim-selected` / `data-isonim-hovered`,
+  // laid out like the selection handles (`fixedFrame`, `placeFixed`), so it
+  // follows scroll, resize, a transform or `zoom` as they do. The element
+  // itself is not touched. While the pointer is over the selected element
+  // only the hover outline shows, as when both were the element's own
+  // outline and the hover rule came later.
+  // Each overlay is made once and hidden when it has no element, so showing
+  // and hiding it adds and removes nothing.
+  function outlineNode(id) {
+    let node = document.getElementById(id);
+    if (!node) {
+      node = document.createElement('div');
+      node.id = id;
+      node.hidden = true;
+      node.setAttribute('aria-hidden', 'true');
+      chromeRoot().appendChild(node);
+    }
+    return node;
+  }
+  function placeOutline(id, el, frame) {
+    const node = outlineNode(id);
+    if (!el || !el.isConnected || !el.getClientRects().length) {
+      node.hidden = true;
+      return frame;
+    }
+    if (!frame) frame = fixedFrame();
+    const rect = el.getBoundingClientRect();
+    placeFixed(frame, node, rect.left, rect.top, rect.width, rect.height);
+    node.hidden = false;
+    return frame;
+  }
+  // The agent's highlight target (`__isonimAgentHighlight`), or null.
+  let agentTarget = null;
+  function syncOutlines(frame) {
+    const selected = document.querySelector('[data-isonim-selected="true"]');
+    const hovered = document.querySelector('[data-isonim-hovered="true"]');
+    frame = placeOutline('isonim-editor-selection-outline',
+      selected && selected !== hovered ? selected : null, frame);
+    frame = placeOutline('isonim-editor-hover-outline', hovered, frame);
+    placeOutline('isonim-editor-agent-highlight', agentTarget, frame);
+    const agent = outlineNode('isonim-editor-agent-highlight');
+    const beside = !!agentTarget && (agentTarget === selected || agentTarget === hovered);
+    if (beside !== agent.hasAttribute('data-beside-outline')) {
+      if (beside) agent.setAttribute('data-beside-outline', '');
+      else agent.removeAttribute('data-beside-outline');
+    }
+    if (selected || hovered || agentTarget) watchChrome();
+  }
+  // The chrome follows its element wherever the page moves it: a layout
+  // shift, a margin, an animation or transition, a transform on an ancestor
+  // -- none of which the pointer, a scroll or a resize reports. While an
+  // element carries chrome, one requestAnimationFrame loop compares the
+  // border boxes it is placed on (and the chrome's containing block) with
+  // the last frame's, and places the chrome again when one changed.
+  //
+  // One loop, never more: `watchHandle` is non-zero for as long as the loop
+  // exists, including while a tick runs (-1), so a placement inside the tick
+  // (placeHandles -> syncOutlines -> watchChrome) does not start another.
+  //
+  // It stops when nothing connected is selected, hovered or highlighted, when
+  // the bridge is disposed and when the preview's frame is not shown (the
+  // resize that shows it again places the chrome and starts it).
+  //
+  // While the selected element only moves (same size, same containing
+  // block, same margins, borders and paddings), the selection chrome already
+  // placed is shifted by the distance,
+  // and the full placement (computed style, every handle, the guides) runs
+  // once, in the first frame it has stopped moving.
+  let watchHandle = 0;
+  let watchLast = null;
+  let watchSettled = true;
+  // Where placeHandles last put the selection chrome: the element and its
+  // border box, in client pixels.
+  let chromePlacedAt = null;
+  const SHIFTED_CHROME = ['isonim-editor-selection-handles', 'isonim-editor-gap-overlay',
+    'isonim-editor-snap-lines', 'isonim-editor-spacing-measure',
+    'isonim-editor-selection-breadcrumb'];
+  function frameShown() {
+    if (!bridgeFrame) return true;
+    try {
+      return bridgeFrame.isConnected && bridgeFrame.getClientRects().length > 0 &&
+        parent.getComputedStyle(bridgeFrame).visibility !== 'hidden';
+    } catch (e) { return true; }
+  }
+  function chromeTargets() {
+    // A highlighted element the page removed is no longer highlighted.
+    if (agentTarget && !agentTarget.isConnected) {
+      agentTarget = null;
+      outlineNode('isonim-editor-agent-highlight').hidden = true;
+    }
+    const live = function (el) { return el && el.isConnected ? el : null; };
+    return [live(window.__isonimSelectedElement),
+      live(document.querySelector('[data-isonim-hovered="true"]')), live(agentTarget)];
+  }
+  // The used margins, borders and paddings the box handles are placed from:
+  // a move that changes one of them (an element moved by its own margin)
+  // moves those handles relative to the border box, so it is placed in full.
+  const SPACING = ['margin', 'border', 'padding'].reduce(function (all, part) {
+    return all.concat(['top', 'right', 'bottom', 'left'].map(function (side) {
+      return part === 'border' ? 'border-' + side + '-width' : part + '-' + side;
+    }));
+  }, []);
+  function spacingOf(style) {
+    return SPACING.map(function (name) { return style.getPropertyValue(name); }).join(' ');
+  }
+  function boxOf(el) {
+    if (!el) return null;
+    const r = el.getBoundingClientRect();
+    return { left: r.left, top: r.top, width: r.width, height: r.height };
+  }
+  // Also the selected element's margins, borders and paddings: a change that
+  // leaves its border box where it is (padding under border-box) still moves
+  // its padding or margin handles.
+  function chromeState(targets) {
+    return { targets: targets, boxes: targets.map(boxOf), frame: fixedFrame(),
+      spacing: targets[0] ? spacingOf(window.getComputedStyle(targets[0])) : '' };
+  }
+  function sameBox(a, b) {
+    return a === b || (!!a && !!b && a.left === b.left && a.top === b.top &&
+      a.width === b.width && a.height === b.height);
+  }
+  function sameState(a, b) {
+    return a.targets.every(function (t, i) { return t === b.targets[i]; }) &&
+      a.boxes.every(function (box, i) { return sameBox(box, b.boxes[i]); }) &&
+      a.frame.x === b.frame.x && a.frame.y === b.frame.y &&
+      a.frame.sx === b.frame.sx && a.frame.sy === b.frame.sy && a.spacing === b.spacing;
+  }
+  function shiftSelectionChrome(dx, dy, frame) {
+    SHIFTED_CHROME.forEach(function (id) {
+      const node = document.getElementById(id);
+      if (!node) return;
+      node.style.left = ((parseFloat(node.style.left) || 0) + dx / frame.sx) + 'px';
+      node.style.top = ((parseFloat(node.style.top) || 0) + dy / frame.sy) + 'px';
+    });
+    chromePlacedAt.left += dx;
+    chromePlacedAt.top += dy;
+  }
+  // The outlines from boxes already read this frame (writes only).
+  function placeOutlinesAt(state) {
+    const selected = state.targets[0], hovered = state.targets[1], agent = state.targets[2];
+    const put = function (id, box) {
+      const node = outlineNode(id);
+      if (!box) { if (!node.hidden) node.hidden = true; return; }
+      placeFixed(state.frame, node, box.left, box.top, box.width, box.height);
+      if (node.hidden) node.hidden = false;
+    };
+    put('isonim-editor-selection-outline',
+      selected && selected !== hovered ? state.boxes[0] : null);
+    put('isonim-editor-hover-outline', hovered ? state.boxes[1] : null);
+    put('isonim-editor-agent-highlight', agent ? state.boxes[2] : null);
+  }
+  function stopWatch() {
+    watchHandle = 0;
+    watchLast = null;
+    watchSettled = true;
+  }
+  function watchTick() {
+    watchHandle = -1;
+    if (bridgeDisposed || !frameShown()) { stopWatch(); return; }
+    const targets = chromeTargets();
+    if (!targets.some(Boolean)) { stopWatch(); return; }
+    const now = chromeState(targets);
+    const selected = targets[0];
+    if (!watchLast || !sameState(watchLast, now)) {
+      const placed = chromePlacedAt;
+      const box = now.boxes[0];
+      if (selected && placed && placed.el === selected && box &&
+          box.width === placed.width && box.height === placed.height &&
+          now.frame.sx === placed.sx && now.frame.sy === placed.sy &&
+          now.frame.x === placed.fx && now.frame.y === placed.fy &&
+          now.spacing === placed.spacing) {
+        // Moved, not resized: shift what is placed, place the outlines.
+        if (box.left !== placed.left || box.top !== placed.top)
+          shiftSelectionChrome(box.left - placed.left, box.top - placed.top, now.frame);
+        placeOutlinesAt(now);
+        watchSettled = false;
+        // Placing fixed chrome moves no page box: the boxes just read stand,
+        // and are not read again after the writes (that would force layout).
+        watchLast = now;
+      } else {
+        if (selected) placeHandles(selected);
+        else syncOutlines();
+        watchSettled = true;
+        watchLast = chromeState(targets);
+      }
+    } else if (!watchSettled) {
+      // It has stopped moving: the full placement, once.
+      if (selected) placeHandles(selected);
+      watchSettled = true;
+      watchLast = chromeState(targets);
+    }
+    watchHandle = requestAnimationFrame(watchTick);
+  }
+  function watchChrome() {
+    if (!watchHandle && !bridgeDisposed) watchHandle = requestAnimationFrame(watchTick);
+  }
+  // The loop stops while the frame is not shown. Showing it again resizes
+  // the frame element, which places the chrome and starts the loop.
+  if (bridgeFrame) {
+    try {
+      frameObserver = new parent.ResizeObserver(function () {
+        if (bridgeDisposed || !frameShown()) return;
+        const selected = window.__isonimSelectedElement;
+        if (selected && selected.isConnected) placeHandles(selected);
+        else syncOutlines();
+      });
+      frameObserver.observe(bridgeFrame);
+    } catch (e) {}
+  }
+  // The agent's highlight, set from the editor (`control_browser.nim`):
+  // drawn as chrome over `el`, never on it. Null clears it.
+  window.__isonimAgentHighlight = function (el) {
+    agentTarget = el && el.nodeType === 1 && el.ownerDocument === document ? el : null;
+    syncOutlines();
+    return agentTarget !== null;
+  };
+  // The chrome a hover shows, made now: a hover then only moves, shows and
+  // hides it.
+  ['isonim-editor-selection-outline', 'isonim-editor-hover-outline',
+    'isonim-editor-agent-highlight'].forEach(outlineNode);
+  ensureHoverLabel();
+  fixedFrame();
+  // Selection and hover are marked by these attributes wherever they are
+  // set (pointer, Layers panel, restore, clear); the outlines follow them.
+  new MutationObserver(function () {
+    if (!bridgeDisposed) syncOutlines();
+  }).observe(document.documentElement, {
+    subtree: true, attributes: true,
+    attributeFilter: ['data-isonim-selected', 'data-isonim-hovered']
+  });
   // The resize handles' axes: the property, its limits, the edge it moves.
   const RESIZE_AXES = {
     width: { min: 'min-width', max: 'max-width', edge: 'right', scale: 'scaleX',
@@ -1145,7 +1463,7 @@ __ISONIM_SCENE_GRAPH_WALK__
         handle.title = label + ' (drag; Shift sets every side)';
         box.appendChild(handle);
       });
-      document.body.appendChild(box);
+      chromeRoot().appendChild(box);
       box.addEventListener('pointerdown', function (event) {
         const data = event.target && event.target.dataset ? event.target.dataset : {};
         const selected = window.__isonimSelectedElement;
@@ -1169,7 +1487,7 @@ __ISONIM_SCENE_GRAPH_WALK__
       crumb = document.createElement('div');
       crumb.id = 'isonim-editor-selection-breadcrumb';
       crumb.hidden = true;
-      document.body.appendChild(crumb);
+      chromeRoot().appendChild(crumb);
     }
     return crumb;
   }
@@ -1179,7 +1497,7 @@ __ISONIM_SCENE_GRAPH_WALK__
       guide = document.createElement('div');
       guide.id = id;
       guide.className = 'isonim-editor-layout-guide';
-      document.body.appendChild(guide);
+      chromeRoot().appendChild(guide);
     }
     return guide;
   }
@@ -1291,6 +1609,8 @@ __ISONIM_SCENE_GRAPH_WALK__
     // `body` moves and scales (`fixedFrame`).
     const frame = fixedFrame();
     placeFixed(frame, box, rect.left, rect.top, rect.width, rect.height);
+    chromePlacedAt = { el: el, left: rect.left, top: rect.top, width: rect.width,
+      height: rect.height, sx: frame.sx, sy: frame.sy, fx: frame.x, fy: frame.y };
     // On the edges they move: `width` at the bottom-right corner, `height`
     // on the bottom edge left of the bottom margin and padding handles, the
     // spacing handle right of them.
@@ -1312,6 +1632,7 @@ __ISONIM_SCENE_GRAPH_WALK__
     // scale (`zoom` or a scale transform) over the overlay's. Editing, not
     // reviewing: shown in Edit mode only.
     const boxStyle = window.getComputedStyle(el);
+    chromePlacedAt.spacing = spacingOf(boxStyle);
     const scaled = boxSizeFor(el, boxStyle);
     const used = function (name) { return parseFloat(boxStyle.getPropertyValue(name)) || 0; };
     BOX_HANDLES.forEach(function (name) {
@@ -1330,24 +1651,35 @@ __ISONIM_SCENE_GRAPH_WALK__
         (editorMode === 'edit' ? '' : ';display:none');
     });
     placeLayoutGuides(el, rect, frame);
+    syncOutlines(frame);
     const crumb = ensureBreadcrumb();
     const stack = ancestorStack(el).reverse();
-    crumb.innerHTML = '';
-    stack.forEach((node) => {
-      const chip = document.createElement('span');
-      chip.textContent = stableSelector(node);
-      crumb.appendChild(chip);
-    });
     // Where the repeat-click climb currently is. Without this the operator
     // has no way to tell a climb that has reached the outermost element
     // from a click that did nothing.
     const position = drillPosition(el);
-    if (position > 0) {
-      const chip = document.createElement('span');
-      chip.dataset.drill = 'position';
-      chip.textContent = '↑ ' + (position + 1) + '/' + drill.chain.length +
-        (position === drill.chain.length - 1 ? ' top' : '');
-      crumb.appendChild(chip);
+    const chips = stack.map(stableSelector);
+    const drillText = position > 0
+      ? '↑ ' + (position + 1) + '/' + drill.chain.length +
+        (position === drill.chain.length - 1 ? ' top' : '')
+      : '';
+    // Rebuilt only when it says something else: placing the chrome again (a
+    // pointer move, the element moving) changes nothing in it.
+    const crumbText = JSON.stringify([chips, drillText]);
+    if (crumb.dataset.crumbText !== crumbText) {
+      crumb.dataset.crumbText = crumbText;
+      crumb.innerHTML = '';
+      chips.forEach((text) => {
+        const chip = document.createElement('span');
+        chip.textContent = text;
+        crumb.appendChild(chip);
+      });
+      if (drillText) {
+        const chip = document.createElement('span');
+        chip.dataset.drill = 'position';
+        chip.textContent = drillText;
+        crumb.appendChild(chip);
+      }
     }
     placeFixed(frame, crumb, Math.max(6, Math.min(rect.left, window.innerWidth - 280)),
       Math.min(window.innerHeight - 30, rect.bottom + 8));
@@ -1762,15 +2094,10 @@ __ISONIM_SCENE_GRAPH_WALK__
     drillSync(el);
     placeHandles(el);
     const source = parseSource(el.getAttribute('data-isonim-src'));
-    // Selection/hover chrome is editor-owned CSS, not a document property.
-    // Computed style objects are live: eagerly copy every value while that
-    // paint stylesheet is disabled, retaining overlay layout, then restore it
-    // before notifying the inspector.
-    const chromeSheet = document.getElementById('isonim-editor-selection-paint-style').sheet;
-    const chromeDisabled = chromeSheet.disabled;
+    // The selection and hover chrome are overlays (`syncOutlines`), so the
+    // element's computed style is the document's own.
     let detail;
-    try {
-      chromeSheet.disabled = true;
+    {
       const style = window.getComputedStyle(el);
       const rect = el.getBoundingClientRect();
       const stack = ancestorStack(el).reverse().map(stableSelector);
@@ -1828,8 +2155,6 @@ __ISONIM_SCENE_GRAPH_WALK__
             }).join(';'),
           sideRules: decidingSideRules(el)
       };
-    } finally {
-      chromeSheet.disabled = chromeDisabled;
     }
     parent.dispatchEvent(new CustomEvent('isonim-preview-element-selected', {detail: detail}));
   }
@@ -1910,7 +2235,7 @@ __ISONIM_SCENE_GRAPH_WALK__
     });
     menu.style.left = Math.min(event.clientX, window.innerWidth - 206) + 'px';
     menu.style.top = Math.min(event.clientY, window.innerHeight - 316) + 'px';
-    document.body.appendChild(menu);
+    chromeRoot().appendChild(menu);
     const first = menu.querySelector('button');
     if (first) first.focus();
   }
@@ -1992,7 +2317,7 @@ __ISONIM_SCENE_GRAPH_WALK__
     popup.appendChild(label);
     popup.appendChild(input);
     popup.appendChild(actions);
-    document.body.appendChild(popup);
+    chromeRoot().appendChild(popup);
     input.focus();
   }
   document.addEventListener('click', function (event) {
@@ -2161,12 +2486,24 @@ __ISONIM_SCENE_GRAPH_WALK__
     }
   }, true);
   let lastHoverReported = '';
-  document.addEventListener('mouseleave', function () {
+  // The pointer leaving the preview ends the hover: its marker, outline and
+  // label go, and the Layers panel is told. (A 'mouseleave' on the document
+  // never fires; leaving the frame is a 'mouseout' with no element to go to.)
+  function pointerLeft() {
+    document.querySelectorAll('[data-isonim-hovered="true"]').forEach((node) => {
+      node.removeAttribute('data-isonim-hovered');
+    });
+    const label = document.getElementById('isonim-editor-hover-label');
+    if (label) label.hidden = true;
     if (lastHoverReported === '') return;
     lastHoverReported = '';
     parent.dispatchEvent(new CustomEvent('isonim-preview-element-hovered', {
       detail: { id: '' }
     }));
+  }
+  document.documentElement.addEventListener('mouseleave', pointerLeft);
+  window.addEventListener('mouseout', function (event) {
+    if (!event.relatedTarget) pointerLeft();
   });
   document.addEventListener('mousemove', function (event) {
     if (editorMode === 'view') return;
@@ -2197,22 +2534,29 @@ __ISONIM_SCENE_GRAPH_WALK__
       }));
     }
     const position = drill.index;
-    label.textContent = el.tagName.toLowerCase() + ' ' +
+    const labelText = label.firstChild && label.firstChild.nodeType === 3 &&
+      label.childNodes.length === 1 ? label.firstChild : null;
+    const text = el.tagName.toLowerCase() + ' ' +
       Math.round(rect.width) + 'x' + Math.round(rect.height) +
       ' p:' + style.padding + ' • click selects, repeat-click climbs' +
       (position > 0
         ? ' (' + (position + 1) + '/' + drill.chain.length + ')'
         : '');
+    if (labelText) { if (labelText.data !== text) labelText.data = text; }
+    else label.textContent = text;
     label.style.left = Math.max(6, rect.left) + 'px';
     label.style.top = Math.max(18, rect.top - 6) + 'px';
     label.hidden = false;
     if (window.__isonimSelectedElement) placeHandles(window.__isonimSelectedElement);
+    else syncOutlines();
   }, true);
   window.addEventListener('scroll', function () {
     if (window.__isonimSelectedElement) placeHandles(window.__isonimSelectedElement);
+    else syncOutlines();
   }, true);
   window.addEventListener('resize', function () {
     if (window.__isonimSelectedElement) placeHandles(window.__isonimSelectedElement);
+    else syncOutlines();
   });
   bindParent('isonim-select-preview-ancestor', function (event) {
     if (editorMode === 'view') return;
@@ -2466,10 +2810,9 @@ proc editablePreviewDocument*(documentHtml: string;
   function isEditorSheet(sheet) {
     var owner = null;
     try { owner = sheet.ownerNode; } catch (e) {}
-    // The bridge injects `#isonim-editor-selection-style` to draw the
-    // selection outline; its `[data-isonim-selected="true"]` rule matches the
-    // selected element. A stylesheet the editor injected is never a home for
-    // a project edit.
+    // The bridge injects its own stylesheets (`#isonim-editor-selection-style`
+    // and the rest), which style the editor's chrome. A stylesheet the editor
+    // injected is never a home for a project edit.
     return !!(owner && owner.id && owner.id.indexOf('isonim-editor') === 0);
   }
   function declaresIn(style, property) {

@@ -165,14 +165,14 @@ try{
       const frame=[...document.querySelectorAll('.editor-preview iframe')].find(f=>f.getClientRects().length);
       return {first:window.__queuedFirst,second:window.__queuedSecond,state,trace:window.__restoreTrace,
         pending:frame.__isonimSelectionRestore?.id||'',selectedDOM:frame.contentDocument.querySelector('[data-isonim-selected="true"]')?.getAttribute('data-isonim-element-id'),
-        outline: (()=>{const selected=frame.contentDocument.querySelector('[data-isonim-selected="true"]');const css=selected&&frame.contentWindow.getComputedStyle(selected);return {id:selected?.getAttribute('data-isonim-element-id'),style:css?.outlineStyle,width:css?.outlineWidth};})(),
+        outline: (()=>{const doc=frame.contentDocument,selected=doc.querySelector('[data-isonim-selected="true"]');const chrome=doc.querySelector('#isonim-editor-selection-outline')||(selected&&selected.getAttribute('data-isonim-hovered')==='true'?doc.querySelector('#isonim-editor-hover-outline'):null);const css=chrome&&frame.contentWindow.getComputedStyle(chrome);const r=chrome?.getBoundingClientRect(),e=selected?.getBoundingClientRect();return {id:selected?.getAttribute('data-isonim-element-id'),style:css?.outlineStyle,width:css?.outlineWidth,onBox:!!(r&&e)&&Math.abs(r.left-e.left)<0.05&&Math.abs(r.top-e.top)<0.05&&Math.abs(r.width-e.width)<0.05&&Math.abs(r.height-e.height)<0.05};})(),
         searchFocused:document.activeElement===document.querySelector('[data-layer-search]'),graph:window.__restoreGraph()};
     });
     proof.cases.push({width,name,actual});
     assert(actual.first&&actual.second);assert.equal(actual.state.selected,'action');
     assert(actual.trace.length>0,'Must exercise actual production restore callback');
     for(const item of actual.trace){assert.equal(item.id,item.selected,'No obsolete ID may replay');assert(item.liveDocument&&item.connected&&item.visible);}
-    assert.equal(actual.pending,'action');assert.equal(actual.selectedDOM,'action');assert.equal(actual.outline.id,'action');assert.notEqual(actual.outline.style,'none');assert(parseFloat(actual.outline.width)>0);
+    assert.equal(actual.pending,'action');assert.equal(actual.selectedDOM,'action');assert.equal(actual.outline.id,'action');assert.notEqual(actual.outline.style,'none');assert(parseFloat(actual.outline.width)>0);assert(actual.outline.onBox,'The selection outline overlay must lie on the selected element');
     assert(actual.searchFocused,'Preview restoration preserves newer explicit user focus');
     for(const value of Object.values(actual.graph))assert.equal(value.bad,0,'Actual reciprocal slots remain valid');
     const key=actual.state.activeView;

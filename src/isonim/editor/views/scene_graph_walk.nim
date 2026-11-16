@@ -38,6 +38,11 @@ const sceneGraphWalkJs* = """
   // handles is describing the editor, not the design.
   var EDITOR_IDS = [
     'isonim-editor-hover-label',
+    'isonim-editor-selection-outline',
+    'isonim-editor-hover-outline',
+    'isonim-editor-agent-highlight',
+    'isonim-editor-frame-probe',
+    'isonim-editor-chrome',
     'isonim-editor-selection-handles',
     'isonim-editor-selection-breadcrumb',
     'isonim-editor-gap-overlay',

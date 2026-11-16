@@ -98,6 +98,61 @@ proc bindClient*(bridge: BrowserControlBridge; client: BrowserAgentClient) =
 proc installControlBridge*(vm: EditorVM; root: Element): BrowserControlBridge =
   let bridge = BrowserControlBridge(vm: vm, root: root, endpoint: resolveDaemonUrl())
   result = bridge
+  {.emit: """globalThis.__isonimApplyAgentHighlight = (function (shell, node) {
+    // The agent's highlight (select --highlight). On a page element it is
+    // chrome drawn over the element, never a style on it: an inline outline
+    // was a change to the page's own element, so a page transition animated
+    // it and page code received its transition events. The preview's bridge
+    // draws it (__isonimAgentHighlight), following the element as the
+    // selection outline does; a document without the bridge gets a fixed
+    // overlay that follows the element here. The editor's own UI (a Layers
+    // row) keeps an inline outline: it is not the page.
+    for (const previous of shell.__isonimControlHighlights || []) {
+      try {
+        if (previous.bridge) previous.bridge(null);
+        else if (previous.overlay) { previous.stop(); previous.overlay.remove(); }
+        else {
+          previous.node.style.outline = previous.outline;
+          previous.node.style.outlineOffset = previous.offset;
+        }
+      } catch (_) {}
+      previous.node.removeAttribute('data-editor-agent-highlight');
+    }
+    shell.__isonimControlHighlights = [];
+    const doc = node.ownerDocument, win = doc.defaultView;
+    const record = {node: node};
+    if (doc === shell.ownerDocument) {
+      record.outline = node.style.outline; record.offset = node.style.outlineOffset;
+      node.style.outline = '2px solid #818cf8'; node.style.outlineOffset = '3px';
+    } else if (win && typeof win.__isonimAgentHighlight === 'function' &&
+               win.__isonimAgentHighlight(node)) {
+      record.bridge = win.__isonimAgentHighlight;
+    } else {
+      const overlay = doc.createElement('div');
+      overlay.id = 'isonim-editor-agent-highlight';
+      overlay.setAttribute('aria-hidden', 'true');
+      overlay.style.cssText = 'position:fixed;z-index:2147483644;pointer-events:none;' +
+        'box-sizing:border-box;margin:0;padding:0;border:0;background:transparent;' +
+        'outline:2px solid #818cf8;outline-offset:3px;' +
+        'transition:none !important;animation:none !important';
+      let frame = 0;
+      const place = function () {
+        frame = 0;
+        if (!node.isConnected) { overlay.hidden = true; return; }
+        const r = node.getBoundingClientRect();
+        overlay.hidden = false;
+        overlay.style.left = r.left + 'px'; overlay.style.top = r.top + 'px';
+        overlay.style.width = r.width + 'px'; overlay.style.height = r.height + 'px';
+        frame = win.requestAnimationFrame(place);
+      };
+      (doc.body || doc.documentElement).appendChild(overlay);
+      place();
+      record.overlay = overlay;
+      record.stop = function () { if (frame) win.cancelAnimationFrame(frame); frame = 0; };
+    }
+    shell.__isonimControlHighlights = [record];
+    node.setAttribute('data-editor-agent-highlight', 'true');
+  });""".}
   # DOM focus requires a visible control in this exact mounted editor. Human focus
   # events update the same signal, including focus within its preview iframe.
   vm.controlStoryRevealAdapter = proc() =
@@ -149,14 +204,7 @@ proc installControlBridge*(vm: EditorVM; root: Element): BrowserControlBridge =
         candidates.push(...shell.querySelectorAll('[data-element-id], [data-isonim-element-id], [data-layer-id]'));
         const node = candidates.find(n => [n.getAttribute('data-element-id'),n.getAttribute('data-isonim-element-id'),n.getAttribute('data-layer-id'),n.getAttribute('data-test-id')].includes(""", name, """) && n.getClientRects().length);
         if (!node) return;
-        for (const previous of shell.__isonimControlHighlights || []) {
-          previous.node.style.outline = previous.outline;
-          previous.node.style.outlineOffset = previous.offset;
-          previous.node.removeAttribute('data-editor-agent-highlight');
-        }
-        shell.__isonimControlHighlights = [{node,outline:node.style.outline,offset:node.style.outlineOffset}];
-        node.style.outline = '2px solid #818cf8'; node.style.outlineOffset = '3px';
-        node.setAttribute('data-editor-agent-highlight','true');
+        globalThis.__isonimApplyAgentHighlight(shell, node);
         """, applied, """ = true;
       })();
     """].}
@@ -189,16 +237,7 @@ proc installControlBridge*(vm: EditorVM; root: Element): BrowserControlBridge =
             return;
           }
         }
-        if (""", shouldHighlight, """) {
-          for (const previous of shell.__isonimControlHighlights || []) {
-            previous.node.style.outline = previous.outline;
-            previous.node.style.outlineOffset = previous.offset;
-            previous.node.removeAttribute('data-editor-agent-highlight');
-          }
-          shell.__isonimControlHighlights = [{node,outline:node.style.outline,offset:node.style.outlineOffset}];
-          node.style.outline = '2px solid #818cf8'; node.style.outlineOffset = '3px';
-          node.setAttribute('data-editor-agent-highlight','true');
-        }
+        if (""", shouldHighlight, """) globalThis.__isonimApplyAgentHighlight(shell, node);
         """, applied, """ = true;
       })();
     """].}

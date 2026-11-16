@@ -152,12 +152,10 @@ try {
   // Count the transition events that reach page code on the card, from now
   // on. First the card settles: on a loaded host the editor's own preview
   // work after a selection can still be running, and nothing a handle does
-  // has started yet. `outline-*` is not counted: the editor paints the
-  // selection and the hover with an outline, which a card's `transition:
-  // all` animates when the pointer crosses it. No handle changes that, and
-  // it is not what these cases are about.
+  // has started yet. Every property is counted: the selection and hover
+  // outlines are overlays, so they change nothing on the card.
   async function countTransitions(){
-    await card().evaluate(n=>{window.__transitions=0;window.__tlog=[];if(!window.__tlisten){window.__tlisten=true;for(const t of ['transitionrun','transitionstart'])n.addEventListener(t,(e)=>{if(/^outline/.test(e.propertyName))return;window.__transitions++;window.__tlog.push(e.type+':'+e.propertyName);});}});
+    await card().evaluate(n=>{window.__transitions=0;window.__tlog=[];if(!window.__tlisten){window.__tlisten=true;for(const t of ['transitionrun','transitionstart'])n.addEventListener(t,(e)=>{window.__transitions++;window.__tlog.push(e.type+':'+e.propertyName);});}});
     await p.waitForTimeout(300);
     await assertPoll(()=>card().evaluate(n=>n.getAnimations().length),0,'the card settles before the drag');
     await card().evaluate(()=>{window.__transitions=0;window.__tlog=[];});
