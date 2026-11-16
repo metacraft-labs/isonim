@@ -1827,15 +1827,23 @@ proc parseBlocks(body: string; ctx: ParseContext; sourceRelPath: string = "";
         if itemLine.len == 0: break
         if ordered != isOrderedListItem(itemLine): break
         if not ordered and not isUnorderedListItem(itemLine): break
+        let itemStartLine = firstLine + i
         var content = listItemText(itemLine)
         var task = tsNone
         if content.len >= 3 and content[0] == '[' and content[1] in {' ', 'x', 'X'} and content[2] == ']' and (content.len == 3 or content[3] in {' ', '\t'}):
           task = if content[1] == ' ': tsUnchecked else: tsChecked
           content = content[3 .. ^1].strip(leading = true, trailing = false)
           hasTasks = true
-        tasks.add task
-        items.add parseInlineSpans(content, sourceRelPath, resolveContentPath, resolveSymbol, ctx.renderers, firstLine + i)
         inc i
+        while i < lines.len and lines[i].len > 0 and lines[i][0] in {' ', '\t'}:
+          let contStripped = lines[i].strip()
+          if contStripped.len == 0 or startsAnotherBlock(contStripped) or
+              (ctx.renderers.math != nil and contStripped.startsWith("$$")):
+            break
+          content = content.strip(leading = false, trailing = true) & " " & contStripped
+          inc i
+        tasks.add task
+        items.add parseInlineSpans(content, sourceRelPath, resolveContentPath, resolveSymbol, ctx.renderers, itemStartLine)
       result.add Block(kind: bkList, listKind: (if ordered: lkOrdered else: lkUnordered), items: items, tasks: (if hasTasks: tasks else: @[]))
       continue
 

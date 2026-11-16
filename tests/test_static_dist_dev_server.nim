@@ -173,3 +173,8 @@ suite "static_dist_dev_server — serving under a base path":
     for bad in ["blog", "//host", "/a b", "/a?b", "/a#b", "/a/../b", "/./a", "/a//b", "/a\\b"]:
       expect ValueError: discard normalizeBasePath(bad)
     check normalizeBasePath("/blog///") == "/blog"
+
+  test "contentTypeFor serves .md and .txt with explicit UTF-8 media types":
+    let s = newStaticDistDevServer(rebuildCommand = @["true"])
+    check s.contentTypeFor("agents/intro.md") == "text/markdown; charset=utf-8"
+    check s.contentTypeFor("llms.txt") == "text/plain; charset=utf-8"

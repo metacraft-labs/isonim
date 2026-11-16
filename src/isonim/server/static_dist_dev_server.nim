@@ -207,6 +207,9 @@ proc newStaticDistDevServer*(
     pollIntervalMs = 300;
     basePath = ""): StaticDistDevServer =
   ## Raises `ValueError` for a `basePath` that `normalizeBasePath` refuses.
+  var mimes = newMimetypes()
+  mimes.register("md", "text/markdown; charset=utf-8")
+  mimes.register("txt", "text/plain; charset=utf-8")
   StaticDistDevServer(
     distDir: distDir,
     basePath: normalizeBasePath(basePath),
@@ -220,7 +223,7 @@ proc newStaticDistDevServer*(
     hub: newReloadHub(),
     lastError: "",
     snapshot: initTable[string, Time](),
-    mimes: newMimetypes())
+    mimes: mimes)
 
 # ---------------------------------------------------------------------------
 # Rebuild — run the real export pipeline and record any failure.
@@ -312,12 +315,14 @@ proc resolveFile*(s: StaticDistDevServer; urlPath: string): string =
   if fileExists(direct & "/index.html"): return direct & "/index.html"
   ""
 
-proc contentTypeFor(s: StaticDistDevServer; file: string): string =
+proc contentTypeFor*(s: StaticDistDevServer; file: string): string =
   let ext = file.splitFile.ext.toLowerAscii
   case ext
   of ".html": "text/html; charset=utf-8"
   of ".css": "text/css; charset=utf-8"
   of ".js": "text/javascript; charset=utf-8"
+  of ".md": "text/markdown; charset=utf-8"
+  of ".txt": "text/plain; charset=utf-8"
   of ".woff2": "font/woff2"
   of ".woff": "font/woff"
   of ".svg": "image/svg+xml"

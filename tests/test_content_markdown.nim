@@ -423,3 +423,17 @@ suite "isonim/content/markdown -- the path-derived route convention":
     let resolver = proc(p: string): string = "/r/" & p
     check normalizeRelativeLink("./intro.md#x", "guide/page.md", resolver) ==
       ("/r/guide/intro.md#x", true)
+
+  test "parseMarkdownBlocks folds indented continuation lines into unordered and ordered list items":
+    let raw = "- first line\n  second line\n- next item\n\n1. step one\n   continued step\n2. step two\n"
+    let blocks = parseMarkdownBlocks(raw)
+    check blocks.len == 2
+    check blocks[0].kind == bkList
+    check blocks[0].listKind == lkUnordered
+    check blocks[0].items.len == 2
+    check spansText(blocks[0].items[0]) == "first line second line"
+    check spansText(blocks[0].items[1]) == "next item"
+    check blocks[1].kind == bkList
+    check blocks[1].listKind == lkOrdered
+    check blocks[1].items.len == 2
+    check spansText(blocks[1].items[0]) == "step one continued step"
