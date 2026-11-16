@@ -43,7 +43,11 @@ for line in sys.stdin:
                       "tokenPresent": bool(os.environ.get("ISONIM_EDITOR_TOKEN")),
                       "cliStatus": result.returncode, "state": json.loads(result.stdout),
                       "proposalStatus": proposed.returncode, "operationId": operation_id}
-            Path(os.environ["CONTROL_PROBE_DIR"], "probe-" + os.environ["ISONIM_EDITOR_INSTANCE"] + ".json").write_text(json.dumps(record))
+            # Publish whole: a reader polling for the file never sees it half-written.
+            probe = Path(os.environ["CONTROL_PROBE_DIR"], "probe-" + os.environ["ISONIM_EDITOR_INSTANCE"] + ".json")
+            partial = probe.with_name(probe.name + ".partial")
+            partial.write_text(json.dumps(record))
+            os.replace(partial, probe)
             print(json.dumps({"jsonrpc": "2.0", "method": "session/update", "params": {
                 "sessionId": request["params"]["sessionId"], "update": {"sessionUpdate": "agent_message_chunk",
                 "content": {"type": "text", "text": "CONTROL_SCOPE_OK"}}}}), flush=True)

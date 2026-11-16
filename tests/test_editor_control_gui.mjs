@@ -19,6 +19,7 @@ import assert from "node:assert/strict";
 import { spawn, spawnSync } from "node:child_process";
 import {
   mkdtempSync,
+  appendFileSync,
   readFileSync,
   existsSync,
   writeFileSync,
@@ -194,6 +195,32 @@ async function settled(scope) {
   }
   throw new Error("Production view revision did not settle");
 }
+async function readCompleteJson(file, ms = 10000) {
+  // The peer agent replaces its probe atomically, but another writer may
+  // not, and a file can exist before it is complete. Retry, bounded, until
+  // it parses; past the bound the last parse error surfaces with the file
+  // as it then stands.
+  const deadline = Date.now() + ms;
+  for (;;) {
+    try {
+      return JSON.parse(readFileSync(file, "utf8"));
+    } catch (error) {
+      if (Date.now() >= deadline) throw error;
+    }
+    await new Promise((resolve) => setTimeout(resolve, 50));
+  }
+}
+async function eventually(read, accept, ms = 10000) {
+  // Tab state reaches the service with the tab's next poll. Wait for it,
+  // bounded, and return the last value so the caller's assertion reports it.
+  const deadline = Date.now() + ms;
+  let value = read();
+  while (!accept(value) && Date.now() < deadline) {
+    await new Promise((resolve) => setTimeout(resolve, 100));
+    value = read();
+  }
+  return value;
+}
 async function holdInitialDelivery(page) {
   let release;
   const barrier = new Promise((resolve) => {
@@ -322,6 +349,19 @@ async function loseDecisionResponse(
   }
 }
 try {
+  // The probe reader must not take a file still being written: one written
+  // in two parts with a delay between them is read whole.
+  {
+    const partial = path.join(artifacts, "probe-selfcheck.json");
+    const whole = JSON.stringify({ cliStatus: 0, operationId: "selfcheck" });
+    writeFileSync(partial, whole.slice(0, 12));
+    const rest = setTimeout(() => appendFileSync(partial, whole.slice(12)), 300);
+    try {
+      assert.deepEqual(await readCompleteJson(partial), JSON.parse(whole));
+    } finally {
+      clearTimeout(rest);
+    }
+  }
   await startup;
   const browserEnv = { ...process.env };
   delete browserEnv.LD_LIBRARY_PATH;
@@ -378,6 +418,27 @@ try {
         });
       }
     });
+  }
+  // Count each operation outcome the first tab ACKs (IDs and statuses only).
+  // An outcome is ACKed once; a second send is allowed for one retry after a
+  // lost ACK. Re-sending every past outcome on each change made the stale ACKs
+  // grow with every command until a new command's ACK missed the agent's wait.
+  const ackCounts = new Map();
+  first.on("request", (request) => {
+    if (!request.url().endsWith("/api/editor/rpc")) return;
+    const body = request.postDataJSON();
+    if (body?.method !== "editor.ack") return;
+    const op = body.params?.operation ?? {};
+    const key = `${op.operationId} ${op.status} ${op.error ?? ""}`;
+    ackCounts.set(key, (ackCounts.get(key) ?? 0) + 1);
+  });
+  function assertAckedOnce(ids) {
+    for (const id of ids) {
+      const sent = [...ackCounts].filter(([key]) => key.startsWith(id + " "));
+      assert(sent.length > 0, `${id} outcome was acknowledged`);
+      for (const [key, count] of sent)
+        assert(count <= 2, `ACK "${key}" was sent ${count} times`);
+    }
   }
   const a = await registered(first),
     b = await registered(second);
@@ -502,15 +563,24 @@ try {
   const target = frame.locator("[data-isonim-element-id]").first();
   await target.waitFor({ state: "visible" });
   await target.click({ position: { x: 8, y: 8 } });
-  await new Promise((resolve) => setTimeout(resolve, 400));
-  const elements = cli(a, ["elements"]);
-  assert(elements.length > 0, "Production iframe bridge must publish layers");
   const id = await target.getAttribute("data-isonim-element-id");
+  const elements = await eventually(
+    () => cli(a, ["elements"]),
+    (rows) => rows.some((element) => element.id === id),
+  );
+  assert(elements.length > 0, "Production iframe bridge must publish layers");
   assert(
     elements.some((element) => element.id === id),
     "CLI must see actual DOM stable identity",
   );
   await settled(a);
+  assertAckedOnce([
+    "open1",
+    "discoveredCaptureCli",
+    "discoveredCaptureRpc",
+    "focus1",
+    "comment1",
+  ]);
   cli(a, ["focus", "composer", "--command-id", "focus2", "--wait"]);
   const select = cli(a, [
     "select",
@@ -546,6 +616,55 @@ try {
     await target.evaluate((node) => node.ownerDocument.activeElement === node),
     "Explicit select focus applies in actual preview",
   );
+  // A lost ACK must be re-sent. The tab sends each outcome once, so it must
+  // forget an ACK that failed before reaching the service (lostAck: aborted)
+  // or got no answer within its ACK timeout (hungAck: held); the next
+  // redelivery then re-sends it and the command completes. One interception
+  // covers both cases, and completion is awaited over async RPC: a synchronous
+  // CLI call would block the route handler.
+  const ackFaults = new Map([
+    ["lostAck", { hang: false, seen: 0 }],
+    ["hungAck", { hang: true, seen: 0 }],
+  ]);
+  const ackFaultLog = [];
+  let releaseHeld;
+  const held = new Promise((resolve) => (releaseHeld = resolve));
+  await first.route("**/api/editor/rpc", async (route) => {
+    const body = route.request().postDataJSON();
+    const id = body?.params?.operation?.operationId;
+    const fault = body?.method === "editor.ack" ? ackFaults.get(id) : undefined;
+    if (fault) {
+      ackFaultLog.push(`${id} ${body.params.operation.status}`);
+      if (++fault.seen === 1) {
+        if (fault.hang) await held;
+        await route.abort("connectionfailed").catch(() => {});
+        return;
+      }
+    }
+    await route.continue();
+  });
+  async function within(what, ms, done) {
+    const deadline = Date.now() + ms;
+    while (!(await done())) {
+      if (Date.now() > deadline)
+        throw new Error(`${what}; ACKs seen: ${JSON.stringify(ackFaultLog)}`);
+      await new Promise((resolve) => setTimeout(resolve, 100));
+    }
+  }
+  try {
+    for (const [id, fault] of ackFaults) {
+      // Issue against a settled revision, so the first ACK is the applied one.
+      await settled(a);
+      cli(a, ["focus", "composer", "--command-id", id]);
+      await within(`${id}: first ACK was not sent`, 15000, () => fault.seen >= 1);
+      await within(`${id}: lost ACK was never re-sent`, 20000, () => fault.seen >= 2);
+      await within(`${id}: not applied after the re-sent ACK`, 10000, async () =>
+        (await request(a, "editor.wait", { operationId: id })).result?.status === "applied");
+    }
+  } finally {
+    releaseHeld();
+    await first.unrouteAll({ behavior: "wait" });
+  }
   const preference = first.locator("[data-editor-control-approval]");
   await preference.check();
   await settled(a);
@@ -653,8 +772,11 @@ try {
     .locator('[data-editor-control-approve="iframe-stale"]')
     .waitFor({ state: "visible" });
   await frame.locator("#second").focus();
-  await new Promise((resolve) => setTimeout(resolve, 300));
-  assert.notEqual(cli(a, ["state"]).revision, beforeInnerFocus.revision);
+  const afterInnerFocus = await eventually(
+    () => cli(a, ["state"]),
+    (state) => state.revision !== beforeInnerFocus.revision,
+  );
+  assert.notEqual(afterInnerFocus.revision, beforeInnerFocus.revision);
   await first.locator('[data-editor-control-approve="iframe-stale"]').click();
   assert.equal(cli(a, ["wait", "iframe-stale"], 6).error, "revision_conflict");
   assert.equal(cli(a, ["state"]).viewport, beforeInnerFocus.viewport);
@@ -714,7 +836,7 @@ try {
     for (let attempt = 0; attempt < 100 && !existsSync(probePath); attempt++)
       await new Promise((resolve) => setTimeout(resolve, 100));
     assert(existsSync(probePath), "Actual provider must execute scoped CLI");
-    const probeResult = JSON.parse(readFileSync(probePath, "utf8"));
+    const probeResult = await readCompleteJson(probePath);
     assert.equal(probeResult.cliStatus, 0);
     assert.equal(probeResult.state.workspace, scope.workspace);
     assert.equal(probeResult.state.instance, scope.instance);
@@ -903,6 +1025,7 @@ try {
     cli(b, ["viewport", "phone", "--command-id", "detached"], 3).error,
     "disconnected_instance",
   );
+  assertAckedOnce(["focus2", "select1", "selectfocus"]);
   assert.deepEqual(pageErrors, []);
   writeFileSync(
     path.join(artifacts, "results.json"),

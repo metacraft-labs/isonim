@@ -2,7 +2,7 @@
 ## belong to a single mounted shell; browser application ACK is the completion edge.
 when not defined(js): {.error: "Browser control transport requires JS".}
 import std/[dom, json, tables]
-import isonim/core/[signals, computation, owner]
+import isonim/core/[signals, computation, owner, batch]
 import isonim/editor/[control, viewmodels]
 import isonim/editor/design_review/[browser_agent_client, editor_daemon_url]
 
@@ -14,10 +14,15 @@ type
     connected: bool
     disposed: bool
     pollTimer: int
+    acked: Table[string, string]  ## operation ID -> outcome ACKed or in flight
     onClosed*: proc(conversation: string) {.closure.}
 
+const AckTimeoutMs = 5000
+  ## An ACK with no answer by then is abandoned and counts as lost, so a hung
+  ## request cannot hold back the re-send of its outcome.
+
 proc fetchRpc(bridge: BrowserControlBridge; methodName: string; params: JsonNode;
-    done: proc(reply: JsonNode) {.closure.}) =
+    done: proc(reply: JsonNode) {.closure.}; timeoutMs = 0) =
   if bridge.disposed and methodName != "editor.disconnect": return
   let url = (bridge.endpoint & "/api/editor/rpc").cstring
   var auth = bridge.browserToken
@@ -33,23 +38,45 @@ proc fetchRpc(bridge: BrowserControlBridge; methodName: string; params: JsonNode
     try: done(parseJson($value))
     except CatchableError: done(newJNull())
   let receiveCallback = receive
+  let limit = timeoutMs
   {.emit: ["""
-    fetch(""", url, """, {method:'POST', credentials:'omit',
+    const abort = """, limit, """ > 0 ? new AbortController() : null;
+    const abortTimer = abort ? setTimeout(function(){abort.abort();}, """, limit, """) : 0;
+    fetch(""", url, """, {method:'POST', credentials:'omit', signal: abort ? abort.signal : undefined,
       headers:{'Content-Type':'application/json','X-IsoNim-Control':""", token, """},
       body:""", raw, """}).then(function(r){return r.text();}).then(function(body){
+        clearTimeout(abortTimer);
         """, receiveCallback, """(body);
-      }).catch(function(){""", receiveCallback, """('null');});
+      }).catch(function(){clearTimeout(abortTimer); """, receiveCallback, """('null');});
   """].}
 
 proc scope(bridge: BrowserControlBridge): JsonNode =
   parseJson(bridge.scopeJson)
 
 proc acknowledge(bridge: BrowserControlBridge; operation: JsonNode) =
+  ## Sends each operation outcome (status and error) once. The activity
+  ## effect re-runs on every activity change, and every poll redelivers an
+  ## operation until its ACK lands, so without this the tab re-sent every
+  ## outcome it had ever reached, each with a full snapshot.
+  ## Those stale ACKs grew with each command and occupied the browser's few
+  ## connections to the service, so a new command's ACK waited behind them
+  ## past the agent's wait. A failed or timed-out ACK forgets its outcome, so
+  ## the next redelivery or activity change sends it again.
   if not bridge.connected: return
+  let id = operation{"operationId"}.getStr()
+  let outcome = operation{"status"}.getStr() & "\n" & operation{"error"}.getStr()
+  if id.len > 0:
+    if bridge.acked.getOrDefault(id, "") == outcome: return
+    bridge.acked[id] = outcome
   var params = bridge.scope()
   params["operation"] = operation
-  params["state"] = bridge.vm.controlSnapshot()
-  bridge.fetchRpc("editor.ack", params, proc(reply: JsonNode) = discard)
+  # Untracked: the activity effect that calls this must re-run on activity
+  # changes only, not on every signal the snapshot reads.
+  params["state"] = untrack(proc(): JsonNode = bridge.vm.controlSnapshot())
+  bridge.fetchRpc("editor.ack", params, proc(reply: JsonNode) =
+    if id.len > 0 and (reply == nil or reply.kind != JObject or reply{"result"} == nil) and
+        bridge.acked.getOrDefault(id, "") == outcome:
+      bridge.acked.del(id), AckTimeoutMs)
 
 proc bindClient*(bridge: BrowserControlBridge; client: BrowserAgentClient) =
   client.onControlClosed = proc(conversation: string) = bridge.vm.revokeControlConversation(conversation)
@@ -358,6 +385,7 @@ proc installControlBridge*(vm: EditorVM; root: Element): BrowserControlBridge =
         # A new connection is a new target identity. Pending work from the old
         # connection may never apply in a replacement tab or connection epoch.
         vm.controlOperations.clear()
+        bridge.acked.clear()
         vm.controlActivity.val = @[]
         bridge.connected = true
         vm.controlConnected = true
