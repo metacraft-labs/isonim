@@ -6,7 +6,7 @@ import std/[json, os, osproc, strutils, tempfiles, sha1, tables]
 import source_project_lock
 import isonim/core/[signals, owner]
 import isonim/editor/[control, source_catalog, workspace, css_patch, viewmodels, source_style_bindings, source_style_values, types]
-from isonim/editor/design_review/control_routes import validNativeRestoreWrite
+from isonim/editor/design_review/control_routes import validNativeRestoreWrite, validEditConditions
 
 const removalReceiptsRelPath = ".isonim/removal-receipts.json"
   ## The receipts this worker issued for removals (Reset / Fill Delete) not
@@ -114,11 +114,35 @@ proc removalReceipts(root: string): JsonNode =
     raise newException(ValueError, "The removal receipt store " & removalReceiptsRelPath &
       " is unreadable. Nothing was changed.")
 
+const maxEditConditions = 6
+  ## The most conditions only the preview can answer (not a `px` width,
+  ## which the worker decides from the preview's width) that one editable
+  ## declaration's target may depend on and still be described for every
+  ## combination of the preview's answers: 2^6 combinations.
+
+proc answersJson(answers: seq[CssConditionAnswer]): JsonNode =
+  result = newJObject()
+  for answer in answers: result[answer.condition] = %answer.holds
+
 proc describeEditableStyles(root: string; manifest: JsonNode; overrideFile = "";
-    overrideContent = ""): JsonNode =
+    overrideContent = ""; answers: seq[CssConditionAnswer] = @[];
+    viewportWidth = 0; answered = false): JsonNode =
   ## Every editable declaration with its value and its removal statement.
   ## With `overrideFile`, as the project would be if that file held
   ## `overrideContent` (an undo is checked before it is written).
+  ##
+  ## Which rule an edit of a declaration writes depends on the preview's
+  ## answers for the stylesheet's conditions (`css_patch.editConditions`).
+  ## When `answered`, the values and edit statements are those for
+  ## `answers` (the act). Otherwise each declaration whose target depends on
+  ## conditions lists those only the preview can answer (`conditions`) and
+  ## states, for every combination of their answers and every range of
+  ## preview widths the `px` width conditions divide (`cases`: `answers`,
+  ## `minWidth`, `maxWidth`, `value`, `edit`), the value the edit would
+  ## replace and why it would be refused ("" when it would not); the editor
+  ## shows the case its preview's answers and width select, and sends those
+  ## answers and that width with the edit, so a declaration is offered
+  ## exactly as it can be written.
   var sources = initTable[string, string]()
   proc read(file: string): string =
     if overrideFile.len > 0 and file == overrideFile: return overrideContent
@@ -157,20 +181,101 @@ proc describeEditableStyles(root: string; manifest: JsonNode; overrideFile = "";
     var values = newJObject()
     var removals = newJObject()
     var edits = newJObject()
+    var conditions = newJObject()
+    var cases = newJObject()
+    let css = nimConstBody(source, entry{"const"}.getStr())
     for property in entry{"properties"}:
-      let probe = patchCssInNimConstAt(source, entry{"const"}.getStr(),
-        entry{"selector"}.getStr(), property.getStr(), "0", 0)
-      if probe.ok:
-        # Shown without its `!important`, as the field takes a value; the
-        # write keeps the declaration's priority (`cssValueEdit`), and the
-        # act compares with the priority set aside (`cssValueMatches`).
-        values[property.getStr()] = %probe.oldValue.cssValueWithoutPriority()
-        removals[property.getStr()] = %removalStatement(source, entry, property.getStr())
-        edits[property.getStr()] = %editStatement(source, entry, property.getStr())
+      let name = property.getStr()
+      let statement = editStatement(source, entry, name)
+      proc probe(given: seq[CssConditionAnswer]; width: int): tuple[stated: bool; value, edit: string] =
+        # What an edit at the act would replace, and why it would be
+        # refused: the write `patchFile` makes, with a placeholder value.
+        let patched = patchCssInNimConstAt(source, entry{"const"}.getStr(),
+          entry{"selector"}.getStr(), name, "0", width, given)
+        if patched.ok:
+          # Shown without its `!important`, as the field takes a value; the
+          # write keeps the declaration's priority (`cssValueEdit`), and the
+          # act compares with the priority set aside (`cssValueMatches`).
+          (true, patched.oldValue.cssValueWithoutPriority(), statement)
+        elif patched.outcome == cpoAmbiguous:
+          # Refused for a reason the row shows (`undecided`, or a shorthand
+          # in the target rule that would still decide it).
+          (true, "", if statement.len > 0: statement else: patched.message)
+        else:
+          (false, "", "")
+      proc state(stated: tuple[stated: bool; value, edit: string]) =
+        values[name] = %stated.value
+        removals[name] = %removalStatement(source, entry, name)
+        edits[name] = %stated.edit
+      if answered:
+        # The act: the request's answers, and its width for the conditions
+        # the width decides.
+        let stated = probe(answers, viewportWidth)
+        if stated.stated: state(stated)
+        continue
+      let involved = css.editConditions(entry{"selector"}.getStr(), name)
+      if involved.len == 0:
+        let stated = probe(@[], viewportWidth)
+        if stated.stated: state(stated)
+        continue
+      # A `px` width condition is decided from the preview's width, sent
+      # with the edit; only the others are asked of the preview, and only
+      # they count towards the cap.
+      var asked, widths: seq[string] = @[]
+      for condition in involved:
+        if condition.widthDecided(): widths.add condition else: asked.add condition
+      if asked.len > maxEditConditions:
+        var stated = probe(@[], viewportWidth)
+        if stated.stated:
+          # No value: which rule's value the preview renders is not told.
+          stated.value = ""
+          stated.edit = "Which rule decides " & name & " depends on " & $asked.len &
+            " conditions of the stylesheet that only the preview can answer, more than " &
+            "the editor follows; edit the stylesheet directly."
+          state(stated)
+        continue
+      # The target for each combination of answers and each width range is
+      # read from the sheet read once (`targetIndex`); the write it implies
+      # is probed once per distinct target rule.
+      let index = css.targetIndex(entry{"selector"}.getStr(), name)
+      let ranges = widthIntervals(widths)
+      var probed = initTable[string, tuple[stated: bool; value, edit: string]]()
+      var listed = newJArray()
+      for condition in asked: listed.add %condition
+      var rows = newJArray()
+      var shown: seq[string] = @[]
+      for combination in 0 ..< (1 shl asked.len):
+        var given: seq[CssConditionAnswer] = @[]
+        for bit, condition in asked:
+          given.add CssConditionAnswer(condition: condition,
+            holds: (combination and (1 shl bit)) != 0)
+        var previous: JsonNode = nil
+        for span in ranges:
+          let key = index.editTarget(span.minWidth, given).targetKey()
+          if key notin probed: probed[key] = probe(given, span.minWidth)
+          let stated = probed[key]
+          if not stated.stated:
+            previous = nil
+            continue
+          if previous != nil and previous["value"].getStr() == stated.value and
+              previous["edit"].getStr() == stated.edit:
+            previous["maxWidth"] = %span.maxWidth
+            continue
+          previous = %*{"answers": answersJson(given), "minWidth": span.minWidth,
+            "maxWidth": span.maxWidth, "value": stated.value, "edit": stated.edit}
+          rows.add previous
+          if stated.value notin shown: shown.add stated.value
+      if rows.len > 0:
+        # Shown only through the case the preview selects; a value of its
+        # own only when every case has the same one.
+        state((true, (if shown.len == 1: shown[0] else: ""), rows[0]["edit"].getStr()))
+        conditions[name] = listed
+        cases[name] = rows
     result.add(%* {"key": entry{"key"}.getStr(), "elementId": entry{"elementId"}.getStr(),
       "storyId": entry{"storyId"}.getStr(), "file": entry{"file"}.getStr(),
       "const": entry{"const"}, "selector": entry{"selector"}, "properties": entry{"properties"},
-      "sourceHash": $secureHash(source), "values": values, "removals": removals, "edits": edits})
+      "sourceHash": $secureHash(source), "values": values, "removals": removals, "edits": edits,
+      "conditions": conditions, "cases": cases})
 
 proc bindingSnapshot(root: string): JsonNode =
   let file = safePath(root, bindingSidecarRelPath)
@@ -260,12 +365,19 @@ proc cmdSourceProject*(args: seq[string]): int =
     var restoreRecord = -1
     var issuedReceipts: JsonNode
     var removalBefore, removalAfter: string
+    var answers: seq[CssConditionAnswer] = @[]
     if inspectorEdit:
       for key, value in request:
-        if key notin ["commandId", "command", "storyId", "target", "schemaKey", "property", "value", "expectedValue", "expectedSourceHash", "expectedRevision", "viewportWidth", "sourceValue", "restoreWrite"]:
+        if key notin ["commandId", "command", "storyId", "target", "schemaKey", "property", "value", "expectedValue", "expectedSourceHash", "expectedRevision", "viewportWidth", "sourceValue", "restoreWrite", "conditions"]:
           raise newException(ValueError, "Unknown inspector source field.")
         if key in ["expectedRevision", "viewportWidth"]:
           if value.kind != JInt: raise newException(ValueError, "Invalid inspector source field type.")
+        elif key == "conditions":
+          # The preview's answers for the stylesheet's conditions
+          # (`describeEditableStyles`): {prelude: holds}, bounded as the
+          # control route bounds it (`validEditConditions`).
+          let refusal = validEditConditions(value)
+          if refusal.len > 0: raise newException(ValueError, "Invalid inspector source conditions: " & refusal)
         elif key == "restoreWrite":
           if not validNativeRestoreWrite(value): raise newException(ValueError, "Invalid inspector source field type.")
         elif value.kind != JString:
@@ -276,6 +388,9 @@ proc cmdSourceProject*(args: seq[string]): int =
         raise newException(ValueError, "Invalid inspector source revision.")
       restore = request{"restoreWrite"} != nil
       removal = not restore and request["value"].getStr().len == 0
+      if request{"conditions"} != nil:
+        for condition, holds in request["conditions"]:
+          answers.add CssConditionAnswer(condition: condition, holds: holds.getBool())
       # Validated before anything is written: the store update is part of the
       # transaction below and must not be the first thing to fail.
       if removal or restore: issuedReceipts = removalReceipts(root)
@@ -353,7 +468,9 @@ proc cmdSourceProject*(args: seq[string]): int =
         nativeProperty = property
         nativeAfter = request["value"].getStr()
       else:
-        for entry in describeEditableStyles(root, manifest):
+        # Described for the preview's answers, as the edit will be written.
+        for entry in describeEditableStyles(root, manifest, answers = answers,
+            viewportWidth = request["viewportWidth"].getInt(), answered = true):
           if entry{"key"}.getStr() == request{"schemaKey"}.getStr():
             if literalMap != nil: raise newException(ValueError, "Ambiguous editable source schema.")
             literalMap = entry
@@ -377,6 +494,13 @@ proc cmdSourceProject*(args: seq[string]): int =
           newValue: request{"value"}.getStr(), kind: pekCss, scope: pesLocal), parsed)
         if validation.len > 0: raise newException(ValueError, validation[0].message)
       if not restore:
+        # The writer's own refusal first (a selector list; which rule decides
+        # the property cannot be told for the preview's answers; another
+        # declaration in the rule would still decide it): its reason is the
+        # one to show, whatever value the editor expected.
+        if not removal and literalMap{"values", property} != nil and
+            literalMap{"edits", property}.getStr().len > 0:
+          raise newException(ValueError, literalMap["edits"][property].getStr())
         if literalMap{"values", property} == nil or
             literalMap["values"][property].getStr() != request["expectedValue"].getStr():
           raise newException(ValueError, "Authored property changed before this edit.")
@@ -412,7 +536,9 @@ proc cmdSourceProject*(args: seq[string]): int =
         let source = readFile(safePath(root, literalMap{"file"}.getStr()))
         let validated = patchCssInNimConstAt(source, literalMap{"const"}.getStr(),
           literalMap{"selector"}.getStr(), nativeProperty, nativeAfter,
-          request{"viewportWidth"}.getInt())
+          request{"viewportWidth"}.getInt(), answers)
+        if not validated.ok and validated.outcome == cpoAmbiguous:
+          raise newException(ValueError, validated.message)
         if not validated.ok or not validated.oldValue.cssValueMatches(nativeBefore):
           raise newException(ValueError, "Source declaration changed or cannot be safely patched.")
         echo $(%* {"ok": true, "sourceEdit": {"before": nativeBefore,
@@ -503,10 +629,14 @@ proc cmdSourceProject*(args: seq[string]): int =
       if inspectorEdit:
         let patched = patchCssInNimConstAt(content, literalMap{"const"}.getStr(),
           literalMap{"selector"}.getStr(), nativeProperty, nativeAfter,
-          request{"viewportWidth"}.getInt())
+          request{"viewportWidth"}.getInt(), answers)
         if not patched.ok or not patched.oldValue.cssValueMatches(nativeBefore):
+          # The writer's own reason when it refused (which rule decides the
+          # property cannot be told, or another declaration in the rule would
+          # still decide it); a stale declaration otherwise.
           return WorkspacePatchResult(ok: false, diagnostics: @[WorkspaceEditDiagnostic(
-            kind: wedSourceConflict, message: "Source declaration changed or cannot be safely patched.")])
+            kind: wedSourceConflict, message: if not patched.ok and patched.message.len > 0:
+              patched.message else: "Source declaration changed or cannot be safely patched.")])
         return WorkspacePatchResult(ok: true, patch: WorkspaceFilePatch(file: schema.file,
           beforeContent: content, afterContent: patched.content, fullReload: true))
       for fixture in manifest{"fixtures"}:

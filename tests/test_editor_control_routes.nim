@@ -3,7 +3,7 @@
 ## state are exercised directly. Test-authored JSON acknowledgements isolate the
 ## transport registry; they do not prove browser application. The separately
 ## registered full GUI/CLI acceptance supplies that real application boundary.
-import std/[json, os, unittest]
+import std/[json, os, strutils, unittest]
 import isonim/editor/design_review/control_routes
 import isonim/core/[signals, owner]
 import isonim/editor/[control, viewmodels]
@@ -506,6 +506,42 @@ suite "browser-origin inspector source admission":
       let request = inspectorSource(browser, "restore-bad-" & $index)
       request["request"]["restoreWrite"] = shape
       check rpc(registry,"editor.inspector-source",request,credential)["error"]["message"].getStr() == "invalid_inspector_source_field_type"
+
+  test "the preview's condition answers are admitted only bounded and well formed":
+    # isonim-pm issue 2026-11-15-edit-target-at-width-ignores-important-and-
+    # never-targets-a-rule-in-layer (round 3, N1): an edit carries the
+    # preview's matchMedia / CSS.supports answers ({prelude: holds}); the
+    # native worker checks the same bounds again (`validEditConditions`).
+    let registry = newEditorControlRegistry("browser-bootstrap")
+    let browser = register(registry)
+    let credential = browser["browserToken"].getStr()
+    let good = inspectorSource(browser, "conditions-good")
+    good["request"]["conditions"] = %*{"@media (prefers-color-scheme: dark)": true,
+      "@SUPPORTS (display: grid)": false}
+    check rpc(registry,"editor.inspector-source",good,credential){"error"} == nil
+    var many = newJObject()
+    for index in 0 ..< maxEditConditionAnswers: many["@media (min-width: " & $index & "px)"] = %true
+    let atCap = inspectorSource(browser, "conditions-cap")
+    atCap["request"]["conditions"] = many
+    check rpc(registry,"editor.inspector-source",atCap,credential){"error"} == nil
+    var tooMany = many.copy()
+    tooMany["@media (min-width: 9999px)"] = %false
+    var bad: seq[JsonNode] = @[%"@media print", newJArray(), tooMany,
+      %*{"@layer base": true}, %*{"@container (min-width: 1px)": true},
+      %*{"@mediafoo (x)": true}, %*{"(max-width: 1px)": true},
+      %*{"@media print": "true"}, %*{"@media print": 1}]
+    var long = newJObject()
+    long["@media " & "(min-width: 1px) and ".repeat(30)] = %true
+    check long.len == 1
+    bad.add long
+    for index, conditions in bad:
+      let request = inspectorSource(browser, "conditions-bad-" & $index)
+      request["request"]["conditions"] = conditions
+      check rpc(registry,"editor.inspector-source",request,credential)["error"]["message"].getStr() ==
+        "invalid_inspector_source_conditions"
+    check validEditConditions(tooMany).contains("at most 64")
+    check validEditConditions(%*{"@layer base": true}).contains("@media or @supports")
+    check validEditConditions(long).contains("512 bytes")
 
   test "selection, story and revision changes prevent admission":
     let registry = newEditorControlRegistry("browser-bootstrap")

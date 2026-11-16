@@ -145,6 +145,169 @@ class InspectorSourceTransactionTests(unittest.TestCase):
         self.assertEqual(self.source.read_bytes(), human)
         self.assertEqual(self.catalog.read_bytes(), self.original_catalog)
 
+    # isonim-pm issue 2026-11-15-edit-target-at-width-ignores-important-and-
+    # never-targets-a-rule-in-layer, round 2: the worker writes with the
+    # preview's answers for the stylesheet's conditions, describes each
+    # declaration for every combination of them, and says why it refuses.
+    def conditional(self, block):
+        self.source.write_bytes(self.original.replace(b"#secondary-action {", block + b"\n#secondary-action {", 1))
+        build = subprocess.run(["python3", str(REPO / "tools/build_source_catalog.py"), str(self.project)],
+                               env=self.env, capture_output=True, text=True, timeout=70)
+        self.assertEqual(build.returncode, 0, build.stdout + build.stderr)
+        self.original = self.source.read_bytes()
+        self.original_catalog = self.catalog.read_bytes()
+        return next(entry for entry in self.metadata() if entry["elementId"] == "action")
+
+    def attempt(self, request):
+        payload = self.directory / "request.json"
+        payload.write_text(json.dumps(request))
+        result = subprocess.run([str(self.binary), "source-project", str(self.project), str(payload)],
+                                env=self.env, capture_output=True, text=True, timeout=120)
+        (self.directory / "operation.log").write_text(result.stdout + result.stderr)
+        return json.loads(result.stdout)
+
+    def test_a_dark_mode_rule_is_written_as_the_preview_answers(self):
+        dark = b"@media (prefers-color-scheme: dark) { #action { width:60px; } }"
+        pristine = self.original
+        entry = self.conditional(dark)
+        condition = "@media (prefers-color-scheme: dark)"
+        self.assertEqual(entry["conditions"]["width"], [condition])
+        cases = {json.dumps(case["answers"]): case for case in entry["cases"]["width"]}
+        light, darker = cases[json.dumps({condition: False})], cases[json.dumps({condition: True})]
+        self.assertEqual((light["value"], light["edit"]), ("120px", ""))
+        self.assertEqual((darker["value"], darker["edit"]), ("60px", ""))
+        # Offered: a value is stated, so the row is never "no owner".
+        self.assertIn("width", entry["values"])
+        request = {"command": "inspector-edit", "commandId": "native-acceptance", "expectedRevision": 0,
+                   "schemaKey": entry["key"], "target": "action", "storyId": entry["storyId"],
+                   "property": "width", "value": "150px", "expectedSourceHash": entry["sourceHash"],
+                   "viewportWidth": 1440}
+        # Without the preview's answer it cannot be told; the reason says why.
+        refused = self.attempt({**request, "expectedValue": "120px"})
+        self.assertFalse(refused["ok"])
+        self.assertIn("prefers-color-scheme: dark", refused["diagnostic"])
+        self.assertIn("not known", refused["diagnostic"])
+        self.unchanged()
+        # A dark preview writes the dark rule.
+        written = self.attempt({**request, "expectedValue": "60px", "conditions": {condition: True}})
+        self.assertTrue(written["ok"], written)
+        self.assertEqual(self.source.read_bytes(), self.original.replace(dark, dark.replace(b"width:60px", b"width:150px")))
+        # A light preview, from there, writes the base rule.
+        self.original = pristine
+        entry = self.conditional(dark)
+        written = self.attempt({**request, "expectedSourceHash": entry["sourceHash"],
+                                "expectedValue": "120px", "conditions": {condition: False}})
+        self.assertTrue(written["ok"], written)
+        self.assertEqual(self.source.read_bytes(), self.original.replace(b"#action { width:120px;", b"#action { width:150px;"))
+
+    def test_a_refused_write_states_the_writers_reason(self):
+        # A side under an `!important` shorthand in the same rule: the row
+        # states the reason, and the act refuses with it, nothing written.
+        self.original = self.original.replace(b"#action { width:120px; height:48px; padding:8px;",
+                                              b"#action { width:120px; height:48px; padding:8px !important;", 1)
+        entry = self.conditional(b"")
+        self.assertIn("would still decide it", entry["edits"]["padding-right"])
+        self.assertIn("`!important` `padding`", entry["edits"]["padding-right"])
+        refused = self.attempt({"command": "inspector-edit", "commandId": "native-acceptance", "expectedRevision": 0,
+                                "schemaKey": entry["key"], "target": "action", "storyId": entry["storyId"],
+                                "property": "padding-right", "value": "9px",
+                                "expectedValue": entry["values"]["padding-right"],
+                                "expectedSourceHash": entry["sourceHash"], "viewportWidth": 1440})
+        self.assertFalse(refused["ok"])
+        self.assertIn("would still decide it", refused["diagnostic"])
+        self.unchanged()
+        # A rule under a condition no answer covers: stated, not "no owner".
+        self.original = self.original.replace(b"padding:8px !important;", b"padding:8px;").replace(b"\n\n#secondary-action {", b"\n#secondary-action {", 1)
+        entry = self.conditional(b"@container (min-width: 1px) { #action { width:60px; } }")
+        self.assertIn("width", entry["values"])
+        self.assertIn("@container (min-width: 1px)", entry["edits"]["width"])
+        refused = self.attempt({"command": "inspector-edit", "commandId": "native-acceptance", "expectedRevision": 0,
+                                "schemaKey": entry["key"], "target": "action", "storyId": entry["storyId"],
+                                "property": "width", "value": "150px", "expectedValue": entry["values"]["width"],
+                                "expectedSourceHash": entry["sourceHash"], "viewportWidth": 1440})
+        self.assertFalse(refused["ok"])
+        self.assertIn("@container (min-width: 1px)", refused["diagnostic"])
+        self.unchanged()
+
+    # Round 3 (N2): a px width condition is decided from the preview's width,
+    # not asked of the preview, so it does not count towards the 6-condition
+    # cap; the catalog states its cases per range of widths.
+    def test_px_breakpoints_are_cases_by_width_and_never_reach_the_cap(self):
+        blocks = b"".join(b"@media (max-width: %dpx) { #action { width:%dpx; } }\n" % (1300 - 100 * i, 61 + i)
+                          for i in range(7))
+        entry = self.conditional(blocks.rstrip(b"\n"))
+        self.assertEqual(entry["conditions"]["width"], [])
+        self.assertEqual(entry["edits"]["width"], "")
+        rows = entry["cases"]["width"]
+        def case(width):
+            found = [row for row in rows if row["minWidth"] <= width and (row["maxWidth"] < 0 or width <= row["maxWidth"])]
+            self.assertEqual(len(found), 1, (width, rows))
+            return found[0]
+        self.assertEqual(case(1440)["value"], "120px")
+        self.assertEqual(case(1301)["value"], "120px")
+        self.assertEqual(case(1300)["value"], "61px")
+        self.assertEqual(case(650)["value"], "67px")
+        # The ranges are what the width decides: 8 of them, not 2^7 rows.
+        self.assertEqual(len(rows), 8)
+        # Shown only through a case: the cases disagree, so no value of its own.
+        self.assertEqual(entry["values"]["width"], "")
+        request = {"command": "inspector-edit", "commandId": "native-acceptance", "expectedRevision": 0,
+                   "schemaKey": entry["key"], "target": "action", "storyId": entry["storyId"],
+                   "property": "width", "value": "150px", "expectedSourceHash": entry["sourceHash"]}
+        # An answer for a px width condition is not used (round 4, O1): the
+        # width decides it, so this still writes the base rule at 1440px.
+        written = self.attempt({**request, "expectedValue": "120px", "viewportWidth": 1440,
+                                "conditions": {"@media (max-width: 1300px)": True}})
+        self.assertTrue(written["ok"], written)
+        self.assertEqual(self.source.read_bytes(), self.original.replace(b"#action { width:120px;", b"#action { width:150px;"))
+
+    def test_more_conditions_than_the_preview_answers_are_stated_with_no_value(self):
+        preludes = [b"@media (prefers-color-scheme: dark)", b"@media (prefers-reduced-motion: reduce)",
+                    b"@media (hover: none)", b"@media (orientation: portrait)", b"@supports (display: grid)",
+                    b"@supports (gap: 1px)", b"@media (max-width: 50em)"]
+        entry = self.conditional(b"\n".join(p + b" { #action { width:60px; } }" for p in preludes))
+        self.assertEqual(entry["values"]["width"], "")
+        self.assertIn("7 conditions", entry["edits"]["width"])
+        self.assertIn("only the preview can answer", entry["edits"]["width"])
+        self.assertNotIn("width", entry["cases"])
+
+    # Round 3 (N1): the answers are bounded, and refused with the reason.
+    def test_condition_answers_are_bounded(self):
+        entry = self.metadata()[0]
+        entry = next(e for e in self.metadata() if e["elementId"] == "action")
+        request = {"command": "inspector-edit", "commandId": "native-acceptance", "expectedRevision": 0,
+                   "schemaKey": entry["key"], "target": "action", "storyId": entry["storyId"],
+                   "property": "width", "value": "150px", "expectedValue": entry["values"]["width"],
+                   "expectedSourceHash": entry["sourceHash"], "viewportWidth": 1440}
+        for conditions, why in [({"@layer base": True}, "@media or @supports"),
+                                ({"@media print": "yes"}, "true or false"),
+                                ({"@media (min-width: %dpx)" % i: True for i in range(65)}, "at most 64"),
+                                ({"@media " + "(min-width: 1px) and " * 30: True}, "512 bytes"),
+                                ([], "object")]:
+            refused = self.attempt({**request, "conditions": conditions})
+            self.assertFalse(refused["ok"])
+            self.assertIn("Invalid inspector source conditions", refused["diagnostic"])
+            self.assertIn(why, refused["diagnostic"])
+            self.unchanged()
+        # Within the bounds, answers that name nothing in the sheet are harmless.
+        written = self.attempt({**request, "conditions": {"@media (min-width: %dpx)" % i: True for i in range(64)}})
+        self.assertTrue(written["ok"], written)
+
+    # Round 3 (N4): an @supports answer is what lets this edit be written.
+    def test_an_supports_answer_writes_the_supported_rule(self):
+        block = b"@supports (display: grid) { #action { width:60px; } }"
+        entry = self.conditional(block)
+        condition = "@supports (display: grid)"
+        self.assertEqual(entry["conditions"]["width"], [condition])
+        request = {"command": "inspector-edit", "commandId": "native-acceptance", "expectedRevision": 0,
+                   "schemaKey": entry["key"], "target": "action", "storyId": entry["storyId"],
+                   "property": "width", "value": "150px", "expectedValue": "60px",
+                   "expectedSourceHash": entry["sourceHash"], "viewportWidth": 1440,
+                   "conditions": {condition: True}}
+        written = self.attempt(request)
+        self.assertTrue(written["ok"], written)
+        self.assertEqual(self.source.read_bytes(), self.original.replace(block, block.replace(b"width:60px", b"width:150px")))
+
     def test_stale_declaration_value_is_independently_rejected(self):
         request = self.request()
         request["expectedValue"] = "999px"

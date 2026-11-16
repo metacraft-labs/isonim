@@ -3,6 +3,38 @@
 import std/[asyncdispatch, asynchttpserver, json, locks, os, strutils, sysrand, tables, times, monotimes, sets]
 
 
+const
+  maxEditConditionAnswers* = 64
+    ## The most condition answers one native inspector edit may carry.
+  maxEditConditionLength* = 512
+    ## The longest condition (an at-rule prelude) an answer may name.
+
+proc validEditConditions*(value: JsonNode): string =
+  ## Why ``value`` is not a native inspector edit's `conditions` (the
+  ## preview's answers for the stylesheet's conditions, {prelude: holds}),
+  ## or "" when it is: an object of at most `maxEditConditionAnswers`
+  ## booleans, each named by a `@media` or `@supports` prelude of at most
+  ## `maxEditConditionLength` bytes. Shared by the control route and the
+  ## native worker, so both refuse the same requests.
+  if value == nil or value.kind != JObject:
+    return "conditions must be an object of answers"
+  if value.len > maxEditConditionAnswers:
+    return "at most " & $maxEditConditionAnswers & " condition answers, not " & $value.len
+  for condition, holds in value:
+    if condition.len > maxEditConditionLength:
+      return "a condition is at most " & $maxEditConditionLength & " bytes long"
+    let lower = condition.strip().toLowerAscii()
+    var known = false
+    for keyword in ["@media", "@supports"]:
+      if lower.startsWith(keyword) and (lower.len == keyword.len or
+          lower[keyword.len] notin {'a'..'z', '0'..'9', '-', '_'}):
+        known = true
+    if not known:
+      return "a condition must be a @media or @supports prelude"
+    if holds.kind != JBool:
+      return "each condition's answer must be true or false"
+  ""
+
 proc validNativeRestoreWrite*(value: JsonNode): bool =
   ## The exact shape of a native removal's undo receipt: the file, the offset
   ## and whole lines a removal replaced, whether its lines were unique when
@@ -252,10 +284,16 @@ proc rpcDispatch*(reg: EditorControlRegistry; request: JsonNode; token: string):
             raise newException(ControlError, "invalid_binding_source_request")
         else:
           for key, value in request:
-            if key notin ["commandId", "command", "storyId", "target", "schemaKey", "property", "value", "expectedValue", "expectedSourceHash", "expectedRevision", "viewportWidth", "sourceValue", "restoreWrite"]:
+            if key notin ["commandId", "command", "storyId", "target", "schemaKey", "property", "value", "expectedValue", "expectedSourceHash", "expectedRevision", "viewportWidth", "sourceValue", "restoreWrite", "conditions"]:
               raise newException(ControlError, "unknown_inspector_source_field")
             if key in ["expectedRevision", "viewportWidth"]:
               if value.kind != JInt: raise newException(ControlError, "invalid_inspector_source_field_type")
+            elif key == "conditions":
+              # The preview's answers for the stylesheet's conditions
+              # ({prelude: holds}); the worker writes with them and checks
+              # them again (`css_patch.validEditConditions`).
+              if validEditConditions(value).len > 0:
+                raise newException(ControlError, "invalid_inspector_source_conditions")
             elif key == "restoreWrite":
               # Undo of a removal (Reset / Fill Delete): the removal's line
               # receipt, in exactly the shape the native worker accepts

@@ -337,8 +337,10 @@ try {
   cases.push('a fresh capture shows the sides a partly overridden variable gives as the variable, and refuses their drag');
 
   // 17. A transition running on another element of the preview keeps running
-  // through a selection's measurement (review r2, R2).
-  await open('padding: 18px;','h1 { transition: margin-left 3s linear; }\n');
+  // through a selection's measurement (review r2, R2). It lasts far longer
+  // than any selection takes, even on a loaded host: a shorter one could end
+  // on its own during the selection, which would read as a cancellation.
+  await open('padding: 18px;','h1 { transition: margin-left 600s linear; }\n');
   const heading=frame().locator('h1').first();
   await heading.evaluate((h)=>{window.__isonimTransitionCancels=0;h.addEventListener('transitioncancel',()=>window.__isonimTransitionCancels++);getComputedStyle(h).marginLeft;h.style.marginLeft='200px';getComputedStyle(h).marginLeft;});
   assert.equal(await heading.evaluate((h)=>h.getAnimations().length),1,'the heading transition runs');

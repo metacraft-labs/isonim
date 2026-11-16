@@ -6,6 +6,76 @@ import std/[json, options, strutils]
 import isonim/core/[signals, computation, owner, batch]
 import isonim/editor/[viewmodels, workspace, source_catalog, control]
 
+proc previewAnswers(elementId: string; conditions: JsonNode): JsonNode =
+  ## The preview's own answers for a declaration's conditions (the worker's
+  ## `conditions`: `@media` / `@supports` preludes as the stylesheet writes
+  ## them), from the preview frame that shows ``elementId``: `matchMedia` and
+  ## `CSS.supports` there, as the preview runtime decides which rule applies.
+  ## A condition the frame cannot answer (or no frame) is left out, and the
+  ## worker then refuses an edit it decides, with the reason.
+  result = newJObject()
+  if conditions == nil or conditions.kind != JArray or conditions.len == 0: return
+  let id = elementId.cstring
+  let list = ($conditions).cstring
+  var raw: cstring = "{}"
+  {.emit: [raw, """ = (function (id, list) {
+    var conds = JSON.parse(list), win = null;
+    var frames = document.querySelectorAll('iframe');
+    for (var i = 0; i < frames.length && !win; i++) {
+      try {
+        var doc = frames[i].contentDocument;
+        if (!frames[i].getClientRects().length || !doc) continue;
+        if (doc.querySelector('[data-isonim-element-id="' + CSS.escape(id) + '"]') ||
+            doc.getElementById(id)) win = frames[i].contentWindow;
+      } catch (e) {}
+    }
+    var out = {};
+    if (!win) return JSON.stringify(out);
+    for (var c = 0; c < conds.length; c++) {
+      var m = /^\s*@(media|supports)\b([\s\S]*)$/i.exec(conds[c]);
+      if (!m) continue;
+      try {
+        out[conds[c]] = m[1].toLowerCase() === 'media' ?
+          win.matchMedia(m[2].trim()).matches : win.CSS.supports(m[2].trim());
+      } catch (e) {}
+    }
+    return JSON.stringify(out);
+  })(""", id, ", ", list, ");"].}
+  result = parseJson($raw)
+
+proc editCase(mapping: JsonNode; property: string; answers: JsonNode;
+    width: int): tuple[value: JsonNode; edit: string] =
+  ## The value an edit of ``property`` would replace, and why it would be
+  ## refused ("" when it would not), for the preview's ``answers`` and its
+  ## ``width``: the worker's case for them (`describeEditableStyles`; a
+  ## case's `minWidth .. maxWidth` is the range of preview widths it covers,
+  ## `maxWidth` -1 for no bound). Without cases, the declaration's one value
+  ## and statement.
+  result = (mapping{"values", property}, mapping{"edits", property}.getStr())
+  let rows = mapping{"cases", property}
+  if rows == nil or rows.kind != JArray: return
+  for row in rows:
+    var matches = true
+    for condition, holds in row{"answers"}:
+      if answers{condition} == nil or answers[condition].getBool() != holds.getBool():
+        matches = false
+        break
+    if matches and row{"minWidth"} != nil:
+      matches = width >= row["minWidth"].getInt() and
+        (row{"maxWidth"}.getInt(-1) < 0 or width <= row["maxWidth"].getInt())
+    if matches: return (row{"value"}, row{"edit"}.getStr())
+  var names: seq[string] = @[]
+  for condition in mapping{"conditions", property}:
+    if answers{condition.getStr()} == nil: names.add condition.getStr()
+  # No case: no value is shown, since which rule's value renders is not told.
+  result.value = %""
+  result.edit = if names.len > 0:
+      "Which rule decides " & property & " depends on " & names.join(", ") &
+        ", which the preview could not answer; edit the stylesheet directly."
+    else:
+      "Which rule decides " & property & " at this preview width is not described; " &
+        "edit the stylesheet directly."
+
 proc attachSourceProject*(vm: EditorVM; base: EditorWorkspace; inspectorEditing = true) =
   ## Native inspector writes are the default. Catalog-only consumers retain
   ## preview edits and native agent commands without claiming source persistence.
@@ -128,9 +198,19 @@ proc attachSourceProject*(vm: EditorVM; base: EditorWorkspace; inspectorEditing 
   if inspectorEditing:
     createRoot proc(dispose: proc()) =
       vm.sourceProjectMappingDispose = dispose
+      # Bumped shortly after the preview changes width, so the conditions a
+      # declaration depends on are asked again once the frame has its size.
+      let answersTick = createSignal(0)
+      var answeredWidth = -1
       createRenderEffect proc() =
         let element = vm.inspector.selectedElement.val
         let storyId = controlStoryId(vm.selectedStory.val)
+        discard answersTick.val
+        let width = vm.viewport.val.width
+        if width != answeredWidth:
+          answeredWidth = width
+          let again: proc() {.closure.} = proc() = answersTick.val = answersTick.val + 1
+          {.emit: ["setTimeout(", again, ", 300);"].}
         var selected = element
         var changed = false
         # Offered and stated only while a current mapping offers the property
@@ -161,7 +241,11 @@ proc attachSourceProject*(vm: EditorVM; base: EditorWorkspace; inspectorEditing 
             # A matching lower stylesheet declaration is not its source owner.
             if property.origin == poSetStyle: continue
             if mapping{"values", property.name} == nil: continue
-            let authored = mapping["values"][property.name].getStr()
+            # The case the preview's answers select, when which rule an edit
+            # writes depends on the stylesheet's conditions.
+            let chosen = mapping.editCase(property.name,
+              previewAnswers(element.id, mapping{"conditions", property.name}), width)
+            let authored = chosen.value.getStr()
             let token = mapping{"scope"}.getStr() == "semantic-token"
             let shared = token or mapping{"scope"}.getStr() == "shared-class"
             if shared and (property.schemaKey != mapping{"key"}.getStr() or
@@ -199,7 +283,7 @@ proc attachSourceProject*(vm: EditorVM; base: EditorWorkspace; inspectorEditing 
               changed = true
             # Likewise its statement against any edit (a declaration shared
             # by a selector list): the row shows it as its read-only reason.
-            let editRefusal = mapping{"edits", property.name}.getStr()
+            let editRefusal = chosen.edit
             if property.nativeEditRefusal != editRefusal:
               property.nativeEditRefusal = editRefusal
               changed = true
@@ -222,6 +306,7 @@ proc attachSourceProject*(vm: EditorVM; base: EditorWorkspace; inspectorEditing 
       return
     var mappingKey, sourceHash: string
     var expected: JsonNode
+    var answers = newJObject()
     if restoreWrite != nil:
       # Undo of a removal: the entry may be gone with its only declaration,
       # so it is named by the key the removal was written through. The
@@ -248,7 +333,9 @@ proc attachSourceProject*(vm: EditorVM; base: EditorWorkspace; inspectorEditing 
         return
       mappingKey = mapping{"key"}.getStr()
       sourceHash = mapping{"sourceHash"}.getStr()
-      expected = mapping["values"][property]
+      # Asked again now: the edit is written for the preview as it is.
+      answers = previewAnswers(element.id, mapping{"conditions", property})
+      expected = mapping.editCase(property, answers, vm.viewport.val.width).value
     vm.sourceProjectBuildInFlight = true
     inc vm.sourceProjectOperationSerial
     vm.workspaceEditStage.val = wesCompiling
@@ -258,6 +345,7 @@ proc attachSourceProject*(vm: EditorVM; base: EditorWorkspace; inspectorEditing 
       "property": property, "value": value, "expectedValue": expected,
       "expectedSourceHash": sourceHash,
       "viewportWidth": vm.viewport.val.width}
+    if answers.len > 0: request["conditions"] = answers
     if restoreLiteral.len > 0: request["sourceValue"] = %restoreLiteral
     if restoreWrite != nil: request["restoreWrite"] = restoreWrite
     vm.controlSourceTransport(request, proc(reply: JsonNode) =
@@ -375,7 +463,9 @@ proc attachSourceProject*(vm: EditorVM; base: EditorWorkspace; inspectorEditing 
       var authoredBefore = prepared.outcome.sourceEdit.oldValue
       for mapping in editableStyles.val:
         if mapping{"elementId"}.getStr() == element.id and mapping{"storyId"}.getStr() == storyId and mapping{"values", property} != nil:
-          authoredBefore = mapping["values"][property].getStr()
+          authoredBefore = mapping.editCase(property,
+            previewAnswers(element.id, mapping{"conditions", property}),
+            vm.viewport.val.width).value.getStr()
       transact(element, property, prepared.outcome.sourceEdit.newValue, storyId, removalKey,
         proc(ok: bool; diagnostic, sourceBefore, sourceAfter: string; unchanged: bool; edit: JsonNode) =
           if ok and not unchanged:

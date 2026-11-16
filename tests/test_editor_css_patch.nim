@@ -324,7 +324,7 @@ suite "css_patch: a value edit keeps the declaration's priority":
     let at = patchCssDeclarationAt(media, ".x", "padding", "5px", 850)
     check at.ok
     check at.oldValue == "2px !important"
-    check at.content == ".x { padding: 1px; }\n@media (max-width: 1080px) { .x { padding:5px !important; } }\n"
+    check at.content == ".x { padding: 1px; }\n@media (max-width: 1080px) { .x { padding: 5px !important; } }\n"
     check patchCssDeclarationAt(media, ".x", "padding", "2px", 850).outcome == cpoUnchanged
     let under = patchCssDeclarationUnder(media, "@media (max-width: 1080px)",
       ".x", "padding", "6px")
@@ -587,7 +587,7 @@ suite "css_patch: a value edit keeps the declaration's priority":
     let at = patchCssDeclarationAt(css, ".card", "padding", "5px", 500)
     check at.ok
     check at.oldValue == "2px !important"
-    check at.content == css.replace("padding: 2px !important", "padding:5px !important")
+    check at.content == css.replace("padding: 2px !important", "padding: 5px !important")
     let under = patchCssDeclarationUnder(css, "@media (max-width: 600px)",
       ".card", "padding", "6px")
     check under.ok
@@ -610,6 +610,407 @@ suite "css_patch: a value edit keeps the declaration's priority":
     check cssValueMatches("18px !important", "18px !important")
     check not cssValueMatches("18px", "18px !important")
     check not cssValueMatches("18px !important", "20px")
+
+suite "css_patch: the width-aware target follows the cascade":
+  # isonim-pm issue 2026-11-15-edit-target-at-width-ignores-important-and-
+  # never-targets-a-rule-in-layer. Among the rules with the edited selector
+  # (one specificity), the cascade orders by importance, then cascade layer
+  # (reversed for `!important`; outside every layer is after every layer),
+  # then order of appearance -- as the preview runtime's `resolveRule` does.
+  # Not by order of appearance alone, and a rule in `@layer` is a candidate.
+
+  test "the issue's example: an important base rule decides over a later @media rule":
+    const css = ".x { padding: 1px !important; }\n" &
+      "@media (max-width: 1080px) { .x { padding: 2px; } }\n"
+    for width in [850, 1440]:
+      let t = css.editTargetAtWidth(".x", "padding", width)
+      check t.found
+      check not t.isBreakpoint
+      check t.condition == ""
+      check "!important" in t.reason
+    let r = patchCssDeclarationAt(css, ".x", "padding", "5px", 850)
+    check r.ok
+    check r.outcome == cpoReplaced
+    check r.oldValue == "1px !important"
+    check r.content == ".x { padding: 5px !important; }\n" &
+      "@media (max-width: 1080px) { .x { padding: 2px; } }\n"
+
+  test "@media plus !important: the important rule wins over a later one that also applies":
+    const css = ".x { padding: 1px; }\n" &
+      "@media (max-width: 1080px) { .x { padding: 2px !important; } }\n" &
+      "@media (max-width: 1200px) { .x { padding: 3px; } }\n"
+    let narrow = css.editTargetAtWidth(".x", "padding", 850)
+    check narrow.found
+    check narrow.condition == "@media (max-width: 1080px)"
+    check patchCssDeclarationAt(css, ".x", "padding", "5px", 850).content ==
+      css.replace("padding: 2px !important", "padding: 5px !important")
+    # Only the 1200px block holds at 1100px; nothing holds at 1440px.
+    check css.editTargetAtWidth(".x", "padding", 1100).condition ==
+      "@media (max-width: 1200px)"
+    check css.editTargetAtWidth(".x", "padding", 1440).condition == ""
+    # An important shorthand in a breakpoint decides a longhand too.
+    check css.editTargetAtWidth(".x", "padding-top", 850).condition ==
+      "@media (max-width: 1080px)"
+
+  test "a rule in @layer is a target, and an unlayered rule outranks it":
+    const unlayeredWins = ".x { padding: 1px; }\n@layer base { .x { padding: 2px; } }\n"
+    let t = unlayeredWins.editTargetAtWidth(".x", "padding", 850)
+    check t.found
+    check t.condition == ""
+    check patchCssDeclarationAt(unlayeredWins, ".x", "padding", "5px", 850).content ==
+      unlayeredWins.replace("padding: 1px", "padding: 5px")
+    # The layered rule decides what no unlayered rule declares.
+    const layeredOnly = "@layer base { .x { padding: 2px; } }\n.x { color: red; }\n"
+    let l = layeredOnly.editTargetAtWidth(".x", "padding", 850)
+    check l.found
+    check l.isBreakpoint
+    check l.condition == "@layer base"
+    let r = patchCssDeclarationAt(layeredOnly, ".x", "padding", "5px", 850)
+    check r.ok
+    check r.content == layeredOnly.replace("padding: 2px", "padding: 5px")
+    # A layer statement before the base rule is not part of its selector.
+    const statement = "@layer base;\n.x { padding: 1px; }\n@layer base { .x { padding: 2px; } }\n"
+    check statement.editTargetAtWidth(".x", "padding", 850).condition == ""
+    check patchCssDeclaration(statement, ".x", "padding", "5px").content ==
+      statement.replace("padding: 1px", "padding: 5px")
+
+  test "layer order is by first appearance, nested layers included":
+    # `@layer a, b;` makes `b` the later layer, whatever the blocks' order.
+    const declared = "@layer a, b;\n@layer b { .x { padding: 1px; } }\n" &
+      "@layer a { .x { padding: 2px; } }\n"
+    check declared.editTargetAtWidth(".x", "padding", 850).condition == "@layer b"
+    # Without the statement the blocks' own order decides.
+    const blocks = "@layer b { .x { padding: 1px; } }\n@layer a { .x { padding: 2px; } }\n"
+    check blocks.editTargetAtWidth(".x", "padding", 850).condition == "@layer a"
+    # A layer's own declarations come after its sublayers'.
+    const nested = "@layer outer { .x { padding: 1px; }\n" &
+      "  @layer inner { .x { padding: 2px; } } }\n"
+    check nested.editTargetAtWidth(".x", "padding", 850).condition == "@layer outer"
+    # A sublayer ranks inside its parent: `b` after all of `a`, and the
+    # statement inside `a` orders its sublayers.
+    const deep = "@layer a { @layer y, z;\n" &
+      "  @layer z { .x { padding: 1px; } }\n" &
+      "  @layer y { .x { padding: 2px; } } }\n" &
+      "@layer b { .x { margin: 0; } }\n"
+    check deep.editTargetAtWidth(".x", "padding", 850).condition == "@layer a and @layer z"
+    const dotted = "@layer a.z { .x { padding: 1px; } }\n" &
+      "@layer a.y { .x { padding: 2px; } }\n@layer b { .x { padding: 3px; } }\n"
+    check dotted.editTargetAtWidth(".x", "padding", 850).condition == "@layer b"
+    check dotted.editTargetAtWidth(".x", "padding-top", 850).condition == "@layer b"
+    # Two anonymous layers are two layers, the later one later.
+    const anonymous = "@layer { .x { padding: 1px; } }\n@layer { .x { padding: 2px; } }\n"
+    let a = patchCssDeclarationAt(anonymous, ".x", "padding", "5px", 850)
+    check a.ok
+    check a.content == anonymous.replace("padding: 2px", "padding: 5px")
+
+  test "!important reverses layer order, and an unlayered important declaration ranks last":
+    const css = "@layer a, b;\n" &
+      "@layer a { .x { padding: 1px !important; } }\n" &
+      "@layer b { .x { padding: 2px !important; } }\n" &
+      ".x { padding: 3px !important; }\n"
+    let t = css.editTargetAtWidth(".x", "padding", 850)
+    check t.found
+    check t.condition == "@layer a"
+    check "!important" in t.reason
+    check patchCssDeclarationAt(css, ".x", "padding", "5px", 850).content ==
+      css.replace("padding: 1px !important", "padding: 5px !important")
+    # Without importance the order is the other way round.
+    let normal = css.replace(" !important", "")
+    check normal.editTargetAtWidth(".x", "padding", 850).condition == ""
+    # A layer under a breakpoint is ordered and filtered at once.
+    const mixed = "@layer a, b;\n" &
+      "@media (max-width: 1080px) { @layer a { .x { padding: 1px !important; } } }\n" &
+      "@layer b { .x { padding: 2px !important; } }\n"
+    check mixed.editTargetAtWidth(".x", "padding", 850).condition ==
+      "@media (max-width: 1080px) and @layer a"
+    check mixed.editTargetAtWidth(".x", "padding", 1440).condition == "@layer b"
+
+  test "a rule under @supports or another condition no width decides is never chosen":
+    const supports = ".x { padding: 1px; }\n" &
+      "@supports (display: grid) { .x { padding: 2px; } }\n"
+    let t = supports.editTargetAtWidth(".x", "padding", 850)
+    check not t.found
+    check t.undecided
+    check "@supports (display: grid)" in t.reason
+    let r = patchCssDeclarationAt(supports, ".x", "padding", "5px", 850)
+    check not r.ok
+    check r.outcome == cpoAmbiguous
+    check r.content == ""
+    check "@supports (display: grid)" in r.message
+    # Also when no other rule declares the property: an insertion into the
+    # base rule would not decide it while the condition holds. The base rule
+    # declares nothing that sets `padding` here, so only the guard on the
+    # insertion can refuse it.
+    const insertOnly = ".x { color: red; }\n" &
+      "@supports (display: grid) { .x { padding: 2px; } }\n"
+    for property in ["padding", "padding-top"]:
+      let it = insertOnly.editTargetAtWidth(".x", property, 850)
+      check not it.found
+      check it.undecided
+      check "@supports (display: grid)" in it.reason
+      let inserted = patchCssDeclarationAt(insertOnly, ".x", property, "5px", 850)
+      check not inserted.ok
+      check inserted.outcome == cpoAmbiguous
+      check inserted.content == ""
+      check "@supports (display: grid)" in inserted.message
+    # The other side of the same guard: where an insertion into the base
+    # rule would outrank the unknown rule whatever its condition (the unknown
+    # rule is earlier at equal rank, or in a layer), the insertion is written.
+    for css in ["@supports (display: grid) { .x { padding: 2px; } }\n.x { color: red; }\n",
+        ".x { color: red; }\n@layer l { @supports (display: grid) { .x { padding: 2px; } } }\n"]:
+      let t = css.editTargetAtWidth(".x", "padding", 850)
+      check t.found
+      check not t.undecided
+      check t.condition == ""
+      check patchCssDeclarationAt(css, ".x", "padding", "5px", 850).content ==
+        css.replace("color: red;", "color: red; padding:5px;")
+    # Answered, it is decided either way.
+    check insertOnly.editTargetAtWidth(".x", "padding", 850, [CssConditionAnswer(
+      condition: "@supports (display: grid)", holds: true)]).condition ==
+      "@supports (display: grid)"
+    let notSupported = patchCssDeclarationAt(insertOnly, ".x", "padding", "5px", 850,
+      [CssConditionAnswer(condition: "@supports (display: grid)", holds: false)])
+    check notSupported.content == insertOnly.replace("color: red;", "color: red; padding:5px;")
+    for css in [
+        ".x { padding: 1px; }\n@container (min-width: 10px) { .x { padding: 2px; } }\n",
+        ".x { padding: 1px; }\n@media (prefers-color-scheme: dark) { .x { padding: 2px; } }\n",
+        ".x { padding: 1px; }\n@media (max-width: 50em) { .x { padding: 2px; } }\n",
+        ".x { padding: 1px; }\n@media (width <= 600px) { .x { padding: 2px; } }\n",
+        ".x { padding: 1px; }\n@layer l { @supports (gap: 1px) { .x { padding: 2px !important; } } }\n",
+        ".x { padding: 1px; }\n.y { .x { padding: 2px; } }\n"]:
+      check css.editTargetAtWidth(".x", "padding", 850).undecided
+      check not patchCssDeclarationAt(css, ".x", "padding", "5px", 850).ok
+    # Where it could not decide the property whatever its condition, it is
+    # no obstacle: earlier at equal rank, normal under an important rule, in
+    # an earlier layer, or declaring something else.
+    for css in [
+        "@supports (display: grid) { .x { padding: 2px; } }\n.x { padding: 1px; }\n",
+        ".x { padding: 1px !important; }\n@supports (display: grid) { .x { padding: 2px; } }\n",
+        "@layer l { @supports (display: grid) { .x { padding: 2px; } } }\n.x { padding: 1px; }\n",
+        ".x { padding: 1px; }\n@supports (display: grid) { .x { color: red; } }\n"]:
+      let base = css.editTargetAtWidth(".x", "padding", 850)
+      check base.found
+      check base.condition == ""
+      check patchCssDeclarationAt(css, ".x", "padding", "5px", 850).content ==
+        css.replace("padding: 1px", "padding: 5px")
+    # Print and screen are known: the preview is a screen.
+    const print = ".x { padding: 1px; }\n@media print { .x { padding: 2px; } }\n" &
+      "@media screen and (max-width: 1080px) { .x { margin: 0; } }\n"
+    check print.editTargetAtWidth(".x", "padding", 850).condition == ""
+
+  test "undo and redo through a cascade-chosen rule are byte-exact":
+    for (css, width) in [
+        (".x { padding: 1px !important; }\n@media (max-width: 1080px) { .x { padding: 2px; } }\n", 850),
+        ("@layer a, b;\n@layer a { .x { padding: 1px ! IMPORTANT; } }\n@layer b { .x { padding: 2px !important; } }\n", 850),
+        ("@layer base { .x {\n  padding: 2px; /* why */\n} }\n.x { color: red; }\n", 850),
+        (".x { padding: 1px; }\n@media (max-width: 1080px) { .x { padding: 2px !important; } }\n", 850)]:
+      let forward = patchCssDeclarationAt(css, ".x", "padding", "7px", width)
+      check forward.ok
+      check forward.outcome == cpoReplaced
+      check forward.content != css
+      let undone = patchCssDeclarationAt(forward.content, ".x", "padding",
+        forward.oldValue, width)
+      check undone.ok
+      check undone.content == css
+      let redone = patchCssDeclarationAt(undone.content, ".x", "padding", "7px", width)
+      check redone.content == forward.content
+
+suite "css_patch: the preview's answers, and the cascade details Chromium checked":
+  # Round 2 of the same issue: the target is chosen with the preview's own
+  # answers for the stylesheet's conditions (its `matchMedia` /
+  # `CSS.supports`), so a dark-mode, `em` or range-syntax block is decided as
+  # the preview decides it; and four cascade details measured in Chromium.
+
+  const dark = ".x { padding: 1px; }\n" &
+    "@media (prefers-color-scheme: dark) { .x { padding: 2px; } }\n"
+  let light = @[CssConditionAnswer(condition: "@media (prefers-color-scheme: dark)",
+    holds: false)]
+  let darkPreview = @[CssConditionAnswer(condition: "@media   (prefers-color-scheme:  dark)",
+    holds: true)]
+
+  test "the conditions the preview is asked about":
+    check dark.editConditions(".x", "padding") == @["@media (prefers-color-scheme: dark)"]
+    check dark.editConditions(".x", "padding-top") == @["@media (prefers-color-scheme: dark)"]
+    check dark.editConditions(".x", "color").len == 0
+    # A layer named under a condition: the condition decides the layer order.
+    const gated = "@media print { @layer theme; }\n@layer base { .x { padding: 1px; } }\n"
+    check gated.editConditions(".x", "padding") == @["@media print"]
+    # An `@supports` block is asked too, and its answer is what writes it
+    # (round 3, N4: leaving `@supports` out only adds refusals, so it is
+    # checked by a write that needs the answer).
+    const supported = ".x { padding: 1px; }\n@supports (display: grid) { .x { padding: 2px; } }\n"
+    let asked = supported.editConditions(".x", "padding")
+    check asked == @["@supports (display: grid)"]
+    var answers: seq[CssConditionAnswer] = @[]
+    for condition in asked: answers.add CssConditionAnswer(condition: condition, holds: true)
+    let written = patchCssDeclarationAt(supported, ".x", "padding", "5px", 850, answers)
+    check written.ok
+    check written.content == supported.replace("padding: 2px", "padding: 5px")
+    # `@container` cannot be asked with matchMedia or CSS.supports.
+    check (".x { padding: 1px; }\n@container (min-width: 1px) { .x { padding: 2px; } }\n").
+      editConditions(".x", "padding").len == 0
+
+  test "a light preview edits the base rule, a dark one the dark-mode rule":
+    let l = dark.editTargetAtWidth(".x", "padding", 1440, light)
+    check l.found
+    check l.condition == ""
+    check patchCssDeclarationAt(dark, ".x", "padding", "5px", 1440, light).content ==
+      dark.replace("padding: 1px", "padding: 5px")
+    let d = dark.editTargetAtWidth(".x", "padding", 1440, darkPreview)
+    check d.condition == "@media (prefers-color-scheme: dark)"
+    let w = patchCssDeclarationAt(dark, ".x", "padding", "5px", 1440, darkPreview)
+    check w.content == dark.replace("padding: 2px", "padding: 5px")
+    # Undo and redo through the dark rule, byte for byte.
+    let undone = patchCssDeclarationAt(w.content, ".x", "padding", w.oldValue, 1440, darkPreview)
+    check undone.content == dark
+    check patchCssDeclarationAt(undone.content, ".x", "padding", "5px", 1440,
+      darkPreview).content == w.content
+    # Without an answer it is still not known, and the reason says so.
+    let unanswered = patchCssDeclarationAt(dark, ".x", "padding", "5px", 1440)
+    check not unanswered.ok
+    check "prefers-color-scheme: dark" in unanswered.message
+    check "not known" in unanswered.message
+
+  test "px width conditions are decided by the width, and divide it into ranges":
+    check "@media (max-width: 600px)".widthDecided()
+    check "@media screen and (min-width: 400px) and (max-width: 900px)".widthDecided()
+    check "@media print, (max-width: 600px)".widthDecided()
+    check not "@media (max-width: 50em)".widthDecided()
+    check not "@media (prefers-color-scheme: dark)".widthDecided()
+    check not "@supports (display: grid)".widthDecided()
+    check widthIntervals(@["@media (max-width: 600px)", "@media (min-width: 900px)"]) ==
+      @[(minWidth: 1, maxWidth: 600), (minWidth: 601, maxWidth: 899),
+        (minWidth: 900, maxWidth: -1)]
+    check widthIntervals(newSeq[string]()) == @[(minWidth: 1, maxWidth: -1)]
+    # A px width condition is decided by the width, whatever an answer says
+    # (round 4, O1): an answer that it holds at 1440px does not move the
+    # write into the 600px block, nor one that it fails at 390px out of it.
+    const narrow = ".x { padding: 1px; }\n@media (max-width: 600px) { .x { padding: 2px; } }\n"
+    for (width, holds, target) in [(1440, true, ""), (390, false, "@media (max-width: 600px)")]:
+      let told = [CssConditionAnswer(condition: "@media (max-width: 600px)", holds: holds)]
+      check narrow.editTargetAtWidth(".x", "padding", width, told).condition == target
+      check patchCssDeclarationAt(narrow, ".x", "padding", "5px", width, told).content ==
+        (if target.len == 0: narrow.replace("padding: 1px", "padding: 5px")
+         else: narrow.replace("padding: 2px", "padding: 5px"))
+    # Not a px width: the answer decides.
+    const em = ".x { padding: 1px; }\n@media (max-width: 50em) { .x { padding: 2px; } }\n"
+    check em.editTargetAtWidth(".x", "padding", 1440,
+      [CssConditionAnswer(condition: "@media (max-width: 50em)", holds: true)]).condition ==
+      "@media (max-width: 50em)"
+    # Every width in a range has the target its first width has.
+    const css = ".x { padding: 1px; }\n@media (max-width: 600px) { .x { padding: 2px; } }\n" &
+      "@media (min-width: 900px) { .x { padding: 3px; } }\n"
+    let index = css.targetIndex(".x", "padding")
+    for span in widthIntervals(css.editConditions(".x", "padding")):
+      let first = index.editTarget(span.minWidth).targetKey()
+      for width in [span.minWidth + 1, (if span.maxWidth < 0: 5000 else: span.maxWidth)]:
+        check css.editTargetAtWidth(".x", "padding", width).targetKey() == first
+
+  test "em and range widths are decided by the preview's answers":
+    for prelude in ["@media (max-width: 50em)", "@media (width <= 900px)"]:
+      let css = ".x { padding: 1px; }\n" & prelude & " { .x { padding: 2px; } }\n"
+      check css.editTargetAtWidth(".x", "padding", 850).undecided
+      check css.editTargetAtWidth(".x", "padding", 850,
+        [CssConditionAnswer(condition: prelude, holds: true)]).condition == prelude
+      check css.editTargetAtWidth(".x", "padding", 850,
+        [CssConditionAnswer(condition: prelude, holds: false)]).condition == ""
+
+  test "a media query list holds when any of its queries does":
+    const list = ".x { padding: 1px; }\n" &
+      "@media (max-width: 600px), (min-width: 1200px) { .x { padding: 2px; } }\n"
+    check list.editTargetAtWidth(".x", "padding", 390).condition ==
+      "@media (max-width: 600px), (min-width: 1200px)"
+    check list.editTargetAtWidth(".x", "padding", 1440).condition ==
+      "@media (max-width: 600px), (min-width: 1200px)"
+    check list.editTargetAtWidth(".x", "padding", 850).condition == ""
+    # One unknown query in the list leaves it unknown unless another holds.
+    const mixed = ".x { padding: 1px; }\n" &
+      "@media (max-width: 600px), (prefers-color-scheme: dark) { .x { padding: 2px; } }\n"
+    check mixed.editTargetAtWidth(".x", "padding", 390).found
+    check mixed.editTargetAtWidth(".x", "padding", 850).undecided
+
+  test "a layer named under a condition that does not hold takes no place in the order":
+    for css in ["@media print { @layer theme; }\n@layer base { .x { padding: 1px; } }\n" &
+          "@layer theme { .x { padding: 2px; } }\n",
+        "@media print { @layer theme { .y { color: red; } } }\n" &
+          "@layer base { .x { padding: 1px; } }\n@layer theme { .x { padding: 2px; } }\n"]:
+      # `theme` is first named after `base`, so it is the later layer.
+      check css.editTargetAtWidth(".x", "padding", 850).condition == "@layer theme"
+      check css.editTargetAtWidth(".x", "padding", 850,
+        [CssConditionAnswer(condition: "@media print", holds: false)]).condition == "@layer theme"
+      # Where its condition holds, `theme` comes first. (`print` is decided
+      # by the writer itself, for a screen; a feature only the preview
+      # answers shows the answer deciding.)
+      let hover = css.replace("@media print", "@media (hover: hover)")
+      check hover.editTargetAtWidth(".x", "padding", 850,
+        [CssConditionAnswer(condition: "@media (hover: hover)", holds: true)]).condition == "@layer base"
+      check hover.editTargetAtWidth(".x", "padding", 850,
+        [CssConditionAnswer(condition: "@media (hover: hover)", holds: false)]).condition == "@layer theme"
+      check css.editTargetAtWidth(".x", "padding", 850,
+        [CssConditionAnswer(condition: "@media print", holds: true)]).condition == "@layer theme"
+    # Under a condition nobody answered, the order is not known.
+    const unanswered = "@supports (display: grid) { @layer theme; }\n" &
+      "@layer base { .x { padding: 1px; } }\n@layer theme { .x { padding: 2px; } }\n"
+    check unanswered.editTargetAtWidth(".x", "padding", 850).undecided
+    check unanswered.editTargetAtWidth(".x", "padding", 850,
+      [CssConditionAnswer(condition: "@supports (display: grid)", holds: true)]).condition ==
+      "@layer base"
+
+  test "an @import's layer is read after its url, whatever the url says":
+    const css = "@import url(\"data:text/css,.player{}\") layer(theme);\n" &
+      "@layer base { .x { padding: 1px; } }\n@layer theme { .x { padding: 2px; } }\n"
+    check css.editTargetAtWidth(".x", "padding", 850).condition == "@layer base"
+    const quoted = "@import \"layer.css\" layer(theme) supports(display: grid);\n" &
+      "@layer base { .x { padding: 1px; } }\n@layer theme { .x { padding: 2px; } }\n"
+    check quoted.editTargetAtWidth(".x", "padding", 850).condition == "@layer base"
+    const anonymous = "@import url(a.css) layer;\n@layer base { .x { padding: 1px; } }\n"
+    check anonymous.editTargetAtWidth(".x", "padding", 850).condition == "@layer base"
+
+  test "a rule nested after a declaration is a nested rule, not a missing one":
+    const css = ".x { padding: 1px; }\n.y { color: red; .x { padding: 2px; } }\n"
+    let t = css.editTargetAtWidth(".x", "padding", 850)
+    check t.undecided
+    check "nested" in t.reason
+    check not patchCssDeclarationAt(css, ".x", "padding", "5px", 850).ok
+
+  test "two top-level rules: the one the cascade uses is written, with or without a leading statement":
+    for prefix in ["", "@layer b, a;\n", "@charset \"utf-8\";\n@import url(a.css);\n"]:
+      let later = prefix & ".x { padding: 1px; }\n.x { padding: 2px; }\n"
+      check patchCssDeclarationAt(later, ".x", "padding", "5px", 850).content ==
+        later.replace("padding: 2px", "padding: 5px")
+      let important = prefix & ".x { padding: 1px !important; }\n.x { padding: 2px; }\n"
+      check patchCssDeclarationAt(important, ".x", "padding", "5px", 850).content ==
+        important.replace("padding: 1px !important", "padding: 5px !important")
+      # Nothing declares it: which of the two takes a new declaration is
+      # not the cascade's to say, so it is refused as before.
+      let r = patchCssDeclarationAt(later, ".x", "margin", "5px", 850)
+      check not r.ok
+      check r.outcome == cpoAmbiguous
+
+  test "a value edit a shorthand in the same rule would still override is refused, with the reason":
+    for (css, by) in [
+        (".x { padding: 1px !important; }\n", "`!important` `padding`"),
+        (".x { padding-left: 1px; padding: 2px; }\n", "later `padding`"),
+        (".x { padding-left: 1px; padding: 2px !important; }\n", "`!important` `padding`"),
+        (".x { padding: 1px !important; }\n@media (max-width: 1080px) { .x { padding-left: 2px; } }\n",
+         "`!important` `padding`")]:
+      let r = patchCssDeclarationAt(css, ".x", "padding-left", "5px", 850)
+      check not r.ok
+      check by in r.message
+      check "would still decide it" in r.message
+      check r.content == ""
+    # Where the edited declaration decides, it is written: a later longhand,
+    # an important longhand, or a shorthand edit itself.
+    for (css, written) in [
+        (".x { padding: 1px; padding-left: 2px; }\n", ".x { padding: 1px; padding-left: 5px; }\n"),
+        (".x { padding-left: 2px !important; padding: 1px; }\n",
+         ".x { padding-left: 5px !important; padding: 1px; }\n"),
+        (".x { padding: 1px; }\n", ".x { padding: 1px; padding-left:5px; }\n")]:
+      let r = patchCssDeclarationAt(css, ".x", "padding-left", "5px", 850)
+      check r.ok
+      check r.content == written
+    check patchCssDeclarationAt(".x { padding: 1px !important; }\n", ".x", "padding",
+      "5px", 850).content == ".x { padding: 5px !important; }\n"
 
 suite "css_patch: refusals":
 

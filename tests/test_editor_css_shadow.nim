@@ -189,11 +189,25 @@ suite "css_patch: which rule an edit belongs in, at a given width":
   test "a non-width media block is never an edit target":
     ## `@media (prefers-color-scheme: dark)` also redeclares `.tagline`. An
     ## edit made because the preview is 850px wide must never land in the
-    ## dark-mode block, whatever the viewport.
+    ## dark-mode block, whatever the viewport. Nor can the width say whether
+    ## that block decides `color`: it does whenever the preview is dark, so
+    ## no rule is named (the writer refuses) rather than the base rule.
     let t = responsive.editTargetAtWidth(".tagline", "color", 850)
-    check t.found
-    check not t.isBreakpoint
+    check not t.found
+    check t.undecided
     check "dark" notin t.condition
+    check "prefers-color-scheme: dark" in t.reason
+    let r = patchCssDeclarationAt(responsive, ".tagline", "color", "red", 850)
+    check not r.ok
+    check r.content == ""
+    # Where the block cannot decide it (an important base declaration), the
+    # base rule is the target.
+    let important = responsive.replace("text-wrap:balance;",
+      "text-wrap:balance; color:black !important;")
+    let b = important.editTargetAtWidth(".tagline", "color", 850)
+    check b.found
+    check not b.isBreakpoint
+    check "dark" notin b.condition
 
   test "min-width blocks are evaluated too":
     const desktopFirst = """

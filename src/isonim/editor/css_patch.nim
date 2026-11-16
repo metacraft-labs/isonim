@@ -63,7 +63,22 @@ type
     condition*: string   ## The at-rule prelude, "" for the base rule.
     selector*: string
     isBreakpoint*: bool  ## True when `condition` is non-empty.
-    reason*: string      ## Why this rule, in one sentence, for the UI.
+    reason*: string      ## Why this rule, in one sentence, for the UI; when
+                         ## `undecided`, why no rule can be named.
+    undecided*: bool     ## No rule is named (`found` is false): a rule under
+                         ## a condition this cannot evaluate at the width
+                         ## would decide the property whenever it holds.
+    ruleStart: int       ## The chosen rule's `bodyStart`, -1 for none.
+    decides: bool        ## The chosen rule declares the property (it is not
+                         ## only the base rule a new declaration would go to).
+
+  CssConditionAnswer* = object
+    ## The preview's own answer for one of the stylesheet's conditions: its
+    ## `matchMedia(…).matches` for a `@media` prelude, its `CSS.supports(…)`
+    ## for a `@supports` one. ``condition`` is the prelude as the stylesheet
+    ## writes it (`editConditions`), compared with whitespace collapsed.
+    condition*: string
+    holds*: bool
 
   CssShadow* = object
     ## A LATER rule that overrides the declaration a patch just wrote.
@@ -463,6 +478,11 @@ iterator topLevelRules(css: string): RuleSpan =
         bodyStart = -1
       selectorStart = i + 1
       i += 1
+    of ';':
+      # At depth 0 a `;` ends an at-statement (`@layer a, b;`, `@import …;`),
+      # which is not part of the next rule's selector.
+      if depth == 0: selectorStart = i + 1
+      i += 1
     else:
       i += 1
 
@@ -604,31 +624,108 @@ func resettersOf(property: string): seq[string] =
         result.add s
       break
 
-type NestedRule = object
-  ## A rule at ANY depth, with the at-rule conditions enclosing it.
-  selector: string
-  condition: string    ## All enclosing preludes, outermost first, " and "-joined.
-  bodyStart: int
-  bodyEnd: int
+type
+  NestedRule = object
+    ## A rule at ANY depth, with the at-rule conditions enclosing it.
+    selector: string
+    condition: string    ## All enclosing preludes, outermost first, " and "-
+                         ## joined; for a rule nested in a style rule, that
+                         ## rule's selector too, so a caller that treats any
+                         ## condition as "not unconditional" stays safe.
+    bodyStart: int
+    bodyEnd: int
+    preludes: seq[string]  ## The enclosing at-rule preludes, outermost first.
+    layer: seq[string]   ## The cascade layer it sits in, as the names of each
+                         ## level (an anonymous layer gets a name no author
+                         ## can write); empty outside every layer.
+    inStyle: bool        ## Nested in a style rule: its selector is relative.
 
-iterator allRules(css: string): NestedRule =
-  ## Every rule, including those nested inside at-rules, with the full stack of
-  ## conditions it sits under.
+  CssItemKind = enum
+    ciRule               ## A style rule (`NestedRule`).
+    ciLayer              ## A cascade layer named: an `@layer` block or
+                         ## statement, or an `@import … layer(…)`.
+
+  CssItem = object
+    at: int              ## Where it starts: a rule's body, a layer's prelude.
+    case kind: CssItemKind
+    of ciRule: rule: NestedRule
+    of ciLayer:
+      names: seq[seq[string]]  ## Each name it declares, in full.
+      gates: seq[string]   ## The at-rule preludes enclosing it: a layer named
+                           ## under a condition that does not hold is not
+                           ## named at all (CSS Cascade 5, checked in Chromium).
+      gatedByStyle: bool   ## Named inside a style rule.
+
+func layerNames(prelude: string; anonymous: var int): seq[seq[string]] =
+  ## The layer names an `@layer` prelude (or an `@import`'s `layer(…)`)
+  ## declares, each split at its dots. An unnamed layer gets a name of its
+  ## own that no author can write, so two of them are two layers.
+  let list = prelude.strip()
+  if list.len == 0:
+    inc anonymous
+    return @[@["\0anonymous" & $anonymous]]
+  for name in list.split(','):
+    var parts: seq[string] = @[]
+    for part in name.split('.'): parts.add part.strip()
+    result.add parts
+
+func importLayer(text: string; anonymous: var int): seq[seq[string]] =
+  ## The layer an `@import` statement puts its sheet in: its `layer` keyword
+  ## or `layer(…)` function, read after the url or string (whose text may
+  ## say "layer" too) and outside any other function (`supports(…)`).
+  var i = 7                       # past `@import`
+  var depth = 0
+  while i < text.len:
+    let past = text.skipCssOpaque(i)
+    if past > i:
+      i = past
+      continue
+    let c = text[i]
+    if c == '(':
+      inc depth
+    elif c == ')':
+      if depth > 0: dec depth
+    elif depth == 0 and c in {'l', 'L'} and i + 5 <= text.len and
+        text[i ..< i + 5].toLowerAscii() == "layer" and
+        text[i - 1] notin IdentChars + {'-', '\\'} and
+        (i + 5 == text.len or text[i + 5] notin IdentChars + {'-'}):
+      if i + 5 < text.len and text[i + 5] == '(':
+        let close = text.find(')', i + 6)
+        if close > 0: return text[i + 6 ..< close].layerNames(anonymous)
+        return @[]
+      return "".layerNames(anonymous)
+    inc i
+
+func isAtKeyword(lower, name: string): bool =
+  lower.startsWith(name) and
+    (lower.len == name.len or lower[name.len] notin IdentChars + {'-'})
+
+iterator cssItems(css: string): CssItem =
+  ## Every style rule, at any depth, and every place a cascade layer is
+  ## named, in the order they are found (a rule yields at its closing brace,
+  ## so after the rules nested in it; `at` gives document order).
   ##
   ## `topLevelRules` deliberately skips at-rule contents, because a patch must
   ## never land inside a `@media` block it was not asked about. That is the
   ## right rule for the UNCONDITIONAL write path and the wrong one for asking
   ## "what governs this property at this width", since the answer is usually
-  ## exactly the thing in the `@media` block. Two iterators, two questions --
-  ## not one iterator with a flag, because the unconditional write path must
-  ## not be able to acquire this behaviour by accident.
+  ## exactly the thing in the `@media` block.
   ##
   ## The conditions are a STACK, not a single value: `@supports` wrapping
   ## `@media` is a rule that applies only when both hold, and a reader told
   ## only about the inner one would be told something false.
+  type Frame = tuple[selector, prelude: string; bodyStart: int;
+    layer: seq[string]]
   var i = 0
-  var open: seq[tuple[selector, prelude: string; bodyStart: int]] = @[]
+  var open: seq[Frame] = @[]
   var selectorStart = 0
+  var anonymous = 0
+  proc enclosingLayer(open: seq[Frame]): seq[string] =
+    if open.len > 0: open[^1].layer else: @[]
+  proc gates(open: seq[Frame]): tuple[preludes: seq[string]; style: bool] =
+    for frame in open:
+      if frame.prelude.len > 0: result.preludes.add frame.prelude
+      else: result.style = true
   while i < css.len:
     let past = css.skipCssOpaque(i)   # comments, strings, escapes, urls
     if past > i:
@@ -637,27 +734,69 @@ iterator allRules(css: string): NestedRule =
     case css[i]
     of '{':
       let text = css[selectorStart ..< i].strip().withoutComments().strip()
+      var layer = open.enclosingLayer()
       if text.startsWith("@"):
-        open.add (selector: "", prelude: text, bodyStart: i + 1)
+        if text.toLowerAscii().isAtKeyword("@layer"):
+          let names = text[6 .. ^1].layerNames(anonymous)
+          var full: seq[seq[string]] = @[]
+          for name in names: full.add layer & name
+          let gate = open.gates()
+          yield CssItem(kind: ciLayer, at: selectorStart, names: full,
+            gates: gate.preludes, gatedByStyle: gate.style)
+          if full.len == 1: layer = full[0]
+        open.add (selector: "", prelude: text, bodyStart: i + 1, layer: layer)
       else:
-        open.add (selector: text, prelude: "", bodyStart: i + 1)
+        open.add (selector: text, prelude: "", bodyStart: i + 1, layer: layer)
       selectorStart = i + 1
       i += 1
     of '}':
       if open.len > 0:
         let closed = open.pop()
         if closed.selector.len > 0:
-          var conditions: seq[string] = @[]
+          var preludes, conditions: seq[string] = @[]
+          var inStyle = false
           for frame in open:
             if frame.prelude.len > 0:
+              preludes.add frame.prelude
               conditions.add frame.prelude
-          yield NestedRule(selector: closed.selector,
-                           condition: conditions.join(" and "),
-                           bodyStart: closed.bodyStart, bodyEnd: i)
+            else:
+              inStyle = true
+              conditions.add frame.selector
+          yield CssItem(kind: ciRule, at: closed.bodyStart, rule: NestedRule(
+            selector: closed.selector, condition: conditions.join(" and "),
+            bodyStart: closed.bodyStart, bodyEnd: i, preludes: preludes,
+            layer: closed.layer, inStyle: inStyle))
+      selectorStart = i + 1
+      i += 1
+    of ';':
+      # Outside a style rule, a `;` ends an at-statement (`@layer a, b;`,
+      # `@import …;`); inside one it ends a declaration. Neither is part of
+      # the next rule's selector (`.y { color: red; .x { … } }` nests `.x`).
+      if open.len == 0 or open[^1].prelude.len > 0:
+        let text = css[selectorStart ..< i].strip().withoutComments().strip()
+        let lower = text.toLowerAscii()
+        let layer = open.enclosingLayer()
+        var names: seq[seq[string]] = @[]
+        if lower.isAtKeyword("@layer"):
+          names = text[6 .. ^1].layerNames(anonymous)
+        elif lower.isAtKeyword("@import"):
+          names = text.importLayer(anonymous)
+        if names.len > 0:
+          var full: seq[seq[string]] = @[]
+          for name in names: full.add layer & name
+          let gate = open.gates()
+          yield CssItem(kind: ciLayer, at: selectorStart, names: full,
+            gates: gate.preludes, gatedByStyle: gate.style)
       selectorStart = i + 1
       i += 1
     else:
       i += 1
+
+iterator allRules(css: string): NestedRule =
+  ## Every style rule `cssItems` finds, including those nested inside
+  ## at-rules, with the full stack of conditions it sits under.
+  for item in css.cssItems():
+    if item.kind == ciRule: yield item.rule
 
 # ---------------------------------------------------------------------------
 #  Which rule governs a property at a given width.
@@ -774,20 +913,441 @@ func breakpointForWidth*(breakpoints: seq[CssBreakpoint];
     if b.condition.conditionMatchesWidth(width):
       return b
 
-func editTargetAtWidth*(css, selector, property: string;
-                        width: int): CssEditTarget =
-  ## The rule that should receive `property` for `selector` at `width` px.
+type
+  CssTruth = enum
+    ctFails, ctHolds, ctUnknown
+
+  CascadeCandidate = object
+    rule: NestedRule
+    important: bool
+    layer: seq[int]      ## Ordinals from the outermost layer down, then
+                         ## `high(int)` for the declarations directly in it.
+    order: int
+    declared: string     ## The declaration that sets the property in it.
+
+func collapsedCondition(condition: string): string =
+  ## An at-rule prelude compared without its incidental whitespace, so the
+  ## stylesheet's `@media (max-width: 980px)` and a caller's copy of it with a
+  ## different line break or indentation name the same block.
+  condition.withoutComments().splitWhitespace().join(" ")
+
+func answered(answers: openArray[CssConditionAnswer];
+    prelude: string): CssTruth =
+  ## The caller's answer for ``prelude`` (`ctUnknown` when it gave none).
+  let wanted = prelude.collapsedCondition()
+  for answer in answers:
+    if answer.condition.collapsedCondition() == wanted:
+      return if answer.holds: ctHolds else: ctFails
+  ctUnknown
+
+func splitTopLevel(text: string; separator: char): seq[string] =
+  ## ``text`` split at each ``separator`` outside parentheses, strings and
+  ## comments.
+  var depth = 0
+  var start = 0
+  var i = 0
+  while i < text.len:
+    let past = text.skipCssOpaque(i)
+    if past > i:
+      i = past
+      continue
+    case text[i]
+    of '(': inc depth
+    of ')':
+      if depth > 0: dec depth
+    else:
+      if text[i] == separator and depth == 0:
+        result.add text[start ..< i]
+        start = i + 1
+    inc i
+  result.add text[start .. ^1]
+
+func mediaQueryTruth(query: string; width: int): CssTruth =
+  ## One media query (no top-level comma), from its text alone, for a screen
+  ## ``width`` px wide: a media type, then `px` width bounds. Anything else
+  ## (`not`, a feature other than a width, an `em` bound, range syntax) is
+  ## unknown.
+  let q = query.strip().toLowerAscii()
+  if q in ["", "all", "screen", "only screen", "only all"]: return ctHolds
+  for printType in ["print", "only print", "not screen"]:
+    if q.isAtKeyword(printType): return ctFails
+  if q.isAtKeyword("not"): return ctUnknown
+  let prelude = "@media " & q
+  if not prelude.conditionIsWidthOnly(): return ctUnknown
+  # Each bound must be one `px` value this reads, or the query is unknown:
+  # an `em` bound read as absent would make the query hold at every width.
+  for feature in ["max-width", "min-width"]:
+    let count = q.count(feature)
+    if count > 1: return ctUnknown
+    if count == 1 and prelude.widthBound(feature) < 0: return ctUnknown
+  if prelude.conditionMatchesWidth(width): ctHolds else: ctFails
+
+func widthDecided*(prelude: string): bool =
+  ## Whether ``prelude`` is a `@media` query list every query of which is
+  ## read from its text at any width (`mediaQueryTruth`: a media type and
+  ## `px` width bounds), so that a writer told the preview's width decides
+  ## it without the preview's answer.
+  let lower = prelude.strip().toLowerAscii()
+  if not lower.isAtKeyword("@media"): return false
+  for query in prelude.strip()[6 .. ^1].splitTopLevel(','):
+    if query.mediaQueryTruth(1) == ctUnknown: return false
+  true
+
+func preludeTruth(prelude: string; width: int;
+    answers: openArray[CssConditionAnswer]): CssTruth =
+  ## Whether a rule under the at-rule ``prelude`` applies in the preview.
+  ##
+  ## The caller's answer for the prelude decides when it gave one: the
+  ## preview's own `matchMedia` / `CSS.supports` result for the condition,
+  ## as the preview runtime evaluates it (`CssConditionAnswer`). Otherwise
+  ## the text is read, for a screen ``width`` px wide: a media query list
+  ## holds when one of its queries does (`mediaQueryTruth`), `@layer` always
+  ## holds (it orders, it does not filter), and rules in at-rules that hold
+  ## no element style (`@font-face`, `@keyframes`, `@page`,
+  ## `@starting-style`, ...) never apply. Everything else is unknown:
+  ## `@supports`, `@container`, `@scope` and any at-rule not named here.
+  let lower = prelude.strip().toLowerAscii()
+  if lower.isAtKeyword("@layer"): return ctHolds
+  for name in ["@font-face", "@keyframes", "@-webkit-keyframes", "@page",
+      "@property", "@counter-style", "@font-feature-values",
+      "@font-palette-values", "@starting-style", "@view-transition",
+      "@namespace"]:
+    if lower.isAtKeyword(name): return ctFails
+  # A `px` width condition is the writer's own to decide, from the width it
+  # is given (`widthDecided`); an answer for one is not used, so a request
+  # cannot move a write to a breakpoint its width does not apply.
+  if not prelude.widthDecided():
+    let given = answers.answered(prelude)
+    if given != ctUnknown: return given
+  if not lower.isAtKeyword("@media"): return ctUnknown
+  result = ctFails
+  for query in prelude.strip()[6 .. ^1].splitTopLevel(','):
+    case query.mediaQueryTruth(width)
+    of ctHolds: return ctHolds
+    of ctUnknown: result = ctUnknown
+    of ctFails: discard
+
+func widthIntervals*(preludes: openArray[string]):
+    seq[tuple[minWidth, maxWidth: int]] =
+  ## The preview widths, as ranges `minWidth .. maxWidth` (`maxWidth` -1 for
+  ## no upper bound, from 1px up), over each of which every one of
+  ## ``preludes`` (each `widthDecided`) holds throughout or fails throughout.
+  var points = @[1]
+  for prelude in preludes:
+    for query in prelude.strip()[6 .. ^1].splitTopLevel(','):
+      let text = "@media " & query.strip().toLowerAscii()
+      let upper = text.widthBound("max-width")
+      if upper >= 0: points.add upper + 1
+      let lower = text.widthBound("min-width")
+      if lower >= 1: points.add lower
+  for i in 1 ..< points.len:
+    var j = i
+    while j > 0 and points[j - 1] > points[j]:
+      swap(points[j - 1], points[j])
+      dec j
+  var unique: seq[int] = @[]
+  for point in points:
+    if unique.len == 0 or unique[^1] != point: unique.add point
+  for i, point in unique:
+    result.add (minWidth: point,
+      maxWidth: if i + 1 < unique.len: unique[i + 1] - 1 else: -1)
+
+func stackTruth(preludes: seq[string]; inStyle: bool; width: int;
+    answers: openArray[CssConditionAnswer]): tuple[truth: CssTruth;
+    unknown: string] =
+  ## Every condition in a stack, together: false when one is, otherwise
+  ## unknown when one is (``unknown`` names the first such). Inside a style
+  ## rule is unknown: a nested rule's selector is relative to its parent's,
+  ## so which elements it styles is not its selector text.
+  result.truth = ctHolds
+  if inStyle:
+    result = (ctUnknown, "a rule nested in another style rule")
+  for prelude in preludes:
+    case prelude.preludeTruth(width, answers)
+    of ctFails: return (ctFails, "")
+    of ctUnknown:
+      if result.truth != ctUnknown: result = (ctUnknown, prelude)
+    of ctHolds: discard
+
+type LayerOrder = object
+  ## Each cascade layer's ordinal among its siblings, by first appearance.
+  ordinals: seq[tuple[name: seq[string]; ordinal: int]]
+  counts: seq[tuple[parent: seq[string]; count: int]]
+
+func known(order: LayerOrder; name: seq[string]): bool =
+  for o in order.ordinals:
+    if o.name == name: return true
+
+func register(order: var LayerOrder; name: seq[string]) =
+  ## Ranks ``name`` and each layer above it, where they first appear.
+  for depth in 1 .. name.len:
+    let prefix = name[0 ..< depth]
+    if order.known(prefix): continue
+    let parent = name[0 ..< depth - 1]
+    var ordinal = -1
+    for c in order.counts.mitems:
+      if c.parent == parent:
+        ordinal = c.count
+        inc c.count
+        break
+    if ordinal < 0:
+      ordinal = 0
+      order.counts.add (parent: parent, count: 1)
+    order.ordinals.add (name: prefix, ordinal: ordinal)
+
+func position(order: LayerOrder; layer: seq[string]): seq[int] =
+  ## A layer's place in the layer order, comparable by `compareLayers`: its
+  ## ordinal at each level, then `high(int)` for the declarations directly in
+  ## it, which come after its sublayers. Outside every layer, `[high(int)]`:
+  ## after every layer.
+  for depth in 1 .. layer.len:
+    for o in order.ordinals:
+      if o.name == layer[0 ..< depth]:
+        result.add o.ordinal
+        break
+  result.add high(int)
+
+func compareLayers(x, y: seq[int]): int =
+  ## Positive when layer position ``x`` comes later in the layer order.
+  for i in 0 ..< min(x.len, y.len):
+    if x[i] != y[i]: return (if x[i] > y[i]: 1 else: -1)
+  x.len - y.len
+
+func cascadeWins(x, y: CascadeCandidate): bool =
+  ## True when ``x`` beats ``y`` for one property, both rules having the
+  ## same selector and so the same specificity
+  ## (https://www.w3.org/TR/css-cascade-5/#cascade-sort): importance, then
+  ## cascade layer -- later layers win for normal declarations and earlier
+  ## ones for `!important`, and a declaration outside every layer counts as
+  ## in the last one -- then order of appearance.
+  if x.important != y.important: return x.important
+  let layers = compareLayers(x.layer, y.layer)
+  if layers != 0: return (if x.important: layers < 0 else: layers > 0)
+  x.order > y.order
+
+func describe(rule: NestedRule; selector: string): string =
+  if rule.condition.len > 0: "`" & selector & "` in " & rule.condition
+  else: "the base rule for `" & selector & "`"
+
+func sortedItems(css: string): seq[CssItem] =
+  ## `cssItems` in document order.
+  for item in css.cssItems():
+    result.add item
+  for i in 1 ..< result.len:
+    var j = i
+    while j > 0 and result[j - 1].at > result[j].at:
+      swap(result[j - 1], result[j])
+      j -= 1
+
+func editConditions*(css, selector, property: string): seq[string] =
+  ## The `@media` and `@supports` preludes, as the stylesheet writes them
+  ## and in document order, whose answers can change which rule
+  ## `editTargetAtWidth` names for `property` on `selector`: those over a
+  ## rule with the selector that declares the property (or a shorthand
+  ## setting it), and those over a place a cascade layer is named. These are
+  ## the conditions a caller asks the preview about (`CssConditionAnswer`).
+  let targets = property.resettersOf()
+  proc addCondition(list: var seq[string]; prelude: string) =
+    let lower = prelude.strip().toLowerAscii()
+    if not (lower.isAtKeyword("@media") or lower.isAtKeyword("@supports")):
+      return
+    for known in list:
+      if known.collapsedCondition() == prelude.collapsedCondition(): return
+    list.add prelude
+  for item in css.sortedItems():
+    case item.kind
+    of ciLayer:
+      for prelude in item.gates: result.addCondition prelude
+    of ciRule:
+      let rule = item.rule
+      if not rule.selector.selectorMatches(selector): continue
+      let body = RuleSpan(selector: rule.selector, bodyStart: rule.bodyStart,
+                          bodyEnd: rule.bodyEnd)
+      var declares = false
+      for name in targets:
+        if css.findDeclaration(body, name).valueStart >= 0:
+          declares = true
+          break
+      if declares:
+        for prelude in rule.preludes: result.addCondition prelude
+
+type
+  IndexedItem = object
+    ## One place the cascade for one selector and property is decided by:
+    ## a layer naming, or a rule with the selector (whatever it declares,
+    ## since a rule with the selector and no declaration can be the base
+    ## rule a new declaration goes to).
+    isLayer: bool
+    names: seq[seq[string]]
+    gates: seq[string]
+    gatedByStyle: bool
+    rule: NestedRule
+    declared: string     ## The declaration that sets the property, "" for none.
+    important: bool
+
+  CssTargetIndex* = object
+    ## What `editTargetAtWidth` reads from a stylesheet for one selector and
+    ## property, read once (`targetIndex`), so that the target for many
+    ## widths and answers (`editTarget`) costs no further scan of the sheet.
+    selector, property: string
+    items: seq[IndexedItem]
+    base: int            ## Index in `items` of the base rule, -1 for none.
+
+func targetIndex*(css, selector, property: string): CssTargetIndex =
+  ## `css` read once for `editTarget`: every layer naming, and every rule
+  ## with `selector` with the declaration that sets `property` in it.
+  result = CssTargetIndex(selector: selector, property: property, base: -1)
+  let targets = property.resettersOf()
+  for item in css.sortedItems():
+    if item.kind == ciLayer:
+      result.items.add IndexedItem(isLayer: true, names: item.names,
+        gates: item.gates, gatedByStyle: item.gatedByStyle)
+      continue
+    let rule = item.rule
+    if not rule.selector.selectorMatches(selector):
+      continue
+    var indexed = IndexedItem(rule: rule)
+    let body = RuleSpan(selector: rule.selector, bodyStart: rule.bodyStart,
+                        bodyEnd: rule.bodyEnd)
+    for name in targets:
+      let decl = css.findDeclaration(body, name)
+      if decl.valueStart >= 0:
+        if indexed.declared.len == 0: indexed.declared = name
+        if css[decl.valueStart ..< decl.valueEnd].cssValueParts().important:
+          indexed.important = true
+    if rule.condition.len == 0 and not rule.inStyle:
+      result.base = result.items.len
+    result.items.add indexed
+
+func targetKey*(target: CssEditTarget): string =
+  ## Which rule ``target`` names (or why none), apart from the width its
+  ## reason mentions: equal keys write the same rule, or refuse alike.
+  $target.found & "|" & $target.undecided & "|" & $target.ruleStart & "|" &
+    (if target.undecided: target.reason else: "")
+
+func editTarget*(index: CssTargetIndex; width: int;
+    answers: openArray[CssConditionAnswer] = []): CssEditTarget =
+  ## `editTargetAtWidth` from a stylesheet read once (`targetIndex`).
+  let selector = index.selector
+  let property = index.property
+  var layers: LayerOrder
+  var uncertainLayer = ""         # a prelude a layer's naming depends on
+  var base = CssEditTarget(found: false, ruleStart: -1)
+  var baseRule: NestedRule
+  if index.base >= 0:
+    baseRule = index.items[index.base].rule
+    base = CssEditTarget(found: true, condition: "",
+                         selector: baseRule.selector, isBreakpoint: false,
+                         reason: "the base rule for `" & selector & "`",
+                         ruleStart: baseRule.bodyStart)
+  var best: CascadeCandidate
+  var haveBest = false
+  var anyLayered = false
+  var unknown: seq[tuple[candidate: CascadeCandidate; why: string]] = @[]
+  for item in index.items:
+    if item.isLayer:
+      let gate = stackTruth(item.gates, item.gatedByStyle, width, answers)
+      case gate.truth
+      of ctFails: discard
+      of ctHolds:
+        for name in item.names: layers.register(name)
+      of ctUnknown:
+        for name in item.names:
+          if not layers.known(name) and uncertainLayer.len == 0:
+            uncertainLayer = gate.unknown
+          layers.register(name)
+      continue
+    if item.declared.len == 0:
+      continue
+    let rule = item.rule
+    let truth = stackTruth(rule.preludes, rule.inStyle, width, answers)
+    if truth.truth == ctFails:
+      continue
+    let candidate = CascadeCandidate(rule: rule, order: rule.bodyStart,
+      layer: layers.position(rule.layer), declared: item.declared,
+      important: item.important)
+    if rule.layer.len > 0: anyLayered = true
+    if truth.truth == ctUnknown:
+      unknown.add (candidate, truth.unknown)
+    elif not haveBest or candidate.cascadeWins(best):
+      best = candidate
+      haveBest = true
+
+  if uncertainLayer.len > 0 and anyLayered:
+    return CssEditTarget(found: false, undecided: true, ruleStart: -1,
+      reason: "the order of the cascade layers that set `" & property &
+        "` for `" & selector & "` depends on " & uncertainLayer &
+        ", which the preview did not answer, so which rule decides `" &
+        property & "` cannot be told.")
+  # What an unknown rule is weighed against: the deciding rule, or, when
+  # none declares the property, a normal declaration added to the base rule.
+  var against: CascadeCandidate
+  var haveAgainst = haveBest
+  if haveBest: against = best
+  elif base.found:
+    against = CascadeCandidate(rule: baseRule, order: baseRule.bodyStart,
+      layer: layers.position(baseRule.layer))
+    haveAgainst = true
+  for (u, why) in unknown:
+    if not haveAgainst or u.cascadeWins(against):
+      return CssEditTarget(found: false, undecided: true, ruleStart: -1,
+        reason: "`" & u.declared & "` is also set for " &
+          u.rule.describe(selector) & ", and whether " & why &
+          " applies in the preview is not known; whenever it does, that " &
+          "rule decides `" & property & "`, so which rule decides it " &
+          "cannot be told.")
+
+  if not haveBest:
+    return base
+  let rule = best.rule
+  CssEditTarget(
+    found: true, condition: rule.condition, selector: rule.selector,
+    isBreakpoint: rule.condition.len > 0, ruleStart: rule.bodyStart,
+    decides: true,
+    reason:
+      if rule.condition.len > 0:
+        "`" & best.declared & "` is set for `" & selector & "` in " &
+          rule.condition & ", which is what applies at " & $width & "px" &
+          (if best.important: " (`!important`)" else: "")
+      else:
+        "`" & best.declared & "` is set for `" & selector & "` in the base rule" &
+          (if best.important: " (`!important`)" else: ""))
+
+
+func editTargetAtWidth*(css, selector, property: string; width: int;
+    answers: openArray[CssConditionAnswer] = []): CssEditTarget =
+  ## The rule that should receive `property` for `selector` in a preview
+  ## `width` px wide whose own answers for the stylesheet's conditions are
+  ## ``answers`` (`CssConditionAnswer`; see `editConditions`).
   ##
   ## This is the whole of breakpoint-aware editing, and it is one rule:
   ##
-  ##   **Write where the value is already decided.** Of every rule that matches
-  ##   the selector and applies at this width, take the LAST one that declares
-  ##   the property or a shorthand setting it. That rule is the one currently
-  ##   winning, so it is the one that has to change for anything to happen.
+  ##   **Write where the value is already decided.** Of every rule that has
+  ##   the selector and applies in the preview, take the one the cascade uses
+  ##   for the property or a shorthand setting it. That rule is the one
+  ##   currently winning, so it is the one that has to change for anything to
+  ##   happen. The rules share the selector, so they share its specificity,
+  ##   and the cascade orders them by importance, then cascade layer, then
+  ##   order of appearance (`cascadeWins`): `.x { padding:1px !important; }`
+  ##   decides `padding` over a later `@media` rule's normal `padding`, and a
+  ##   rule outside every `@layer` over one inside a layer. A layer named
+  ##   under a condition that does not hold takes no place in the order.
   ##
   ##   **If nothing declares it, write to the base rule.** A property no rule
   ##   mentions has no responsive intent to respect, and scoping it to whatever
   ##   breakpoint happens to be on screen would invent one.
+  ##
+  ##   **If it cannot be told, name no rule.** Whether a rule applies is the
+  ##   preview's answer for its conditions when the caller gives one, and is
+  ##   otherwise read from the text (`preludeTruth`). A rule under a
+  ##   condition neither answers (`@container`; `@supports` or
+  ##   `prefers-color-scheme` without an answer) is never chosen. When it
+  ##   declares the property and would outrank the rule otherwise chosen
+  ##   whenever its condition holds, or a layer it depends on is named under
+  ##   such a condition, which rule decides the property is not known, and
+  ##   the answer is `undecided`, with the reason in `reason`. A writer
+  ##   refuses then, with that reason, as the preview runtime leaves the
+  ##   preview alone when it cannot tell which rule decides.
   ##
   ## Worked example, from the stylesheet this was built against. `.tagline` is
   ## declared at the top level with `font: var(--sys-type-display)` and again
@@ -803,44 +1363,28 @@ func editTargetAtWidth*(css, selector, property: string;
   ##
   ## Both answers are correct and they are different rules. That is why this
   ## takes a width instead of guessing.
-  let targets = property.resettersOf()
-  var rules: seq[NestedRule] = @[]
-  for rule in css.allRules():
-    rules.add rule
-  # Document order. `allRules` yields on the closing brace, so a nested rule
-  # is yielded before the block containing it.
-  for i in 1 ..< rules.len:
-    var j = i
-    while j > 0 and rules[j - 1].bodyStart > rules[j].bodyStart:
-      swap(rules[j - 1], rules[j])
-      j -= 1
+  css.targetIndex(selector, property).editTarget(width, answers)
 
-  var base = CssEditTarget(found: false)
-  var winner = CssEditTarget(found: false)
-  for rule in rules:
-    if not rule.selector.selectorMatches(selector):
-      continue
-    if rule.condition.len == 0:
-      base = CssEditTarget(found: true, condition: "",
-                           selector: rule.selector, isBreakpoint: false,
-                           reason: "the base rule for `" & selector & "`")
-    if not rule.condition.conditionMatchesWidth(width):
-      continue
-    let body = RuleSpan(selector: rule.selector, bodyStart: rule.bodyStart,
-                        bodyEnd: rule.bodyEnd)
-    for candidate in targets:
-      if css.findDeclaration(body, candidate).valueStart >= 0:
-        winner = CssEditTarget(
-          found: true, condition: rule.condition, selector: rule.selector,
-          isBreakpoint: rule.condition.len > 0,
-          reason:
-            if rule.condition.len > 0:
-              "`" & candidate & "` is set for `" & selector & "` in " &
-                rule.condition & ", which is what applies at " & $width & "px"
-            else:
-              "`" & candidate & "` is set for `" & selector & "` in the base rule")
-        break
-  if winner.found: winner else: base
+func inRuleOverride(css: string; body: RuleSpan; property: string): string =
+  ## The declaration in the rule ``body`` that would still decide
+  ## ``property`` after a value edit of it (the declaration kept with its
+  ## priority, or a normal one added at the end): a shorthand setting it that
+  ## is `!important` over a normal declaration, or of the same priority and
+  ## later. "" when none would.
+  let own = css.findDeclaration(body, property)
+  let ownImportant = own.valueStart >= 0 and
+    css[own.valueStart ..< own.valueEnd].cssValueParts().important
+  let ownAt = if own.valueStart >= 0: own.nameStart else: high(int)
+  for name in property.resettersOf():
+    if name == property: continue
+    let decl = css.findDeclaration(body, name)
+    if decl.valueStart < 0: continue
+    let important = css[decl.valueStart ..< decl.valueEnd].cssValueParts().important
+    if important and not ownImportant:
+      return "the `!important` `" & name & "` declaration"
+    if important == ownImportant and decl.nameStart > ownAt:
+      return "the later `" & name & "` declaration"
+  ""
 
 func shadowingDeclaration*(css, selector, property: string): CssShadow =
   ## The later rule that would override `property` for `selector`, if any.
@@ -965,28 +1509,62 @@ proc patchCssDeclaration*(css, selector, property, newValue: string):
   css.cssWriteRefusal(patchCssDeclarationUnguarded(css, selector, property, newValue))
 
 proc patchCssDeclarationAtUnguarded(css, selector, property,
-    newValue: string; width: int): CssPatchResult =
+    newValue: string; width: int;
+    answers: openArray[CssConditionAnswer]): CssPatchResult =
   ## `patchCssDeclaration`, but into the rule that governs `property` at
   ## `width` -- which may be inside an `@media` block.
   ##
   ## Falls back to the plain top-level patch when the governing rule IS the
   ## base rule, so the unconditional path keeps its refusals (ambiguous
   ## selector, missing rule) and its byte-for-byte behaviour.
-  let target = css.editTargetAtWidth(selector, property, width)
-  if not target.found or not target.isBreakpoint:
+  ##
+  ## Refused, with `editTargetAtWidth`'s reason, when which rule decides the
+  ## property in the preview cannot be told (`CssEditTarget.undecided`), and
+  ## when a shorthand in the target rule would still decide the property
+  ## after the edit (`inRuleOverride`: an `!important` shorthand over a
+  ## normal declaration, or a later one of the same priority), so the write
+  ## would change nothing that renders.
+  let target = css.editTargetAtWidth(selector, property, width, answers)
+  if target.undecided:
+    return CssPatchResult(ok: false, outcome: cpoAmbiguous,
+      message: "`" & property & "` for `" & selector & "` cannot be edited here: " &
+        target.reason & " Edit the stylesheet directly.")
+  if target.found:
+    for rule in css.allRules():
+      if rule.bodyStart != target.ruleStart: continue
+      let overrider = css.inRuleOverride(RuleSpan(selector: rule.selector,
+        bodyStart: rule.bodyStart, bodyEnd: rule.bodyEnd), property)
+      if overrider.len > 0:
+        return CssPatchResult(ok: false, outcome: cpoAmbiguous,
+          message: "`" & property & "` for `" & selector & "` cannot be " &
+            "edited here: in " & rule.describe(selector) & ", " & overrider &
+            " sets it and would still decide it after the edit. Edit that " &
+            "declaration instead.")
+  if not target.found:
     return patchCssDeclaration(css, selector, property, newValue)
+  if not target.isBreakpoint:
+    # An unconditional rule: the plain top-level patch, with its refusals,
+    # unless more than one top-level rule has the selector and the cascade
+    # names the one that declares the property (the later, or the
+    # `!important`, of `.x { … } .x { … }`): then that rule, exactly.
+    var topLevel = 0
+    for rule in css.topLevelRules():
+      if rule.selector.selectorMatches(selector): inc topLevel
+    if not target.decides or topLevel <= 1:
+      return patchCssDeclaration(css, selector, property, newValue)
 
-  # Locate the one rule matching BOTH the selector and the condition.
+  # The one rule the cascade uses: the rule `editTargetAtWidth` chose, found
+  # by where its body starts, so another rule under the same conditions is
+  # never mistaken for it.
   var matches: seq[NestedRule] = @[]
   for rule in css.allRules():
-    if rule.condition == target.condition and
+    if rule.bodyStart == target.ruleStart and
         rule.selector.selectorMatches(selector):
       matches.add rule
   if matches.len != 1:
-    return CssPatchResult(ok: false, outcome: cpoAmbiguous,
-      message: $matches.len & " rules declare `" & selector & "` in " &
-        target.condition & ". Which one owns `" & property &
-        "` is a decision this patch cannot make; edit the stylesheet directly.")
+    return CssPatchResult(ok: false, outcome: cpoRuleNotFound,
+      message: "The rule that owns `" & property & "` for `" & selector &
+        "` in " & target.condition & " could not be found again.")
 
   let rule = matches[0]
   let body = RuleSpan(selector: rule.selector, bodyStart: rule.bodyStart,
@@ -1003,9 +1581,12 @@ proc patchCssDeclarationAtUnguarded(css, selector, property,
     if edit.unchanged:
       return CssPatchResult(ok: true, outcome: cpoUnchanged, content: css,
                             oldValue: current)
+    # The space after the colon stays, as in the base-rule path, so writing
+    # the old value back restores the rule byte for byte.
     return CssPatchResult(ok: true, outcome: cpoReplaced,
-      content: css[0 ..< decl.valueStart] & edit.text &
-        css[decl.valueEnd .. ^1],
+      content: css[0 ..< decl.valueStart] & (
+        if css[decl.valueStart] in {' ', '\t'}: " " else: "") &
+        edit.text & css[decl.valueEnd .. ^1],
       oldValue: current)
 
   # Insert before the closing brace, matching the neighbours' layout.
@@ -1043,17 +1624,12 @@ proc patchCssDeclarationAtUnguarded(css, selector, property,
 # ---------------------------------------------------------------------------
 
 proc patchCssDeclarationAt*(css, selector, property, newValue: string;
-    width: int): CssPatchResult =
+    width: int; answers: openArray[CssConditionAnswer] = []): CssPatchResult =
   ## `patchCssDeclarationAtUnguarded`, refused when its write would land inside
   ## what only the end of the sheet closes (`cssWriteRefusal`).
   css.cssWriteRefusal(patchCssDeclarationAtUnguarded(css, selector, property,
-    newValue, width))
+    newValue, width, answers))
 
-func collapsedCondition(condition: string): string =
-  ## An at-rule prelude compared without its incidental whitespace, so the
-  ## stylesheet's `@media (max-width: 980px)` and a caller's copy of it with a
-  ## different line break or indentation name the same block.
-  condition.withoutComments().splitWhitespace().join(" ")
 
 iterator topLevelAtBlocks(css: string): tuple[prelude: string;
     bodyStart, bodyEnd: int] =
@@ -1327,7 +1903,8 @@ proc patchCssInNimConst*(nimSource, constName, selector, property,
 
 
 proc patchCssInNimConstAt*(nimSource, constName, selector, property,
-                           newValue: string; width: int): CssPatchResult =
+                           newValue: string; width: int;
+                           answers: openArray[CssConditionAnswer] = []): CssPatchResult =
   ## `patchCssInNimConst`, but breakpoint-aware: the declaration lands in the
   ## rule that governs `property` at `width`, which may be inside an `@media`
   ## block in the same const.
@@ -1353,7 +1930,8 @@ proc patchCssInNimConstAt*(nimSource, constName, selector, property,
       message: "`" & constName & "` has no closing `\"\"\"`.")
 
   let body = nimSource[bodyStart ..< bodyEnd]
-  result = patchCssDeclarationAt(body, selector, property, newValue, width)
+  result = patchCssDeclarationAt(body, selector, property, newValue, width,
+    answers)
   if not result.ok or result.outcome == cpoUnchanged:
     if result.outcome == cpoUnchanged:
       result.content = nimSource
@@ -1501,7 +2079,8 @@ proc removeCssInNimConst*(nimSource, constName, selector,
       nimSource[bodyEnd .. ^1]
 
 func editTargetInNimConst*(nimSource, constName, selector, property: string;
-                           width: int): CssEditTarget =
+                           width: int;
+                           answers: openArray[CssConditionAnswer] = []): CssEditTarget =
   ## `editTargetAtWidth` against a stylesheet held in a Nim const.
   ##
   ## Separate from the patch so the UI can ask "where would this go?" without
@@ -1520,7 +2099,8 @@ func editTargetInNimConst*(nimSource, constName, selector, property: string;
   let bodyEnd = nimSource.find("\"\"\"", bodyStart)
   if bodyEnd < 0:
     return CssEditTarget(found: false)
-  nimSource[bodyStart ..< bodyEnd].editTargetAtWidth(selector, property, width)
+  nimSource[bodyStart ..< bodyEnd].editTargetAtWidth(selector, property,
+    width, answers)
 
 proc cssRuleSelectors*(css: string): seq[string] =
   ## Read candidates through the same rule scanner used by source patching.
