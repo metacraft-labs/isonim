@@ -13,6 +13,27 @@ proc hasDurableSourceControl(vm: EditorVM): bool =
     (vm.workspaceEditAdapter != nil and vm.workspaceEditAdapter.durableSourceControl and
       vm.workspaceEditAdapter.compile != nil and vm.workspaceEditAdapter.reloadPreview != nil)
 
+proc sourceRefusalText*(diagnostic: string): string =
+  ## The status-bar text for a source write the control service refused.
+  ## The service reports bare codes; Saving requires an actionable
+  ## diagnostic, so each code the user can act on is explained, with the code
+  ## kept at the end for support. Any other diagnostic (a compiler or worker
+  ## message, already written for people) is returned unchanged.
+  let action =
+    case diagnostic
+    of "disconnected_instance":
+      "This tab lost its connection to the editor service. Reload the page, then make the change again."
+    of "stale_instance", "stale_connection_epoch", "wrong_workspace":
+      "This tab's editor session was replaced, for example by a newer tab or a project switch. Reload the page, then make the change again."
+    of "browser_credential_required", "ambiguous_target: explicit instance required":
+      "This tab is not authorized to write source. Reload the page, then make the change again."
+    of "source_permission_denied":
+      "Writing source is not permitted in this workspace."
+    of "stale_inspector_source_target":
+      "The selection, story or viewport changed before the change was saved. Make the change again."
+    else: ""
+  if action.len == 0: diagnostic else: action & " (" & diagnostic & ")"
+
 proc controlStoryId*(story: StoryRef): string =
   storyIdFor(story)
 

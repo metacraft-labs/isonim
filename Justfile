@@ -1756,6 +1756,7 @@ test-editor-c2-headless:
 test-editor-c2-source: isonim-review-build editor-inspector-build
     "${ISONIM_SCENARIO_NODE:-node}" tests/test_editor_fill_readonly_gui.mjs
     "${ISONIM_SCENARIO_NODE:-node}" tests/test_editor_inspector_source_gui.mjs
+    "${ISONIM_SCENARIO_NODE:-node}" tests/test_editor_source_lease_stall_gui.mjs
     "${ISONIM_SCENARIO_NODE:-node}" tests/test_editor_native_reset_gui.mjs
     "${ISONIM_SCENARIO_NODE:-node}" tests/test_editor_native_compiled_reset_gui.mjs
     "${ISONIM_SCENARIO_NODE:-node}" tests/test_editor_native_compiled_scope_sides_gui.mjs

@@ -701,3 +701,109 @@ suite "reviewer: lease renewal at session admission":
     check rpc(reg, "editor.preference", target(tab), tab["browserToken"].getStr()){"error"}{"message"}.getStr == "disconnected_instance"
     discard reg.validateBrowserScope(target(tab), tab["browserToken"].getStr(), renewLease = true)
     check rpc(reg, "editor.preference", target(tab), tab["browserToken"].getStr()){"error"}{"message"}.getStr != "disconnected_instance"
+
+# A tab whose poll loop stalled past the lease still owns its source writes:
+# the edit or undo it starts carries its exact browser credential, which
+# renews the lease the way its poll would. Real registry, real credentials and
+# a real lease expiry (waited out, not edited).
+proc sourceAuthorization(browser: JsonNode; id: string; admit: JsonNode = %false): JsonNode =
+  result = target(browser)
+  result["operationId"] = %id
+  if admit != nil: result["admit"] = admit
+proc undoOf(browser: JsonNode; id: string): JsonNode =
+  result = inspectorSource(browser, id)
+  result["request"]["value"] = %"120px"
+  result["request"]["expectedValue"] = %"150px"
+  result["request"]["restoreWrite"] = %* {"file": "stories.nim", "offset": 10, "before": "  width:120px;\n",
+    "after": "", "unique": true, "afterHash": "0123456789012345678901234567890123456789"}
+proc bindingsSave(browser: JsonNode; id: string): JsonNode =
+  result = inspectorSource(browser, id)
+  result["request"] = %* {"commandId": id, "command": "bindings-save",
+    "storyId": "Card / ready", "target": "action", "viewportWidth": 1440,
+    "expectedRevision": 4, "expectedBindingHash": "0123456789012345678901234567890123456789",
+    "bindingSidecar": "{\"version\":1,\"variableBindings\":[],\"variableBindingHistory\":[]}"}
+proc expire() = sleep(int(BrowserLeaseSeconds * 1000) + 100)
+
+suite "source writes after a stall past the browser lease":
+  test "a stalled tab's edit, then its undo, are admitted and renew the lease":
+    let reg = newEditorControlRegistry("browser-bootstrap")
+    let browser = register(reg)
+    let credential = browser["browserToken"].getStr()
+    for (id, submission) in [("edit-1", inspectorSource(browser, "edit-1")), ("undo-1", undoOf(browser, "undo-1"))]:
+      expire()
+      check rpc(reg, "editor.command", command(browser, "agent-" & id), browser["controlToken"].getStr())["error"]["message"].getStr == "disconnected_instance"
+      # The edit's admission, then the launcher's authorization and, after the
+      # project lock, its admission, all as /api/editor/source/operation makes them.
+      check rpc(reg, "editor.inspector-source", submission, credential)["result"]["status"].getStr == "running"
+      check rpc(reg, "editor.source-authorize", sourceAuthorization(browser, id), credential)["result"] == submission["request"]
+      check rpc(reg, "editor.source-authorize", sourceAuthorization(browser, id, %true), credential)["result"] == submission["request"]
+      check rpc(reg, "editor.command", command(browser, "agent-" & id), browser["controlToken"].getStr())["result"]["status"].getStr == "queued"
+
+  test "a stalled tab's binding metadata save is admitted and renews the lease":
+    let reg = newEditorControlRegistry("browser-bootstrap")
+    let browser = register(reg)
+    expire()
+    check rpc(reg, "editor.bindings-source", bindingsSave(browser, "bindings-1"), browser["browserToken"].getStr())["result"]["status"].getStr == "running"
+    check rpc(reg, "editor.command", command(browser), browser["controlToken"].getStr())["result"]["status"].getStr == "queued"
+
+  test "another tab, an agent, an empty token or a disconnected tab cannot renew through a source write":
+    let reg = newEditorControlRegistry("browser-bootstrap")
+    let tab = register(reg)
+    let other = register(reg)
+    let closed = register(reg)
+    let chat = reg.bindConversation(reg.validateBrowserScope(target(tab), tab["browserToken"].getStr()), "chat")
+    # An operation the tab registered while live, for the authorization probes.
+    check rpc(reg, "editor.inspector-source", inspectorSource(tab, "live-1"), tab["browserToken"].getStr())["result"]["status"].getStr == "running"
+    check rpc(reg, "editor.disconnect", target(closed), closed["browserToken"].getStr())["result"]["disconnected"].getBool
+    expire()
+    check rpc(reg, "editor.poll", target(other), other["browserToken"].getStr())["result"]["commands"].len == 0
+    for token in [other["browserToken"].getStr(), tab["controlToken"].getStr(), chat.token, "browser-bootstrap", ""]:
+      check rpc(reg, "editor.inspector-source", inspectorSource(tab, "foreign-1"), token)["error"]["message"].getStr == "browser_credential_required"
+      check rpc(reg, "editor.bindings-source", bindingsSave(tab, "foreign-2"), token)["error"]["message"].getStr == "browser_credential_required"
+      check rpc(reg, "editor.source-authorize", sourceAuthorization(tab, "live-1"), token)["error"]["message"].getStr == "browser_credential_required"
+    # None of them renewed the tab's lease.
+    check rpc(reg, "editor.command", command(tab), tab["controlToken"].getStr())["error"]["message"].getStr == "disconnected_instance"
+    check rpc(reg, "editor.ack", target(tab), tab["browserToken"].getStr())["error"]["message"].getStr == "disconnected_instance"
+    # A disconnected tab stays refused even with its own exact credential.
+    let closedToken = closed["browserToken"].getStr()
+    check rpc(reg, "editor.inspector-source", inspectorSource(closed, "closed-1"), closedToken)["error"]["message"].getStr == "disconnected_instance"
+    check rpc(reg, "editor.bindings-source", bindingsSave(closed, "closed-2"), closedToken)["error"]["message"].getStr == "disconnected_instance"
+    check rpc(reg, "editor.source-authorize", sourceAuthorization(closed, "closed-1"), closedToken)["error"]["message"].getStr == "disconnected_instance"
+    # A stale epoch or forged instance is refused before anything is renewed.
+    var crossed = inspectorSource(tab, "crossed-1")
+    crossed["epoch"] = other["epoch"]
+    check rpc(reg, "editor.inspector-source", crossed, tab["browserToken"].getStr())["error"]["message"].getStr == "stale_connection_epoch"
+    check rpc(reg, "editor.command", command(tab), tab["controlToken"].getStr())["error"]["message"].getStr == "disconnected_instance"
+
+  test "the admission after the project lock never renews an expired lease":
+    # The launcher's second authorization may follow a long wait for the
+    # project lock, which the tab may not have outlived; it needs a live lease.
+    let reg = newEditorControlRegistry("browser-bootstrap")
+    let browser = register(reg)
+    let credential = browser["browserToken"].getStr()
+    check rpc(reg, "editor.inspector-source", inspectorSource(browser, "edit-1"), credential)["result"]["status"].getStr == "running"
+    expire()
+    for admit in [%true, %"yes", %1]:
+      check rpc(reg, "editor.source-authorize", sourceAuthorization(browser, "edit-1", admit), credential)["error"]["message"].getStr == "disconnected_instance"
+    check rpc(reg, "editor.command", command(browser), browser["controlToken"].getStr())["error"]["message"].getStr == "disconnected_instance"
+
+  test "renewal is opt-in per browser method":
+    for name in ["editor.poll", "editor.inspector-source", "editor.bindings-source"]:
+      check renewsBrowserLease(name, newJObject())
+    check renewsBrowserLease("editor.source-authorize", %* {"admit": false})
+    check renewsBrowserLease("editor.source-authorize", newJObject())
+    for params in [%* {"admit": true}, %* {"admit": "false"}, %* {"admit": nil}]:
+      check not renewsBrowserLease("editor.source-authorize", params)
+    for name in ["editor.ack", "editor.disconnect", "editor.preference", "editor.approve", "editor.command",
+        "editor.state", "editor.wait", "editor.register", "editor.unknown"]:
+      check not renewsBrowserLease(name, newJObject())
+
+  test "a refused source write reads as an action, with the code kept":
+    check sourceRefusalText("disconnected_instance") ==
+      "This tab lost its connection to the editor service. Reload the page, then make the change again. (disconnected_instance)"
+    for code in ["stale_instance", "stale_connection_epoch", "wrong_workspace", "browser_credential_required",
+        "source_permission_denied", "stale_inspector_source_target"]:
+      let text = sourceRefusalText(code)
+      check text.endsWith(" (" & code & ")") and text.len > code.len + 20
+    for passthrough in ["Source changed before the pending edit could be applied.", "Project compiler exceeded 120 seconds", ""]:
+      check sourceRefusalText(passthrough) == passthrough

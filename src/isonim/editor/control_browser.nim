@@ -238,7 +238,12 @@ proc installControlBridge*(vm: EditorVM; root: Element): BrowserControlBridge =
         var reply: JsonNode
         try: reply = parseJson($raw)
         except CatchableError: reply = %* {"ok": false, "diagnostic": "Source bridge returned an invalid response."}
-        done(reply)
+        # The user sees an actionable refusal; the ACK below keeps the code.
+        var shown = reply
+        if not reply{"ok"}.getBool() and reply{"diagnostic"} != nil and reply{"diagnostic"}.kind == JString:
+          shown = reply.copy()
+          shown["diagnostic"] = %sourceRefusalText(reply["diagnostic"].getStr())
+        done(shown)
         if registered != nil:
           registered["status"] = %(if reply{"ok"}.getBool(): "applied" else: "failed")
           if not reply{"ok"}.getBool(): registered["error"] = reply{"diagnostic"}
@@ -258,7 +263,7 @@ proc installControlBridge*(vm: EditorVM; root: Element): BrowserControlBridge =
       registration["state"] = state
       bridge.fetchRpc(if request{"command"}.getStr() == "bindings-save": "editor.bindings-source" else: "editor.inspector-source", registration, proc(reply: JsonNode) =
         if reply{"result"} == nil:
-          done(%* {"ok": false, "diagnostic": reply{"error", "message"}.getStr("Inspector source admission failed.")})
+          done(%* {"ok": false, "diagnostic": sourceRefusalText(reply{"error", "message"}.getStr("Inspector source admission failed."))})
         else:
           registered = reply["result"]
           sendSource())

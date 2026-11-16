@@ -199,6 +199,29 @@ proc revokeConversation*(reg: EditorControlRegistry; conversation: string) {.gcs
             operation["error"] = %"conversation_closed"
     finally: release(reg.lock)
 
+proc renewsBrowserLease*(methodName: string; params: JsonNode): bool =
+  ## The browser RPCs that renew an expired lease, each only for the tab's
+  ## exact browser credential (checked by the caller before renewing).
+  ##
+  ## The poll, and the source writes the tab starts: the inspector edit or
+  ## undo admission (``editor.inspector-source``), the binding-metadata
+  ## admission (``editor.bindings-source``), and the source authorization the
+  ## launcher makes as any tab-started write begins (``editor.source-authorize``
+  ## without ``admit``). That authorization covers those inspector and binding
+  ## writes and also the tab applying an agent-queued create-story or build,
+  ## which the tab starts with its own credential after the agent queued it.
+  ## Each request carries the tab's exact browser credential when the tab sent
+  ## it, so it proves a live tab as well as a poll does, and a tab that stalled
+  ## past the lease must not lose that write. The launcher's second authorization, after it has waited for
+  ## the project lock (``admit: true``), does not renew: the wait may have
+  ## outlived the tab, so the write is admitted only while the lease is live,
+  ## which the first authorization or the tab's resumed polling keeps it.
+  ## Every other method requires a live lease.
+  case methodName
+  of "editor.poll", "editor.inspector-source", "editor.bindings-source": true
+  of "editor.source-authorize": params{"admit"} == nil or params{"admit"}.kind == JBool and not params{"admit"}.getBool()
+  else: false
+
 proc rpcDispatch*(reg: EditorControlRegistry; request: JsonNode; token: string): JsonNode =
   if request == nil or request.kind != JObject:
     return rpcError(newJNull(), -32600, "invalid_request")
@@ -232,14 +255,18 @@ proc rpcDispatch*(reg: EditorControlRegistry; request: JsonNode; token: string):
         "browserToken": browserToken, "controlToken": scope.token, "leaseSeconds": BrowserLeaseSeconds}
     else:
       # A still-mounted tab may renew an expired transport lease with its exact
-      # browser credential (here by poll; ``validateBrowserScope`` with
-      # ``renewLease`` by session admission). No other browser method renews an
-      # expired lease; ``editor.ack`` only refreshes a live one. Explicit
-      # disconnect/replacement remains revoked; agents cannot renew leases and
-      # remain denied until the tab renews it.
-      let instance = reg.requireInstance(params, allowExpiredLease = methodName == "editor.poll")
+      # browser credential: by poll, by the source writes the tab starts (see
+      # ``renewsBrowserLease``), and by session admission (``validateBrowserScope``
+      # with ``renewLease``). No other browser method renews an expired lease;
+      # ``editor.ack`` only refreshes a live one. Explicit disconnect/replacement
+      # remains revoked; agents cannot renew leases and remain denied until the
+      # tab renews it.
+      let renews = renewsBrowserLease(methodName, params)
+      let instance = reg.requireInstance(params, allowExpiredLease = renews)
       if methodName in ["editor.poll", "editor.ack", "editor.disconnect", "editor.preference", "editor.approve", "editor.source-authorize", "editor.inspector-source", "editor.bindings-source"]:
         instance.browserAuthorized(token)
+        # Only after the exact browser credential matched.
+        if renews: instance.touched = getMonoTime()
       else: discard reg.agentAuthorized(instance, token)
       case methodName
       of "editor.state", "editor.capabilities", "editor.stories", "editor.elements":
