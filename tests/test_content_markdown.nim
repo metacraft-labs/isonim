@@ -437,3 +437,13 @@ suite "isonim/content/markdown -- the path-derived route convention":
     check blocks[1].listKind == lkOrdered
     check blocks[1].items.len == 2
     check spansText(blocks[1].items[0]) == "step one continued step"
+
+  test "parseMarkdownBlocks skips standalone single-line and multi-line HTML comments while keeping <!--more-->":
+    let raw = "First paragraph.\n\n<!-- generated:begin capture install version -->\n<!-- generated:end -->\n\n<!--\nmulti-line\ncomment\n-->\n\n<!--more-->\n\nSecond paragraph.\n"
+    let blocks = parseMarkdownBlocks(raw)
+    check blocks.len == 3
+    check blocks[0].kind == bkParagraph
+    check spansText(blocks[0].spans) == "First paragraph."
+    check blocks[1].kind == bkExcerptBreak
+    check blocks[2].kind == bkParagraph
+    check spansText(blocks[2].spans) == "Second paragraph."

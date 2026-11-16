@@ -1397,7 +1397,7 @@ proc startsAnotherBlock(line: string): bool =
   ## so paragraph accumulation knows where to stop even without a
   ## blank-line separator.
   fenceWidth(line) >= 3 or line.startsWith(":::") or
-    quoteLine(line) or line == "<!--more-->" or footnoteDefinition(line).label.len > 0 or
+    quoteLine(line) or line.startsWith("<!--") or footnoteDefinition(line).label.len > 0 or
     isUnorderedListItem(line) or isOrderedListItem(line) or
     isTableRow(line) or headingMarkerLevel(line) > 0 or
     isComponentTagLine(line)
@@ -1492,6 +1492,23 @@ proc parseBlocks(body: string; ctx: ParseContext; sourceRelPath: string = "";
       result.add Block(kind: bkExcerptBreak)
       inc i
       continue
+
+    if stripped.startsWith("<!--"):
+      if "-->" in stripped[4 .. ^1]:
+        let afterClose = stripped[4 + stripped[4 .. ^1].find("-->") + 3 .. ^1].strip()
+        if afterClose.len == 0:
+          inc i
+          continue
+      else:
+        var closeIdx = i + 1
+        while closeIdx < lines.len and "-->" notin lines[closeIdx]:
+          inc closeIdx
+        if closeIdx < lines.len:
+          let tail = lines[closeIdx]
+          let afterClose = tail[tail.find("-->") + 3 .. ^1].strip()
+          if afterClose.len == 0:
+            i = closeIdx + 1
+            continue
 
     let definition = footnoteDefinition(stripped)
     if ctx.footnotes and definition.label.len > 0:
