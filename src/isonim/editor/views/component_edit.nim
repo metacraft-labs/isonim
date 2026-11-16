@@ -138,7 +138,10 @@ const editablePreviewBridgeTemplate = block:
     background: #3B82F6;
     border: 1px solid white;
     pointer-events: auto;
-    cursor: nwse-resize;
+    cursor: ew-resize;
+  }
+  #isonim-editor-selection-handles > span[data-handle="height"] {
+    cursor: ns-resize;
   }
   #isonim-editor-selection-handles > span[data-handle="spacing"] {
     width: 10px;
@@ -444,6 +447,309 @@ __ISONIM_SCENE_GRAPH_WALK__
     drag.cancel();
     return true;
   }
+  // The used `width` and `height` of an element in the box they set
+  // (`box-sizing`), and how many of the document's pixels one of the
+  // element's own CSS pixels covers on each axis: a transform or `zoom` on
+  // it or an ancestor scales its border box on screen. `width` is null where
+  // it does not apply (https://www.w3.org/TR/CSS2/visudet.html#the-width-property:
+  // non-replaced inline boxes, table rows and row groups, and boxes that are
+  // not generated); the resolved value there is the computed value, which
+  // nothing renders.
+  const REPLACED = ['IMG', 'VIDEO', 'CANVAS', 'IFRAME', 'EMBED', 'OBJECT',
+    'INPUT', 'TEXTAREA', 'SELECT', 'BUTTON', 'svg'];
+  function widthApplies(el, style) {
+    const display = style.display;
+    if (display === 'none' || display === 'contents') return false;
+    if (display === 'inline') return REPLACED.indexOf(el.tagName) >= 0;
+    return ['table-row', 'table-row-group', 'table-header-group',
+      'table-footer-group'].indexOf(display) < 0;
+  }
+  function boxSizeFor(el, style) {
+    const n = function (name) { return parseFloat(style.getPropertyValue(name)) || 0; };
+    // `height` applies where `width` does, apart from table columns.
+    const applies = widthApplies(el, style);
+    const width = applies ? parseFloat(style.width) : NaN;
+    const height = applies ? parseFloat(style.height) : NaN;
+    const content = style.boxSizing !== 'border-box';
+    const outerW = (isFinite(width) ? width : 0) + (content
+      ? n('padding-left') + n('padding-right') + n('border-left-width') + n('border-right-width')
+      : 0);
+    const outerH = (isFinite(height) ? height : 0) + (content
+      ? n('padding-top') + n('padding-bottom') + n('border-top-width') + n('border-bottom-width')
+      : 0);
+    const rect = el.getBoundingClientRect();
+    const ratio = function (shown, own) {
+      const r = own > 0 && shown > 0 ? shown / own : 1;
+      return isFinite(r) && r > 0 ? r : 1;
+    };
+    return {
+      width: isFinite(width) ? width : null,
+      height: isFinite(height) ? height : null,
+      scaleX: ratio(rect.width, outerW),
+      scaleY: ratio(rect.height, outerH)
+    };
+  }
+  // Why the canvas handles cannot follow the pointer on `el`, or "": the
+  // scale above is read from the bounding box, which is the element's own
+  // scale only under scale, translate and `zoom`. A rotation, a skew, a
+  // mirror or a perspective on it or an ancestor turns or flips its box, and
+  // a drag along the screen's axes no longer moves its edges along them.
+  function transformRefusal(el) {
+    for (let node = el; node && node.nodeType === 1; node = node.parentElement) {
+      const style = window.getComputedStyle(node);
+      const turned = (style.rotate && style.rotate !== 'none') ||
+        (style.scale && style.scale !== 'none' &&
+          style.scale.split(/\s+/).some(function (v) { return parseFloat(v) < 0; }));
+      let bad = !!turned;
+      const t = style.transform;
+      if (!bad && t && t !== 'none') {
+        const m = (t.match(/\(([^)]*)\)/) || [, ''])[1].split(',').map(parseFloat);
+        if (t.indexOf('matrix3d') === 0) {
+          // Only scale (0, 5, 10) and translation (12, 13, 14) may be set.
+          bad = m.length !== 16 || m[0] <= 0 || m[5] <= 0 ||
+            [1, 2, 3, 4, 6, 7, 8, 9, 11].some(function (i) { return Math.abs(m[i]) > 1e-6; });
+        } else {
+          bad = m.length !== 6 || m[0] <= 0 || m[3] <= 0 ||
+            Math.abs(m[1]) > 1e-6 || Math.abs(m[2]) > 1e-6;
+        }
+      }
+      if (bad) return 'The canvas handles cannot follow the pointer on a rotated, ' +
+        'skewed or mirrored element; use the inspector fields.';
+    }
+    return '';
+  }
+  // Where the selection chrome's fixed-position elements are laid out: their
+  // containing block is the viewport, or an ancestor with a transform or a
+  // filter (`body { transform: ... }`), which also scales them
+  // (https://www.w3.org/TR/css-transforms-1/#containing-block-for-all-descendants).
+  // A probe at left/top 0 and 100px square says where that origin lands on
+  // screen and how big one of its pixels is.
+  function fixedFrame() {
+    const probe = document.createElement('div');
+    probe.style.cssText = 'position:fixed;left:0;top:0;width:100px;height:100px;' +
+      'visibility:hidden;pointer-events:none;margin:0;padding:0;border:0';
+    document.body.appendChild(probe);
+    const r = probe.getBoundingClientRect();
+    probe.remove();
+    return {
+      x: r.left, y: r.top,
+      sx: r.width > 0 ? r.width / 100 : 1,
+      sy: r.height > 0 ? r.height / 100 : 1
+    };
+  }
+  // Place a fixed-position `node` at client coordinates (x, y), with a size
+  // in client pixels when given.
+  function placeFixed(frame, node, x, y, width, height) {
+    node.style.left = ((x - frame.x) / frame.sx) + 'px';
+    node.style.top = ((y - frame.y) / frame.sy) + 'px';
+    if (width !== undefined) node.style.width = (width / frame.sx) + 'px';
+    if (height !== undefined) node.style.height = (height / frame.sy) + 'px';
+  }
+  // The resize handles' axes: the property, its limits, the edge it moves.
+  const RESIZE_AXES = {
+    width: { min: 'min-width', max: 'max-width', edge: 'right', scale: 'scaleX',
+      side: 'right' },
+    height: { min: 'min-height', max: 'max-height', edge: 'bottom', scale: 'scaleY',
+      side: 'bottom' }
+  };
+  function inlineSnapshot(el, names) {
+    return names.map(function (name) {
+      return [name, el.style.getPropertyValue(name), el.style.getPropertyPriority(name)];
+    });
+  }
+  function inlineRestore(el, snapshot) {
+    snapshot.forEach(function (entry) {
+      if (entry[1]) el.style.setProperty(entry[0], entry[1], entry[2]);
+      else el.style.removeProperty(entry[0]);
+    });
+  }
+  // The scroll offsets of the document and of `el`'s scrolled ancestors. A
+  // trial size can shorten the page and the browser then clamps an offset;
+  // the trials put back what they found.
+  function scrollSnapshot(el) {
+    const out = [];
+    for (let node = el.parentElement; node; node = node.parentElement)
+      if (node.scrollTop || node.scrollLeft) out.push([node, node.scrollLeft, node.scrollTop]);
+    const root = document.scrollingElement;
+    if (root) out.push([root, root.scrollLeft, root.scrollTop]);
+    return out;
+  }
+  function scrollRestore(snapshot) {
+    snapshot.forEach(function (entry) {
+      if (entry[0].scrollLeft !== entry[1]) entry[0].scrollLeft = entry[1];
+      if (entry[0].scrollTop !== entry[2]) entry[0].scrollTop = entry[2];
+    });
+  }
+  // A transition on the size would make the trials and the drag preview read
+  // its current value, not the requested one, and would fire transition
+  // events into page code. Every handle drag holds `transition: none` inline
+  // from the press to its end; `release` puts back the inline transition
+  // exactly, after the size it restores has been computed, so nothing
+  // animates back.
+  const TRANSITION_LONGHANDS = ['transition-property', 'transition-duration',
+    'transition-timing-function', 'transition-delay', 'transition-behavior'];
+  // Holds nest: a box handle's release that waits for a native project's
+  // answer keeps its hold until the answer, and a later drag on the same
+  // element holds too. The first hold on an element takes the snapshot, and
+  // the last release puts it back.
+  const transitionHolds = new WeakMap();
+  function holdTransitions(el) {
+    let entry = transitionHolds.get(el);
+    if (entry) entry.count++;
+    else {
+      entry = { count: 1, snapshot: inlineSnapshot(el, TRANSITION_LONGHANDS) };
+      transitionHolds.set(el, entry);
+      el.style.setProperty('transition', 'none', 'important');
+    }
+    let held = true;
+    return {
+      release: function () {
+        if (!held) return;
+        held = false;
+        if (--entry.count > 0) return;
+        transitionHolds.delete(el);
+        void window.getComputedStyle(el).width;
+        void window.getComputedStyle(el).height;
+        TRANSITION_LONGHANDS.forEach(function (name) { el.style.removeProperty(name); });
+        inlineRestore(el, entry.snapshot);
+      }
+    };
+  }
+  // What renders when the preview sets `axis` to `px`: its used value and
+  // where the edge the handle sits on lands. With `free`, `min-*` and
+  // `max-*` are lifted, to tell their clamp from anything else that holds the
+  // size; with `important`, the preview's declaration outranks an
+  // `!important` one in a style rule. Inline style is left as it was found
+  // by the caller (`inlineRestore`): nothing is painted in between.
+  function tryAxis(el, axis, px, free, important) {
+    const a = RESIZE_AXES[axis];
+    el.style.setProperty(axis, px + 'px', important ? 'important' : '');
+    if (free) {
+      el.style.setProperty(a.min, '0px', 'important');
+      el.style.setProperty(a.max, 'none', 'important');
+    }
+    return {
+      used: boxSizeFor(el, window.getComputedStyle(el))[axis],
+      edge: el.getBoundingClientRect()[a.edge]
+    };
+  }
+  // Why the preview's `axis` does not follow a drag, from what holds it.
+  function heldReason(el, axis, start) {
+    // A CSS animation of the size overrides every declaration that is not
+    // `!important`, the preview's included, and the forced trial below would
+    // then name an `!important` rule that does not exist.
+    const animations = el.getAnimations ? el.getAnimations().filter(function (an) {
+      if (typeof CSSTransition !== 'undefined' && an instanceof CSSTransition) return false;
+      const effect = an.effect;
+      return !!(effect && effect.getKeyframes) && effect.getKeyframes().some(function (k) {
+        return Object.prototype.hasOwnProperty.call(k, axis);
+      });
+    }) : [];
+    if (animations.length) return axis + ' does not follow the drag: an animation (' +
+      (animations[0].animationName || animations[0].id || 'scripted') + ') decides it.';
+    const snapshot = inlineSnapshot(el, [axis, RESIZE_AXES[axis].min, RESIZE_AXES[axis].max]);
+    const scroll = scrollSnapshot(el);
+    let important = false;
+    try {
+      const forced = tryAxis(el, axis, start + 20, true, true);
+      important = Math.abs(forced.used - (start + 20)) < 0.5;
+    } finally { inlineRestore(el, snapshot); scrollRestore(scroll); }
+    if (important) return axis + ' does not follow the drag: an !important ' +
+      axis + ' declaration decides it.';
+    const parentStyle = el.parentElement ? window.getComputedStyle(el.parentElement) : null;
+    const display = parentStyle ? parentStyle.display : '';
+    if (display === 'flex' || display === 'inline-flex') {
+      const row = parentStyle.flexDirection.indexOf('row') === 0;
+      if (row === (axis === 'width')) return axis + ' does not follow the drag: ' +
+        'flex layout decides it (flex: ' + window.getComputedStyle(el).flex + ').';
+    }
+    if (display === 'grid' || display === 'inline-grid')
+      return axis + ' does not follow the drag: grid layout decides it.';
+    return axis + ' does not follow the drag: the layout decides it.';
+  }
+  // A press on a resize handle: where the drag starts and how the edge the
+  // handle sits on moves with the property, or why it cannot start.
+  //   - The start is the used value in the box the property sets
+  //     (https://www.w3.org/TR/css-sizing-3/#box-sizing): the content box for
+  //     `content-box`, the border box for `border-box`. The resolved value is
+  //     that used value, after `min-*` and `max-*`
+  //     (https://www.w3.org/TR/cssom-1/#resolved-values).
+  //   - Two trial sizes, 20px either side with `min-*`/`max-*` lifted, say
+  //     whether the preview's declaration decides the size at all (an
+  //     `!important` rule or flex sizing can hold it) and how far the
+  //     handle's edge moves per pixel: 1 for a box laid out from its other
+  //     edge, 1/2 for a centred one, 0 for one laid out from this edge,
+  //     where the handle cannot follow the pointer.
+  //   The trials are synchronous and restored before the browser paints.
+  function planResize(el, axis) {
+    const style = window.getComputedStyle(el);
+    const box = boxSizeFor(el, style);
+    if (box[axis] === null)
+      return { refusal: axis + ' does not apply to an element with display: ' + style.display + '.' };
+    const turned = transformRefusal(el);
+    if (turned) return { refusal: turned };
+    const a = RESIZE_AXES[axis];
+    const start = box[axis];
+    const scale = box[a.scale];
+    const snapshot = inlineSnapshot(el, [axis, a.min, a.max]);
+    const scroll = scrollSnapshot(el);
+    const edge0 = el.getBoundingClientRect()[a.edge];
+    // A factor outside 0.25..1.05 is not the edge following the size: the
+    // trial size moved the element (its line wrapped, as in a full
+    // `flex-wrap` row or a line of inline blocks), so the other direction is
+    // tried before the press is refused.
+    let factor = null;
+    let followed = false;
+    let pinned = false;
+    try {
+      [20, -20].forEach(function (d) {
+        if (factor !== null || start + d < 0) return;
+        const trial = tryAxis(el, axis, start + d, true, false);
+        inlineRestore(el, snapshot);
+        if (Math.abs(trial.used - (start + d)) >= 0.5) return;
+        followed = true;
+        const f = (trial.edge - edge0) / (d * scale);
+        if (f >= 0.25 && f <= 1.05) factor = f;
+        else if (Math.abs(f) < 0.25) pinned = true;
+      });
+    } finally {
+      inlineRestore(el, snapshot);
+      scrollRestore(scroll);
+    }
+    if (factor !== null) return { start: start, scale: scale, factor: factor };
+    if (!followed) return { refusal: heldReason(el, axis, start) };
+    // In a line that wraps, a larger size can push the element onto the next
+    // line and a smaller one pull it back, but not both: the element is at
+    // the end of its line, or at the start of one. So a wrap seen one way is
+    // decided by the other trial; where that trial cannot run (a size under
+    // 20px has no smaller one), only the wrap was seen.
+    if (!pinned) return { refusal: 'Resizing moves this element instead of its ' + a.side +
+      ' edge (its line wraps). Set ' + axis + ' in the inspector.' };
+    return { refusal: 'Resizing does not move the ' + a.side +
+      ' edge of this element: its layout places it from that edge. Set ' + axis +
+      ' in the inspector.' };
+  }
+  // The used gap the spacing handle starts from, in pixels: a percentage
+  // resolves against the content box (column gaps against its width, row
+  // gaps against its height, https://www.w3.org/TR/css-align-3/#column-row-gap).
+  // The handle drags the gap between the items: the row gap in a column
+  // flex container, the column gap otherwise.
+  function usedGap(el, style) {
+    const column = style.display.indexOf('flex') >= 0 &&
+      style.flexDirection.indexOf('column') === 0;
+    const text = style.getPropertyValue(column ? 'row-gap' : 'column-gap').trim();
+    if (!text || text === 'normal') return 0;
+    if (text.slice(-1) !== '%') return parseFloat(text) || 0;
+    const n = function (name) { return parseFloat(style.getPropertyValue(name)) || 0; };
+    const box = boxSizeFor(el, style);
+    const border = style.boxSizing === 'border-box';
+    const content = column
+      ? (box.height || 0) - (border ? n('padding-top') + n('padding-bottom') +
+        n('border-top-width') + n('border-bottom-width') : 0)
+      : (box.width || 0) - (border ? n('padding-left') + n('padding-right') +
+        n('border-left-width') + n('border-right-width') : 0);
+    return (parseFloat(text) || 0) * Math.max(0, content) / 100;
+  }
   function startHandleDrag(handleEl, event, gesture) {
     cancelHandleDrag();
     const drag = {
@@ -602,12 +908,19 @@ __ISONIM_SCENE_GRAPH_WALK__
     note.dataset.layoutGuide = 'box-drag-message';
     note.textContent = text;
     const rect = el.getBoundingClientRect();
-    note.style.left = Math.max(6, Math.min(rect.left, window.innerWidth - 292)) + 'px';
-    note.style.top = Math.max(6, Math.min(window.innerHeight - 48, rect.bottom + 40)) + 'px';
+    placeFixed(fixedFrame(), note, Math.max(6, Math.min(rect.left, window.innerWidth - 292)),
+      Math.max(6, Math.min(window.innerHeight - 48, rect.bottom + 40)));
   }
   function startBoxSideDrag(handleEl, handle, selected, event) {
     hideBoxMessage();
-    const startPx = parseFloat(window.getComputedStyle(selected).getPropertyValue(handle)) || 0;
+    const turned = transformRefusal(selected);
+    if (turned) { showBoxMessage(selected, turned); return; }
+    const startStyle = window.getComputedStyle(selected);
+    const startPx = parseFloat(startStyle.getPropertyValue(handle)) || 0;
+    // The side follows the pointer: the distance is in the element's own CSS
+    // pixels, the pointer's over its scale (a `zoom` or scale transform on
+    // it or an ancestor).
+    const scaled = boxSizeFor(selected, startStyle);
     // A side the drag cannot move (`auto`, a variable) is refused at the
     // press, with the reason beside the selection.
     const property = boxDragRequest({ phase: 'start', handle: handle,
@@ -615,11 +928,14 @@ __ISONIM_SCENE_GRAPH_WALK__
         if (!ok && message) showBoxMessage(selected, String(message));
       } });
     if (!property) return;
+    // The preview shows the dragged value at once, as for the resize handles.
+    const transitions = holdTransitions(selected);
     const owner = {};
     let value = '';
     startHandleDrag(handleEl, event, {
       move: function (dx, dy) {
-        const next = boxDragRequest({ phase: 'move', start: startPx, dx: dx, dy: dy });
+        const next = boxDragRequest({ phase: 'move', start: startPx,
+          dx: dx / scaled.scaleX, dy: dy / scaled.scaleY });
         if (!next) return false;
         value = next;
         if (handleDrag) handleDrag.readout = property + ': ' + value;
@@ -629,6 +945,7 @@ __ISONIM_SCENE_GRAPH_WALK__
       cancel: function () {
         boxDragRequest({ phase: 'cancel' });
         clearBoxPreview(owner);
+        transitions.release();
         if (window.__isonimSelectedElement === selected) placeHandles(selected);
       },
       commit: function () {
@@ -645,6 +962,7 @@ __ISONIM_SCENE_GRAPH_WALK__
             entry.held = outcome.held;
           }
           else clearBoxPreview(owner);
+          transitions.release();
           if (window.__isonimSelectedElement !== selected) return;
           placeHandles(selected);
           if (!ok && message) showBoxMessage(selected, String(message));
@@ -660,12 +978,157 @@ __ISONIM_SCENE_GRAPH_WALK__
       }
     });
   }
+  // The selection's `width` (the corner handle) or `height` (the bottom
+  // handle): the property its Layout row shows. The edge follows the
+  // pointer: the property changes by the distance over the element's own
+  // scale and over how far the edge moves per pixel (`planResize`).
+  // `min-*`/`max-*` clamp the value, and the value written is the one the box
+  // shows; anything else holding the size ends the drag with the reason.
+  function startResizeDrag(handleEl, axis, selected, event) {
+    hideBoxMessage();
+    const transitions = holdTransitions(selected);
+    const plan = planResize(selected, axis);
+    if (plan.refusal) {
+      transitions.release();
+      showBoxMessage(selected, plan.refusal);
+      return;
+    }
+    const a = RESIZE_AXES[axis];
+    const source = parseSource(selected.getAttribute('data-isonim-src'));
+    const marker = 'data-isonim-layout-resized';
+    // What the drag replaces, for Escape and pointer cancellation.
+    const before = {
+      value: selected.style.getPropertyValue(axis),
+      priority: selected.style.getPropertyPriority(axis),
+      marked: selected.hasAttribute(marker)
+    };
+    const limits = inlineSnapshot(selected, [a.min, a.max]);
+    let next = '';
+    const restore = function () {
+      if (before.value) selected.style.setProperty(axis, before.value, before.priority);
+      else selected.style.removeProperty(axis);
+      if (!before.marked) selected.removeAttribute(marker);
+      transitions.release();
+      if (window.__isonimSelectedElement === selected) placeHandles(selected);
+    };
+    const start = Math.round(plan.start);
+    startHandleDrag(handleEl, event, {
+      move: function (dx, dy) {
+        // The preview's zoom scales the frame from outside, and its pointer
+        // events already arrive in the document's pixels.
+        const d = axis === 'width' ? dx : dy;
+        const requested = Math.max(0, Math.round(plan.start + d / (plan.scale * plan.factor)));
+        selected.style.setProperty(axis, requested + 'px');
+        const shown = boxSizeFor(selected, window.getComputedStyle(selected))[axis];
+        let note = '';
+        if (Math.abs(shown - requested) >= 0.5) {
+          // Only `min-*` and `max-*` may hold the value: lifted, the box
+          // must take the request.
+          const free = tryAxis(selected, axis, requested, true, false);
+          inlineRestore(selected, limits);
+          selected.style.setProperty(axis, requested + 'px');
+          if (Math.abs(free.used - requested) >= 0.5) {
+            showBoxMessage(selected, heldReason(selected, axis, plan.start));
+            return false;
+          }
+          note = ' (clamped from ' + requested + 'px by ' +
+            (shown < requested ? a.max : a.min) + ')';
+        }
+        const value = Math.round(shown);
+        next = value === start ? '' : value + 'px';
+        if (handleDrag) handleDrag.readout = axis + ': ' + value + 'px' + note;
+        selected.setAttribute(marker, 'true');
+        placeHandles(selected);
+      },
+      cancel: restore,
+      // One edit, on release. A drag that ends on the value in place (or
+      // that `min-*`/`max-*` held there) commits nothing.
+      commit: function () {
+        if (!next) { restore(); return; }
+        transitions.release();
+        parent.dispatchEvent(new CustomEvent('isonim-preview-direct-manipulation', {
+          detail: {
+            kind: 'resize',
+            property: axis,
+            value: next,
+            sourceFile: source.file,
+            sourceLine: source.line,
+            handle: axis === 'width' ? 'se' : 'height',
+            sourceKey: sourceKeyFor(selected),
+            measurement: axis + '=' + next
+          }
+        }));
+      }
+    });
+  }
+  // The spacing handle: `gap` in a flex or grid container, otherwise uniform
+  // `padding`, from its used value in pixels (a percentage gap resolved,
+  // `usedGap`), moved by the vertical distance over the element's scale.
+  function startSpacingDrag(handleEl, selected, event) {
+    hideBoxMessage();
+    const turned = transformRefusal(selected);
+    if (turned) { showBoxMessage(selected, turned); return; }
+    const style = window.getComputedStyle(selected);
+    const scaled = boxSizeFor(selected, style);
+    const property =
+      (style.display === 'flex' || style.display === 'grid' || style.gap !== 'normal')
+        ? 'gap'
+        : 'padding';
+    const startSpacing = property === 'gap' ? usedGap(selected, style)
+      : parseFloat(style.paddingTop) || 0;
+    const source = parseSource(selected.getAttribute('data-isonim-src'));
+    const marker = 'data-isonim-spacing-adjusted';
+    // The preview shows the dragged value at once, as for the resize handles.
+    const transitions = holdTransitions(selected);
+    const before = {
+      value: selected.style.getPropertyValue(property),
+      priority: selected.style.getPropertyPriority(property),
+      marked: selected.hasAttribute(marker)
+    };
+    let next = '';
+    const restore = function () {
+      if (before.value) selected.style.setProperty(property, before.value, before.priority);
+      else selected.style.removeProperty(property);
+      if (!before.marked) selected.removeAttribute(marker);
+      transitions.release();
+      if (window.__isonimSelectedElement === selected) placeHandles(selected);
+    };
+    startHandleDrag(handleEl, event, {
+      move: function (dx, dy) {
+        next = Math.max(0, Math.round(startSpacing + dy / scaled.scaleY)) + 'px';
+        selected.style.setProperty(property, next);
+        selected.setAttribute(marker, 'true');
+        placeHandles(selected);
+      },
+      cancel: restore,
+      commit: function () {
+        if (!next) { restore(); return; }
+        transitions.release();
+        parent.dispatchEvent(new CustomEvent('isonim-preview-direct-manipulation', {
+          detail: {
+            kind: 'spacing',
+            property: property,
+            value: next,
+            sourceFile: source.file,
+            sourceLine: source.line,
+            handle: 'spacing',
+            sourceKey: sourceKeyFor(selected),
+            measurement: property + '=' + next
+          }
+        }));
+      }
+    });
+  }
   function ensureHandles() {
     let box = document.getElementById('isonim-editor-selection-handles');
     if (!box) {
       box = document.createElement('div');
       box.id = 'isonim-editor-selection-handles';
-      ['nw','ne','se','sw','spacing'].forEach((name) => {
+      // The resize handles sit on the edges they move: the right edge
+      // (`width`) and the bottom edge (`height`). A handle on the left or top
+      // edge could move it only by moving the element (its position or a
+      // margin), which a size does not do, so there is none.
+      ['se','height','spacing'].forEach((name) => {
         const handle = document.createElement('span');
         handle.dataset.handle = name;
         box.appendChild(handle);
@@ -693,62 +1156,9 @@ __ISONIM_SCENE_GRAPH_WALK__
         }
         const handle = data.handle || '';
         if (!handle) return;
-        const rect = selected.getBoundingClientRect();
-        const startWidth = rect.width;
-        const style = window.getComputedStyle(selected);
-        const spacingProperty =
-          (style.display === 'flex' || style.display === 'grid' || style.gap !== 'normal')
-            ? 'gap'
-            : 'padding';
-        const startSpacing = parseFloat(
-          spacingProperty === 'gap'
-            ? (style.gap === 'normal' ? '0' : style.gap)
-            : style.paddingTop
-        ) || 0;
-        const source = parseSource(selected.getAttribute('data-isonim-src'));
-        const property = handle === 'spacing' ? spacingProperty : 'width';
-        const marker = handle === 'spacing'
-          ? 'data-isonim-spacing-adjusted'
-          : 'data-isonim-layout-resized';
-        // What the drag replaces, for Escape and pointer cancellation.
-        const before = {
-          value: selected.style.getPropertyValue(property),
-          priority: selected.style.getPropertyPriority(property),
-          marked: selected.hasAttribute(marker)
-        };
-        let next = '';
-        startHandleDrag(event.target, event, {
-          move: function (dx, dy) {
-            next = handle === 'spacing'
-              ? Math.max(0, Math.round(startSpacing + dy)) + 'px'
-              : Math.max(24, Math.round(startWidth + dx)) + 'px';
-            selected.style.setProperty(property, next);
-            selected.setAttribute(marker, 'true');
-            placeHandles(selected);
-          },
-          cancel: function () {
-            if (before.value) selected.style.setProperty(property, before.value, before.priority);
-            else selected.style.removeProperty(property);
-            if (!before.marked) selected.removeAttribute(marker);
-            if (window.__isonimSelectedElement === selected) placeHandles(selected);
-          },
-          // One edit, on release.
-          commit: function () {
-            if (!next) return;
-            parent.dispatchEvent(new CustomEvent('isonim-preview-direct-manipulation', {
-              detail: {
-                kind: handle === 'spacing' ? 'spacing' : 'resize',
-                property: property,
-                value: next,
-                sourceFile: source.file,
-                sourceLine: source.line,
-                handle: handle,
-                sourceKey: sourceKeyFor(selected),
-                measurement: property + '=' + next
-              }
-            }));
-          }
-        });
+        if (handle === 'spacing') startSpacingDrag(event.target, selected, event);
+        else startResizeDrag(event.target, handle === 'height' ? 'height' : 'width',
+          selected, event);
       });
     }
     return box;
@@ -773,71 +1183,153 @@ __ISONIM_SCENE_GRAPH_WALK__
     }
     return guide;
   }
-  function placeLayoutGuides(el, rect) {
+  function placeLayoutGuides(el, rect, frame) {
     const style = window.getComputedStyle(el);
     const gapOverlay = ensureLayoutGuide('isonim-editor-gap-overlay');
     gapOverlay.setAttribute('aria-label', 'Canvas gap overlay');
     gapOverlay.dataset.layoutGuide = 'gap-overlay';
-    gapOverlay.style.left = (rect.right + 8) + 'px';
-    gapOverlay.style.top = rect.top + 'px';
-    gapOverlay.style.width = Math.max(12, parseFloat(style.columnGap || style.gap || '0') || 12) + 'px';
-    gapOverlay.style.height = Math.max(18, Math.min(rect.height, 64)) + 'px';
+    placeFixed(frame, gapOverlay, rect.right + 8, rect.top,
+      Math.max(12, parseFloat(style.columnGap || style.gap || '0') || 12),
+      Math.max(18, Math.min(rect.height, 64)));
     gapOverlay.textContent = (style.gap && style.gap !== 'normal' ? style.gap : 'gap');
 
     const snap = ensureLayoutGuide('isonim-editor-snap-lines');
     snap.setAttribute('aria-label', 'Canvas snap lines');
     snap.dataset.layoutGuide = 'snap-lines';
-    snap.style.left = rect.left + 'px';
-    snap.style.top = rect.top + 'px';
-    snap.style.width = Math.max(1, rect.width) + 'px';
-    snap.style.height = Math.max(1, rect.height) + 'px';
+    placeFixed(frame, snap, rect.left, rect.top, Math.max(1, rect.width),
+      Math.max(1, rect.height));
 
     const measure = ensureLayoutGuide('isonim-editor-spacing-measure');
     measure.setAttribute('aria-label', 'Canvas spacing measurement');
     measure.dataset.layoutGuide = 'spacing-measurement';
-    measure.style.left = Math.max(6, rect.left) + 'px';
-    measure.style.top = Math.max(6, rect.top - 22) + 'px';
+    placeFixed(frame, measure, Math.max(6, rect.left), Math.max(6, rect.top - 22));
     // While a margin or padding handle is dragged, the readout is its value.
     measure.textContent = (handleDrag && handleDrag.readout) ||
       (Math.round(rect.width) + ' x ' + Math.round(rect.height));
   }
+  // Every handle keeps a point that a press reaches. On a small box the
+  // handles meet (the bottom padding handle lies over the corner width
+  // handle on a box under about 20px wide): a handle whose centre another
+  // drawn above it covers (a press there reaches the other) is moved
+  // outwards, along the direction it faces, in 3px steps, until its centre
+  // is clear.
+  const HANDLE_OUTWARDS = {
+    se: [1, 1], height: [0, 1], spacing: [0, 1],
+    'margin-top': [0, -1], 'padding-top': [0, -1],
+    'margin-bottom': [0, 1], 'padding-bottom': [0, 1],
+    'margin-left': [-1, 0], 'padding-left': [-1, 0],
+    'margin-right': [1, 0], 'padding-right': [1, 0]
+  };
+  function separateHandles(box) {
+    const nodes = Array.prototype.filter.call(box.children, function (node) {
+      return node.offsetParent !== null || node.getClientRects().length > 0;
+    });
+    // The preview's viewport: a handle outside it cannot be pressed (a box
+    // flush with an edge has its margin handles there).
+    const vw = document.documentElement.clientWidth;
+    const vh = document.documentElement.clientHeight;
+    // The box the handles edit (the overlay sits on its border box).
+    const edges = box.getBoundingClientRect();
+    // From the top down, so each handle is tested against the final places
+    // of those above it.
+    for (let i = nodes.length - 1; i >= 0; i--) {
+      const node = nodes[i];
+      const way = HANDLE_OUTWARDS[node.dataset.handle || node.dataset.boxHandle] || [1, 1];
+      node.style.translate = '';
+      const base = node.getBoundingClientRect();
+      // Offsets to try, in order: in place, then outwards in 3px steps (up to
+      // 36px), then along the handle's edge either way (up to 72px: in a
+      // viewport corner the handles of a small box crowd together), and for
+      // a handle the viewport cuts off, inwards. Each is pulled back inside the
+      // viewport, so a handle at a viewport edge moves inwards only as far
+      // as it must.
+      const tries = [[0, 0]];
+      for (let k = 1; k <= 12; k++) tries.push([way[0] * 3 * k, way[1] * 3 * k]);
+      // A corner handle has two edges: it tries up its right edge and left
+      // along its bottom edge in turn, nearest first.
+      const along = way[0] && way[1] ? [[0, -1], [-1, 0]]
+        : [[way[1], way[0]], [-way[1], -way[0]]];
+      for (let k = 1; k <= 24; k++) along.forEach(function (d) {
+        tries.push([d[0] * 3 * k, d[1] * 3 * k]);
+      });
+      // A handle the viewport cuts off, with no room along its edge, moves
+      // inwards as a last resort (a small box in a viewport corner).
+      if (base.left < 1 || base.top < 1 || base.right > vw - 1 || base.bottom > vh - 1)
+        for (let k = 1; k <= 12; k++) tries.push([-way[0] * 3 * k, -way[1] * 3 * k]);
+      const inside = function (offset, start, end, size) {
+        return offset + Math.max(0, 1 - (start + offset)) - Math.max(0, end + offset - (size - 1));
+      };
+      // A move along an edge stops at the far end of that edge: some of the
+      // handle stays over the edge it edits, on the box's own side.
+      const pastFarEnd = function (dx, dy) {
+        const alongX = way[0] === 0 || (way[1] !== 0 && dx < 0);
+        const alongY = way[1] === 0 || (way[0] !== 0 && dy < 0);
+        return (alongX && ((dx < 0 && base.right + dx < edges.left) ||
+            (dx > 0 && base.left + dx > edges.right))) ||
+          (alongY && ((dy < 0 && base.bottom + dy < edges.top) ||
+            (dy > 0 && base.top + dy > edges.bottom)));
+      };
+      let placed = false;
+      for (let t = 0; t < tries.length && !placed; t++) {
+        const dx = inside(tries[t][0], base.left, base.right, vw);
+        const dy = inside(tries[t][1], base.top, base.bottom, vh);
+        if ((dx || dy) && pastFarEnd(dx, dy)) continue;
+        node.style.translate = dx || dy ? dx + 'px ' + dy + 'px' : '';
+        const r = node.getBoundingClientRect();
+        // What a press at the centre reaches: another handle, or other
+        // selection chrome (the breadcrumb), covers it.
+        const hit = document.elementFromPoint(r.left + r.width / 2, r.top + r.height / 2);
+        placed = !!hit && (hit === node || node.contains(hit));
+      }
+      if (!placed) node.style.translate = '';
+    }
+  }
   function placeHandles(el) {
     const box = ensureHandles();
     const rect = el.getBoundingClientRect();
-    box.style.left = rect.left + 'px';
-    box.style.top = rect.top + 'px';
-    box.style.width = rect.width + 'px';
-    box.style.height = rect.height + 'px';
-    box.querySelector('[data-handle="nw"]').style.cssText = 'left:-4px;top:-4px';
-    box.querySelector('[data-handle="ne"]').style.cssText = 'right:-4px;top:-4px';
+    // Laid out in the overlay's containing block, which a transform on
+    // `body` moves and scales (`fixedFrame`).
+    const frame = fixedFrame();
+    placeFixed(frame, box, rect.left, rect.top, rect.width, rect.height);
+    // On the edges they move: `width` at the bottom-right corner, `height`
+    // on the bottom edge left of the bottom margin and padding handles, the
+    // spacing handle right of them.
     box.querySelector('[data-handle="se"]').style.cssText = 'right:-4px;bottom:-4px';
-    box.querySelector('[data-handle="sw"]').style.cssText = 'left:-4px;bottom:-4px';
-    // Right of centre, where the bottom margin and padding handles are not.
-    box.querySelector('[data-handle="spacing"]').style.cssText = 'left:calc(50% + 14px);bottom:-18px';
+    // On a box narrower than about 64px those places lie past the ends of
+    // the bottom edge, so each is held over the edge (`max`, `min`).
+    box.querySelector('[data-handle="height"]').style.cssText = 'left:max(-4px, calc(50% - 32px));bottom:-4px';
+    box.querySelector('[data-handle="spacing"]').style.cssText = 'left:min(calc(100% - 6px), calc(50% + 14px));bottom:-18px';
     box.querySelector('[data-handle="se"]').setAttribute('aria-label', 'Resize selected element');
     box.querySelector('[data-handle="se"]').dataset.layoutHandle = 'resize';
+    box.querySelector('[data-handle="height"]').setAttribute('aria-label', 'Adjust selected element height');
+    box.querySelector('[data-handle="height"]').dataset.layoutHandle = 'resize-height';
     box.querySelector('[data-handle="spacing"]').setAttribute('aria-label', 'Adjust selected spacing');
     box.querySelector('[data-handle="spacing"]').dataset.layoutHandle = 'spacing';
     // A padding handle sits on its side's content edge, inside the border and
     // the padding; a margin handle on the margin edge, outside. Both follow
     // the box as a drag previews it. Offsets are from the overlay's 1px
-    // border. Editing, not reviewing: shown in Edit mode only.
+    // border, in the overlay's pixels: the element's used values times its
+    // scale (`zoom` or a scale transform) over the overlay's. Editing, not
+    // reviewing: shown in Edit mode only.
     const boxStyle = window.getComputedStyle(el);
+    const scaled = boxSizeFor(el, boxStyle);
     const used = function (name) { return parseFloat(boxStyle.getPropertyValue(name)) || 0; };
     BOX_HANDLES.forEach(function (name) {
       const node = box.querySelector('[data-box-handle="' + name + '"]');
       if (!node) return;
       const dash = name.indexOf('-');
       const side = name.slice(dash + 1);
+      const across = (side === 'top' || side === 'bottom')
+        ? scaled.scaleY / frame.sy : scaled.scaleX / frame.sx;
       const offset = name.slice(0, dash) === 'padding'
-        ? used('border-' + side + '-width') + used('padding-' + side) - 1
-        : -used('margin-' + side) - 7;
+        ? (used('border-' + side + '-width') + used('padding-' + side)) * across - 1
+        : -used('margin-' + side) * across - 7;
       const along = (side === 'top' || side === 'bottom')
         ? 'left:calc(50% - 8px)' : 'top:calc(50% - 8px)';
       node.style.cssText = along + ';' + side + ':' + offset + 'px' +
         (editorMode === 'edit' ? '' : ';display:none');
     });
-    placeLayoutGuides(el, rect);
+    placeLayoutGuides(el, rect, frame);
     const crumb = ensureBreadcrumb();
     const stack = ancestorStack(el).reverse();
     crumb.innerHTML = '';
@@ -857,9 +1349,12 @@ __ISONIM_SCENE_GRAPH_WALK__
         (position === drill.chain.length - 1 ? ' top' : '');
       crumb.appendChild(chip);
     }
-    crumb.style.left = Math.max(6, Math.min(rect.left, window.innerWidth - 280)) + 'px';
-    crumb.style.top = Math.min(window.innerHeight - 30, rect.bottom + 8) + 'px';
+    placeFixed(frame, crumb, Math.max(6, Math.min(rect.left, window.innerWidth - 280)),
+      Math.min(window.innerHeight - 30, rect.bottom + 8));
     crumb.hidden = false;
+    // Last, after the guides and the breadcrumb are in place: a handle is
+    // tested against where they are now.
+    separateHandles(box);
   }
   // Which declaration block decides each side of a simple shorthand, measured
   // rather than inferred, without changing what the preview renders.

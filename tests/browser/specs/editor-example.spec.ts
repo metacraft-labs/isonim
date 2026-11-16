@@ -2447,17 +2447,26 @@ test.describe("IsoNim packaged editor example", () => {
     await expect(card).toHaveAttribute("data-isonim-selected", "true");
     expect(await undoCount()).toBe(start + 1);
 
-    // So does pointer cancellation of the resize handle's drag.
+    // So does pointer cancellation of the resize handle's drag. The card is
+    // content-box, 24px of padding a side and `max-width: 420px`: its width
+    // is 420px and its border box 468px. The handle starts from the width,
+    // so a drag 30px inwards shrinks the box by exactly 30px (isonim-pm issue
+    // 2026-10-23-the-canvas-resize-handle-sets-width-from-the-border-box).
+    expect(await used("box-sizing")).toBe("content-box");
     const width = await used("width");
+    expect(width).toBe("420px");
+    const borderBox = () => card.evaluate((node) => node.getBoundingClientRect().width);
+    const boxBefore = await borderBox();
     await frame.getByLabel("Resize selected element", { exact: true }).evaluate((node) =>
       node.addEventListener("pointerdown", (event) => {
         (window as any).__resizePointer = (event as PointerEvent).pointerId;
       }));
-    // (The handle sets `width` from the border box, and the card has a
-    // max-width: a long drag inwards is one that shows.)
     p = await press("Resize selected element");
-    await page.mouse.move(p.x - px(100), p.y, { steps: 3 });
-    await expect.poll(() => used("width")).not.toBe(width);
+    await page.mouse.move(p.x - px(15), p.y, { steps: 2 });
+    await page.mouse.move(p.x - px(30), p.y, { steps: 2 });
+    await expect.poll(() => used("width")).toBe("390px");
+    expect(Math.abs((await borderBox()) - (boxBefore - 30))).toBeLessThan(0.51);
+    await expect(frame.getByLabel("Canvas spacing measurement")).toHaveText("width: 390px");
     expect(await undoCount()).toBe(start + 1);
     await card.evaluate(() => window.dispatchEvent(new PointerEvent("pointercancel",
       { pointerId: (window as any).__resizePointer, bubbles: true })));
@@ -2466,6 +2475,15 @@ test.describe("IsoNim packaged editor example", () => {
     expect(await undoCount()).toBe(start + 1);
     expect(await demoSourceContent(page, demoFoundationSource))
       .toBe(original.replace("padding: 18px;", "padding: 24px;"));
+
+    // Escape puts it back too.
+    p = await press("Resize selected element");
+    await page.mouse.move(p.x - px(30), p.y, { steps: 3 });
+    await expect.poll(() => used("width")).toBe("390px");
+    await page.keyboard.press("Escape");
+    await expect.poll(() => used("width")).toBe(width);
+    await page.mouse.up();
+    expect(await undoCount()).toBe(start + 1);
 
     // Undo puts the bytes back.
     await page.evaluate(() => (document.activeElement as HTMLElement | null)?.blur());

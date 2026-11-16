@@ -1832,6 +1832,20 @@ test-editor-inline-preview-headless:
 test-editor-inline-preview: test-editor-inline-preview-headless isonim-review-build editor-popup-build
     timeout --signal=TERM --kill-after=15s 180s "${ISONIM_SCENARIO_NODE:-node}" tests/test_editor_inline_preview_gui.mjs
 
+# The selection overlay's canvas handles (editor spec "Edit Mode" and "Visual
+# box model": the handles' drag contract): the width and height handles move
+# their edge by the distance dragged for content-box and border-box, at 50%
+# and 200% preview scale, on a zoomed element and under a transform on body;
+# min-/max- clamps are written as shown and named; an !important rule, flex
+# sizing, an edge the layout pins, an inline box and a rotated element are
+# refused at the press; margin, padding and spacing handles follow a zoomed
+# card and a percentage gap; Escape and pointer cancellation restore. The
+# editor example's real writer.
+test-editor-canvas-resize-gui:
+    mkdir -p build/editor-shorthand
+    nim js --hints:off --path:src --path:. --path:../nim-everywhere/src --path:../isonim-render-serve/src --path:../nim-acp/src --path:../nim-agent-harbor/src --path:../nim-agents/src -o:build/editor-shorthand/editor.js tests/helpers/editor_shorthand_order_workspace.nim
+    timeout --signal=TERM --kill-after=15s 1800s "${ISONIM_SCENARIO_NODE:-node}" tests/test_editor_canvas_resize_gui.mjs
+
 test-editor-c4a-gestures: isonim-review-build editor-inspector-build
     timeout --signal=TERM --kill-after=15s 180s "${ISONIM_SCENARIO_NODE:-node}" tests/test_editor_inspector_gestures_gui.mjs
 

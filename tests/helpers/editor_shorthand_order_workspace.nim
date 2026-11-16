@@ -17,6 +17,11 @@
 ## extra class `window.__isonimShorthandCardClass` names (`2xl`, which
 ## Chromium serialises in a selector as `.\32 xl`).
 ##
+## Further properties of the card rule are mapped when
+## `window.__isonimShorthandMapped` names them (comma-separated): the canvas
+## resize handle's cases (`tests/test_editor_canvas_resize_gui.mjs`) map
+## `width`.
+##
 ## The card's corners are mapped too, and the example document's inline
 ## `border-radius:8px` is left out of the preview unless
 ## `window.__isonimShorthandKeepInlineRadius` is set: an inline declaration
@@ -110,7 +115,12 @@ proc main() =
     adapter.writeFile = proc(file, content: string): WorkspaceOperationResult =
       WorkspaceOperationResult(ok: false, message: "Could not write " & file &
         ": the test host refuses every write.")
-  for property in MappedSides:
+  # `window.__isonimShorthandMapped`: more of the card rule's properties to
+  # map, comma-separated (`width` for the canvas resize handle's cases).
+  var mapped = @MappedSides
+  for extra in pageString("__isonimShorthandMapped").split(','):
+    if extra.strip().len > 0: mapped.add extra.strip()
+  for property in mapped:
     schema.nodes.add DesignSchemaNode(
       key: "classes.destination-card." & property,
       kind: dsnClassDefinition, name: "destination-card",
