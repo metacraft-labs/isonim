@@ -2048,6 +2048,7 @@ editor-preview-mount-build: build-tailwind
 
 test-editor-preview-mount-gui: editor-preview-mount-build
     timeout --signal=TERM --kill-after=15s 180s "${ISONIM_SCENARIO_NODE:-node}" tests/test_editor_preview_mount_gui.mjs
+    timeout --signal=TERM --kill-after=15s 180s "${ISONIM_SCENARIO_NODE:-node}" tests/test_editor_page_preview_mount_gui.mjs
 
 # Requested-document ownership on real reactive roots; strict Node execution.
 test-editor-preview-mount: build-tailwind

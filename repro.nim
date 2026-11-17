@@ -1585,9 +1585,9 @@ package isonim:
       extraInputs = @["src", "tests/helpers/editor_preview_mount_browser.nim", "Justfile", "build/tailwind-styles.json"],
       extraOutputs = @["build/editor-preview-mount"])
     let previewMountGuiEdge = sh.shell(
-      command = "timeout --signal=TERM --kill-after=15s 180s \"${ISONIM_SCENARIO_NODE:-node}\" tests/test_editor_preview_mount_gui.mjs",
+      command = "timeout --signal=TERM --kill-after=15s 180s \"${ISONIM_SCENARIO_NODE:-node}\" tests/test_editor_preview_mount_gui.mjs && timeout --signal=TERM --kill-after=15s 180s \"${ISONIM_SCENARIO_NODE:-node}\" tests/test_editor_page_preview_mount_gui.mjs",
       cacheable = false, actionId = "isonim.preview_mount_execute.gui", after = @[previewMountBrowserEdge],
-      extraInputs = @["tests/test_editor_preview_mount_gui.mjs", "build/editor-preview-mount"])
+      extraInputs = @["tests/test_editor_preview_mount_gui.mjs", "tests/test_editor_page_preview_mount_gui.mjs", "build/editor-preview-mount"])
     testBuildActions.add(previewMountBrowserEdge)
     testExecuteActions.add(previewMountGuiEdge)
     discard collect("test-editor-preview-mount", previewMountActions)

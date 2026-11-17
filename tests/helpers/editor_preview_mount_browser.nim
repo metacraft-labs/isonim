@@ -89,7 +89,42 @@ proc enterPageFullScreen(): bool =
           kind: story.kind, index: storyIndex))
         vm.setPreviewFullScreen(true)
         return vm.previewFullScreenActive()
+
+proc selectPage(index: int): bool =
+  ## Selects the page story at `index` among the page stories, in sidebar
+  ## order. Page stories are shown in the page preview, not in the component
+  ## detail view that `selectComponent` reaches.
+  var position = 0
+  for group in vm.sidebar.groups.val:
+    for storyIndex, story in group.items:
+      if story.kind == skPage:
+        if position == index:
+          return vm.selectStory(StoryRef(group: story.group, name: story.name,
+            kind: story.kind, index: storyIndex))
+        inc position
+  result = false
+proc pageStoryCount(): int =
+  for group in vm.sidebar.groups.val:
+    for story in group.items:
+      if story.kind == skPage:
+        inc result
+proc showPage() =
+  ## Shows the page view for the selected page story, without re-selecting it.
+  vm.activeView.val = evPagePreview
+proc changeToPhoneViewport() =
+  ## A viewport change re-runs the page preview's document effect, as a resize
+  ## of the preview does.
+  vm.changeViewport(makeBuiltinViewport(pvkPhone))
+proc changeToStreamedBackend() =
+  ## A streamed (non-web) backend: the mount hook is a web-path rule and must
+  ## not run for it.
+  vm.changePlatform(pbTui)
 let selectFn = selectComponent
+let selectPageFn = selectPage
+let pageStoryCountFn = pageStoryCount
+let showPageFn = showPage
+let phoneViewportFn = changeToPhoneViewport
+let streamedFn = changeToStreamedBackend
 let snapshotFn = snapshot
 let reloadFn = reloadFixture
 let disposeFn = closeView
@@ -98,7 +133,9 @@ let remountFn = remountView
 let disposeRetainingDomFn = disposeRetainingDom
 let focusRestoreFn = requestFocusRestore
 let fullScreenFn = enterPageFullScreen
-{.emit: ["window.__mountProbe={select:", selectFn, ",snapshot:", snapshotFn,
+{.emit: ["window.__mountProbe={select:", selectFn, ",selectPage:", selectPageFn,
+  ",pageStoryCount:", pageStoryCountFn,
+  ",showPage:", showPageFn, ",phoneViewport:", phoneViewportFn, ",streamed:", streamedFn, ",snapshot:", snapshotFn,
   ",reload:", reloadFn, ",dispose:", disposeFn, ",storyboard:", storyboardFn,
   ",remount:", remountFn, ",disposeRetainingDom:", disposeRetainingDomFn,
   ",requestFocusRestore:", focusRestoreFn, ",enterPageFullScreen:", fullScreenFn, "};"].}

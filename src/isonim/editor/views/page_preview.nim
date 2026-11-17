@@ -14,6 +14,7 @@ import isonim/editor/viewmodels
 import isonim/editor/streaming_preview
 import isonim/editor/views/canvas_mount
 import isonim/editor/views/component_edit  # editablePreviewDocument (edit overlay)
+import isonim/editor/views/preview_mount   # the workspace's mount hook, shared with detail/edit
 
 when defined(js):
   import std/jsffi as jsffi
@@ -372,6 +373,20 @@ proc renderPagePreview*[R, E](r: R; vm: EditorVM): E =
   when isDomViewHost(E):
     let pageBridgeBinding = newBridgeBinding()
 
+  # The workspace's mount hook draws a page story's content into the frame,
+  # exactly as the detail and edit views do. Without it a page story whose
+  # project supplies only an empty shell rendered as an empty frame here.
+  let mountState = newPreviewMountState()
+  # Bumped each time the srcdoc effect requests a document. The mount effect
+  # below reads it, so the story is mounted once per requested document.
+  let pageSrcdocGeneration = createSignal(0)
+  # The story and whether a web document was requested for it, as the srcdoc
+  # effect last requested them. The mount effect reads these rather than the
+  # live selection, so what it mounts is the document that was requested, and
+  # does not depend on which of the two effects runs first after a story switch.
+  var pageMountStory: StoryRef
+  var pageMountRequested = false
+
   createRenderEffect proc() =
     let preview = vm.preview.current.val
     let viewport = vm.viewport.val
@@ -417,8 +432,11 @@ proc renderPagePreview*[R, E](r: R; vm: EditorVM): E =
     # M-EVP-13: hide the viewport-sized device frame when the canvas
     # takes over.
     r.setStyle(deviceFrame, "display", if useCanvas: "none" else: "flex")
+    pageMountRequested = false
     if useCanvas:
-      # Hide iframe + fallback; the canvas wrapper takes over.
+      # Hide iframe + fallback; the canvas wrapper takes over. Retire any
+      # mounted root the web document left behind.
+      discard requestedPreviewMountDocument(previewFrame, mountState, "")
       r.setAttribute(previewFrame, "srcdoc", "")
       r.setStyle(fallbackPanel, "display", "none")
       r.setStyle(previewFrame, "display", "none")
@@ -449,10 +467,18 @@ proc renderPagePreview*[R, E](r: R; vm: EditorVM): E =
         else:
           editablePreviewDocument(preview.documentHtml, preview.metadata,
             vm.editMode.val)
-      r.setAttribute(previewFrame, "srcdoc", identifiedPreviewDocument(srcdoc, vm.selectedStory.val, vm.livePreviewReloadGeneration.val))
+      let pageStory = vm.selectedStory.val
+      r.setAttribute(previewFrame, "srcdoc",
+        requestedPreviewMountDocument(previewFrame, mountState,
+          identifiedPreviewDocument(srcdoc, pageStory,
+            vm.livePreviewReloadGeneration.val)))
       r.setStyle(fallbackPanel, "display", "none")
       r.setStyle(previewFrame, "display", "block")
+      pageMountStory = pageStory
+      pageMountRequested = true
+      pageSrcdocGeneration.update(proc(previous: int): int = previous + 1)
     else:
+      discard requestedPreviewMountDocument(previewFrame, mountState, "")
       r.setAttribute(previewFrame, "srcdoc", "")
       r.setStyle(fallbackPanel, "display", "flex")
       r.setStyle(previewFrame, "display", "none")
@@ -559,6 +585,29 @@ proc renderPagePreview*[R, E](r: R; vm: EditorVM): E =
       if useCanvas and synthetic and not fellBack: "block" else: "none")
     r.setStyle(rendererFellBackNote, "display",
       if fellBack: "flex" else: "none")
+
+  # The workspace's mount, run once per requested document and again on a view
+  # switch. It is its own effect: the srcdoc effect must not read the view,
+  # or every switch would reload the page frame. Mount only into the shown
+  # view on the web path. Both preview views stay mounted and display-toggled,
+  # and a hidden view that mounted would also restore a selection on the shared
+  # VM. A switch away retires the pending request. The srcdoc effect writes the
+  # flags before it bumps the generation, and this effect runs inside that bump
+  # (synchronously), so it always sees the request those flags describe.
+  createRenderEffect proc() =
+    discard pageSrcdocGeneration.val
+    let pageStory = pageMountStory
+    if pageMountRequested and vm.platform.val == pbWeb and
+        vm.activeView.val == evPagePreview:
+      # The closure runs inside this effect when the frame is already loaded,
+      # so it reads the selection untracked: this effect must not subscribe to it.
+      mountPreviewInto(previewFrame, pageStory, vm.previewMount, mountState,
+        false, proc(): bool =
+          vm.platform.val == pbWeb and
+            vm.activeView.val == evPagePreview and
+            vm.selectedStory.value == pageStory)
+    else:
+      mountState.cancelPendingPreviewMount()
 
   # M-EVP-13: overlay positioning effect — hover label, selection
   # outline, breadcrumb, edit-mode handles. Shared with component_detail
