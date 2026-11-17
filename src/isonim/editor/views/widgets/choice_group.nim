@@ -210,6 +210,13 @@ proc activate*(vm: ChoiceGroupVM; index: int) =
   if vm.variant == cgvChevron and vm.popupOpen.val:
     vm.popupOpen.val = false
 
+proc clearActive*(vm: ChoiceGroupVM) =
+  ## Leave no option active. For a selection that is not one of the options
+  ## (a viewport that sits in an overflow menu, not in the strip): every pill
+  ## then reads ``aria-pressed="false"``, where ``activate`` would have to
+  ## press some option that is not the selection.
+  vm.activeIndex.val = -1
+
 proc togglePopup*(vm: ChoiceGroupVM) =
   ## Flip ``popupOpen``. Idempotent against listeners — the signal's
   ## default equality only fires when the value flips.

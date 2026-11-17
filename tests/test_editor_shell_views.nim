@@ -2165,6 +2165,33 @@ suite "Per-item shell effects":
       require findByAttr(chrome, "data-preview-viewport", "desktop") != nil
       dispose()
 
+  test "viewport strip presses only the pill of the active viewport":
+    ## Wide is an overflow-menu viewport on web, not a strip pill. Before the
+    ## fix the strip kept the last pinned pill pressed (Desktop) while Wide was
+    ## the active viewport, both at creation and after a change.
+    createRoot do (dispose: proc()):
+      let vm = createEditorVM()
+      let strip = ["desktop", "laptop", "tablet", "phone"]
+      proc pressed(chrome: MockNode): seq[string] =
+        for slug in strip:
+          let pill = findByAttr(chrome, "data-preview-viewport", slug)
+          if pill != nil and pill.attributes.getOrDefault("aria-pressed") == "true":
+            result.add slug
+      vm.changeViewport(makeBuiltinViewport(pvkWide))
+      let chrome = renderPreviewChromeBar[MockRenderer, MockNode](MockRenderer(), vm)
+      check pressed(chrome).len == 0
+      let overflow = findByAttr(chrome, "data-preview-viewport-overflow", "true")
+      check overflow != nil
+      check overflow.attributes["title"] ==
+        "Current viewport: Wide; choose another size"
+      vm.changeViewport(makeBuiltinViewport(pvkDesktop))
+      check pressed(chrome) == @["desktop"]
+      vm.changeViewport(makeBuiltinViewport(pvkWide))
+      check pressed(chrome).len == 0
+      vm.changeViewport(makeBuiltinViewport(pvkPhone))
+      check pressed(chrome) == @["phone"]
+      dispose()
+
   test "foundation catalog remains usable without a story but spec still needs one":
     createRoot do (dispose: proc()):
       let vm = createEditorVM()

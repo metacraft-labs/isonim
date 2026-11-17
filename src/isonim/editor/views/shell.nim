@@ -5018,6 +5018,10 @@ proc renderPreviewChromeBar*[R, E](r: R; vm: EditorVM;
   var viewportStripVm = createSegmentedChoiceVM(
     pinnedViewportLabels(initialBackend),
     initialIndex = max(0, initialPinnedIndex))
+  # A viewport that is not pinned (Wide on web) must press no pill. The VM
+  # cannot start unselected on its own: its initial index is clamped to 0.
+  if initialPinnedIndex < 0:
+    viewportStripVm.clearActive()
   var viewportPinned = initialPinned
   var viewportPopup = initialPopup
   r.mountSegmentedChoice(viewportStripHost, viewportStripVm,
@@ -5173,13 +5177,15 @@ proc renderPreviewChromeBar*[R, E](r: R; vm: EditorVM;
         disposeViewportStrip = nil
       r.clearChildren(viewportStripHost)
       viewportPinned = newPinned
-      var pinnedIdx = 0
+      var pinnedIdx = -1
       for i, vp in newPinned:
         if viewportsEqual(active, vp):
           pinnedIdx = i
           break
       viewportStripVm = createSegmentedChoiceVM(
-        newPinnedLabels, initialIndex = pinnedIdx)
+        newPinnedLabels, initialIndex = max(0, pinnedIdx))
+      if pinnedIdx < 0:
+        viewportStripVm.clearActive()
       createRoot(proc(dispose: proc()) =
         disposeViewportStrip = dispose
         r.mountSegmentedChoice(viewportStripHost, viewportStripVm,
@@ -5208,11 +5214,18 @@ proc renderPreviewChromeBar*[R, E](r: R; vm: EditorVM;
   # afterwards.
   createRenderEffect proc() =
     let active = capturedVm.viewport.val
+    var pinnedIdx = -1
     for i, vp in viewportPinned:
       if viewportsEqual(active, vp):
-        if viewportStripVm.activeIndex.value != i:
-          viewportStripVm.activate(i)
+        pinnedIdx = i
         break
+    # A viewport outside the strip (Wide, in the overflow menu) must clear the
+    # pressed pill rather than leave the last pinned one pressed.
+    if pinnedIdx < 0:
+      if viewportStripVm.activeIndex.value != -1:
+        viewportStripVm.clearActive()
+    elif viewportStripVm.activeIndex.value != pinnedIdx:
+      viewportStripVm.activate(pinnedIdx)
 
   # Backend and viewport both answer "what am I looking at", so they sit
   # together in the left group rather than one being bookended and the other
