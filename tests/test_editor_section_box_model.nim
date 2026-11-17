@@ -1938,3 +1938,250 @@ suite "the preview reload an unshown edit needs":
       check not vm.previewMissesPendingEdits.val
       check not vm.previewShowsPendingEdits.val
       dispose()
+
+# --- An accepted agent proposal for a shorthand ---------------------------
+
+proc paddingProposal(source, value: string): SourceEditPlan =
+  ## The plan the "Padding, all sides" field makes at the shared class scope
+  ## over ``source``, taken from an identical editor, owned by no history
+  ## entry: an agent proposal carries it so.
+  let scratch = new(string)
+  scratch[] = source
+  let vm = boxVm(scratch)
+  doAssert vm.editCssProperty("padding", value, pesShared).status ==
+    pesAccepted
+  result = vm.inspector.pendingSourceEdits.val[^1]
+  result.historyId = 0
+
+proc inspectorPadding(value: string; topWritten: bool): CSSPropertyEditTransaction =
+  ## The same edit committed through the inspector after the same history
+  ## (padding-top 24px, written or still pending), on an identical editor:
+  ## the sides and the preview followers a commit settles.
+  let scratch = new(string)
+  scratch[] = DemoFoundationInitialSource
+  let vm = boxVm(scratch)
+  doAssert vm.editCssProperty("padding-top", "24px", pesShared).status ==
+    pesAccepted
+  if topWritten:
+    doAssert vm.applyWorkspaceFileEdits().ok
+  doAssert vm.editCssProperty("padding", value, pesShared).status ==
+    pesAccepted
+  vm.inspector.undoStack.val[^1]
+
+# Templates, so their checks belong to the test that expands them.
+template acceptPadding(vm: EditorVM; plan: SourceEditPlan) =
+  block:
+    let id = vm.chat.addAgentEditProposal(AgentEditProposal(title: "Padding",
+      summary: "Set the padding", sourceEdits: @[plan],
+      selectedEditIndexes: @[0], validity: aepvCurrent))
+    check vm.acceptAgentProposedEdit(id).ok
+
+template previewShows(vm: EditorVM; want: string;
+    settled: CSSPropertyEditTransaction) =
+  block:
+    let request = vm.inspector.previewValueRequest.val
+    check request.property == "padding"
+    check request.value == want
+    check request.followers == settled.sideFollowersAfter
+    check request.followers.len > 0
+    check request.rule == settled.previewRule
+    check request.rule.len > 0
+
+suite "a written agent proposal for a shorthand settles its sides as a commit does":
+  ## isonim-pm issue 2026-11-15-after-an-accepted-agent-proposal-replaces-a-
+  ## pending-edit-the-inspector-shows-a-value-the-file-does-not-hold, review
+  ## RV-1/RV-2. A proposal belongs to no history entry, but once written the
+  ## inspector's sides and the preview's followers are exactly what the same
+  ## edit committed through the inspector gives (the rule's declaration
+  ## order, above), and an undo of an edit it superseded shows that state.
+  test "after a written padding-top, a proposal for padding keeps the top":
+    createRoot proc(dispose: proc()) =
+      let foundation = new(string)
+      foundation[] = DemoFoundationInitialSource
+      let vm = boxVm(foundation)
+      check vm.editCssProperty("padding-top", "24px", pesShared).status ==
+        pesAccepted
+      vm.write()
+      let expected = inspectorPadding("20px", topWritten = true)
+      vm.acceptPadding(paddingProposal(foundation[], "20px"))
+      check foundation[] == withCardRule("padding: 20px; padding-top: 24px;")
+      check vm.value("padding") == "20px"
+      check vm.sides("padding-") == @["24px", "20px", "20px", "20px"]
+      # The inspector commit of the same edit settles the same sides.
+      var committed: seq[string] = @[]
+      for side in Sides:
+        for prop in expected.afterElement.properties:
+          if prop.name == "padding-" & side: committed.add prop.value
+      check vm.sides("padding-") == committed
+      vm.previewShows("20px", expected)
+      dispose()
+
+  test "with a pending padding-top, a proposal for padding keeps the top":
+    createRoot proc(dispose: proc()) =
+      let foundation = new(string)
+      foundation[] = DemoFoundationInitialSource
+      let vm = boxVm(foundation)
+      let plan = paddingProposal(foundation[], "20px")
+      check vm.editCssProperty("padding-top", "24px", pesShared).status ==
+        pesAccepted
+      vm.acceptPadding(plan)
+      check foundation[] == withCardRule("padding: 20px; padding-top: 24px;")
+      check vm.sides("padding-") == @["24px", "20px", "20px", "20px"]
+      vm.previewShows("20px", inspectorPadding("20px", topWritten = false))
+      dispose()
+
+  test "undoing a superseded padding edit shows the state the proposal left, and redo the edit's":
+    createRoot proc(dispose: proc()) =
+      let foundation = new(string)
+      foundation[] = DemoFoundationInitialSource
+      let vm = boxVm(foundation)
+      check vm.editCssProperty("padding-top", "24px", pesShared).status ==
+        pesAccepted
+      vm.write()
+      let topWritten = foundation[]
+      let plan = paddingProposal(topWritten, "20px")
+      check vm.editCssProperty("padding", "22px", pesShared).status ==
+        pesAccepted
+      vm.acceptPadding(plan)
+      let accepted = withCardRule("padding: 20px; padding-top: 24px;")
+      check foundation[] == accepted
+      check vm.inspector.undoStack.val[^1].superseded
+      let at20 = inspectorPadding("20px", topWritten = true)
+      let at22 = inspectorPadding("22px", topWritten = true)
+      # Undo of the superseded 22px edit: nothing moves, and the preview is
+      # told the proposal's state -- not the sides the 22px edit found.
+      check vm.runEditorCommand(eckUndo).status == ecsSucceeded
+      check foundation[] == accepted
+      check vm.value("padding") == "20px"
+      check vm.sides("padding-") == @["24px", "20px", "20px", "20px"]
+      vm.previewShows("20px", at20)
+      check vm.inspector.historyNotice.val.startsWith("Undone:")
+      # Redo writes 22px over the proposal, with the 22px edit's sides.
+      check vm.runEditorCommand(eckRedo).status == ecsSucceeded
+      check vm.inspector.historyNotice.val == ""
+      check vm.sides("padding-") == @["24px", "22px", "22px", "22px"]
+      vm.previewShows("22px", at22)
+      vm.write()
+      check foundation[] == withCardRule("padding: 22px; padding-top: 24px;")
+      # Its own undo returns to the proposal's state.
+      check vm.runEditorCommand(eckUndo).status == ecsSucceeded
+      check vm.sides("padding-") == @["24px", "20px", "20px", "20px"]
+      vm.previewShows("20px", at20)
+      vm.write()
+      check foundation[] == accepted
+      dispose()
+
+proc cardRuleText(foundation: ref string): string =
+  let at = foundation[].find(".destination-card {")
+  foundation[][at .. foundation[].find("}", at)]
+
+template previewAsks(vm: EditorVM; asked, want: string;
+    sideFollowers: seq[(string, string)]) =
+  block:
+    let request = vm.inspector.previewValueRequest.val
+    check request.property == asked
+    check request.value == want
+    check request.followers == sideFollowers
+
+suite "an undo or redo under a written proposal shows what the rule renders":
+  ## Review RV2-1/RV2-2 of isonim-pm issue 2026-11-15-after-an-accepted-agent-
+  ## proposal-replaces-a-pending-edit-the-inspector-shows-a-value-the-file-
+  ## does-not-hold. On a rule written over several lines the example writer
+  ## appends a side to the last declaration's line, and a proposal rewrites
+  ## only the shorthand's line, so the side edit's own undo still runs. When
+  ## that undo removes the side's declaration, the shorthand the proposal
+  ## wrote decides the side; the inspector and the preview show that, settled
+  ## by the rule's declaration order, whichever element was selected.
+  const Lines = ".destination-card {\n  padding: 18px;\n  color: red;\n}"
+  const TopAdded = ".destination-card {\n  padding: 18px;\n  color: red; padding-top: 24px; }"
+  const Proposed = ".destination-card {\n  padding: 20px;\n  color: red; padding-top: 24px; }"
+  const TopUndone = ".destination-card {\n  padding: 20px;\n  color: red;\n}"
+
+  proc linesSource(rule: string): string =
+    DemoFoundationInitialSource.replace(CardRule, rule)
+
+  test "M4 undoing a side edit the proposal's shorthand now decides":
+    createRoot proc(dispose: proc()) =
+      let foundation = new(string)
+      foundation[] = linesSource(Lines)
+      let vm = boxVm(foundation)
+      check vm.editCssProperty("padding-top", "24px", pesShared).status ==
+        pesAccepted
+      vm.write()
+      check foundation.cardRuleText == TopAdded
+      vm.acceptPadding(paddingProposal(foundation[], "20px"))
+      check foundation.cardRuleText == Proposed
+      check vm.sides("padding-") == @["24px", "20px", "20px", "20px"]
+      check vm.runEditorCommand(eckUndo).status == ecsSucceeded
+      check vm.sides("padding-") == @["20px", "20px", "20px", "20px"]
+      vm.previewAsks("padding-top", "20px", @[("padding-top", "20px")])
+      vm.write()
+      check foundation.cardRuleText == TopUndone
+      check vm.runEditorCommand(eckRedo).status == ecsSucceeded
+      check vm.sides("padding-") == @["24px", "20px", "20px", "20px"]
+      vm.previewAsks("padding-top", "24px", @[("padding-top", "24px")])
+      vm.write()
+      check foundation.cardRuleText == Proposed
+      check vm.runEditorCommand(eckUndo).status == ecsSucceeded
+      check vm.sides("padding-") == @["20px", "20px", "20px", "20px"]
+      vm.write()
+      check foundation.cardRuleText == TopUndone
+      dispose()
+
+  test "M5 control: a side declared on its own line is restored in place":
+    createRoot proc(dispose: proc()) =
+      let foundation = new(string)
+      let own = ".destination-card {\n  padding: 18px;\n  padding-top: 18px;\n}"
+      foundation[] = linesSource(own)
+      let vm = boxVm(foundation)
+      check vm.editCssProperty("padding-top", "24px", pesShared).status ==
+        pesAccepted
+      vm.write()
+      check foundation.cardRuleText == own.replace("padding-top: 18px", "padding-top: 24px")
+      vm.acceptPadding(paddingProposal(foundation[], "20px"))
+      let proposed = ".destination-card {\n  padding: 20px;\n  padding-top: 24px;\n}"
+      check foundation.cardRuleText == proposed
+      check vm.sides("padding-") == @["24px", "20px", "20px", "20px"]
+      check vm.runEditorCommand(eckUndo).status == ecsSucceeded
+      check vm.sides("padding-") == @["18px", "20px", "20px", "20px"]
+      vm.previewAsks("padding-top", "18px", @[("padding-top", "18px")])
+      vm.write()
+      check foundation.cardRuleText == proposed.replace("padding-top: 24px", "padding-top: 18px")
+      check vm.runEditorCommand(eckRedo).status == ecsSucceeded
+      check vm.sides("padding-") == @["24px", "20px", "20px", "20px"]
+      vm.previewAsks("padding-top", "24px", @[("padding-top", "24px")])
+      vm.write()
+      check foundation.cardRuleText == proposed
+      dispose()
+
+  test "M6 the proposal is accepted while another element is selected":
+    createRoot proc(dispose: proc()) =
+      let foundation = new(string)
+      foundation[] = linesSource(Lines)
+      let vm = boxVm(foundation)
+      check vm.editCssProperty("padding-top", "24px", pesShared).status ==
+        pesAccepted
+      vm.write()
+      let plan = paddingProposal(foundation[], "20px")
+      check vm.selectInspectorElement(ElementRef(id: "other", tag: "p",
+        sourceKey: "other", sourceFile: DemoFoundationSource, sourceLine: 1))
+      vm.acceptPadding(plan)
+      check foundation.cardRuleText == Proposed
+      # The card's latest snapshot is settled by the rule's declaration
+      # order, not spread over every side.
+      var recorded: seq[string] = @[]
+      for side in Sides:
+        for prop in vm.inspector.undoStack.val[^1].afterElement.properties:
+          if prop.name == "padding-" & side: recorded.add prop.value
+      check recorded == @["24px", "20px", "20px", "20px"]
+      check vm.runEditorCommand(eckUndo).status == ecsSucceeded
+      check vm.sides("padding-") == @["20px", "20px", "20px", "20px"]
+      vm.previewAsks("padding-top", "20px", @[("padding-top", "20px")])
+      vm.write()
+      check foundation.cardRuleText == TopUndone
+      check vm.runEditorCommand(eckRedo).status == ecsSucceeded
+      check vm.sides("padding-") == @["24px", "20px", "20px", "20px"]
+      vm.previewAsks("padding-top", "24px", @[("padding-top", "24px")])
+      vm.write()
+      check foundation.cardRuleText == Proposed
+      dispose()

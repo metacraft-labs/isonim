@@ -153,6 +153,12 @@ type
     previewValueRequest*: Signal[PreviewValueRequest]
       ## Set by undo/redo; applied by the preview view. See
       ## `PreviewValueRequest`.
+    historyNotice*: Signal[string]
+      ## Why the last undo or redo moved nothing that can be seen, or "".
+      ## Undoing an edit that an accepted agent proposal replaced before it
+      ## was written withdraws nothing: the file keeps the proposal. The
+      ## status bar says so, so the keystroke is not read as ignored.
+      ## Cleared by the next undo, redo or staged edit.
     breadcrumbTrail*: Signal[seq[BreadcrumbEntry]]
       ## The status-bar element path. Display state, not selection:
       ## it is the ancestor chain of the last selection that arrived
@@ -4034,11 +4040,15 @@ proc discardCssPropertyEdits*(inspector: InspectorVM)
   ## Forward-declared: `runEditorCommand`'s Revert arm delegates to it, and it
   ## is defined further down with the rest of the edit-history machinery.
 
+proc settleHistoryCommand(editor: EditorVM; redo: bool;
+    journalBefore: seq[SourceEditPlan]; modelBefore: ElementRef)
+
 proc runEditorCommand*(editor: EditorVM;
     kind: EditorCommandKind): EditorCommandState {.discardable.} =
   ## Dispatch a framework-owned editor command with deterministic state.
   if kind in {eckUndo, eckRedo}:
     editor.pruneCutOffRedo()
+    editor.inspector.historyNotice.val = ""
   let available = editor.evaluateCommand(kind)
   if available.status == ecsDisabled:
     return editor.failCommand(kind, available.diagnostic)
@@ -4197,8 +4207,13 @@ proc runEditorCommand*(editor: EditorVM;
         return editor.refuseInspectorHistory(kind, refusal)
       case target
       of ehkInspector:
-        if redo: discard editor.inspector.redoCssPropertyEdit()
-        else: discard editor.inspector.undoCssPropertyEdit()
+        let journalBefore = editor.inspector.pendingSourceEdits.val
+        let modelBefore = editor.inspector.selectedElement.val
+        let moved =
+          if redo: editor.inspector.redoCssPropertyEdit()
+          else: editor.inspector.undoCssPropertyEdit()
+        if moved:
+          editor.settleHistoryCommand(redo, journalBefore, modelBefore)
       of ehkVector:
         if redo: discard editor.redoVectorEdit()
         else: discard editor.undoVectorEdit()
@@ -4684,10 +4699,15 @@ func unwrittenExpectation(pending: seq[SourceEditPlan];
   result = plan
   if result.expectedOldValue.len == 0:
     return
+  # The first such plan in journal (history) order: when a plan no history
+  # entry owns replaces the pending plans of two entries, the later one
+  # expects the earlier one's unwritten value, and only the earlier one's
+  # expectation is what the file holds.
   for existing in pending:
     if result.replacesJournaledPlan(existing) and
         existing.expectedOldValue.len > 0:
       result.expectedOldValue = existing.expectedOldValue
+      return
 
 func journaledPlans(pending: seq[SourceEditPlan]; plan: SourceEditPlan;
     replaceExisting: bool): tuple[plans: seq[SourceEditPlan],
@@ -4715,9 +4735,19 @@ func withoutJournalEntry(pending: seq[SourceEditPlan];
     plan: SourceEditPlan): seq[SourceEditPlan] =
   pending.filterIt(not it.sameSourceJournalEntry(plan))
 
+func withSlotFrom(element: ElementRef; plan: SourceEditPlan;
+    source: ElementRef): ElementRef
+func sameElementAs(a, b: ElementRef): bool
+proc requestPreviewValue(inspector: InspectorVM; element: ElementRef;
+                         property, value: string;
+                         sourceScope = sskLocalInstance; condition = "";
+                         followers: seq[(string, string)] = @[];
+                         rule = "")
+
 proc journalSourceEdit*(inspector: InspectorVM; plan: SourceEditPlan;
     replaceExisting = true) =
   ## Single source-edit journal used by manual controls and accepted AI plans.
+  inspector.historyNotice.val = ""
   var plan = plan
   if replaceExisting and not plan.restoreWrite.recorded:
     plan = inspector.pendingSourceEdits.val.unwrittenExpectation(plan)
@@ -4737,10 +4767,28 @@ proc journalSourceEdit*(inspector: InspectorVM; plan: SourceEditPlan;
     # The replaced plan's edit will never be written on its own, so its
     # history entry must not be undone as if it had been. See `superseded`.
     var stack = inspector.undoStack.val
+    var lowest = -1
     for i in 0 ..< stack.len:
       if stack[i].sourceEdit.historyId in displaced:
         stack[i].superseded = true
+        if lowest < 0: lowest = i
     inspector.undoStack.val = stack
+    # Until the change is written the inspector shows what the file holds
+    # for the declaration: the state before the earliest edit it replaced.
+    # The superseded value is neither on disk nor pending, and the change is
+    # no history entry, so showing it would be a value nothing will write;
+    # a failed write of the change is reported in the status bar. Once the
+    # change is written, `followUnownedWrite` shows it.
+    if plan.historyId == 0 and lowest >= 0:
+      let beneath = stack[lowest]
+      let selected = inspector.selectedElement.val
+      if selected.sameElementAs(beneath.beforeElement):
+        inspector.selectedElement.val =
+          selected.withSlotFrom(plan, beneath.beforeElement)
+        inspector.requestPreviewValue(beneath.beforeElement, plan.property,
+          beneath.sourceEdit.oldValue, beneath.sourceEdit.sourceScope,
+          beneath.sourceEdit.breakpointCondition,
+          beneath.sideFollowersBefore, beneath.previewRule)
   inspector.conflicts.val = @[]
   inspector.editDiagnostics.val = @[]
 
@@ -5077,6 +5125,94 @@ func sameRenderedValue(captured, declared: string): bool =
   let (bPx, bValue) = px(b)
   not (aPx and bPx) or abs(aValue - bValue) < 1e-9
 
+func slotPropertyIndex(element: ElementRef; plan: SourceEditPlan): int =
+  ## The index of ``element``'s property that shows the declaration
+  ## ``plan`` writes, or -1. A responsive override is never the
+  ## element's property: the row shows the base declaration.
+  result = -1
+  if plan.property.len == 0 or plan.breakpointCondition.len > 0:
+    return
+  for i, prop in element.properties:
+    if prop.name != plan.property:
+      continue
+    let variantSuffix =
+      if prop.variantKey.len > 0: ":" & prop.variantKey else: ""
+    let own = SourceEditPlan(file: prop.sourceFile, line: prop.sourceLine,
+      property: prop.name, schemaKey: prop.schemaKey,
+      sourceScope: plan.sourceScope,
+      conflictKey: prop.sourceFile & ":" & $prop.sourceLine & ":" &
+        prop.name & variantSuffix)
+    if own.sameSourceJournalSlot(plan):
+      return i
+    # A shared scope's plan is keyed by the scope's declaration, not the
+    # row's (`sharedScopePlan`); the row is that declaration's when it names
+    # the same schema entry, or sits at the same source location.
+    if plan.sourceScope != sskLocalInstance and
+        ((plan.schemaKey.len > 0 and prop.schemaKey == plan.schemaKey) or
+         (plan.file.len > 0 and prop.sourceFile == plan.file and
+          plan.line > 0 and prop.sourceLine == plan.line)):
+      return i
+
+func slotValue(element: ElementRef; plan: SourceEditPlan): string =
+  let index = element.slotPropertyIndex(plan)
+  if index >= 0: element.properties[index].value else: plan.newValue
+
+func slotValueOr(element: ElementRef; plan: SourceEditPlan;
+    fallback: string): string =
+  let index = element.slotPropertyIndex(plan)
+  if index >= 0: element.properties[index].value else: fallback
+
+func reboundOver(plan: SourceEditPlan; under: string): SourceEditPlan =
+  ## A superseded edit's plan, applied again over ``under``: the value the
+  ## file holds for its declaration at that moment.
+  ##
+  ## A superseded plan's expectation is not fixed when it is superseded.
+  ## One change can supersede two pending edits of a declaration, and each
+  ## is applied again later over whatever is then current: the change's
+  ## value, or the lower edit's once that one is applied again. Each is
+  ## checked against the value beneath it in history order, so the writes
+  ## are those of separate writes in that order.
+  result = plan
+  result.oldValue = under
+  if result.expectedOldValue.len > 0:
+    result.expectedOldValue = under
+
+func withSlotFrom(element: ElementRef; plan: SourceEditPlan;
+    source: ElementRef): ElementRef =
+  ## ``element`` with the declaration ``plan`` writes -- and, for a simple
+  ## shorthand, each of its sides -- as ``source`` shows them. Two snapshots
+  ## of one element differ there and nowhere else when they differ only by
+  ## an edit of that declaration.
+  result = element
+  let index = element.slotPropertyIndex(plan)
+  let theirsAt = source.slotPropertyIndex(plan)
+  if index < 0 or theirsAt < 0:
+    return
+  result.properties[index] = source.properties[theirsAt]
+  let group = shorthandGroup(plan.property)
+  if not group.found:
+    return
+  for side in group.sides:
+    for theirs in source.properties:
+      if theirs.name != side: continue
+      for mine in result.properties.mitems:
+        if mine.name == side:
+          mine = theirs
+
+func sameElementAs(a, b: ElementRef): bool =
+  a.fallbackElementId.len > 0 and a.fallbackElementId == b.fallbackElementId
+
+func withSlotValue(element: ElementRef; plan: SourceEditPlan;
+    value: string): ElementRef =
+  ## ``element`` showing ``value`` for the declaration ``plan`` writes, its
+  ## shorthand sides following as after an edit (`withShorthandSides`).
+  result = element
+  let index = element.slotPropertyIndex(plan)
+  if index < 0:
+    return
+  result.properties[index].value = value
+  result = result.withShorthandSides(plan.property, value)
+
 type PreparedPropertyEdit* = object
   outcome*: PropertyEditResult
   transaction*: CSSPropertyEditTransaction
@@ -5312,6 +5448,10 @@ proc sourcePlanAdmissionRefusal(editor: EditorVM;
 
 proc removalWriteRefusal(editor: EditorVM; plan: SourceEditPlan): string
 proc withRuleOrderedSides(editor: EditorVM;
+    transaction: var CSSPropertyEditTransaction): string
+proc settleRuleSides(adapter: WorkspaceEditAdapter;
+    beforeContent, afterContent: string;
+    schema: WorkspaceEditableSchemaEntry;
     transaction: var CSSPropertyEditTransaction): string
 
 proc writerEditRefusal(editor: EditorVM; plan: SourceEditPlan): string =
@@ -5639,6 +5779,30 @@ func replayOverDiskValue(plan: SourceEditPlan; diskValue: string): SourceEditPla
   result.expectedOldValue = diskValue
   result.restoreWrite = SourceWriteReceipt()
 
+func valueBeneath(undo: seq[CSSPropertyEditTransaction];
+    pending: seq[SourceEditPlan];
+    txn: CSSPropertyEditTransaction): tuple[value: string; below: int] =
+  ## What the declaration of superseded entry ``txn`` holds at its place in
+  ## history, read from the history and never from the selection: the value
+  ## of the nearest edit to the same declaration below it when that edit
+  ## was applied again over the change that superseded ``txn`` (it is
+  ## pending, or written after that change), else the change's own value
+  ## (``txn.sourceEdit.oldValue``, set by `followUnownedWrite`). ``below``
+  ## is that edit's index in ``undo``, or -1.
+  for i in countdown(undo.high, 0):
+    let entry = undo[i]
+    if not entry.sourceEdit.sameSourceJournalSlot(txn.sourceEdit):
+      continue
+    let id = entry.sourceEdit.historyId
+    let appliedAgain = (id > 0 and pending.anyIt(it.historyId == id)) or
+      (not entry.superseded and entry.historyEntryOnDisk and
+        entry.lastWrite.sequence > txn.supersededAt)
+    if appliedAgain:
+      return (entry.afterElement.slotValueOr(txn.sourceEdit,
+        entry.sourceEdit.newValue), i)
+    break
+  (txn.sourceEdit.oldValue, -1)
+
 proc inspectorHistoryStep*(inspector: InspectorVM;
     redo: bool): InspectorHistoryStep =
   ## Decide how the top inspector history entry is undone or redone, without
@@ -5653,7 +5817,10 @@ proc inspectorHistoryStep*(inspector: InspectorVM;
     # Its last plan never reached disk; withdrawing it is the whole step.
     return InspectorHistoryStep(kind: ihsDropPending)
   if not redo:
-    if not txn.saved:
+    if not txn.saved or txn.superseded:
+      # A superseded entry's value never reached disk (`superseded`): the
+      # change no history entry owns that replaced it is what the file
+      # holds, and undoing the entry withdraws nothing from it.
       return InspectorHistoryStep(kind: ihsDropPending)
     if txn.lastWrite.recorded and txn.lastWriteApplied:
       return InspectorHistoryStep(kind: ihsRestoreWrite,
@@ -5667,6 +5834,13 @@ proc inspectorHistoryStep*(inspector: InspectorVM;
         "added to the source without a recorded location, so the line it " &
         "wrote cannot be identified and undoing it could overwrite other " &
         "edits. No source was changed.")
+  # Redo of an edit a change superseded: its value never reached disk, so
+  # it is applied again over what the declaration holds at that point in
+  # history (`valueBeneath`, `reboundOver`).
+  if txn.superseded:
+    return InspectorHistoryStep(kind: ihsReplayPlan,
+      plan: txn.sourceEdit.reboundOver(inspector.undoStack.val.valueBeneath(
+        inspector.pendingSourceEdits.val, txn).value))
   # Redo. An appended declaration is position-independent: appending it again
   # restores it exactly and cannot touch anything else.
   if txn.sourceEdit.expectedOldValue.len == 0:
@@ -5680,18 +5854,42 @@ proc inspectorHistoryStep*(inspector: InspectorVM;
       plan: txn.restorePlan(redo = true))
   InspectorHistoryStep(kind: ihsReplayPlan, plan: txn.sourceEdit)
 
-proc journalSupersededBelow(inspector: InspectorVM; plan: SourceEditPlan) =
+proc journalSupersededBelow(inspector: InspectorVM;
+    undone: CSSPropertyEditTransaction): tuple[restaged: bool;
+                                 entry: CSSPropertyEditTransaction] =
   ## After undoing an edit, the previous edit to the same slot is current
   ## again. If its plan was replaced in the journal before being written, its
-  ## effect is not on disk, so journal it again.
+  ## effect is not on disk, so journal it again -- and show it: the model
+  ## takes the value that will be written, not the one the undone edit found
+  ## (the change that superseded it).
+  let plan = undone.sourceEdit
   var stack = inspector.undoStack.val
   for i in countdown(stack.high, 0):
     if stack[i].sourceEdit.sameSourceJournalSlot(plan):
       if stack[i].superseded:
+        # Applied again over what the undone edit leaves (`reboundOver`).
+        # The state beneath it is the one the undone edit leaves, shorthand
+        # sides included; so is what its own undo later returns to.
+        let under = undone.beforeElement.slotValueOr(plan, plan.oldValue)
+        stack[i].sourceEdit = stack[i].sourceEdit.reboundOver(under)
+        stack[i].beforeElement =
+          if stack[i].beforeElement.sameElementAs(undone.beforeElement):
+            stack[i].beforeElement.withSlotFrom(plan, undone.beforeElement)
+          else: stack[i].beforeElement.withSlotValue(plan, under)
+        stack[i].sideFollowersBefore = undone.sideFollowersBefore
         stack[i].superseded = false
         stack[i].saved = false
         inspector.undoStack.val = stack
         inspector.journalSourceEdit(stack[i].sourceEdit)
+        let restaged = stack[i].sourceEdit
+        let selected = inspector.selectedElement.val
+        inspector.selectedElement.val =
+          if selected.sameElementAs(stack[i].afterElement):
+            selected.withSlotFrom(restaged, stack[i].afterElement)
+          else:
+            selected.withSlotValue(restaged,
+              stack[i].afterElement.slotValue(restaged))
+        return (true, stack[i])
       return
 
 proc requestPreviewValue(inspector: InspectorVM; element: ElementRef;
@@ -5731,6 +5929,7 @@ proc undoCssPropertyEdit*(inspector: InspectorVM): bool {.discardable.} =
   ## own write replaced (its receipt), never "whatever text equals the value",
   ## so a sibling edit that shares the value is untouched. When nothing
   ## identifies those lines the undo is refused and nothing changes.
+  inspector.historyNotice.val = ""
   let step = inspector.inspectorHistoryStep(redo = false)
   case step.kind
   of ihsNone:
@@ -5761,18 +5960,50 @@ proc undoCssPropertyEdit*(inspector: InspectorVM): bool {.discardable.} =
     inspector.journalSourceEdit(step.plan)
   of ihsNone, ihsRefuse:
     discard
-  inspector.journalSupersededBelow(txn.sourceEdit)
+  # Undoing a superseded entry withdraws nothing, so nothing below it is
+  # current again (`inspectorHistoryStep`).
+  let restaged =
+    if txn.superseded: (restaged: false, entry: CSSPropertyEditTransaction())
+    else: inspector.journalSupersededBelow(txn)
   inspector.editDiagnostics.val = @[]
-  inspector.requestPreviewValue(txn.beforeElement, txn.sourceEdit.property,
-                                txn.sourceEdit.oldValue, txn.sourceEdit.sourceScope,
-                                txn.sourceEdit.breakpointCondition,
-                                txn.sideFollowersBefore, txn.previewRule)
+  if restaged.restaged:
+    let below = restaged.entry
+    # The re-staged value is now what lies under the undone edit, so undoing
+    # it again after a redo returns to that value.
+    var redo = inspector.redoStack.val
+    let under = below.afterElement.slotValue(below.sourceEdit)
+    redo[^1].beforeElement =
+      if redo[^1].beforeElement.sameElementAs(below.afterElement):
+        redo[^1].beforeElement.withSlotFrom(below.sourceEdit, below.afterElement)
+      else: redo[^1].beforeElement.withSlotValue(below.sourceEdit, under)
+    redo[^1].sideFollowersBefore = below.sideFollowersAfter
+    redo[^1].sourceEdit.oldValue = under
+    inspector.redoStack.val = redo
+    inspector.requestPreviewValue(inspector.selectedElement.val,
+                                  below.sourceEdit.property,
+                                  below.sourceEdit.newValue,
+                                  below.sourceEdit.sourceScope,
+                                  below.sourceEdit.breakpointCondition,
+                                  below.sideFollowersAfter, below.previewRule)
+  else:
+    # For a superseded entry this is the state the change left, which
+    # `followUnownedWrite` recorded as the entry's before state, shorthand
+    # sides and their preview followers included.
+    inspector.requestPreviewValue(txn.beforeElement, txn.sourceEdit.property,
+                                  txn.sourceEdit.oldValue, txn.sourceEdit.sourceScope,
+                                  txn.sourceEdit.breakpointCondition,
+                                  txn.sideFollowersBefore, txn.previewRule)
+  if txn.superseded:
+    inspector.historyNotice.val = "Undone: this " & txn.sourceEdit.property &
+      " edit had been replaced by an accepted agent proposal before it was " &
+      "saved, so the file keeps the proposal."
   true
 
 proc redoCssPropertyEdit*(inspector: InspectorVM): bool {.discardable.} =
   ## The same, forwards. Symmetric with `undoCssPropertyEdit` on purpose: redo
   ## withdraws a still-unwritten undo, appends an appended declaration again,
   ## or exactly inverts the written undo, and shows the value it restores.
+  inspector.historyNotice.val = ""
   let step = inspector.inspectorHistoryStep(redo = true)
   case step.kind
   of ihsNone:
@@ -5784,7 +6015,25 @@ proc redoCssPropertyEdit*(inspector: InspectorVM): bool {.discardable.} =
     discard
 
   let stack = inspector.redoStack.val
-  let txn = stack[^1]
+  var txn = stack[^1]
+  if txn.superseded:
+    # Undoing it again returns to the state it was applied over: the edit
+    # beneath it, when that one was applied again, else the change that
+    # superseded it (which ``beforeElement`` already shows).
+    let beneath = inspector.undoStack.val.valueBeneath(
+      inspector.pendingSourceEdits.val, txn)
+    if beneath.below >= 0:
+      let under = inspector.undoStack.val[beneath.below]
+      if txn.beforeElement.sameElementAs(under.afterElement):
+        txn.beforeElement = txn.beforeElement.withSlotFrom(step.plan,
+          under.afterElement)
+      else:
+        txn.beforeElement = txn.beforeElement.withSlotValue(step.plan,
+          beneath.value)
+      txn.sideFollowersBefore = under.sideFollowersAfter
+    txn.sourceEdit = step.plan
+    # Staged again: from here it is an ordinary entry whose plan is pending.
+    txn.superseded = false
   inspector.selectedElement.val = txn.afterElement
   inspector.redoStack.val = stack[0 ..< stack.len - 1]
   case step.kind
@@ -5927,6 +6176,121 @@ proc creditHistoryWrite[T](undo, redo: var seq[T]; id: int;
       redo[i].lastWriteApplied = false
       return (false, true)
 
+proc followUnownedWrite(editor: EditorVM; patch: WorkspaceFilePatch) =
+  ## A written change no history entry owns (an accepted or reverted agent
+  ## proposal) is what the file now holds for its declaration, so the model,
+  ## the preview and the history's snapshots take its value.
+  ##
+  ## Without it the inspector kept showing the pending edit the change had
+  ## replaced, and undoing every edit returned the model to the value before
+  ## them while the file kept the change (isonim-pm issue 2026-11-15-after-
+  ## an-accepted-agent-proposal-replaces-a-pending-edit-the-inspector-shows-
+  ## a-value-the-file-does-not-hold).
+  ##
+  ## The change is settled exactly as a commit of it is: a simple
+  ## shorthand's sides follow it only where its rule's declaration order
+  ## lets it decide them (`settleRuleSides`, given the bytes this write
+  ## actually replaced), and the preview is told those sides and the rule.
+  ## After `padding: 20px; padding-top: 24px;` the top stays 24px.
+  ##
+  ## In every snapshot the history holds for the element, the properties
+  ## the change moved take their new values, except an entry's own value
+  ## for the declaration (its ``afterElement``): undoing such an entry
+  ## leaves the change (it is no step of its own), and redoing it puts the
+  ## entry's value back. A superseded entry's before state becomes the
+  ## state the change left, with its preview followers, since undoing it
+  ## withdraws nothing; its plan is checked against the change's value
+  ## unless an edit is applied over the change first (`valueBeneath`).
+  let plan = patch.plan
+  if plan.historyId > 0 or plan.restoreWrite.recorded:
+    return
+  let inspector = editor.inspector
+  let value = plan.newValue
+  let selected = inspector.selectedElement.val
+  let shown = selected.slotPropertyIndex(plan) >= 0
+  # The element the declaration belongs to, as it stands now: the selection
+  # when it shows the declaration, else that element's latest snapshot in
+  # history (an entry's after state, or the before state of one whose own
+  # value is not on disk). Settled the same way either way, so a proposal
+  # accepted while another element is selected does not spread a shorthand
+  # over sides its rule's declaration order decides otherwise.
+  var subject = ElementRef()
+  var hasSubject = shown
+  if shown:
+    subject = selected
+  else:
+    let stack = inspector.undoStack.val
+    for i in countdown(stack.high, 0):
+      if stack[i].afterElement.slotPropertyIndex(plan) >= 0:
+        subject =
+          if stack[i].superseded: stack[i].beforeElement
+          else: stack[i].afterElement
+        hasSubject = true
+        break
+  var change = CSSPropertyEditTransaction(sourceEdit: plan,
+    beforeElement: subject, afterElement: subject.withSlotValue(plan, value))
+  let adapter = editor.workspaceEditAdapter
+  if hasSubject and not editor.hasAsyncSourceProject and
+      plan.breakpointCondition.len == 0 and not adapter.isNil and
+      not adapter.ruleDeclarations.isNil:
+    if settleRuleSides(adapter, patch.beforeContent, patch.afterContent,
+        patch.schema, change).len > 0:
+      # A side a later or `!important` shorthand still overrides: the
+      # write changed nothing that renders.
+      change.afterElement = subject
+  # What the change moved on this element, by property name.
+  var moved: seq[(string, string)] = @[]
+  if hasSubject:
+    for prop in change.afterElement.properties:
+      var was = ""
+      var found = false
+      for old in subject.properties:
+        if old.name == prop.name:
+          was = old.value
+          found = true
+      if not found or was != prop.value:
+        moved.add (prop.name, prop.value)
+  if shown:
+    inspector.selectedElement.val = change.afterElement
+    inspector.requestPreviewValue(selected, plan.property, value,
+      plan.sourceScope, plan.breakpointCondition, change.sideFollowersAfter,
+      change.previewRule)
+  proc follow(element: ElementRef): ElementRef =
+    if hasSubject and element.sameElementAs(subject):
+      result = element
+      for (name, movedValue) in moved:
+        for prop in result.properties.mitems:
+          if prop.name == name:
+            prop.value = movedValue
+    else:
+      result = element.withSlotValue(plan, value)
+  let sequence = inspector.lastWriteSequence
+  proc rebase(stack: var seq[CSSPropertyEditTransaction]) =
+    for entry in stack.mitems:
+      let sameSlot = entry.sourceEdit.sameSourceJournalSlot(plan)
+      if sameSlot and entry.superseded:
+        entry.beforeElement =
+          if hasSubject and entry.beforeElement.sameElementAs(subject):
+            change.afterElement
+          else: entry.beforeElement.withSlotValue(plan, value)
+        entry.sideFollowersBefore = change.sideFollowersAfter
+        if change.previewRule.len > 0:
+          entry.previewRule = change.previewRule
+        entry.sourceEdit.oldValue = value
+        if entry.sourceEdit.expectedOldValue.len > 0:
+          entry.sourceEdit.expectedOldValue = value
+        entry.supersededAt = sequence
+      else:
+        entry.beforeElement = follow(entry.beforeElement)
+        if not sameSlot:
+          entry.afterElement = follow(entry.afterElement)
+  var undo = inspector.undoStack.val
+  var redo = inspector.redoStack.val
+  undo.rebase()
+  redo.rebase()
+  inspector.undoStack.val = undo
+  inspector.redoStack.val = redo
+
 proc recordHistoryWrites(editor: EditorVM; patches: seq[WorkspaceFilePatch]) =
   ## Credit each completed write to the history entry, in whichever history,
   ## whose plan produced it. History ids are handed out by one counter, so an
@@ -5941,6 +6305,7 @@ proc recordHistoryWrites(editor: EditorVM; patches: seq[WorkspaceFilePatch]) =
   for patch in patches:
     let id = patch.plan.historyId
     if id <= 0:
+      editor.followUnownedWrite(patch)
       continue
     let receipt = editor.inspector.nextWriteReceipt(patch)
     if editor.inspector.creditInspectorWrite(id, receipt):
@@ -10565,13 +10930,19 @@ func restagedBelow[T](pending: seq[SourceEditPlan]; stackBelow: seq[T];
 
 func restagedSupersededBelow(pending: seq[SourceEditPlan];
     stackBelow: seq[CSSPropertyEditTransaction];
-    plan: SourceEditPlan): seq[SourceEditPlan] =
-  ## The journal after the inspector's `journalSupersededBelow`.
+    undone: CSSPropertyEditTransaction): seq[SourceEditPlan] =
+  ## The journal after the inspector's `journalSupersededBelow`, which an
+  ## undo of a superseded entry does not run (`undoCssPropertyEdit`).
   result = pending
+  if undone.superseded:
+    return
+  let plan = undone.sourceEdit
   for i in countdown(stackBelow.high, 0):
     if stackBelow[i].sourceEdit.sameSourceJournalSlot(plan):
       if stackBelow[i].superseded:
-        result = pending.journaledPlans(stackBelow[i].sourceEdit,
+        let under = undone.beforeElement.slotValueOr(plan, plan.oldValue)
+        result = pending.journaledPlans(
+          stackBelow[i].sourceEdit.reboundOver(under),
           replaceExisting = true).plans
       return
 
@@ -10608,7 +10979,7 @@ proc journalAfterHistoryCommand(editor: EditorVM; redo: bool;
       let stack = inspector.undoStack.val
       let txn = stack[^1]
       pending.stepJournal(step, txn.sourceEdit, replaceExisting = true)
-        .restagedSupersededBelow(stack[0 ..< stack.high], txn.sourceEdit)
+        .restagedSupersededBelow(stack[0 ..< stack.high], txn)
     else:
       let txn = inspector.redoStack.val[^1]
       pending.stepJournal(step, txn.sourceEdit, replaceExisting = true)
@@ -10725,14 +11096,26 @@ proc withRuleOrderedSides(editor: EditorVM;
     if not read.ok:
       return
     beforeContent = read.content
-  let afterRule = adapter.ruleDeclarations(plan, afterContent,
-    drafted.patch.schema)
+  settleRuleSides(adapter, beforeContent, afterContent, drafted.patch.schema,
+    transaction)
+
+proc settleRuleSides(adapter: WorkspaceEditAdapter;
+    beforeContent, afterContent: string;
+    schema: WorkspaceEditableSchemaEntry;
+    transaction: var CSSPropertyEditTransaction): string =
+  ## The settling step of `withRuleOrderedSides`, given the file before and
+  ## after the edit's own write. A commit drafts both in memory; a written
+  ## change no history entry owns (`followUnownedWrite`) passes the bytes
+  ## its write actually replaced, so its sides are settled by the very same
+  ## rules.
+  let plan = transaction.sourceEdit
+  let group = shorthandGroup(plan.property)
+  let afterRule = adapter.ruleDeclarations(plan, afterContent, schema)
   if afterRule.ok and plan.sourceScope == sskSharedClass:
     transaction.previewRule = afterRule.rule
   if not group.found:
     return
-  let beforeRule = adapter.ruleDeclarations(plan, beforeContent,
-    drafted.patch.schema)
+  let beforeRule = adapter.ruleDeclarations(plan, beforeContent, schema)
   if not beforeRule.ok or not afterRule.ok:
     return
   let before = renderedRuleSides(beforeRule.declarations, group.shorthand,
@@ -10819,6 +11202,130 @@ proc withRuleOrderedSides(editor: EditorVM;
           prop.authoredValue = capturedAuthored
   transaction.sideFollowersBefore = followersBefore
   transaction.sideFollowersAfter = followersAfter
+
+proc draftedDeclarationFile(editor: EditorVM; adapter: WorkspaceEditAdapter;
+    journal: seq[SourceEditPlan]; plan: SourceEditPlan): tuple[ok: bool;
+    content: string; schema: WorkspaceEditableSchemaEntry] =
+  ## The file holding ``plan``'s declaration as ``journal`` leaves it once
+  ## written: every plan drafted in memory, in order, by the write's own
+  ## per-plan step (`draftWorkspacePlan`). Nothing is written.
+  let resolved = adapter.resolveWorkspaceSchema(plan)
+  if not resolved.ok:
+    return
+  let target =
+    if resolved.entryOwnsFile: resolved.entry.file
+    elif plan.file.len > 0: plan.file
+    else: resolved.entry.file
+  var drafts: seq[WorkspaceFileDraft] = @[]
+  for pending in journal:
+    if not adapter.draftWorkspacePlan(drafts, editor.stampedForWrite(pending)).ok:
+      return
+  let at = drafts.draftIndex(target)
+  if at >= 0:
+    return (true, drafts[at].currentContent, resolved.entry)
+  let read = adapter.readFile(target)
+  if not read.ok:
+    return
+  (true, read.content, resolved.entry)
+
+proc settleHistoryCommand(editor: EditorVM; redo: bool;
+    journalBefore: seq[SourceEditPlan]; modelBefore: ElementRef) =
+  ## After an inspector undo or redo, show what the rule renders.
+  ##
+  ## A history entry's snapshots were taken when it was made. A change no
+  ## history entry owns can have rewritten its shorthand since (an accepted
+  ## agent proposal), so an undo that removes a side's declaration leaves
+  ## that side to the shorthand the change wrote, not to the value the
+  ## snapshot remembers: on `padding: 20px;` after undoing a written
+  ## `padding-top: 24px`, the top renders 20px, not the 18px it was before
+  ## either edit (isonim-pm issue 2026-11-15-after-an-accepted-agent-
+  ## proposal-replaces-a-pending-edit-the-inspector-shows-a-value-the-file-
+  ## does-not-hold, review RV2-1/RV2-2).
+  ##
+  ## So the sides are settled from the file the command leaves, by the same
+  ## step a commit uses (`settleRuleSides`): the journal before and after
+  ## the command drafted in memory, exactly as the write will apply it. The
+  ## element is the history's (the command shows it whatever was selected).
+  ## The inspector, the preview request and the moved entry's snapshot take
+  ## the result, so the next undo or redo starts from what the file renders.
+  ## Left as the command made it when the writer cannot say (no
+  ## `ruleDeclarations`, a native source project, a responsive override, a
+  ## property that is not part of a simple shorthand).
+  let inspector = editor.inspector
+  if editor.hasAsyncSourceProject:
+    return
+  let adapter = editor.workspaceEditAdapter
+  if adapter.isNil or adapter.ruleDeclarations.isNil or
+      adapter.patchFile.isNil or adapter.readFile.isNil:
+    return
+  let stack = if redo: inspector.undoStack.val else: inspector.redoStack.val
+  if stack.len == 0:
+    return
+  let moved = stack[^1]
+  var plan = moved.sourceEdit
+  if plan.breakpointCondition.len > 0 or not shorthandGroup(plan.property).found:
+    return
+  # Identifies the declaration only: its own value is what the drafts say.
+  plan.restoreWrite = SourceWriteReceipt()
+  plan.newValue = ""
+  let before = editor.draftedDeclarationFile(adapter, journalBefore, plan)
+  let after = editor.draftedDeclarationFile(adapter,
+    inspector.pendingSourceEdits.val, plan)
+  if not before.ok or not after.ok:
+    return
+  if not adapter.ruleDeclarations(plan, before.content, before.schema).ok:
+    return
+  let afterRule = adapter.ruleDeclarations(plan, after.content, after.schema)
+  if not afterRule.ok:
+    return
+  let shown = inspector.selectedElement.val
+  var settled = CSSPropertyEditTransaction(sourceEdit: plan,
+    beforeElement:
+      if modelBefore.sameElementAs(shown): modelBefore
+      elif redo: moved.beforeElement
+      else: moved.afterElement,
+    afterElement: shown)
+  if settleRuleSides(adapter, before.content, after.content, after.schema,
+      settled).len > 0:
+    return
+  # Only a side this rule declares once the command is written takes the
+  # settled value. A side it leaves to another rule keeps what the command
+  # restored: the snapshot it returns to holds that other rule's value,
+  # which the commit-time settle (whose fallback is the state before the
+  # edit) cannot know here.
+  let group = shorthandGroup(plan.property)
+  let declared = renderedRuleSides(afterRule.declarations, group.shorthand,
+    group.sides)
+  var corrected = shown
+  for i, side in group.sides:
+    if declared.values[i].len == 0 or declared.values[i] == UnknownSide:
+      continue
+    for theirs in settled.afterElement.properties:
+      if theirs.name != side: continue
+      for mine in corrected.properties.mitems:
+        if mine.name == side:
+          mine.value = theirs.value
+          mine.authoredValue = theirs.authoredValue
+          mine.decidingRule = theirs.decidingRule
+  if corrected == shown:
+    return
+  inspector.selectedElement.val = corrected
+  let rule = if settled.previewRule.len > 0: settled.previewRule
+             else: moved.previewRule
+  inspector.requestPreviewValue(corrected, moved.sourceEdit.property,
+    corrected.slotValueOr(moved.sourceEdit, ""),
+    moved.sourceEdit.sourceScope, moved.sourceEdit.breakpointCondition,
+    settled.sideFollowersAfter, rule)
+  if redo:
+    var undo = inspector.undoStack.val
+    undo[^1].afterElement = corrected
+    undo[^1].sideFollowersAfter = settled.sideFollowersAfter
+    inspector.undoStack.val = undo
+  else:
+    var undone = inspector.redoStack.val
+    undone[^1].beforeElement = corrected
+    undone[^1].sideFollowersBefore = settled.sideFollowersAfter
+    inspector.redoStack.val = undone
 
 proc inspectorHistoryRefusal(editor: EditorVM; redo: bool): PropertyEditDiagnostic =
   ## Why the next undo/redo must be refused, or an empty message.
@@ -13143,6 +13650,7 @@ proc createInspectorVM*(designSystemSchema: Signal[DesignSystemSchema] = nil;
     designSystemSchema: schemaSignal,
     selectedElement: selectedElement,
     previewValueRequest: createSignal(PreviewValueRequest()),
+    historyNotice: createSignal(""),
     breadcrumbTrail: createSignal[seq[BreadcrumbEntry]](@[]),
     breadcrumbWalkId: createSignal(""),
     layers: layers,

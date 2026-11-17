@@ -942,6 +942,30 @@ proc renderStatusBar[R, E](r: R; vm: EditorVM): E =
   # it without displacing anything that was being looked at.
   r.insertBefore(rightControls, saveError, statusBadges)
 
+  # Why the last undo or redo moved nothing visible (`historyNotice`): an
+  # undo of an edit an accepted agent proposal replaced before it was saved
+  # withdraws nothing, and without a word the keystroke reads as ignored.
+  # Not an alert and not a save result -- a quiet `role="status"` note,
+  # gone with the next undo, redo or edit.
+  var historyNoticeEl: E
+  let historyNotice = ui(r):
+    span(ref = historyNoticeEl,
+          `data-history-notice` = "true",
+          role = "status",
+          display = "none",
+          max_width = "46vw",
+          color = textDim,
+          font_size = "10px",
+          white_space = "nowrap", overflow = "hidden",
+          text_overflow = "ellipsis"):
+      text ""
+  r.insertBefore(rightControls, historyNotice, statusBadges)
+  createRenderEffect proc() =
+    let notice = vm.inspector.historyNotice.val
+    r.setTextContent(historyNoticeEl, notice)
+    r.setAttribute(historyNoticeEl, "title", notice)
+    r.setStyle(historyNoticeEl, "display", if notice.len > 0: "inline" else: "none")
+
   createRenderEffect proc() =
     let indicator = vm.saveIndicator()
     if indicator.state == sisFailed:

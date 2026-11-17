@@ -908,3 +908,221 @@ suite "Randomized batches undo and redo like separate writes":
       echo "    ", failure
     check outcome.failures.len == 0
     check outcome.counts["walked"] > 300
+
+# --- Changes no history entry owns ----------------------------------------
+
+suite "The inspector, the preview and the file agree around an accepted proposal":
+  ## isonim-pm issue 2026-11-15-after-an-accepted-agent-proposal-replaces-a-
+  ## pending-edit-the-inspector-shows-a-value-the-file-does-not-hold; editor
+  ## spec "Saving": edits, their undo and redo keep the inspector, the
+  ## preview and the source in agreement. An accepted agent proposal belongs
+  ## to no history entry; it replaces a pending edit to the same declaration,
+  ## which is then superseded, and undoing a later edit to that declaration
+  ## stages the superseded value again. Through the editor example's
+  ## production writer, every step checks the inspector's value, the value
+  ## the preview was last asked to show and the file's bytes.
+  func overflowIs(value: string): string =
+    longTailWith([("overflow", value)])
+
+  proc overflow(vm: EditorVM): string =
+    for prop in vm.inspector.selectedElement.val.properties:
+      if prop.name == "overflow":
+        return prop.value
+
+  proc previewed(vm: EditorVM): (string, string) =
+    let request = vm.inspector.previewValueRequest.val
+    (request.property, request.value)
+
+  # The helpers that check are templates, so their checks belong to the
+  # test that expands them (a check inside a proc does not fail the test).
+  template commitOverflow(vm: EditorVM; value: string) =
+    block:
+      let committed = vm.commitInspectorValue("overflow", value, sskSharedClass)
+      check committed.ok
+      check committed.message == ""
+
+  proc overflowPlan(value: string): SourceEditPlan =
+    ## The plan the inspector's overflow row makes at the shared class
+    ## scope, taken from a commit on an identical editor, as an agent
+    ## proposal carries it: owned by no history entry.
+    let scratch = new(string)
+    scratch[] = DemoFoundationInitialSource
+    let vm = wanderlustVm(scratch)
+    doAssert vm.commitInspectorValue("overflow", value, sskSharedClass).ok
+    result = vm.inspector.pendingSourceEdits.val[0]
+    result.historyId = 0
+
+  template acceptOverflow(vm: EditorVM; value: string) =
+    block:
+      var plan = overflowPlan(value)
+      plan.oldValue = vm.overflow
+      let id = vm.chat.addAgentEditProposal(AgentEditProposal(
+        title: "Overflow", summary: "Set overflow to " & value,
+        sourceEdits: @[plan], selectedEditIndexes: @[0],
+        validity: aepvCurrent))
+      let accepted = vm.acceptAgentProposedEdit(id)
+      check accepted.ok
+      check accepted.diagnostics.len == 0
+
+  template step(vm: EditorVM; command: EditorCommandKind; model: string;
+      foundation: ref string; written: string) =
+    block:
+      let ran = vm.runEditorCommand(command)
+      check ran.status == ecsSucceeded
+      check ran.diagnostic == ""
+      check vm.overflow == model
+      check vm.previewed == ("overflow", model)
+      if vm.inspector.pendingSourceEdits.val.len > 0:
+        vm.save()
+      check foundation[] == written
+      check vm.overflow == model
+
+  test "a proposal over a pending edit, a later edit, and undo and redo across both":
+    createRoot proc(dispose: proc()) =
+      let foundation = new(string)
+      foundation[] = DemoFoundationInitialSource
+      let vm = wanderlustVm(foundation)
+      vm.commitOverflow("hidden")
+      check vm.overflow == "hidden"
+      check foundation[] == DemoFoundationInitialSource
+      vm.acceptOverflow("scroll")
+      check foundation[] == overflowIs("scroll")
+      check vm.inspector.undoStack.val[0].superseded
+      check vm.overflow == "scroll"
+      check vm.previewed == ("overflow", "scroll")
+      vm.commitOverflow("auto")
+      vm.save()
+      check foundation[] == overflowIs("auto")
+      check vm.overflow == "auto"
+      vm.step(eckUndo, "hidden", foundation, overflowIs("hidden"))
+      vm.step(eckUndo, "scroll", foundation, overflowIs("scroll"))
+      vm.step(eckRedo, "hidden", foundation, overflowIs("hidden"))
+      vm.step(eckRedo, "auto", foundation, overflowIs("auto"))
+      vm.step(eckUndo, "hidden", foundation, overflowIs("hidden"))
+      vm.step(eckUndo, "scroll", foundation, overflowIs("scroll"))
+      dispose()
+
+  test "an edit over a written proposal undoes to the proposal's value":
+    createRoot proc(dispose: proc()) =
+      let foundation = new(string)
+      foundation[] = DemoFoundationInitialSource
+      let vm = wanderlustVm(foundation)
+      vm.acceptOverflow("scroll")
+      check foundation[] == overflowIs("scroll")
+      check vm.overflow == "scroll"
+      vm.commitOverflow("hidden")
+      vm.save()
+      check foundation[] == overflowIs("hidden")
+      vm.step(eckUndo, "scroll", foundation, overflowIs("scroll"))
+      vm.step(eckRedo, "hidden", foundation, overflowIs("hidden"))
+      vm.step(eckUndo, "scroll", foundation, overflowIs("scroll"))
+      dispose()
+
+  test "undoing the superseded edit itself moves no byte and redo writes it over the proposal":
+    createRoot proc(dispose: proc()) =
+      let foundation = new(string)
+      foundation[] = DemoFoundationInitialSource
+      let vm = wanderlustVm(foundation)
+      vm.commitOverflow("hidden")
+      vm.acceptOverflow("scroll")
+      check vm.overflow == "scroll"
+      vm.step(eckUndo, "scroll", foundation, overflowIs("scroll"))
+      check vm.inspector.pendingSourceEdits.val.len == 0
+      vm.step(eckRedo, "hidden", foundation, overflowIs("hidden"))
+      vm.step(eckUndo, "scroll", foundation, overflowIs("scroll"))
+      dispose()
+
+  test "a Reset after the proposal, undone and redone":
+    createRoot proc(dispose: proc()) =
+      let foundation = new(string)
+      foundation[] = DemoFoundationInitialSource
+      let vm = wanderlustVm(foundation)
+      vm.commitOverflow("hidden")
+      vm.acceptOverflow("scroll")
+      check vm.overflow == "scroll"
+      vm.commitOverflow("")
+      vm.save()
+      check foundation[] == overflowIs("")
+      check vm.overflow == ""
+      # Undoing the Reset makes the superseded edit current again.
+      vm.step(eckUndo, "hidden", foundation, overflowIs("hidden"))
+      vm.step(eckUndo, "scroll", foundation, overflowIs("scroll"))
+      vm.step(eckRedo, "hidden", foundation, overflowIs("hidden"))
+      vm.step(eckRedo, "", foundation, overflowIs(""))
+      dispose()
+
+  test "a Reset of a written proposal undoes to the proposal's value":
+    createRoot proc(dispose: proc()) =
+      let foundation = new(string)
+      foundation[] = DemoFoundationInitialSource
+      let vm = wanderlustVm(foundation)
+      vm.acceptOverflow("scroll")
+      vm.commitOverflow("")
+      vm.save()
+      check foundation[] == overflowIs("")
+      check vm.overflow == ""
+      vm.step(eckUndo, "scroll", foundation, overflowIs("scroll"))
+      vm.step(eckRedo, "", foundation, overflowIs(""))
+      dispose()
+
+  test "one proposal supersedes two pending edits; redoing both writes them in history order":
+    # Each is checked against the value beneath it: the second redo expects
+    # the first edit's value, which the first redo wrote, not the
+    # proposal's.
+    createRoot proc(dispose: proc()) =
+      let foundation = new(string)
+      foundation[] = DemoFoundationInitialSource
+      let vm = wanderlustVm(foundation)
+      vm.commitOverflow("hidden")
+      vm.commitOverflow("scroll")
+      check vm.inspector.pendingSourceEdits.val.len == 2
+      vm.acceptOverflow("auto")
+      check foundation[] == overflowIs("auto")
+      check vm.overflow == "auto"
+      vm.step(eckUndo, "auto", foundation, overflowIs("auto"))
+      vm.step(eckUndo, "auto", foundation, overflowIs("auto"))
+      vm.step(eckRedo, "hidden", foundation, overflowIs("hidden"))
+      vm.step(eckRedo, "scroll", foundation, overflowIs("scroll"))
+      vm.step(eckUndo, "hidden", foundation, overflowIs("hidden"))
+      vm.step(eckUndo, "auto", foundation, overflowIs("auto"))
+      dispose()
+
+  test "one proposal supersedes two pending edits; a later edit's undo re-stages them one at a time":
+    createRoot proc(dispose: proc()) =
+      let foundation = new(string)
+      foundation[] = DemoFoundationInitialSource
+      let vm = wanderlustVm(foundation)
+      vm.commitOverflow("hidden")
+      vm.commitOverflow("scroll")
+      vm.acceptOverflow("auto")
+      vm.commitOverflow("visible")
+      vm.save()
+      check foundation[] == overflowIs("visible")
+      vm.step(eckUndo, "scroll", foundation, overflowIs("scroll"))
+      vm.step(eckUndo, "hidden", foundation, overflowIs("hidden"))
+      vm.step(eckUndo, "auto", foundation, overflowIs("auto"))
+      vm.step(eckRedo, "hidden", foundation, overflowIs("hidden"))
+      vm.step(eckRedo, "scroll", foundation, overflowIs("scroll"))
+      vm.step(eckRedo, "visible", foundation, overflowIs("visible"))
+      dispose()
+
+  test "a redo of the second superseded edit is checked against history, whatever is selected":
+    # Review RV-3: with another element selected the value beneath came
+    # from the selection, fell back to the proposal's, and the redo was
+    # refused although the file held the first edit's value.
+    createRoot proc(dispose: proc()) =
+      let foundation = new(string)
+      foundation[] = DemoFoundationInitialSource
+      let vm = wanderlustVm(foundation)
+      vm.commitOverflow("hidden")
+      vm.commitOverflow("scroll")
+      vm.acceptOverflow("auto")
+      vm.step(eckUndo, "auto", foundation, overflowIs("auto"))
+      vm.step(eckUndo, "auto", foundation, overflowIs("auto"))
+      vm.step(eckRedo, "hidden", foundation, overflowIs("hidden"))
+      check vm.selectInspectorElement(ElementRef(id: "hero", tag: "section",
+        sourceKey: "hero", sourceFile: DemoFoundationSource, sourceLine: 1))
+      vm.step(eckRedo, "scroll", foundation, overflowIs("scroll"))
+      vm.step(eckUndo, "hidden", foundation, overflowIs("hidden"))
+      vm.step(eckUndo, "auto", foundation, overflowIs("auto"))
+      dispose()

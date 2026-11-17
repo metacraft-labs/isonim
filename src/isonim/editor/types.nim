@@ -1443,6 +1443,11 @@ type
       ## A later edit to the same source slot replaced this entry's plan in
       ## the journal before it was written. Its effect is therefore not on
       ## disk; undoing the later edit journals this plan again.
+    supersededAt*: int
+      ## For a superseded entry: the inspector's write sequence when the
+      ## change that superseded it was written. An edit to the same slot
+      ## written after it was applied over that change, so a redo of this
+      ## entry lands on that edit's value instead (`valueBeneath`).
 
   AgentEditProposalStatus* = enum
     aepsProposed
