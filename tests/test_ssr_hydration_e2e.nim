@@ -983,6 +983,36 @@ suite "SSR-Hydration E2E - hydrate() entry point":
     {.emit: [hyDone, " = !!(globalThis._$HY && globalThis._$HY.done);"].}
     check hyDone
 
+  test "hydrate_releases_unclaimed_nodes - the registry is dropped when hydration is done":
+    ## A server node with a hydration key that no client code claims (here
+    ## an element inside markup the client keeps as it is) must not stay
+    ## reachable from the hydration registry once hydration is done: the
+    ## application may remove it, and the registry would otherwise keep it
+    ## alive for the life of the page.
+    let container = makeSSRContainer(
+      cstring"""<div data-hk="0"><p data-hk="rich-0-0">rich text</p></div>""")
+    {.emit: ["""
+      globalThis._$HY = {
+        events: [],
+        completed: new WeakSet(),
+        r: {},
+        fe: function() {}
+      };
+    """].}
+    var seenDuring = false
+    hydrate(
+      code = proc(): Node =
+        let divNode = getNextElement(tmpl("<div></div>"))
+        # VACUITY GUARD: while hydrating, the unclaimed node is registered.
+        seenDuring = sharedConfig.registry != nil and sharedConfig.registry.has(cstring"rich-0-0")
+        return divNode
+      ,
+      element = container
+    )
+    check seenDuring
+    check sharedConfig.done
+    check sharedConfig.registry == nil
+
 # ---------------------------------------------------------------------------
 # Suite: SSR hydration key consistency
 # ---------------------------------------------------------------------------

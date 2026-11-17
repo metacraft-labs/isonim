@@ -358,6 +358,13 @@ proc hydrate*(code: proc(): Node, element: Element,
 
   # Mark hydration as done
   sharedConfig.done = true
+  # The registry is hydration's bookkeeping, read only while hydrating
+  # (`getNextElement`, `claimElement`). The server nodes no client code
+  # claimed are still in it (an element with a hydration key inside markup
+  # the client inserts as is, such as rendered rich text); dropping it lets
+  # the application remove those nodes without the registry keeping them
+  # alive for the life of the page.
+  sharedConfig.registry = nil
   {.emit: ["if (globalThis._$HY) { globalThis._$HY.mismatches = isonimHy.mismatches; globalThis._$HY.done = true; }"].}
   if hydrationMismatches() > 0:
     {.emit: "console.warn('isonim hydrate: ' + isonimHy.mismatches + ' element(s) had no server-rendered match and were created anew');".}

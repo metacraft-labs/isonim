@@ -355,6 +355,7 @@ test-js: build-tailwind
     nim js -r tests/test_terminal.nim
     nim js -r tests/test_hydration.nim
     nim js -r tests/test_ssr_hydration_e2e.nim
+    bash tests/run_hydration_mutants.sh
     nim js -r tests/test_app_e2e.nim
     nim js -r tests/test_web_components_advanced.nim
     nim js -r tests/test_third_party.nim
