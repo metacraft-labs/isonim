@@ -57,8 +57,9 @@ proc pageString(name: string): string =
   $value
 
 proc orderless(): bool =
-  ## `window.__isonimShorthandOrderless`: the writer reports no rule order, a
-  ## host with neither writer order nor native catalog statements.
+  ## `window.__isonimShorthandOrderless`: the writer reports no rule order
+  ## and does not name the rule it writes, a host with neither writer order
+  ## nor native catalog statements.
   var drop = false
   {.emit: [drop, " = !!(typeof window !== 'undefined' && window.__isonimShorthandOrderless);"].}
   drop
@@ -105,7 +106,9 @@ proc main() =
     kind: skComponent, index: 0)
   var schema = demoDesignSystemSchema()
   var adapter = demoVectorEditAdapter(vectorSource, foundationSource)
-  if orderless(): adapter.ruleDeclarations = nil
+  if orderless():
+    adapter.ruleDeclarations = nil
+    adapter.editRule = nil
   # `window.__isonimShorthandStagingOnly`: a project that only stages edits
   # (the write does not reload the preview); `window.__isonimShorthandFailWrites`:
   # every file write fails, as a full disk or a locked file would.

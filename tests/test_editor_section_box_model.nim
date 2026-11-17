@@ -78,7 +78,9 @@ proc boxVm(foundation: ref string; writable = true; mapSides = true;
   var schema = demoDesignSystemSchema()
   var adapter = demoVectorEditAdapter(vector, foundation)
   # A writer that does not report its rules' declarations.
-  if orderless: adapter.ruleDeclarations = nil
+  if orderless:
+    adapter.ruleDeclarations = nil
+    adapter.editRule = nil
   if mapSides:
     for property in @MappedSides & alsoMapped:
       schema.nodes.add DesignSchemaNode(
@@ -2184,4 +2186,128 @@ suite "an undo or redo under a written proposal shows what the rule renders":
       vm.previewAsks("padding-top", "24px", @[("padding-top", "24px")])
       vm.write()
       check foundation.cardRuleText == Proposed
+      dispose()
+
+suite "an edit of a rule another declaration decides for the element":
+  # isonim-pm issue 2026-11-15-an-accepted-edit-of-a-shared-class-changes-
+  # nothing-when-another-rule-decides-the-property; editor spec "Saving": an
+  # edit changes the one declaration that owns the property for the selected
+  # element, and a refusal the editor can know at the act is made there. The
+  # element carries what the preview's cascade resolver measured when the
+  # selection was captured (`PropertyInfo.cascadeDecider`, `cascadeHomes`,
+  # `cascadeConditions`); the browser half is
+  # `tests/test_editor_shorthand_order_gui.mjs`.
+  proc decided(decider: string; conditions = ""; homes: seq[string] = @[];
+      matched = @[".destination-card", "#wl-card"]): ElementRef =
+    result = boxElement()
+    result.matchedRules = matched
+    for prop in result.properties.mitems:
+      if prop.name == "padding":
+        prop.cascadeDecider = decider
+        prop.cascadeConditions = conditions
+        prop.cascadeHomes = homes
+
+  proc paddingOf(vm: EditorVM): PropertyInfo =
+    for prop in vm.inspector.selectedElement.val.properties:
+      if prop.name == "padding": return prop
+
+  proc sharedChoice(vm: EditorVM): SourceScopeChoice =
+    for choice in vm.sourceScopeChoices(vm.paddingOf()):
+      if choice.kind == sskSharedClass: return choice
+
+  test "refused at the act, naming the deciding rule, at every scope the writer puts in that rule":
+    createRoot proc(dispose: proc()) =
+      let foundation = new(string)
+      foundation[] = DemoFoundationInitialSource
+      let vm = boxVm(foundation, element = decided("#wl-card"))
+      const why = "`#wl-card` decides padding for this element ahead of " &
+        "`.destination-card`, so changing it in `.destination-card` would " &
+        "not change what this element renders"
+      # The row's shared scope is shown disabled with the reason and is not
+      # the default.
+      let shared = vm.sharedChoice()
+      check not shared.editable
+      check why in shared.reason
+      let refused = vm.editSharedDesignProperty("padding", "20px", sskSharedClass)
+      check refused.status == pesRejected
+      check refused.diagnostics.len == 1 and why in refused.diagnostics[0].message
+      # The editor example's writer puts a local edit of the card's padding
+      # in the same rule: refused too, with the same reason, through the
+      # row's commit.
+      let local = commitInspectorValue(vm, "padding", "20px", sskLocalInstance)
+      check not local.ok
+      check why in local.message
+      # And the multi-edit admission (a section's raw CSS) answers the same.
+      check why in vm.propertyValueCommitRefusal("padding", "20px", sskSharedClass)
+      check vm.inspector.pendingSourceEdits.val.len == 0
+      check vm.inspector.undoStack.val.len == 0
+      check foundation[] == DemoFoundationInitialSource
+      check vm.paddingOf().value == "18px"
+      dispose()
+
+  test "the element's inline style is named":
+    createRoot proc(dispose: proc()) =
+      let foundation = new(string)
+      foundation[] = DemoFoundationInitialSource
+      let vm = boxVm(foundation, element = decided("style"))
+      let refused = vm.editSharedDesignProperty("padding", "20px", sskSharedClass)
+      check refused.status == pesRejected
+      check refused.diagnostics.len == 1 and
+        "The element's inline style decides padding for this element" in
+          refused.diagnostics[0].message
+      check foundation[] == DemoFoundationInitialSource
+      dispose()
+
+  test "accepted where the written rule decides, or would by a normal declaration":
+    createRoot proc(dispose: proc()) =
+      for element in [decided(".destination-card"),
+          decided("#wl-card", homes = @[".destination-card"]),
+          # Nothing measured: an unsound or missing answer refuses nothing.
+          decided("")]:
+        let foundation = new(string)
+        foundation[] = DemoFoundationInitialSource
+        let vm = boxVm(foundation, element = element)
+        check vm.sharedChoice().editable
+        check commitInspectorValue(vm, "padding", "20px", sskSharedClass).ok
+        check vm.inspector.pendingSourceEdits.val.len == 1
+      dispose()
+
+  test "not refused when the capture cannot speak for the written rule":
+    createRoot proc(dispose: proc()) =
+      # The written rule is not among the rules the capture saw match, or it
+      # saw two by that name; or the writer does not name its rule.
+      for (element, orderless) in [
+          (decided("#wl-card", matched = @["#wl-card"]), false),
+          (decided("#wl-card", matched = @[".destination-card",
+            ".destination-card", "#wl-card"]), false),
+          (decided("#wl-card"), true)]:
+        let foundation = new(string)
+        foundation[] = DemoFoundationInitialSource
+        let vm = boxVm(foundation, element = element, orderless = orderless)
+        check commitInspectorValue(vm, "padding", "20px", sskSharedClass).ok
+      dispose()
+
+  test "a deciding rule under a condition the written rule does not share is not refused":
+    createRoot proc(dispose: proc()) =
+      # The edit still changes what renders wherever the condition does not
+      # hold (another width).
+      let foundation = new(string)
+      foundation[] = DemoFoundationInitialSource
+      let vm = boxVm(foundation, element = decided(
+        "@media (min-width: 1000px) #wl-card", "@media (min-width: 1000px)",
+        matched = @[".destination-card", "@media (min-width: 1000px) #wl-card"]))
+      check commitInspectorValue(vm, "padding", "20px", sskSharedClass).ok
+      dispose()
+
+  test "a removal is not refused":
+    createRoot proc(dispose: proc()) =
+      let foundation = new(string)
+      foundation[] = DemoFoundationInitialSource
+      let vm = boxVm(foundation, element = decided("#wl-card"))
+      # Reset removes a declaration nothing renders: allowed at the row's
+      # default scope (the local instance, as the shared one is disabled for
+      # a value edit), where this writer removes it from the card rule.
+      check vm.propertyResetRefusal("padding", sskLocalInstance) == ""
+      check commitInspectorValue(vm, "padding", "", sskLocalInstance).ok
+      check vm.inspector.pendingSourceEdits.val.len == 1
       dispose()

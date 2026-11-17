@@ -2,6 +2,7 @@
 ## caller-supplied source paths: the project owns source declarations and the
 ## rendered catalog owns target identity. Complex/ambiguous rules are refused.
 import std/[json, strutils, tables, sha1, options, algorithm]
+from std/unicode import Rune, `$`
 import isonim/editor/[html_classes, css_patch, source_catalog, source_style_values, types, viewmodels]
 
 type
@@ -123,23 +124,117 @@ proc recordEmbeddedStylesheets*(catalog, manifest: JsonNode; readSource: SourceR
       record.add(%* {"file": parts[0], "const": parts[1]})
     story[embeddedStylesheetsField] = record
 
+const cssWhitespace = {' ', '\t', '\n', '\r', '\f'}
+
+func cssEscapeEnd(text: string; at: int): int =
+  ## ``text[at]`` is a backslash: the index just past the escape it starts
+  ## (CSS Syntax 4.3.7, https://www.w3.org/TR/css-syntax-3/#consume-escaped-code-point):
+  ## one to six hex digits and one whitespace after them (`\32 xl` is `2xl`),
+  ## or any one other code point (`\:`, `\/`).
+  var i = at + 1
+  if i >= text.len: return i
+  if text[i] in HexDigits:
+    var digits = 0
+    while i < text.len and digits < 6 and text[i] in HexDigits:
+      inc i
+      inc digits
+    if i < text.len and text[i] in cssWhitespace:
+      if text[i] == '\r' and i + 1 < text.len and text[i + 1] == '\n': inc i
+      inc i
+    return i
+  # A multi-byte UTF-8 code point is escaped whole.
+  if ord(text[i]) >= 0xC0:
+    inc i
+    while i < text.len and (ord(text[i]) and 0xC0) == 0x80: inc i
+    return i
+  i + 1
+
+func cssDecodedEscape(text: string; at, stop: int): string =
+  ## The code point the escape ``text[at ..< stop]`` stands for, as UTF-8.
+  let raw = text[at + 1 ..< stop]
+  # Only a hex escape is closed by one whitespace; an escaped space or tab
+  # is itself the code point (`.panel\\ x` is the class `panel x`).
+  if raw.len == 0 or raw[0] notin HexDigits: return raw
+  let body = raw.strip(leading = false, trailing = true, chars = cssWhitespace)
+  if body.len > 0 and body[0] in HexDigits:
+    var code = 0
+    for c in body: code = code * 16 + parseHexInt($c)
+    if code == 0 or code > 0x10FFFF or code in 0xD800 .. 0xDFFF: code = 0xFFFD
+    return $Rune(code)
+  body
+
+func cssIdent(text: string; at: int): tuple[name: string; next: int] =
+  ## The name that starts at ``text[at]`` (an identifier, escapes decoded),
+  ## and the index after it; an empty name when none starts there.
+  var i = at
+  while i < text.len:
+    let c = text[i]
+    if c == '\\':
+      if i + 1 >= text.len or text[i + 1] in {'\n', '\r', '\f'}: break
+      let stop = text.cssEscapeEnd(i)
+      result.name.add text.cssDecodedEscape(i, stop)
+      i = stop
+    elif c in {'a'..'z', 'A'..'Z', '0'..'9', '-', '_'} or ord(c) >= 0x80:
+      result.name.add c
+      inc i
+    else: break
+  result.next = i
+
+func compoundParts(compound: string): Option[tuple[tag: string;
+    classes, ids: seq[string]]] =
+  ## A compound of an optional type and `.class` / `#id` parts, names decoded,
+  ## or none for anything else (`*`, attributes, pseudo-classes).
+  var parts: tuple[tag: string; classes, ids: seq[string]]
+  var at = 0
+  if compound.len == 0: return
+  if compound[0] notin {'.', '#'}:
+    let (name, next) = compound.cssIdent(0)
+    if name.len == 0: return
+    parts.tag = name.toLowerAscii()
+    at = next
+  while at < compound.len:
+    let kind = compound[at]
+    if kind notin {'.', '#'}: return
+    let (name, next) = compound.cssIdent(at + 1)
+    if name.len == 0: return
+    if kind == '#': parts.ids.add name else: parts.classes.add name
+    at = next
+  some(parts)
+
+func compoundMatches(element: SourceHtmlElement; compound: string): Option[bool] =
+  ## Whether a type/class/ID compound matches ``element`` (escapes decoded),
+  ## or none when the compound is not of that form.
+  let parts = compound.compoundParts()
+  if parts.isNone: return
+  let found = parts.get
+  if found.tag.len > 0 and element.tag != found.tag: return some(false)
+  let classes = element.attributes.getOrDefault("class").splitWhitespace()
+  for name in found.classes:
+    if name notin classes: return some(false)
+  for name in found.ids:
+    if element.attributes.getOrDefault("id") != name: return some(false)
+  some(true)
+
 func selectorCouldMatch(element: SourceHtmlElement; selector: string): bool =
   ## Only required terminal type/class/ID can prove a rule unrelated. Attribute,
   ## ancestor and state predicates are never evaluated to infer a winner.
+  ## Escapes are decoded (CSS Syntax 4.3.7), so a utility class such as
+  ## Tailwind's `.md\:p-4` or `.w-1\/2` is ruled in or out by its name, and a
+  ## hex escape's trailing whitespace (`.\32 xl`) is part of the name, not a
+  ## descendant combinator.
   if selector.strip() == ":root": return element.tag == "html"
   var start, depth, brackets = 0
   var quote: char
-  var escaped = false
-  for index, character in selector:
-    if escaped:
-      escaped = false
-      continue
-    if character == '\\':
-      if brackets == 0: return true
-      escaped = true
+  var index = 0
+  while index < selector.len:
+    let character = selector[index]
+    if character == '\\' and quote == '\0':
+      index = selector.cssEscapeEnd(index)
       continue
     if quote != '\0':
+      if character == '\\': index = selector.cssEscapeEnd(index); continue
       if character == quote: quote = '\0'
+      inc index
       continue
     if character in {'\'', '"'}:
       quote = character
@@ -154,16 +249,244 @@ func selectorCouldMatch(element: SourceHtmlElement; selector: string): bool =
         if depth < 0: return true
       elif depth == 0 and character in {' ', '\t', '\n', '\r', '>', '+', '~'}:
         start = index + 1
-  if depth != 0 or brackets != 0 or quote != '\0' or escaped: return true
+    inc index
+  if depth != 0 or brackets != 0 or quote != '\0': return true
   let subject = selector[start .. ^1].strip()
+  # The compound's type/class/ID part: up to its first pseudo-class or
+  # attribute selector, an escaped `:` or `[` being part of a name.
   var stop = subject.len
-  for index, character in subject:
-    if character in {':', '['}: stop = index; break
+  var at = 0
+  while at < subject.len:
+    if subject[at] == '\\':
+      at = subject.cssEscapeEnd(at)
+      continue
+    if subject[at] in {':', '['}:
+      stop = at
+      break
+    inc at
+  # An `:is()` / `:where()` / `:matches()` in the compound requires one of its
+  # arguments to match the element itself: none can, none does.
+  var i = stop
+  while i < subject.len:
+    if subject[i] == '\\':
+      i = subject.cssEscapeEnd(i)
+      continue
+    if subject[i] == ':' and (i == 0 or subject[i - 1] != ':'):
+      let (name, next) = subject.cssIdent(i + 1)
+      let lower = name.toLowerAscii()
+      if lower in ["is", "where", "matches"] and next < subject.len and subject[next] == '(':
+        var depth = 0
+        var close = -1
+        var j = next
+        while j < subject.len:
+          let past = subject.skipCssOpaque(j)
+          if past > j:
+            j = past
+            continue
+          if subject[j] == '(': inc depth
+          elif subject[j] == ')':
+            dec depth
+            if depth == 0:
+              close = j
+              break
+          inc j
+        if close < 0: return true
+        var any = false
+        for member in subject[next + 1 ..< close].splitSelectorList():
+          if element.selectorCouldMatch(member): any = true
+        if not any: return false
+        i = close + 1
+        continue
+    inc i
   let simple = subject[0 ..< stop]
   if simple.len == 0 or '*' in simple: return true
-  for character in simple:
-    if character notin {'a'..'z','A'..'Z','0'..'9','-','_','.','#'}: return true
-  element.simpleSelectorMatches(simple)
+  let matched = element.compoundMatches(simple)
+  if matched.isNone: return true
+  matched.get
+
+func readableSpecificity(selector: string): Option[(int, int, int)] =
+  ## A selector's specificity (ids, classes/attributes/pseudo-classes, types),
+  ## when it can be read here: `:where()` counts nothing, `:is()`, `:not()`,
+  ## `:has()` their most specific argument, another functional pseudo-class
+  ## one; none for `:nth-child(... of S)`, a string, a nesting `&` or a
+  ## namespace. Escapes are decoded as part of
+  ## the name they occur in (`.md\:p-4` is one class; `.\32 xl` is one class
+  ## and its space is not a combinator).
+  var a, b, c = 0
+  var at = 0
+  var compoundStart = true
+  while at < selector.len:
+    let ch = selector[at]
+    if ch in {'(', ')', '"', '\'', '&', '|'}: return none((int, int, int))
+    if ch in {' ', '\t', '\n', '\r', '>', '+', '~'}:
+      compoundStart = true
+      inc at
+      continue
+    if ch == '*':
+      compoundStart = false
+      inc at
+      continue
+    if ch == '[':
+      inc b
+      while at < selector.len and selector[at] != ']':
+        if selector[at] == '\\': at = selector.cssEscapeEnd(at) else: inc at
+      inc at
+      compoundStart = false
+      continue
+    if ch in {'#', '.', ':'}:
+      var element = false
+      if ch == ':' and at + 1 < selector.len and selector[at + 1] == ':':
+        element = true
+        inc at
+      let (name, next) = selector.cssIdent(at + 1)
+      if name.len == 0: return none((int, int, int))
+      at = next
+      compoundStart = false
+      if not element and ch == ':' and at < selector.len and selector[at] == '(':
+        # A functional pseudo-class: its arguments up to the matching `)`.
+        var depth = 0
+        var close = -1
+        var i = at
+        while i < selector.len:
+          let x = selector[i]
+          if x == '\\':
+            i = selector.cssEscapeEnd(i)
+            continue
+          if x in {'"', '\''}: return none((int, int, int))
+          if x == '(': inc depth
+          elif x == ')':
+            dec depth
+            if depth == 0:
+              close = i
+              break
+          inc i
+        if close < 0: return none((int, int, int))
+        let arguments = selector[at + 1 ..< close]
+        at = close + 1
+        case name.toLowerAscii()
+        of "where": discard
+        of "is", "not", "has", "matches":
+          # The most specific selector of the list.
+          var best = (0, 0, 0)
+          let members = arguments.splitSelectorList()
+          if members.len == 0: return none((int, int, int))
+          for member in members:
+            let one = readableSpecificity(member)
+            if one.isNone: return none((int, int, int))
+            if one.get > best: best = one.get
+          a += best[0]
+          b += best[1]
+          c += best[2]
+        else:
+          # `:nth-child(2n of S)` counts S too: not read here.
+          if " of " in arguments.toLowerAscii(): return none((int, int, int))
+          inc b
+        continue
+      if ch == '#': inc a
+      elif element: inc c
+      else: inc b
+      continue
+    if compoundStart and (ch in {'a'..'z', 'A'..'Z', '_', '-', '\\'} or ord(ch) >= 0x80):
+      let (name, next) = selector.cssIdent(at)
+      if name.len == 0: return none((int, int, int))
+      inc c
+      at = next
+      compoundStart = false
+      continue
+    return none((int, int, int))
+  some((a, b, c))
+
+type PageOwner = tuple[selector, condition, property: string; important: bool;
+    after: seq[string]]
+  ## An owner among a page's own `<style>` rules, and the opted-in constants
+  ## (`file\nconst` keys) whose last copy in the page comes before it.
+
+func couldOutrank(owner: PageOwner; declarationSelector, sheet: string;
+    layered: bool): bool =
+  ## Whether a page stylesheet's owner of a property could decide it over the
+  ## opted-in declaration of ``declarationSelector`` in ``sheet`` (a
+  ## top-level, unconditional normal declaration -- `cssUnconditionalLiterals`
+  ## offers no other), by the cascade
+  ## (https://www.w3.org/TR/css-cascade-5/#cascade-sort): `!important`
+  ## always could; when the page wraps the opted-in constant in a layer or
+  ## another block (``layered``) any owner could; a normal owner inside
+  ## `@layer` never can over the unlayered declaration; otherwise one of
+  ## higher specificity can, one of equal specificity only when it comes after
+  ## the constant's last copy in the page, and one of lower specificity never,
+  ## whatever its condition. Anything this cannot read (a selector
+  ## `readableSpecificity` cannot count, `@scope`, an unknown at-rule) could.
+  ## So a universal reset or a type rule (`* { padding: 0 }`, `div { width:
+  ## 5px }`) does not withhold a class rule, nor does an earlier rule of the
+  ## same specificity -- the opted-in selector's own included.
+  if owner.important or layered: return true
+  let condition = owner.condition.toLowerAscii()
+  var rest = condition
+  for known in ["@media", "@supports", "@layer"]:
+    rest = rest.replace(known, "")
+  if "@" in rest: return true
+  if "@layer" in condition: return false
+  let mine = readableSpecificity(owner.selector)
+  let theirs = readableSpecificity(declarationSelector)
+  if mine.isNone or theirs.isNone: return true
+  if mine.get != theirs.get: return mine.get > theirs.get
+  sheet in owner.after
+
+proc pageStyles(html: string): seq[tuple[text, media: string]] =
+  ## The text of every `<style>` element the page applies, in document order,
+  ## with its `media` attribute ("" or `all` for every width): as
+  ## `htmlStyleTexts`, but a media-limited `<style>` is kept, so its rules
+  ## count as conditional owners.
+  let tokens = htmlElementTokens(html)
+  for index, token in tokens:
+    if token.closing or token.tag != "style": continue
+    var media = token.attributes.getOrDefault("media").strip()
+    if media.toLowerAscii() == "all": media = ""
+    # A `<style>` whose every media query is for another medium (`print`,
+    # `speech`) or `not all` never applies in a screen preview.
+    if media.len > 0:
+      var screen = false
+      for query in media.splitSelectorList():
+        let q = query.toLowerAscii().strip()
+        let words = q.splitWhitespace()
+        let first = if words.len > 0 and words[0] == "only" and words.len > 1: words[1]
+          elif words.len > 0: words[0] else: ""
+        if q == "not all" or first in ["print", "speech"]: continue
+        screen = true
+      if not screen: continue
+    if index + 1 < tokens.len and tokens[index + 1].closing and tokens[index + 1].tag == "style":
+      result.add (html[token.finish ..< tokens[index + 1].start], media)
+
+func openPreludes(css: string; at: int): seq[string] =
+  ## The preludes of the blocks open at ``css[at]``, outermost first
+  ## (`@layer base`, `@media (min-width: 1px)`); comments, strings and
+  ## `url()` are text (`css_patch.skipCssOpaque`).
+  var i = 0
+  var start = 0
+  while i < at:
+    let past = css.skipCssOpaque(i)
+    if past > i:
+      i = past
+      continue
+    case css[i]
+    of '{':
+      result.add css[start ..< i].strip()
+      start = i + 1
+    of '}':
+      if result.len > 0: discard result.pop()
+      start = i + 1
+    of ';':
+      start = i + 1
+    else: discard
+    inc i
+
+func reordersCascade(preludes: seq[string]): bool =
+  ## Whether a block the page wraps an opted-in constant in can change how
+  ## its declarations rank: `@media` and `@supports` only decide whether they
+  ## apply, not their order, layer or specificity; `@layer`, a style rule
+  ## (nesting), `@scope`, `@container` and any other block may.
+  for prelude in preludes:
+    let lower = prelude.toLowerAscii()
+    if not (lower.startsWith("@media") or lower.startsWith("@supports")): return true
 
 proc compiledStyleBindings*(catalog, manifest: JsonNode; readSource: SourceReader;
     reoffer: seq[ReofferedDeclaration] = @[]): JsonNode =
@@ -330,6 +653,17 @@ proc compiledStyleBindings*(catalog, manifest: JsonNode; readSource: SourceReade
   proc sheetOf(node: JsonNode): string = node["file"].getStr() & "\n" & node["const"].getStr()
   var elements: seq[tuple[story: string, element: SourceHtmlElement]]
   var storySheets = initTable[string, seq[string]]()
+  # The text of every `<style>` element a page applies, without the opted-in
+  # constants it loads: a rule the project does not opt in can still decide a property for an
+  # element (an id rule outranking a shared class rule, a later rule with the
+  # same selector), and then the class rule is not that property's origin
+  # there; one that cannot outrank it (a universal reset, a type rule) does
+  # not count (`couldOutrank`) (editor spec "Native project
+  # source capabilities": a possible override prevents the producer from
+  # presenting an earlier shared rule as that origin; "Saving": an edit
+  # changes the one declaration that owns the property for the element).
+  var storyStyles = initTable[string, seq[tuple[text: string; after: seq[string]]]]()
+  var storyLayered = initTable[string, bool]()
   for story in catalog{"stories"}:
     let storyId = story{"group"}.getStr() & " / " & story{"name"}.getStr()
     let markup = sourceElementMarkup(story{"documentHtml"}.getStr(), sourceStoryIdentityPrefix(storyId))
@@ -346,6 +680,72 @@ proc compiledStyleBindings*(catalog, manifest: JsonNode; readSource: SourceReade
       storySheets[storyId] = named
     else:
       storySheets[storyId] = loadedStylesheets(story{"documentHtml"}.getStr(), sheets)
+    # The rest of the page's `<style>` text: every copy of an opted-in
+    # constant the page loads is taken out (those rules are the opted-in
+    # sheets' own owners, `sheetOwners`; a constant embedded once per
+    # component instance is still one stylesheet), so what is left is the
+    # page's own rules.
+    # The page's own rules: its `<style>` text without every copy of the
+    # opted-in constants it loads (those are the opted-in sheets' own
+    # owners, `sheetOwners`; a constant embedded once per component instance
+    # is still one stylesheet), each piece with the constants whose last copy
+    # comes before it, for the order of equally specific rules. A page
+    # credited by its record with a constant whose current text it does not
+    # hold (built before the source was edited, or a producer's declaration)
+    # cannot be told apart from its own rules: none of its `<style>` text is
+    # read as the page's own then, as before. A constant the page wraps in a
+    # block that can reorder the cascade (`@layer base { ... }`, not `@media`
+    # or `@supports`, which only decide whether it applies) may lose to any
+    # page rule (`couldOutrank`).
+    let styles = pageStyles(story{"documentHtml"}.getStr())
+    var occurrences: seq[tuple[style, first, stop: int; key: string]]
+    var exact = true
+    var layered = false
+    for sheet in sheets:
+      if sheet.key notin storySheets[storyId]: continue
+      let value = nimTripleQuotedValue(sheet.css)
+      if value.strip().len == 0: continue
+      var found = false
+      for index, style in styles:
+        if style.media.len > 0: continue
+        var at = style.text.find(value)
+        while at >= 0:
+          var free = true
+          for other in occurrences:
+            if other.style == index and at < other.stop and other.first < at + value.len:
+              free = false
+          if free:
+            found = true
+            if style.text.openPreludes(at).reordersCascade(): layered = true
+            occurrences.add (index, at, at + value.len, sheet.key)
+          at = style.text.find(value, at + 1)
+      if not found: exact = false
+    var pieces: seq[tuple[text: string; after: seq[string]]]
+    if exact:
+      var last = initTable[string, (int, int)]()
+      for occurrence in occurrences:
+        let position = (occurrence.style, occurrence.stop)
+        if not last.hasKey(occurrence.key) or last[occurrence.key] < position:
+          last[occurrence.key] = position
+      for index, style in styles:
+        var cuts: seq[(int, int)]
+        for occurrence in occurrences:
+          if occurrence.style == index: cuts.add (occurrence.first, occurrence.stop)
+        cuts.sort()
+        var cursor = 0
+        proc piece(first, stop: int) =
+          var text = style.text[first ..< stop]
+          if style.media.len > 0: text = "@media " & style.media & " {\n" & text & "\n}"
+          var after: seq[string]
+          for key, position in last:
+            if position <= (index, first): after.add key
+          pieces.add (text, after)
+        for (first, stop) in cuts:
+          piece(cursor, first)
+          cursor = stop
+        piece(cursor, style.text.len)
+    storyStyles[storyId] = pieces
+    storyLayered[storyId] = layered
     for element in markup.elements: elements.add((storyId, element))
   proc loads(story, sheet: string): bool = sheet in storySheets.getOrDefault(story)
   var unsupportedTokens: seq[string]
@@ -381,6 +781,14 @@ proc compiledStyleBindings*(catalog, manifest: JsonNode; readSource: SourceReade
     var candidates = newJArray()
     var possibleOwners: seq[tuple[selector, condition, property: string]]
     for sheet in storySheets.getOrDefault(target.story): possibleOwners.add sheetOwners[sheet]
+    # Every owner among the page's own rules, with its priority: only one that
+    # could outrank the opted-in declaration withholds it (`couldOutrank`).
+    var pageOwners: seq[PageOwner]
+    for piece in storyStyles.getOrDefault(target.story):
+      for owner in cssRankedPropertyOwners(piece.text, attributionProperties):
+        pageOwners.add (owner.selector, owner.condition, owner.property,
+          owner.important, piece.after)
+    let layered = storyLayered.getOrDefault(target.story)
     for declaration in declarations:
       if loads(target.story, declaration.sheetOf()) and
           simpleSelectorMatches(target.element, declaration["selector"].getStr()): candidates.add declaration
@@ -402,6 +810,15 @@ proc compiledStyleBindings*(catalog, manifest: JsonNode; readSource: SourceReade
           if matches and (other.condition.len > 0 or other.selector != declaration["selector"].getStr()):
             attributionBlocked = true
           elif not selectorSupported and target.element.selectorCouldMatch(other.selector):
+            attributionBlocked = true
+        # The page's own rules: one that matches the element and could
+        # outrank the opted-in declaration withholds it -- a later rule with
+        # its very selector included (`couldOutrank`).
+        let ownSelector = declaration["selector"].getStr()
+        for other in pageOwners:
+          if other.property != property: continue
+          if not other.couldOutrank(ownSelector, declaration.sheetOf(), layered): continue
+          if target.element.selectorCouldMatch(other.selector):
             attributionBlocked = true
         if inlineStyle.len > 0 and cssPropertyOwners(".inline {" & inlineStyle & "}",@[property]).len > 0:
           attributionBlocked = true
@@ -475,6 +892,16 @@ proc compiledStyleBindings*(catalog, manifest: JsonNode; readSource: SourceReade
       let inlineStyle = target.element.attributes.getOrDefault("style")
       for name in homes:
         var ownedElsewhere = false
+        # The page's own rules (`storyStyles`: its `<style>` text without the
+        # opted-in constants it loads, which the loop below reads).
+        for piece in storyStyles.getOrDefault(target.story):
+          for found in cssRankedPropertyOwners(piece.text, @[name]):
+            let other: PageOwner = (found.selector, found.condition, found.property,
+              found.important, piece.after)
+            if not other.couldOutrank(declaration.selector, sheet,
+                storyLayered.getOrDefault(target.story)): continue
+            if target.element.selectorCouldMatch(other.selector):
+              ownedElsewhere = true
         for loaded in storySheets.getOrDefault(target.story):
           for opted in sheets:
             if opted.key != loaded: continue

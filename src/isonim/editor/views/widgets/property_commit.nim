@@ -718,6 +718,18 @@ proc inspectorRowWiring*(vm: EditorVM; property: string): InspectorRowWiring =
     # binding's rule.
     if property.isSome and (property.get.authoredValue.len > 0 or
         property.get.nativeSourceOffered): return ""
+    # The project offers no declaration of it for this element. Where the
+    # preview's cascade says which declaration decides it, say so, as what the
+    # preview measures rather than as the reason: usually that rule (one the
+    # project does not opt in, or the inline style) is why a shared rule that
+    # also sets it is not offered, but a producer that cannot rank a page rule
+    # withholds the shared rule even where that rule itself decides.
+    let decider = if property.isSome: property.get.cascadeDecider else: ""
+    if decider.len > 0:
+      return "Read-only: no editable source declaration in this project owns " &
+        capturedProperty & " for this element (the preview measures " &
+        (if decider == "style": "its inline style" else: "`" & decider & "`") &
+        " as deciding it)."
     "Read-only: no editable source declaration in this project owns " &
       capturedProperty & "."
 

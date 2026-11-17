@@ -1977,6 +1977,16 @@ __ISONIM_SCENE_GRAPH_WALK__
     const lines = [];
     let calm = null;
     aliasMemo = new Map();
+    // Which declaration decides each property the inspector shows, by the
+    // preview runtime's own resolver (`__isonimCascadeAnswers`), asked before
+    // anything below adopts a sheet: one `@cascade<TAB>answer` line each.
+    try {
+      const answers = window.__isonimCascadeAnswers ?
+        window.__isonimCascadeAnswers(el, ISONIM_EDITABLE_PROPS) : '';
+      for (const answer of answers.split('\n')) {
+        if (answer) lines.push('@cascade\t' + answer);
+      }
+    } catch (e) {}
     try {
       // Transitions are switched off on the measured element only (it carries
       // `data-isonim-selected` while it is captured): a transition running on
@@ -3021,13 +3031,21 @@ proc editablePreviewDocument*(documentHtml: string;
     CSSFontPaletteValuesRule: true, CSSNamespaceRule: true,
     CSSViewTransitionRule: true
   };
-  function resolveRule(el, property, shared) {
-    var result = { rule: null, sound: true, inline: false, unread: false };
+  // One walk over the element's style sheets, independent of the property:
+  // the matching rules the cascade can rank (`candidates`, each with its
+  // layer, specificity and order), the declaration blocks it cannot judge
+  // (`unjudged`: a rule under a condition this cannot evaluate, nested in a
+  // style rule, whose selector cannot be matched or ranked here, or with no
+  // selector), and whether the element sits in or hosts a shadow tree
+  // (`foreign`) or a sheet could not be read (`unread`). `resolveFrom` answers
+  // one property from it, so the capture can ask every property it reports
+  // with one walk (`__isonimCascadeAnswers`).
+  function cascadeCandidates(el) {
+    var walk = { candidates: [], unjudged: [], foreign: false, unread: false };
     if (el.getRootNode() !== document || el.shadowRoot || el.assignedSlot) {
-      result.sound = false;
+      walk.foreign = true;
     }
     var ordinals = {}, counts = {}, anonymous = 0, order = 0;
-    var best = null, home = null;
     function layerName(parent, name) {
       // Registers a (possibly dotted) layer name, first appearance first, and
       // returns its full name.
@@ -3064,7 +3082,6 @@ proc editablePreviewDocument*(documentHtml: string;
         var kind = rule.constructor && rule.constructor.name;
         if (rule.type === CSSRule.STYLE_RULE) {
           var nested = rule.parentRule && rule.parentRule.type === CSSRule.STYLE_RULE;
-          var declared = declaresIn(rule.style, property);
           var judged = !unknown && !nested && rule.selectorText;
           var matching = [];
           if (judged) {
@@ -3076,7 +3093,7 @@ proc editablePreviewDocument*(documentHtml: string;
             }
           }
           if (!judged) {
-            if (declared) result.sound = false;
+            walk.unjudged.push(rule.style);
           } else if (matching.length) {
             var specificity = null;
             for (var m = 0; m < matching.length; m++) {
@@ -3085,14 +3102,10 @@ proc editablePreviewDocument*(documentHtml: string;
               if (!specificity || laterSpecificity(one, specificity)) specificity = one;
             }
             if (!specificity) {
-              if (declared) result.sound = false;
+              walk.unjudged.push(rule.style);
             } else {
-              var candidate = { rule: rule, important: !!(declared && declared.important),
-                layer: layerPosition(layer), specificity: specificity, order: order++ };
-              if (declared && (!best || cascadeWins(candidate, best))) best = candidate;
-              var normal = { rule: rule, important: false, layer: candidate.layer,
-                specificity: specificity, order: candidate.order };
-              if (!home || cascadeWins(normal, home)) home = normal;
+              walk.candidates.push({ rule: rule, layer: layerPosition(layer),
+                specificity: specificity, order: order++ });
             }
           }
           // Rules nested in this one: their selectors are relative to it.
@@ -3123,7 +3136,7 @@ proc editablePreviewDocument*(documentHtml: string;
         if (rule.type === CSSRule.IMPORT_RULE) {
           var imported = null;
           try { imported = rule.styleSheet && rule.styleSheet.cssRules; } catch (e) {}
-          if (!imported) { result.unread = true; continue; }
+          if (!imported) { walk.unread = true; continue; }
           var importMedia = holds(function () {
             return !rule.media.mediaText || matchMedia(rule.media.mediaText).matches;
           });
@@ -3146,7 +3159,7 @@ proc editablePreviewDocument*(documentHtml: string;
         // here: whether its rules apply cannot be told.
         if (rule.cssRules) { visit(rule.cssRules, layer, true); continue; }
         // A declaration block with no selector of its own (`CSSNestedDeclarations`).
-        if (rule.style && declaresIn(rule.style, property)) result.sound = false;
+        if (rule.style) walk.unjudged.push(rule.style);
       }
     }
     var sheets = [].slice.call(document.styleSheets).concat(document.adoptedStyleSheets || []);
@@ -3158,17 +3171,178 @@ proc editablePreviewDocument*(documentHtml: string;
       });
       if (applies === false) continue;
       var rules = null;
-      try { rules = sheet.cssRules; } catch (e) { result.unread = true; continue; }
+      try { rules = sheet.cssRules; } catch (e) { walk.unread = true; continue; }
       visit(rules, '', applies === null);
+    }
+    return walk;
+  }
+  // ``property`` answered from one walk (`cascadeCandidates`); `best` is the
+  // deciding candidate (null when no rule declares the property).
+  function resolveFrom(walk, el, property, shared) {
+    var result = { rule: null, sound: !walk.foreign, inline: false, unread: walk.unread, best: null };
+    for (var u = 0; u < walk.unjudged.length; u++) {
+      if (walk.unjudged[u] && declaresIn(walk.unjudged[u], property)) { result.sound = false; break; }
+    }
+    var best = null, home = null;
+    for (var c = 0; c < walk.candidates.length; c++) {
+      var found = walk.candidates[c];
+      var declared = declaresIn(found.rule.style, property);
+      var candidate = { rule: found.rule, important: !!(declared && declared.important),
+        layer: found.layer, specificity: found.specificity, order: found.order };
+      if (declared && (!best || cascadeWins(candidate, best))) best = candidate;
+      var normal = { rule: found.rule, important: false, layer: found.layer,
+        specificity: found.specificity, order: found.order };
+      if (!home || cascadeWins(normal, home)) home = normal;
     }
     var inline = declaresIn(el.style, property);
     if (inline && (inline.important || !best || !best.important)) {
       result.inline = true;
       if (shared) result.sound = false;
     }
+    result.best = best;
     result.rule = best ? best.rule : home ? home.rule : null;
     return result;
   }
+  function resolveRule(el, property, shared) {
+    return resolveFrom(cascadeCandidates(el), el, property, shared);
+  }
+  // The at-rule conditions a rule applies under (`@media`, `@supports`,
+  // `@container`, `@scope`, and any other grouping rule), outermost first,
+  // as `ruleIdentity` writes them; a layer is not a condition. "" for a rule
+  // that applies wherever its selector matches.
+  function ruleConditions(rule) {
+    var parts = [];
+    for (var parent = rule.parentRule; parent; parent = parent.parentRule) {
+      var kind = parent.constructor && parent.constructor.name;
+      if (kind === 'CSSLayerBlockRule') continue;
+      if (kind === 'CSSMediaRule') parts.unshift('@media ' + parent.conditionText);
+      else if (kind === 'CSSSupportsRule') parts.unshift('@supports ' + parent.conditionText);
+      else return '\u0000';
+    }
+    return parts.join(' ').replace(/\s+/g, ' ').trim();
+  }
+  // Which declaration decides each of ``properties`` for ``el``, and which
+  // matching rules a normal declaration would decide it in, by the resolver
+  // above -- the same answer an edit's preview uses. For the capture
+  // (`decidingSideRules`): one `property<TAB>decider<TAB>conditions<TAB>homes`
+  // line per property the answer is sound for, where `decider` names the
+  // deciding rule as `ruleIdentity` does, or is `style` for the inline style;
+  // `conditions` are the deciding rule's (`ruleConditions`); and `homes` are
+  // the names, separated by U+001F, of the matching rules where a normal
+  // declaration of the property would outrank the deciding one. A property
+  // no rule and no inline style declares, or whose answer is unsound (a
+  // sheet that cannot be read, a declaring block that cannot be judged, a
+  // shadow tree) has no line. Read into `PropertyInfo.cascadeDecider`.
+  // Whether a selector depends on a state of the page, so that it matches
+  // only while that state holds. Inverted on purpose: only the pseudo-classes
+  // known to depend on nothing but the document's structure and attributes
+  // (STATIC_PSEUDO) leave a selector static; any other pseudo-class --
+  // `:hover`, `:focus-within`, `:checked`, a vendor or future one such as
+  // `:interest-source` or `:-webkit-drag` -- makes it stateful, wherever it
+  // occurs (on the element, an ancestor, a sibling, inside `:is()`,
+  // `:not()`, `:has()` or `:nth-child(... of S)`), so an unknown one never
+  // grounds a refusal. The selector is read by CSS Syntax rules: an escape is
+  // part of a name (`.hover\:p-4` is a class, not a state: such a rule can
+  // ground a refusal), and a string or an attribute value is not a selector.
+  // `:empty` is treated as stateful: inline text editing changes it.
+  var STATIC_PSEUDO = {
+    'is': 1, 'where': 1, 'not': 1, 'has': 1, 'matches': 1, '-webkit-any': 1,
+    'first-child': 1, 'last-child': 1, 'only-child': 1, 'first-of-type': 1,
+    'last-of-type': 1, 'only-of-type': 1, 'nth-child': 1, 'nth-last-child': 1,
+    'nth-of-type': 1, 'nth-last-of-type': 1, 'root': 1, 'scope': 1,
+    'lang': 1, 'dir': 1, 'defined': 1
+  };
+  function selectorDependsOnState(text) {
+    text = String(text || '');
+    var i = 0;
+    function escapeEnd(at) {
+      at++;
+      if (at < text.length && /[0-9A-Fa-f]/.test(text[at])) {
+        for (var digits = 0; digits < 6 && at < text.length && /[0-9A-Fa-f]/.test(text[at]); digits++) at++;
+        if (at < text.length && /[ \t\n\r\f]/.test(text[at])) at++;
+        return at;
+      }
+      return at + 1;
+    }
+    while (i < text.length) {
+      var ch = text[i];
+      if (ch === '\\') { i = escapeEnd(i); continue; }
+      if (ch === '"' || ch === "'") {
+        for (i++; i < text.length && text[i] !== ch; i++) if (text[i] === '\\') i++;
+        i++;
+        continue;
+      }
+      if (ch === '[') {
+        // An attribute selector: its value is text, not a selector.
+        for (i++; i < text.length && text[i] !== ']'; i++) {
+          if (text[i] === '\\') { i++; continue; }
+          if (text[i] === '"' || text[i] === "'") {
+            var quote = text[i];
+            for (i++; i < text.length && text[i] !== quote; i++) if (text[i] === '\\') i++;
+          }
+        }
+        i++;
+        continue;
+      }
+      if (ch === ':') {
+        if (text[i + 1] === ':') {
+          // A pseudo-element (`::before`): skip its name; its arguments, if
+          // any (`::part()`, `::slotted()`), are read as selectors below.
+          i += 2;
+          while (i < text.length && /[A-Za-z0-9_\-]/.test(text[i])) i++;
+          continue;
+        }
+        var start = i + 1, end = start;
+        while (end < text.length && /[A-Za-z0-9_\-]/.test(text[end])) end++;
+        var name = text.slice(start, end).toLowerCase();
+        if (!STATIC_PSEUDO[name]) return true;
+        i = end;
+        continue;
+      }
+      i++;
+    }
+    return false;
+  }
+  window.__isonimSelectorDependsOnState = selectorDependsOnState;
+  window.__isonimCascadeAnswers = function (el, properties) {
+    var lines = [];
+    try {
+      var walk = cascadeCandidates(el);
+      if (walk.foreign || walk.unread) return '';
+      for (var i = 0; i < properties.length; i++) {
+        var property = properties[i];
+        var answer = resolveFrom(walk, el, property, false);
+        if (!answer.sound) continue;
+        var decider = '', conditions = '', homes = [];
+        if (answer.inline) {
+          decider = 'style';
+        } else if (answer.best) {
+          // A deciding rule whose selector depends on a state of the page
+          // (`selectorDependsOnState`: any pseudo-class not known to be
+          // static, anywhere in it) decides only while that state holds -- the
+          // click that selects the element leaves it hovered -- so, like a
+          // condition, it never grounds a refusal.
+          if (selectorDependsOnState(answer.best.rule.selectorText)) continue;
+          decider = ruleIdentity(answer.best.rule);
+          conditions = ruleConditions(answer.best.rule);
+          if (conditions === '\u0000') continue;
+          for (var c = 0; c < walk.candidates.length; c++) {
+            var found = walk.candidates[c];
+            if (found.rule === answer.best.rule) continue;
+            var normal = { rule: found.rule, important: false, layer: found.layer,
+              specificity: found.specificity, order: found.order };
+            if (cascadeWins(normal, answer.best)) homes.push(ruleIdentity(found.rule));
+          }
+        } else {
+          continue;
+        }
+        lines.push(property + '\t' + decider + '\t' + conditions + '\t' + homes.join('\u001f'));
+      }
+    } catch (e) {
+      return '';
+    }
+    return lines.join('\n');
+  };
   function governingRule(el, property) {
     var resolved = resolveRule(el, property, false);
     return resolved.sound ? resolved.rule : null;

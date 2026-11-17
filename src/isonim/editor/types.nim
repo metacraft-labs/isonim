@@ -625,6 +625,23 @@ type
       ## style, `none` when nothing declares it, "" when not measured. A
       ## writer's `ruleDeclarations` names its rule the same way, so an edit
       ## of that rule moves only the sides it decides.
+    cascadeDecider*: string
+      ## Which declaration decides this property for the element, as the
+      ## preview runtime's cascade resolver measured it when the selection
+      ## was captured (importance, layers, specificity, order, the `@media`
+      ## and `@supports` conditions that hold): the rule, named as
+      ## `decidingRule` names one, or `style` for the inline style. "" when
+      ## nothing declares it or the answer could not be told soundly (a
+      ## sheet the preview cannot read, a declaring rule under a condition it
+      ## cannot evaluate, a shadow tree).
+    cascadeConditions*: string
+      ## The at-rule conditions ``cascadeDecider`` applies under (`@media
+      ## (max-width: 640px)`), "" for a rule that applies wherever its
+      ## selector matches.
+    cascadeHomes*: seq[string]
+      ## The matching rules where a normal declaration of this property
+      ## would outrank ``cascadeDecider``, by name. An edit that inserts the
+      ## property into one of them decides it.
     sourceOwner*: string
       ## For a side of a simple shorthand in a native source project: the
       ## property whose declaration decides it in its rule, as the catalog
@@ -1737,6 +1754,18 @@ type
       ## "respect declaration order") -- and shows and previews that. A writer
       ## that does not set it keeps the editor's earlier behaviour (an edited
       ## shorthand's sides follow it).
+    editRule*: proc(plan: SourceEditPlan;
+      schema: WorkspaceEditableSchemaEntry): string {.closure.}
+      ## Optional: the rule ``plan`` is written into for this entry, named as
+      ## `WorkspaceRuleDeclarations.rule` names it, or "" when the writer
+      ## cannot say. Like `editRefusal` it reads no file: a statement from
+      ## what the adapter already holds, asked at the commit and, untracked,
+      ## for each shared scope a row offers. The editor compares it with the
+      ## declaration the preview's cascade measures as deciding the property
+      ## (`PropertyInfo.cascadeDecider`), and refuses an edit that would
+      ## change nothing the selected element renders (editor spec
+      ## "Saving": an edit changes the one declaration that owns the property
+      ## for the selected element).
 
   WorkspaceRuleDeclaration* = object
     property*: string

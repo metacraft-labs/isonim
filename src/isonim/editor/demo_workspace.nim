@@ -607,6 +607,16 @@ proc demoVectorEditAdapter*(vectorSource, foundationSource: ref string): Workspa
     let rules = foundationSource[].demoRules(selector)
     if rules.len == 1 and ',' in rules[0].selector:
       return demoRuleRefusal(rules, schema.file, selector, plan.property)
+  # The rule a class entry's value is written into (`setDemoDeclaration`:
+  # the one top-level rule for its selector), from the source this adapter
+  # holds, so the editor can tell a rule another declaration overrides for
+  # the selected element (`editRule`). A responsive override is written into
+  # another rule and is not named.
+  result.editRule = proc(plan: SourceEditPlan;
+      schema: WorkspaceEditableSchemaEntry): string =
+    if plan.breakpointCondition.len > 0 or schema.file != DemoFoundationSource:
+      return
+    demoRuleDeclarations(foundationSource[], schema).rule
   # The rule's declarations in source order, so the editor can tell which
   # declaration decides each side of a shorthand (`ruleDeclarations`).
   # Responsive overrides live in another rule and are not reported.

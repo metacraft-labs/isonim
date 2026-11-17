@@ -27,6 +27,17 @@
  * how fast the host runs. Nothing is replaced: the save that follows is the
  * editor's own.
  *
+ * Cases 13, 33, 34, 43 and 56 onwards (61 and 62: a `:hover` rule never
+ * grounds a refusal): an edit the writer puts in a rule
+ * another declaration decides for the card (a more specific, more important
+ * or later rule, the inline style) would change nothing the card renders, so
+ * the rule's scope is shown disabled with the reason and a commit is refused
+ * at the act, naming the deciding rule; where the rule decides, or a
+ * declaration inserted into it would, or the deciding rule applies only
+ * under a condition, the edit is written. Editor spec "Saving"; isonim-pm
+ * issue 2026-11-15-an-accepted-edit-of-a-shared-class-changes-nothing-when-
+ * another-rule-decides-the-property.
+ *
  * No mocks. The host (`tests/helpers/editor_shorthand_order_workspace.nim`)
  * is the editor example with its real writer, preview document and browser
  * selection bridge, plus schema entries for the card's sides. The page is
@@ -86,7 +97,7 @@ try {
     await p.getByRole('button',{name:'Toggle DestinationCard stories'}).click();
     await p.getByRole('button',{name:'Select story DestinationCard / Default'}).click();
     await p.getByRole('button',{name:'Switch to edit mode'}).click();
-    await selectExactly();
+    await selectExactly(!!host.hover);
     const layout=p.locator('[data-inspector-section-header="layout"]');
     if((await layout.getAttribute('aria-expanded'))!=='true')await layout.click();
     const toggle=p.getByRole('button',{name:'Show box model controls'});
@@ -98,7 +109,10 @@ try {
   // no MutationObserver record touches the card's `style` attribute.
   const frame=()=>p.frameLocator('iframe[title="Editable component preview"]');
   async function blocks(){return card().evaluate((n)=>{const out=[];const visit=(rules)=>{for(const r of rules){if(r.style)out.push((r.selectorText||'')+'{'+window.__isonimShorthandBlockSnapshot(r.style)+'}');if(r.cssRules)visit(r.cssRules);}};for(const sh of document.styleSheets){if(sh.ownerNode&&sh.ownerNode.id==='isonim-editor-selection-paint-style')continue;try{visit(sh.cssRules);}catch(e){}}return {rules:out,inline:n.getAttribute('style'),sides:['top','right','bottom','left'].map(s=>getComputedStyle(n).getPropertyValue('padding-'+s)).concat(['top-left','top-right','bottom-right','bottom-left'].map(c=>getComputedStyle(n).getPropertyValue('border-'+c+'-radius'))),animations:n.getAnimations().length};});}
-  async function selectExactly(){
+  // ``hovered``: the case has a `:hover` rule, so the click that selects the
+  // card hovers it and its rendered sides change by the hover itself; the
+  // rules and inline style are still compared, the rendered sides are not.
+  async function selectExactly(hovered=false){
     const before=await blocks();
     await card().evaluate((n)=>{window.__isonimStyleRecords=0;const o=new MutationObserver(rs=>{for(const r of rs)if(r.attributeName==='style')window.__isonimStyleRecords++;});o.observe(n,{attributes:true});window.__isonimStyleObserver=o;});
     await card().click({force:true,position:{x:3,y:3}});
@@ -106,6 +120,7 @@ try {
     await p.waitForTimeout(300);
     const records=await card().evaluate(()=>{window.__isonimStyleObserver.disconnect();return window.__isonimStyleRecords;});
     const after=await blocks();
+    if(hovered){delete after.sides;delete before.sides;}
     assert.deepEqual(after,before,'the selection measurement changed the preview');
     assert.equal(records,0,'the selection measurement wrote the card\'s style attribute');
   }
@@ -119,6 +134,14 @@ try {
     assert.deepEqual(last,expected,what);
   }
   async function undoRedo(redo){await p.evaluate(()=>document.activeElement?.blur());await p.keyboard.press(redo?'ControlOrMeta+Shift+z':'ControlOrMeta+z');}
+  // Every rule of the preview's stylesheets, named as the capture names a
+  // rule, and the card's inline style; and the check that only one rule changed.
+  const styleState=()=>card().evaluate((n)=>{const out=[];const visit=(rs)=>{for(const r of rs){if(r.style&&r.selectorText!==undefined)out.push(window.__isonimRuleIdentity(r)+' {'+r.style.cssText+'}');if(r.cssRules)visit(r.cssRules);}};for(const sh of document.styleSheets){const o=sh.ownerNode;if(o&&o.id&&o.id.startsWith('isonim-editor'))continue;try{visit(sh.cssRules);}catch(e){}}return {rules:out,inline:n.getAttribute('style')};});
+  const onlyChanged=(before,after,target,what)=>{
+    const strip=(state)=>({rules:state.rules.filter(r=>!r.startsWith(target+' {')),inline:state.inline});
+    assert.deepEqual(strip(after),strip(before),what+': a rule other than `'+target+'` (or the inline style) changed');
+  };
+  const ruleText=async(name)=>(await styleState()).rules.filter(r=>r.startsWith(name+' {'));
 
   // 1. The case in the issue: a later side keeps its value.
   await open('padding: 18px;');
@@ -267,19 +290,36 @@ try {
   assert.equal(await field('Padding top').inputValue(),'30');
   cases.push('a padding transition neither hides the measurement nor is started by it');
 
-  // 13. The example's own inline corners decide the radius: a Corner radius
-  // edit of the rule leaves them, in the preview and in the inspector.
+  // 13. The example's own inline corners decide the radius. A Corner radius
+  // edit, which the writer puts in the card rule, would change nothing the
+  // card renders: the rule's scope is shown disabled with the reason, and a
+  // commit (at the local scope, which this writer also puts in the card
+  // rule) is refused at the act, naming the inline style; nothing is
+  // written and the corners and their fields keep their values. Editor spec
+  // "Saving"; isonim-pm issue 2026-11-15-an-accepted-edit-of-a-shared-class-
+  // changes-nothing-when-another-rule-decides-the-property.
   await open('padding: 18px; border-radius: 14px;','',true);
   const appearance2=p.locator('[data-inspector-section-header="appearance"]');
   if((await appearance2.getAttribute('aria-expanded'))!=='true')await appearance2.click();
-  const radius2=p.locator('[data-inspector-section-body="appearance"] [data-property-row-css-property="border-radius"] [data-property-row-input]');
+  const radiusRow2=p.locator('[data-inspector-section-body="appearance"] [data-property-row-css-property="border-radius"]');
+  const radius2=radiusRow2.locator('[data-property-row-input]');
+  const inlineWhy=/The element's inline style decides border-radius for this element ahead of `\.destination-card`, so changing it in `\.destination-card` would not change what this element renders/;
+  const sharedChip2=radiusRow2.locator('[data-source-scope-kind="sskSharedClass"]').first();
+  assert.equal(await sharedChip2.getAttribute('data-source-scope-editable'),'false');
+  assert.match(await sharedChip2.getAttribute('data-source-scope-reason'),inlineWhy);
+  const before13=await styleState();
   await radius2.click();await radius2.press('ControlOrMeta+A');await p.keyboard.type('12');await radius2.press('Enter');
+  const message13=radiusRow2.locator('[data-property-row-message]');
+  await assertPoll(async()=>inlineWhy.test(await message13.textContent()),true,'the row says why the commit was refused');
+  await p.waitForTimeout(1500);
+  assert.equal(await pending(),0);
+  assert.equal(await cardRule(),'.destination-card { padding: 18px; border-radius: 14px; }');
   const corners2=async()=>{const out=[];for(const c of ['top-left','top-right','bottom-right','bottom-left'])out.push(await computed('border-'+c+'-radius'));return out;};
-  await settle('.destination-card { padding: 18px; border-radius: 12px; }');
-  await assertPoll(corners2,['8px','8px','8px','8px'],'preview: the inline corners hold');
+  assert.deepEqual(await corners2(),['8px','8px','8px','8px']);
+  onlyChanged(before13,await styleState(),'','after the refused commit');
   const cornerValues=await p.evaluate(()=>{const props=globalThis.__isonimEditorVm.inspector.selectedElement.value.properties;const str=(v)=>typeof v==='string'?v:String.fromCharCode(...v);return props.filter(q=>str(q.name).startsWith('border-')&&str(q.name).endsWith('-radius')&&str(q.name)!=='border-radius').map(q=>str(q.name)+'='+str(q.value));});
   assert.deepEqual(cornerValues.sort(),['border-bottom-left-radius=8px','border-bottom-right-radius=8px','border-top-left-radius=8px','border-top-right-radius=8px']);
-  cases.push('corners the inline style decides are not moved by a Corner radius edit of the rule');
+  cases.push('a Corner radius edit the inline style overrides is refused at the act, naming the inline style, and nothing is written');
 
   // 14. A side a variable decides, as a fresh capture (after a reload) sees
   // it: the field shows the variable, and a press on its canvas handle
@@ -507,12 +547,7 @@ try {
   // names a rule) and the card's inline style before the commit, right after
   // it and after the write, and requires that only the rule the edit is
   // written to changed.
-  const styleState=()=>card().evaluate((n)=>{const out=[];const visit=(rs)=>{for(const r of rs){if(r.style&&r.selectorText!==undefined)out.push(window.__isonimRuleIdentity(r)+' {'+r.style.cssText+'}');if(r.cssRules)visit(r.cssRules);}};for(const sh of document.styleSheets){const o=sh.ownerNode;if(o&&o.id&&o.id.startsWith('isonim-editor'))continue;try{visit(sh.cssRules);}catch(e){}}return {rules:out,inline:n.getAttribute('style')};});
-  const onlyChanged=(before,after,target,what)=>{
-    const strip=(state)=>({rules:state.rules.filter(r=>!r.startsWith(target+' {')),inline:state.inline});
-    assert.deepEqual(strip(after),strip(before),what+': a rule other than `'+target+'` (or the inline style) changed');
-  };
-  const ruleText=async(name)=>(await styleState()).rules.filter(r=>r.startsWith(name+' {'));
+  // (`styleState`, `onlyChanged` and `ruleText` are defined with the helpers above.)
   const settleWrite=async(expectedRule)=>{await settle(expectedRule);await p.waitForTimeout(1500);};
   // What the preview showed when the commit's declaration reached it, read in
   // the editor page's own listener for it (registered after the preview's,
@@ -555,23 +590,43 @@ try {
   };
   const heldRules=()=>card().evaluate(()=>{const s=document.getElementById('isonim-editor-box-drag-preview');return s?s.textContent.trim():'';});
 
-  // 33. The card's own id rule decides its padding, ahead of the class rule
-  // the writer writes and a later class rule. The edit is written to the
-  // card rule, which the id rule overrides, so the preview -- like the
-  // written file -- shows no change, and neither the id rule nor the later
-  // class rule gains the value.
+  // An edit the writer puts in a rule another declaration decides for the
+  // card would change nothing the card renders: the rule's scope is shown
+  // disabled with the reason, and the commit is refused at the act with the
+  // reason under the box model; nothing is written and no rule or inline
+  // style changes. Editor spec "Saving" (an edit changes the one declaration
+  // that owns the property for the selected element); isonim-pm issue
+  // 2026-11-15-an-accepted-edit-of-a-shared-class-changes-nothing-when-
+  // another-rule-decides-the-property.
+  const refusedElsewhere=async(fieldName,value,why,writtenRule,renders)=>{
+    const chip=p.locator('[data-property-row-css-property="padding"] [data-source-scope-kind="sskSharedClass"]').first();
+    assert.equal(await chip.getAttribute('data-source-scope-editable'),'false','the rule\'s scope is disabled');
+    assert.match(await chip.getAttribute('data-source-scope-reason'),why);
+    const before=await styleState();
+    await commit(fieldName,value);
+    const message=p.locator('[data-box-model-message]');
+    await message.waitFor({state:'visible'});
+    assert.match(await message.textContent(),why);
+    await p.waitForTimeout(1500);
+    assert.equal(await pending(),0,'nothing is staged');
+    assert.equal(await cardRule(),writtenRule,'nothing is written');
+    assert.deepEqual(await rendered('padding-'),renders);
+    onlyChanged(before,await styleState(),'','after the refused commit');
+  };
+
+  // 33. The issue's case: the card's own id rule decides its padding, ahead
+  // of the class rule the writer writes and a later class rule.
   await open('padding: 18px;','#wl-card { padding: 10px; }\n.long-tail-card { padding: 30px; }\n',false,false,'','','','wl-card');
   await assertPoll(()=>rendered('padding-'),['10px','10px','10px','10px'],'the id rule decides');
-  const before33=await styleState();
-  await commit('Padding, all sides','20');
-  await assertPoll(async()=>(await ruleText('.destination-card')),['.destination-card {padding: 20px;}'],'preview: the edit is in the card rule');
-  assert.deepEqual(await rendered('padding-'),['10px','10px','10px','10px'],'preview right after the commit: the id rule still decides');
-  onlyChanged(before33,await styleState(),'.destination-card','right after the commit');
+  await refusedElsewhere('Padding, all sides','20',/`#wl-card` decides padding for this element ahead of `\.destination-card`, so changing it in `\.destination-card` would not change what this element renders/,'.destination-card { padding: 18px; }',['10px','10px','10px','10px']);
   assert.equal(await field('Padding top').inputValue(),'10');
-  await settleWrite('.destination-card { padding: 20px; }');
-  assert.deepEqual(await rendered('padding-'),['10px','10px','10px','10px'],'preview after the write');
-  onlyChanged(before33,await styleState(),'.destination-card','after the write');
-  cases.push('an edit the writer puts in a rule an id rule overrides is previewed in that rule, with no change, before and after the write');
+  // A side, too: the id rule's shorthand decides it.
+  await commit('Padding top','24');
+  await assertPoll(async()=>/`#wl-card` decides padding-top for this element/.test(await p.locator('[data-box-model-message]').textContent()),true,'the side\'s refusal names the id rule');
+  await p.waitForTimeout(1500);
+  assert.equal(await pending(),0);
+  assert.equal(await cardRule(),'.destination-card { padding: 18px; }');
+  cases.push('an edit of the card rule an id rule overrides is refused at the act, naming the id rule, and nothing is written');
   // The same document, asked without the writer's rule (the issue's own
   // probe, on the genuine preview): the id rule is the one the cascade uses,
   // not the later class rule.
@@ -583,26 +638,18 @@ try {
   cases.push('without the writer\'s rule an edit lands on the id rule the cascade uses, not on a later class rule');
 
   // 34. An `!important` declaration in an earlier rule decides the padding
-  // over the card rule the writer writes, which comes later. The edit is
-  // previewed in the card rule, with no change, as the written file shows
-  // it; asked without the writer's rule, the resolver takes the important
-  // rule, not the later one.
+  // over the card rule the writer writes, which comes later: refused, naming
+  // the important rule. Asked without the writer's rule, the resolver takes
+  // the important rule, not the later one.
   await open('padding: 18px;','',false,false,'.long-tail-card { padding: 10px !important; }\n');
   await assertPoll(()=>rendered('padding-'),['10px','10px','10px','10px'],'the important rule decides');
-  const before34=await styleState();
-  await commit('Padding, all sides','20');
-  await assertPoll(async()=>(await ruleText('.destination-card')),['.destination-card {padding: 20px;}'],'preview: the edit is in the card rule');
-  assert.deepEqual(await rendered('padding-'),['10px','10px','10px','10px'],'preview right after the commit');
-  onlyChanged(before34,await styleState(),'.destination-card','right after the commit');
-  await settleWrite('.destination-card { padding: 20px; }');
-  assert.deepEqual(await rendered('padding-'),['10px','10px','10px','10px'],'preview after the write');
-  onlyChanged(before34,await styleState(),'.destination-card','after the write');
+  await refusedElsewhere('Padding, all sides','20',/`\.long-tail-card` decides padding for this element ahead of `\.destination-card`/,'.destination-card { padding: 18px; }',['10px','10px','10px','10px']);
   const before34b=await styleState();
   const direct34=await card().evaluate((n)=>{const ok=window.__isonimSetDeclaration(n.getAttribute('data-isonim-element-id')||'','article[data-testid="component-edit-preview"]','padding','26px','sskSharedClass','');return {ok,right:getComputedStyle(n).paddingRight};});
   assert.deepEqual(direct34,{ok:true,right:'26px'},'without the writer\'s rule the edit lands on the important rule');
   assert((await ruleText('.long-tail-card')).includes('.long-tail-card {padding: 26px !important;}'));
   onlyChanged(before34b,await styleState(),'.long-tail-card','the cascade-resolved edit');
-  cases.push('an !important rule earlier in the sheet decides: the writer\'s later rule shows no change, and the resolver takes the important rule');
+  cases.push('an !important rule earlier in the sheet decides: an edit of the writer\'s later rule is refused, naming it, and the resolver takes the important rule');
 
   // 35. `@layer` order: the card rule sits in a layer declared after the
   // later rule's, so it decides although it comes first.
@@ -757,18 +804,11 @@ try {
 
   // 43. `!important` reverses layer order: an important declaration in a
   // layer beats an unlayered important one, even a more specific, later one.
-  // The writer's card rule shows no change before or after the write; asked
-  // without the writer's rule, the resolver takes the layered rule.
+  // An edit of the writer's card rule is refused, naming the layered rule;
+  // asked without the writer's rule, the resolver takes the layered rule.
   await open('padding: 18px;','article.destination-card { padding: 30px !important; }\n',false,false,'@layer low { .long-tail-card { padding: 10px !important; } }\n');
   await assertPoll(()=>rendered('padding-'),['10px','10px','10px','10px'],'the layered important rule decides');
-  const before43=await styleState();
-  await commit('Padding, all sides','20');
-  await assertPoll(async()=>(await ruleText('.destination-card')),['.destination-card {padding: 20px;}'],'preview: the edit is in the card rule');
-  assert.deepEqual(await rendered('padding-'),['10px','10px','10px','10px'],'preview right after the commit');
-  onlyChanged(before43,await styleState(),'.destination-card','right after the commit');
-  await settleWrite('.destination-card { padding: 20px; }');
-  assert.deepEqual(await rendered('padding-'),['10px','10px','10px','10px'],'preview after the write');
-  onlyChanged(before43,await styleState(),'.destination-card','after the write');
+  await refusedElsewhere('Padding, all sides','20',/`@layer low \.long-tail-card` decides padding for this element ahead of `\.destination-card`/,'.destination-card { padding: 18px; }',['10px','10px','10px','10px']);
   const before43b=await styleState();
   const direct43=await card().evaluate((n)=>{const ok=window.__isonimSetDeclaration(n.getAttribute('data-isonim-element-id')||'','article[data-testid="component-edit-preview"]','padding','26px','sskSharedClass','');return {ok,right:getComputedStyle(n).paddingRight};});
   assert.deepEqual(direct43,{ok:true,right:'26px'},'without the writer\'s rule the edit lands on the layered important rule');
@@ -952,14 +992,125 @@ try {
     assert.deepEqual(await fileRenders(),['20px','20px','20px','20px'],'the file after redo'+what);
     cases.push('a value edit of an !important declaration keeps its priority in the preview and the file, through undo and redo'+what);
   }
-  // No priority is manufactured: the same edit of a plain declaration.
-  await open('padding: 18px;','.long-tail-card { padding: 30px; }\n');
-  await assertPoll(()=>rendered('padding-'),['30px','30px','30px','30px'],'the later rule decides');
+  // No priority is manufactured: the same edit of a plain declaration. The
+  // `.long-tail-card` rule comes first here, so the card rule decides and the
+  // edit is admitted (with the later rule deciding it would be refused at the
+  // act, as in cases 33 and 57); written after the card rule, as
+  // `fileRenders` places it, the plain written declaration loses to it.
+  await open('padding: 18px;','',false,false,'.long-tail-card { padding: 30px; }\n');
+  await assertPoll(()=>rendered('padding-'),['18px','18px','18px','18px'],'the card rule decides');
+  await armCapture(sides);
+  await commit('Padding, all sides','20');
+  const at55=await captured();
+  assert.deepEqual(at55.state.rules.filter(r=>r.startsWith('.destination-card {')),['.destination-card {padding: 20px;}'],'the preview adds no priority');
+  await settleWrite('.destination-card { padding: 20px; }');
+  assert.deepEqual(await rendered('padding-'),['20px','20px','20px','20px'],'preview after the write');
+  assert.deepEqual(await fileRenders(),['30px','30px','30px','30px'],'the written declaration has no priority');
+  cases.push('a value edit of a plain declaration adds no priority to the preview or the file');
+
+  // 56. The same id rule as case 33, but the card rule's declaration is
+  // `!important`, so the card rule decides: its scope is offered and the
+  // edit is written, keeping the priority, and the card renders it.
+  await open('padding: 18px !important;','#wl-card { padding: 10px; }\n',false,false,'','','','wl-card');
+  await assertPoll(()=>rendered('padding-'),['18px','18px','18px','18px'],'the important card rule decides');
+  const chip56=p.locator('[data-property-row-css-property="padding"] [data-source-scope-kind="sskSharedClass"]').first();
+  assert.equal(await chip56.getAttribute('data-source-scope-editable'),'true');
+  await commit('Padding, all sides','20');
+  await settleWrite('.destination-card { padding: 20px !important; }');
+  assert.deepEqual(await rendered('padding-'),['20px','20px','20px','20px'],'the written important rule renders');
+  cases.push('an !important card rule decides over an id rule: the edit is written and renders');
+
+  // 57. A more specific class combination decides: refused, naming it.
+  await open('padding: 18px;','.destination-card.long-tail-card { padding: 10px; }\n');
+  await assertPoll(()=>rendered('padding-'),['10px','10px','10px','10px'],'the compound rule decides');
+  await refusedElsewhere('Padding, all sides','20',/`\.destination-card\.long-tail-card` decides padding for this element ahead of `\.destination-card`/,'.destination-card { padding: 18px; }',['10px','10px','10px','10px']);
+  cases.push('a more specific class combination decides: an edit of the card rule is refused, naming it');
+
+  // 58. Responsive overrides. An id rule under `@media (max-width: 640px)`
+  // decides only at a compact width: at this one the card rule decides, so
+  // the edit is written and renders. One under `@media (min-width: 1000px)`
+  // decides here, but the card rule still decides below 1000px, where the
+  // edit changes what renders: not refused, written, and this width still
+  // shows the override.
+  await open('padding: 18px;','@media (max-width: 640px) { #wl-card { padding: 10px; } }\n',false,false,'','','','wl-card');
+  await assertPoll(()=>rendered('padding-'),['18px','18px','18px','18px'],'the card rule decides at this width');
   await commit('Padding, all sides','20');
   await settleWrite('.destination-card { padding: 20px; }');
-  assert.deepEqual(await rendered('padding-'),['30px','30px','30px','30px'],'preview after the write: no priority was added');
-  assert.deepEqual(await fileRenders(),['30px','30px','30px','30px']);
-  cases.push('a value edit of a plain declaration adds no priority to the preview or the file');
+  assert.deepEqual(await rendered('padding-'),['20px','20px','20px','20px']);
+  cases.push('a deciding rule that applies only at another width does not stop the edit');
+  await open('padding: 18px;','@media (min-width: 1000px) { #wl-card { padding: 10px; } }\n',false,false,'','','','wl-card');
+  await assertPoll(()=>rendered('padding-'),['10px','10px','10px','10px'],'the override decides at this width');
+  await commit('Padding, all sides','20');
+  await settleWrite('.destination-card { padding: 20px; }');
+  assert.deepEqual(await rendered('padding-'),['10px','10px','10px','10px']);
+  cases.push('a deciding rule under a width condition is not a refusal: the edit still changes other widths');
+
+  // 59. The card rule declares no padding and an earlier rule of the same
+  // specificity does: a declaration inserted into the card rule outranks it
+  // (the card rule is one of the property's homes), so it is written and
+  // renders.
+  await open('margin: 0px;','',false,false,'.long-tail-card { padding: 10px; }\n');
+  await assertPoll(()=>rendered('padding-'),['10px','10px','10px','10px'],'the earlier rule decides');
+  await commit('Padding, all sides','20');
+  await settleWrite('.destination-card { margin: 0px; padding: 20px; }');
+  assert.deepEqual(await rendered('padding-'),['20px','20px','20px','20px']);
+  cases.push('a declaration inserted into a rule that would outrank the deciding one is written and renders');
+
+  // 60. An earlier, more specific rule decides and the card rule declares no
+  // padding: a declaration inserted into the card rule, although later, would
+  // not outrank it (the card rule is not a home), so the edit is refused,
+  // naming it. Ranking the rules by order alone would admit it.
+  await open('margin: 0px;','',false,false,'article.long-tail-card { padding: 10px; }\n');
+  await assertPoll(()=>rendered('padding-'),['10px','10px','10px','10px'],'the earlier, more specific rule decides');
+  await refusedElsewhere('Padding, all sides','20',/`article\.long-tail-card` decides padding for this element ahead of `\.destination-card`/,'.destination-card { margin: 0px; }',['10px','10px','10px','10px']);
+  cases.push('an earlier, more specific rule decides over an insertion into the later card rule: refused, naming it');
+
+  // 61 and 62. A rule that decides only while the card, or an ancestor, is
+  // hovered. The click that selects the card leaves the pointer on it, so the
+  // capture sees the hover rule deciding; but it decides only in that state,
+  // and with the pointer elsewhere the card rule decides, so it never grounds
+  // a refusal: the scope is offered, the edit is written, and the card
+  // renders it once it is not hovered. Review R1 of the shared-noeffect
+  // round 1 candidate.
+  for(const [n,hoverRule] of [['61','.destination-card:hover { padding: 10px; }'],['62','*:hover > .destination-card { padding: 10px; }']]){
+    await open('padding: 18px;',hoverRule+'\n',false,false,'','','','','',{hover:true});
+    // The capture was taken under the click's hover: it read the hover
+    // rule's 10px and named that rule as deciding the padding.
+    const at=await p.evaluate(()=>{const str=(v)=>typeof v==='string'?v:String.fromCharCode(...v);const props=globalThis.__isonimEditorVm.inspector.selectedElement.value.properties;const top=props.find(q=>str(q.name)==='padding-top');return {top:str(top.value),rule:str(top.decidingRule)};});
+    assert.equal(at.top,'10px','case '+n+': the selecting click hovers the card');
+    assert.match(at.rule,/:hover/,'case '+n+': the capture saw the hover rule deciding');
+    const chip=p.locator('[data-property-row-css-property="padding"] [data-source-scope-kind="sskSharedClass"]').first();
+    assert.equal(await chip.getAttribute('data-source-scope-editable'),'true','case '+n+': the hover rule does not disable the scope');
+    await commit('Padding, all sides','20');
+    await settleWrite('.destination-card { padding: 20px; }');
+    await p.mouse.move(2,2);
+    await assertPoll(()=>rendered('padding-'),['20px','20px','20px','20px'],'case '+n+': not hovered, the card renders the edit');
+    cases.push('a rule that decides only while '+(n==='61'?'the card':'an ancestor')+' is hovered never grounds a refusal: the edit is written and renders');
+  }
+
+  // 63. Which selectors count as depending on a state of the page: any
+  // pseudo-class not known to be static, wherever it occurs, read by CSS
+  // Syntax rules (an escape is part of a name, an attribute value is text).
+  // Review R1b of the shared-noeffect round 2 candidate.
+  await open('padding: 18px;');
+  const stateful=await card().evaluate(()=>{const f=window.__isonimSelectorDependsOnState;return Object.fromEntries([
+    '.a:hover','.a:interest-source','.a:-webkit-drag','.a:target-after','.a:active-view-transition','*:focus-within > .a',
+    '.a:not(:hover)',':is(.a, .b:focus)','.a:nth-child(2 of .b:checked)','.a:empty',
+    '.hover\\:p-4','.a:nth-child(2n+1)',':root .a','.a:not(.b)',':where(.a):is(.b)','.a::before','[data-x=":hover"]','.\\32 xl','.a:lang(en)','.a:has(> .b)'
+  ].map(x=>[x,f(x)]));});
+  assert.deepEqual(stateful,{
+    '.a:hover':true,'.a:interest-source':true,'.a:-webkit-drag':true,'.a:target-after':true,'.a:active-view-transition':true,'*:focus-within > .a':true,
+    '.a:not(:hover)':true,':is(.a, .b:focus)':true,'.a:nth-child(2 of .b:checked)':true,'.a:empty':true,
+    '.hover\\:p-4':false,'.a:nth-child(2n+1)':false,':root .a':false,'.a:not(.b)':false,':where(.a):is(.b)':false,'.a::before':false,'[data-x=":hover"]':false,'.\\32 xl':false,'.a:lang(en)':false,'.a:has(> .b)':false});
+  cases.push('only pseudo-classes known to be static leave a selector static; escapes and attribute values are not pseudo-classes');
+
+  // 64. A class whose name spells a state (`hover:p-4`, Tailwind's escaped
+  // `.hover\:p-4`) is a class: a rule with it that decides is a ground for
+  // refusal like any other.
+  await open('padding: 18px;','.destination-card.hover\\:p-4 { padding: 10px; }\n',false,false,'','','','','hover:p-4');
+  await assertPoll(()=>rendered('padding-'),['10px','10px','10px','10px'],'the escaped-class rule decides');
+  await refusedElsewhere('Padding, all sides','20',/`\.destination-card\.hover\\:p-4` decides padding for this element ahead of `\.destination-card`/,'.destination-card { padding: 18px; }',['10px','10px','10px','10px']);
+  cases.push('a class that spells a state in an escape is a class: its deciding rule refuses the edit, naming it');
 
   assert.deepEqual(errors,[]);
   console.log('Shorthand order GUI passed:',pub,cases.length);

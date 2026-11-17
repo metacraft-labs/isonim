@@ -5,7 +5,7 @@
 ## A static row is a compiled page: it loads its stylesheets in `<style>`
 ## elements, as a project page embeds the constant (`page` below), because a
 ## stylesheet binds only the elements of pages that load it.
-import std/[unittest, json, os, tempfiles, strutils]
+import std/[unittest, json, os, tempfiles, strutils, algorithm]
 import isonim/editor/[source_style_bindings, source_catalog, css_patch, source_style_values, viewmodels, types]
 
 proc page(body, source: string; consts = @["styles"]): string =
@@ -223,12 +223,18 @@ suite "Compiler owned stylesheet capabilities":
       let catalog = pageCatalog(pair[1], source)
       check compiledStyleBindings(catalog,manifest,proc(file:string):string = source).len == 0
     for unrelated in [".other:hover { width:20px; }", ".other[data-kind=\"panel\"] { width:20px; }", ".panel[data-kind=\"other\"] .other:hover { width:20px; }", ".panel .other:hover { width:20px; }",
-        ".other > button:hover { width:20px; }", "@media(min-width:100px) { .host .other { width:20px; } }"]:
+        ".other > button:hover { width:20px; }", "@media(min-width:100px) { .host .other { width:20px; } }",
+        # An escaped class name is decoded (CSS Syntax 4.3.7): `other:escaped`
+        # is a class this element does not have.
+        ".other\\:escaped { width:20px; }"]:
       let source = "const styles* = \"\"\".panel { width:10px; } " & unrelated & "\"\"\""
       let catalog = pageCatalog("<div class='panel'></div>", source)
       check compiledStyleBindings(catalog,manifest,proc(file:string):string = source).len == 1
     for ambiguous in [".other .panel:hover { width:20px; }", ".panel[data-kind=\"other\"] { width:20px; }", ".host > .panel { width:20px; }",
-        "[data-kind='other'] { width:20px; }", ".other\\:escaped { width:20px; }",
+        "[data-kind='other'] { width:20px; }",
+        # `.pan\65 l` is `.panel` written with a hex escape: another rule for
+        # the element's class.
+        ".pan\\65 l { width:20px; }",
         "@media(min-width:100px) { .host .panel { width:20px; } }"]:
       let source = "const styles* = \"\"\".panel { width:10px; } " & ambiguous & "\"\"\""
       let catalog = pageCatalog("<div class='panel'></div>", source)
@@ -551,3 +557,120 @@ suite "A re-offered shorthand presents its sides":
     let listed = bound("const styles* = \"\"\".panel, .other { width:10px; }\"\"\"")
     check listed.len == 1
     check listed[0]["values"] == %*{"width":"10px"}
+
+suite "A page rule the project does not opt in withholds a class rule only where it could decide":
+  # isonim-pm issue 2026-11-15-an-accepted-edit-of-a-shared-class-changes-
+  # nothing-when-another-rule-decides-the-property; editor spec "Native
+  # project source capabilities": a possible override prevents the producer
+  # from presenting an earlier shared rule as that origin. Every `<style>` the
+  # page applies counts, opted in or not, but only an owner that could
+  # outrank the opted-in declaration (specificity, `!important`, layers, a
+  # second rule with the same selector).
+  proc offered(extraBefore, extraAfter: string; body = "<div class='panel'></div>";
+      opted = ".panel { padding: 4px; width: 20px; }"; wrap = false;
+      wrapIn = ""): seq[string] =
+    let directory = createTempDir("isonim-page-owners-", "")
+    defer: removeDir(directory)
+    writeFile(directory / "styles.nim", "const styles* = \"\"\"\n" & opted & "\n\"\"\"\n")
+    let source = readFile(directory / "styles.nim")
+    let html = (if extraBefore.len > 0: "<style>" & extraBefore & "</style>" else: "") &
+      (if wrap or wrapIn.len > 0: "<style>" & (if wrap: "@layer base" else: wrapIn) & " {\n" &
+         nimConstBody(source, "styles") & "\n}</style>"
+       else: "<style>" & nimConstBody(source, "styles") & "</style>") &
+      (if extraAfter.len > 0: "<style>" & extraAfter & "</style>" else: "") & body
+    let catalog = %*{"stories":[{"group":"Card","name":"Ready","kind":"component","documentHtml":html}]}
+    let manifest = %*{"editableStyleSources":[{"file":"styles.nim","const":"styles",
+      "properties":["padding","width"]}]}
+    for binding in compiledStyleBindings(catalog, manifest,
+        proc(file: string): string = readFile(directory / file)):
+      for property in binding["properties"]: result.add property.getStr()
+    result.sort()
+
+  const all = @["padding", "padding-bottom", "padding-left", "padding-right",
+    "padding-top", "width"]
+  const sides = @["padding", "padding-bottom", "padding-left", "padding-right",
+    "padding-top"]
+
+  test "a CSS reset and a type rule keep the class rule's rows":
+    check offered("", "") == all
+    # A universal reset (Tailwind's preflight shape) and a type rule are less
+    # specific than `.panel`: they can never decide over it.
+    check offered("*, ::before, ::after { margin: 0; padding: 0; border: 0 solid; }", "") == all
+    check offered("", "* { padding: 0; margin: 0; }") == all
+    check offered("div { width: 5px; }", "") == all
+    # A layered rule of equal specificity loses to an unlayered one.
+    check offered("@layer base { .panel { width: 5px; } }", "") == all
+
+  test "a rule that could decide withholds the property it sets":
+    # More specific (an id), important, or as specific under a condition.
+    check offered("#x { width: 90px; }", "", "<div id='x' class='panel'></div>") ==
+      sides
+    check offered("div { width: 5px !important; }", "") ==
+      sides
+    check offered("", "@media (min-width: 1px) { div.panel { padding: 1px; } }") == @["width"]
+
+  test "a later rule with the opted-in selector, or as specific, withholds it; an earlier one does not":
+    check offered("", ".panel { width: 90px; }") == sides
+    check offered(".panel { width: 90px; }", "") == all
+    # Equal specificity, another selector: the later one decides.
+    check offered("", ".other { width: 90px; }", "<div class='panel other'></div>") == sides
+    check offered(".other { width: 90px; }", "", "<div class='panel other'></div>") == all
+
+  test "escaped class names are decoded (CSS Syntax 4.3.7) before matching and ranking":
+    # Tailwind utilities the element does not have: every row stays.
+    check offered(".md\\:p-4 { padding: 1rem; }", "") == all
+    check offered("@media (min-width: 768px) { .md\\:p-4 { padding: 1rem; } }", "") == all
+    check offered("", ".hover\\:bg-x:hover { width: 1px; }") == all
+    check offered("", ".w-1\\/2 { width: 50%; }") == all
+    # The same utilities on the element: they could decide, and do.
+    check offered("", ".w-1\\/2 { width: 50%; }", "<div class='panel w-1/2'></div>") == sides
+    check offered("", ".md\\:p-4 { padding: 1rem; }", "<div class='panel md:p-4'></div>") == @["width"]
+    check offered("", ".hover\\:bg-x:hover { width: 1px; }",
+      "<div class='panel hover:bg-x'></div>") == sides
+    # A hex escape with its trailing space is one class (`2xl`), not a
+    # descendant combinator; two classes outrank `.panel`.
+    check offered("", ".\\32 xl { width: 5px; }") == all
+    check offered("", ".\\32 xl.x { width: 5px; }", "<div class='panel 2xl x'></div>") == sides
+    check offered("", ".\\32 xl { width: 5px; }", "<div class='panel 2xl'></div>") == sides
+
+  test "functional pseudo-classes are ranked by their arguments":
+    # `:where()` counts nothing: a later `:where(#x)` loses to `.panel`.
+    check offered("", ":where(#x) { width: 90px; }", "<div id='x' class='panel'></div>") == all
+    # `:is(#x)` counts its id, `:not(.zz)` its class (a tie, later).
+    check offered("", ":is(#x) { width: 90px; }", "<div id='x' class='panel'></div>") == sides
+    check offered("", "div:not(.zz) { width: 90px; }") == sides
+    check offered(":not(.zz) { width: 90px; }", "") == all
+
+  test "a selector list is split only at its top-level commas":
+    # The elad2412 reset: zero specificity and earlier, so it never outranks
+    # `.panel` -- with its list split inside `:where()`/`:not()` the pieces
+    # read as unrankable and withheld every row.
+    check offered("*:where(:not(html, iframe, canvas, img, svg, video, audio):not(svg *, symbol *)) { all: unset; display: revert; }", "") == all
+    check offered(":where(ul, ol) { padding: 0; }", "") == all
+    check offered(":is(h1, h2, h3) { width: auto; }", "") == all
+    check offered("", ":is(h1, h2, h3) { width: auto; }") == all
+    # Lists whose members do not match the element.
+    check offered("", ":where(.a, #x) .zz { width: 5px; }", "<div id='x' class='panel'></div>") == all
+    check offered("", ":is(.zz, .yy) { width: 5px !important; }") == all
+    # A list member that matches and outranks still withholds.
+    check offered("", ":is(.zz, #x) { width: 5px; }", "<div id='x' class='panel'></div>") == sides
+    check offered("", "h1, div.panel { width: 5px; }") == sides
+    # `:is()` / `:where()` in the subject: one of its arguments must match.
+    check offered("", "div:where(.zz, .yy) { width: 5px !important; }") == all
+    check offered("", "div:where(.zz, .panel) { width: 5px !important; }") == sides
+
+  test "an escaped space is part of a name":
+    # `.panel\ x` is the class `panel x`, which no element carries.
+    check offered("", ".panel\\ x.y { width: 5px; }", "<div class='panel panelx y'></div>") == all
+
+  test "a media-limited style element counts, as a conditional rule":
+    check offered("", "", "<div id='x' class='panel'></div><style media=\"screen\">#x { width: 90px; }</style>") == sides
+    check offered("", "", "<div class='panel'></div><style media=\"screen\">div { width: 90px; }</style>") == all
+    # Another medium never applies in the preview.
+    check offered("", "", "<div id='x' class='panel'></div><style media=\"print\">#x { width: 90px; }</style>") == all
+    check offered("", "", "<div id='x' class='panel'></div><style media=\"print, speech\">#x { width: 90px; }</style>") == all
+    check offered("", "", "<div id='x' class='panel'></div><style media=\"print, screen\">#x { width: 90px; }</style>") == sides
+
+  test "a constant the page wraps in a layer loses to the page's unlayered rules; one wrapped in @media does not":
+    check offered("* { padding: 0; }", "", wrap = true) == @["width"]
+    check offered("* { padding: 0; }", "", wrapIn = "@media (min-width: 1px)") == all

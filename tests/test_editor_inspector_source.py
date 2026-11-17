@@ -1243,6 +1243,39 @@ class NativeReSetAndSelectorListTests(InspectorSourceTransactionTests):
         rows = [row for row in self.metadata() if row["key"] == shared["key"]]
         self.assertEqual([row["values"] for row in rows], [{"height": "40px"}])
 
+    def test_a_rule_the_project_does_not_opt_in_that_decides_a_property_withholds_the_class_row(self):
+        # isonim-pm issue 2026-11-15-an-accepted-edit-of-a-shared-class-changes-
+        # nothing-when-another-rule-decides-the-property. A rule in the page's
+        # own stylesheet that the project does not opt in -- here a more
+        # specific one -- decides the reused button's width. An edit of the
+        # opted-in `#reused-card` rule would change nothing that button
+        # renders, so the catalog does not offer it there, and a request for
+        # it is refused with nothing written (editor spec "Native project
+        # source capabilities": a possible override prevents the producer
+        # from presenting an earlier shared rule as the origin; "Saving").
+        # The page's other elements, which the rule does not match, are still
+        # offered.
+        source, _ = self.compile_provider(["width"], [])
+        shared = self.one(self.metadata(), lambda row: row["elementId"] == "reused" and row["storyId"] == "Card / default ready", "the reused binding")
+        self.assertEqual(shared["values"], {"width": "110px"})
+        overridden = source.replace(b'"documentHtml":card("Ready card", cardStyles, "action")',
+                                    b'"documentHtml":card("Ready card", cardStyles & "\\nmain #reused-card { width:90px; }\\n", "action")', 1)
+        self.assertNotEqual(overridden, source)
+        self.source.write_bytes(overridden)
+        built = subprocess.run(["python3", str(REPO / "tools/build_source_catalog.py"), str(self.project)],
+                               env=self.env, capture_output=True, text=True, timeout=70)
+        self.assertEqual(built.returncode, 0, built.stdout + built.stderr)
+        page = next(story["documentHtml"] for story in json.loads(self.catalog.read_text())["stories"] if story["group"] == "Card")
+        self.assertIn("main #reused-card { width:90px; }", page)
+        rows = self.metadata()
+        self.assertFalse(any(row["elementId"] == "reused" and row["storyId"] == "Card / default ready" and "width" in row["values"] for row in rows))
+        self.one(rows, lambda row: row["elementId"] == "action" and row["storyId"] == "Card / default ready" and "width" in row["values"], "the action binding")
+        catalog = self.catalog.read_bytes()
+        refused = self.operate(self.edit(dict(shared, sourceHash=self.file_hash()), "reused", "width", "150px", "110px"), expected=4)
+        self.assertIn("Unsupported editable source schema", refused["diagnostic"])
+        self.assertEqual(self.source.read_bytes(), overridden)
+        self.assertEqual(self.catalog.read_bytes(), catalog)
+
     def test_a_compiled_re_offer_outlives_the_receipt_undo_cap(self):
         # Review R1: the re-offer lasts until the removal is undone, not
         # while its receipt is among the last 64. 65 later removals (each

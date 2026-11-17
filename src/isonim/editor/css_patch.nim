@@ -962,6 +962,38 @@ func splitTopLevel(text: string; separator: char): seq[string] =
     inc i
   result.add text[start .. ^1]
 
+func splitSelectorList*(selector: string): seq[string] =
+  ## A selector list's members, split only at its top-level commas: a comma
+  ## inside a function (`:is(h1, h2)`, `:where()`, `:not()`, `:has()`,
+  ## `:nth-child(2n of .a, .b)`), an attribute selector, a string, a comment
+  ## or an escape (`\\,`) belongs to the member it occurs in, as the preview
+  ## runtime's `splitSelectorList` reads one. Members are stripped; empty
+  ## ones are dropped.
+  var depth, brackets = 0
+  var start = 0
+  var i = 0
+  while i < selector.len:
+    let past = selector.skipCssOpaque(i)
+    if past > i:
+      i = past
+      continue
+    case selector[i]
+    of '(': inc depth
+    of ')':
+      if depth > 0: dec depth
+    of '[': inc brackets
+    of ']':
+      if brackets > 0: dec brackets
+    of ',':
+      if depth == 0 and brackets == 0:
+        let member = selector[start ..< i].strip()
+        if member.len > 0: result.add member
+        start = i + 1
+    else: discard
+    inc i
+  let member = selector[start .. ^1].strip()
+  if member.len > 0: result.add member
+
 func mediaQueryTruth(query: string; width: int): CssTruth =
   ## One media query (no top-level comma), from its text alone, for a screen
   ## ``width`` px wide: a media type, then `px` width bounds. Anything else
@@ -2146,9 +2178,33 @@ proc cssPropertyOwners*(css: string; properties: seq[string]): seq[tuple[selecto
     for property in properties:
       for resetter in property.capabilityResetters():
         if css.findDeclaration(body, resetter).valueStart >= 0:
-          for member in rule.selector.withoutComments().split(','):
+          for member in rule.selector.withoutComments().splitSelectorList():
             result.add (member.strip(),rule.condition,property)
           break
+
+proc cssRankedPropertyOwners*(css: string; properties: seq[string]): seq[tuple[
+    selector, condition, property: string; important: bool]] =
+  ## `cssPropertyOwners`, with whether the owning declaration is
+  ## `!important`: a page stylesheet's owner can only override an opted-in
+  ## declaration it could outrank (`source_style_bindings.couldOutrank`).
+  for rule in css.allRules():
+    let body = RuleSpan(selector:rule.selector,bodyStart:rule.bodyStart,bodyEnd:rule.bodyEnd)
+    for property in properties:
+      var found = false
+      var important = false
+      for resetter in property.capabilityResetters():
+        var span = body
+        while true:
+          let declaration = css.findDeclaration(span, resetter)
+          if declaration.valueStart < 0: break
+          found = true
+          if css[declaration.valueStart ..< declaration.valueEnd].cssPrioritySuffix().len > 0:
+            important = true
+          span = RuleSpan(selector: body.selector, bodyStart: declaration.valueEnd + 1,
+            bodyEnd: body.bodyEnd)
+      if found:
+        for member in rule.selector.withoutComments().splitSelectorList():
+          result.add (member.strip(), rule.condition, property, important)
 
 proc cssUnconditionalLiterals*(css: string; properties: seq[string]): seq[CssLiteralRule] =
   ## Read supported direct declarations once through the patcher's scanner.

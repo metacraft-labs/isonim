@@ -3333,6 +3333,20 @@ proc previewDomElementRef*(metadata: StoryRenderMetadata; tag, testId,
     if side == "@matched":
       result.matchedRules = line[tab + 1 .. ^1].split('\x1f')
       continue
+    # `@cascade<TAB>property<TAB>decider<TAB>conditions<TAB>homes`: which
+    # declaration decides the property, by the preview runtime's resolver
+    # (`cascadeDecider`).
+    if side == "@cascade":
+      let answer = line[tab + 1 .. ^1].split('\t')
+      if answer.len < 4 or answer[0].len == 0 or answer[1].len == 0: continue
+      for prop in result.properties.mitems:
+        if prop.name == answer[0]:
+          prop.cascadeDecider = answer[1]
+          prop.cascadeConditions = answer[2]
+          prop.cascadeHomes = @[]
+          for home in answer[3].split('\x1f'):
+            if home.len > 0: prop.cascadeHomes.add home
+      continue
     # `side<TAB>rule[<TAB>specified]`: the deciding block's own text for the
     # side when it is not a plain length becomes its authored value, so a
     # variable or function is shown and refused by a canvas drag as written
@@ -5466,13 +5480,72 @@ proc writerEditRefusal(editor: EditorVM; plan: SourceEditPlan): string =
   if not resolved.ok: return
   adapter.editRefusal(plan, resolved.entry)
 
+proc decidedElsewhereRefusal(editor: EditorVM; plan: SourceEditPlan): string =
+  ## Why a value edit would change nothing the selected element renders, or
+  ## "": the writer writes it into a rule (`WorkspaceEditAdapter.editRule`)
+  ## that another declaration outranks for the selected element, before the
+  ## edit and after it (editor spec "Saving": an edit changes the one
+  ## declaration that owns the property for the selected element). Written,
+  ## a shared class rule would change only the other elements that use it,
+  ## and the user would see an accepted edit with no effect, so it is
+  ## refused at the act, naming the deciding rule. Any scope whose plan the
+  ## writer puts in a named rule is asked: the editor example's writer puts
+  ## a local edit of a class-mapped property in the class rule too.
+  ##
+  ## Which declaration decides the property, and where a normal declaration
+  ## would outrank it, is the preview's cascade, measured when the selection
+  ## was captured by the resolver its edits use (`PropertyInfo.
+  ## cascadeDecider`, `cascadeHomes`). The edit keeps the declaration's
+  ## priority and inserts a missing one as a normal declaration
+  ## (`css_patch.cssValueEdit`), so the written rule decides after the edit
+  ## exactly when it decides now or is one of those homes. Nothing is
+  ## refused when either side cannot say: no writer statement, a rule the
+  ## capture does not know by that name or knows twice, an unsound or
+  ## unmeasured answer, or a deciding rule under a condition the written rule
+  ## does not share (`@media (max-width: 640px)`) -- there the edit still
+  ## changes what renders wherever that condition does not hold. A removal
+  ## is not refused (a declaration nothing renders can be removed), nor a
+  ## responsive override (its own `@media` rule), nor a native project's
+  ## edit (its catalog offers only a rule that owns the property). Reads no
+  ## file.
+  if plan.planKind == cspPropertyRemoval or
+      plan.breakpointCondition.len > 0 or editor.hasAsyncSourceProject:
+    return
+  let adapter = editor.workspaceEditAdapter
+  if adapter.isNil or adapter.editRule.isNil: return
+  let resolved = adapter.resolveWorkspaceSchema(plan)
+  if not resolved.ok: return
+  let rule = adapter.editRule(plan, resolved.entry)
+  if rule.len == 0: return
+  let element = editor.inspector.selectedElement.val
+  if element.matchedRules.count(rule) != 1: return
+  for prop in element.properties:
+    if prop.name != plan.property: continue
+    let decider = prop.cascadeDecider
+    if decider.len == 0 or decider == rule or rule in prop.cascadeHomes:
+      return
+    if prop.cascadeConditions.len > 0 and
+        not rule.startsWith(prop.cascadeConditions & " "):
+      return
+    let deciding =
+      if decider == "style": "The element's inline style"
+      else: "`" & decider & "`"
+    return deciding & " decides " & plan.property & " for this element " &
+      "ahead of `" & rule & "`, so changing it in `" & rule & "` would not " &
+      "change what this element renders; it would change only the other " &
+      "elements that use `" & rule & "`."
+
 proc sourcePlanCommitRefusal(editor: EditorVM; plan: SourceEditPlan): string =
   ## Everything a commit of ``plan`` is refused for at the act: the schema
-  ## admission, and -- for a removal -- whether the write it joins can find
-  ## the one declaration to remove (`removalWriteRefusal`).
+  ## admission, the writer's own statement, an edit of a rule another
+  ## declaration overrides for the selected element
+  ## (`decidedElsewhereRefusal`), and -- for a removal -- whether the write
+  ## it joins can find the one declaration to remove (`removalWriteRefusal`).
   result = editor.sourcePlanAdmissionRefusal(plan)
   if result.len == 0:
     result = editor.writerEditRefusal(plan)
+  if result.len == 0:
+    result = editor.decidedElsewhereRefusal(plan)
   if result.len == 0:
     result = editor.removalWriteRefusal(plan)
 
@@ -7701,6 +7774,11 @@ proc sourceScopeChoices*(editor: EditorVM; prop: PropertyInfo): seq[
       if refusal.len == 0 and not writer.isNil:
         let plan = prop.sharedScopePlan(request, offered, choice)
         refusal = untrack(proc(): string = editor.writerEditRefusal(plan))
+      # And a rule another declaration overrides for this element, which the
+      # commit refuses too (`decidedElsewhereRefusal`).
+      if refusal.len == 0 and not editor.workspaceEditAdapter.editRule.isNil:
+        let plan = prop.sharedScopePlan(request, offered, choice)
+        refusal = untrack(proc(): string = editor.decidedElsewhereRefusal(plan))
       if refusal.len > 0:
         choice.editable = false
         choice.reason = refusal
