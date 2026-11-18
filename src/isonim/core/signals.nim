@@ -29,17 +29,11 @@ type
     ## Signal is just the ref state — no wrapper object, no nimCopy on assignment.
 
 proc notifySignalWrite(state: SignalStateBase) =
-  ## Non-generic: notify all observers that the signal changed.
-  ## Called after the value has been updated.
+  ## Non-generic: mark the signal's readers stale and everything downstream
+  ## of them pending, then flush unless a batch is open (see batch.nim).
   if state.observers.len > 0:
     runUpdates proc() =
-      for i in 0 ..< state.observers.len:
-        let obs = state.observers[i]
-        obs.state = csStale
-        if obs.pure:
-          Updates.add(obs)
-        else:
-          Effects.add(obs)
+      markSignalWrite(state)
 
 proc writeSignal[T](state: SignalState[T]; value: T) =
   ## Write a new value and notify observers if the value changed.

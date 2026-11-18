@@ -20,6 +20,10 @@ type
       checkpointLease*: SignalLease
     observers*: seq[ComputationBase]
     observerSlots*: seq[int]
+    memoComputation*: ComputationBase
+      ## For a memo's signal: the computation that produces its value, so a
+      ## reader can bring it up to date before reading (pull). Nil for a
+      ## plain signal.
 
   OwnerBase* = ref object of RootObj
     ## Base of the disposal tree. Owner tracks child computations and cleanup callbacks.
@@ -145,7 +149,19 @@ proc cleanNode*(node: OwnerBase; dispose: bool = false) =
   if firstCleanupError != nil:
     raise firstCleanupError
 
-proc notifyObservers*(signal: SignalStateBase) =
-  ## Marks all observers as stale. Called after a signal value changes.
-  for obs in signal.observers:
-    obs.state = csStale
+proc isComputationNode*(node: OwnerBase): bool =
+  ## True when `node` is a computation (not a bare root owner). Uses the same
+  ## field test as `cleanNode` on JS, where a browser hot reload re-evaluates
+  ## Nim's RTTI and `of` no longer identifies retained nodes.
+  when defined(js):
+    {.emit: [result, " = ", node, " != null && Object.prototype.hasOwnProperty.call(", node,
+      ", 'sources') && Object.prototype.hasOwnProperty.call(", node,
+      ", 'sourceSlots');"].}
+  else:
+    result = node != nil and node of ComputationBase
+
+proc asComputation*(node: OwnerBase): ComputationBase {.inline.} =
+  when defined(js):
+    {.emit: [result, " = ", node, ";"].}
+  else:
+    result = ComputationBase(node)

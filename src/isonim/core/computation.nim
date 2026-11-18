@@ -20,7 +20,6 @@ type
     ## A signal that is backed by a computation. When read, it ensures
     ## the computation is up-to-date, then returns the cached value.
     value*: T
-    computation*: ComputationBase
     comparator*: EqualityFn[T]
 
   Memo*[T] = object
@@ -48,6 +47,47 @@ proc updateComputation*(comp: ComputationBase) =
     Owner = prevOwner
 
   comp.updatedAt = ExecCount
+
+proc refresh(comp: ComputationBase) =
+  ## Bring `comp` up to date. A stale computation re-runs. A pending one first
+  ## refreshes the memos it read, in the order it read them; a memo that ends
+  ## up with a new value marks `comp` stale, and only then does `comp` re-run.
+  ## A pending computation whose memo inputs are all unchanged becomes clean
+  ## without running. This is what keeps every run glitch-free: a computation
+  ## never runs before the memos it reads are current.
+  if comp.state == csPending:
+    # `comp` stays pending while its sources are refreshed, so a memo that
+    # changes marks it stale without queueing it again. By index, without
+    # copying the seq: refreshing a source re-runs that source, not `comp`.
+    var i = 0
+    while i < comp.sources.len:
+      let upstream = comp.sources[i].memoComputation
+      if upstream != nil and upstream.state != csClean:
+        refresh(upstream)
+        if comp.state == csStale: break
+      inc i
+    if comp.state == csPending: comp.state = csClean
+  if comp.state == csStale:
+    updateComputation(comp)
+
+proc refreshOwners(node: OwnerBase) =
+  ## Refresh the out-of-date computations among `node` and its owners,
+  ## outermost first.
+  if node == nil: return
+  refreshOwners(node.owner)
+  if isComputationNode(node):
+    let c = asComputation(node)
+    if c.state != csClean and c.fn != nil: refresh(c)
+
+proc runTop*(comp: ComputationBase) =
+  ## Process one queued computation. Owners first: when an owning
+  ## computation is itself out of date, it is brought up to date before its
+  ## child, because re-running it may dispose the child (a branch that is no
+  ## longer shown), which then must not run at all.
+  if comp.state == csClean or comp.fn == nil: return
+  refreshOwners(comp.owner)
+  if comp.fn != nil and comp.state != csClean:
+    refresh(comp)
 
 proc createComputation(fn: proc(); pure: bool; initial: bool = true) =
   ## Internal: creates a computation node attached to current Owner.
@@ -103,24 +143,13 @@ proc createMemo*[T](fn: proc(): T; equals: EqualityFn[T] = nil): Memo[T] =
     elif memoSig.value == newVal:
       return
     storeReactiveValue(memoSig.value, newVal)
-    # Notify downstream observers of the memo signal
-    notifyObservers(memoSig)
-    # Queue downstream observers for execution.
-    # Copy the observers list first because updateComputation may
-    # add or remove observers (e.g. show/forEachKeyed toggling
-    # subscriptions), which would mutate the seq during iteration.
-    let observers = memoSig.observers
-    for obs in observers:
-      if obs.pure:
-        if batchDepth > 0:
-          Updates.add(obs)
-        else:
-          updateComputation(obs)
-      else:
-        if batchDepth > 0:
-          Effects.add(obs)
-        else:
-          updateComputation(obs)
+    # Readers were marked pending (and queued) when this memo was marked;
+    # now they are stale. They run when the flush reaches them, after every
+    # memo they read is current -- never from here, which would let a reader
+    # run before its other inputs are refreshed.
+    if memoSig.observers.len > 0:
+      runUpdates proc() =
+        markMemoChanged(memoSig)
 
   comp = ComputationBase(
     sources: @[],
@@ -135,7 +164,7 @@ proc createMemo*[T](fn: proc(): T; equals: EqualityFn[T] = nil): Memo[T] =
     memoSignal: memoSig,
     contextTable: nil,
   )
-  memoSig.computation = comp
+  memoSig.memoComputation = comp
 
   if Owner != nil:
     Owner.owned.add(comp)
@@ -163,8 +192,8 @@ proc createMemo*[T](fn: proc(): T; equals: EqualityFn[T] = nil): Memo[T] =
 proc val*[T](m: Memo[T]): T =
   ## Reads the memo's cached value (tracked).
   ## If the memo is stale, re-evaluates it first.
-  if m.computation.state == csStale:
-    updateComputation(m.computation)
+  if m.computation.state != csClean:
+    refresh(m.computation)
   trackRead(m.signal)
   m.signal.value
 
@@ -179,3 +208,4 @@ proc onMount*(fn: proc()) =
 
 # Register updateComputation as the callback for batch.nim
 updateComputationCb = updateComputation
+runTopCb = runTop
