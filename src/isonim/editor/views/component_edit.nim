@@ -1296,6 +1296,22 @@ __ISONIM_SCENE_GRAPH_WALK__
       }
     });
   }
+  // A resize or spacing release the editor refused at the act (its answer on
+  // the event, `detail.refused`: the reason): the preview is put back to
+  // what it showed before the drag -- what the file renders -- at once, under
+  // a fresh transition hold (the drag's own was released before the
+  // dispatch, so a transition on the property would otherwise animate the
+  // snap-back), and the reason is shown beside the selection, as a box
+  // handle's refusal is (editor spec "Saving": a refused change never
+  // reaches the preview).
+  function refusedRelease(released, selected, restore) {
+    const reason = released.detail && released.detail.refused;
+    if (!reason) return;
+    const hold = holdTransitions(selected);
+    restore();
+    hold.release();
+    if (window.__isonimSelectedElement === selected) showBoxMessage(selected, String(reason));
+  }
   // The selection's `width` (the corner handle) or `height` (the bottom
   // handle): the property its Layout row shows. The edge follows the
   // pointer: the property changes by the distance over the element's own
@@ -1364,7 +1380,7 @@ __ISONIM_SCENE_GRAPH_WALK__
       commit: function () {
         if (!next) { restore(); return; }
         transitions.release();
-        parent.dispatchEvent(new CustomEvent('isonim-preview-direct-manipulation', {
+        const released = new CustomEvent('isonim-preview-direct-manipulation', {
           detail: {
             kind: 'resize',
             property: axis,
@@ -1375,7 +1391,9 @@ __ISONIM_SCENE_GRAPH_WALK__
             sourceKey: sourceKeyFor(selected),
             measurement: axis + '=' + next
           }
-        }));
+        });
+        parent.dispatchEvent(released);
+        refusedRelease(released, selected, restore);
       }
     });
   }
@@ -1422,7 +1440,7 @@ __ISONIM_SCENE_GRAPH_WALK__
       commit: function () {
         if (!next) { restore(); return; }
         transitions.release();
-        parent.dispatchEvent(new CustomEvent('isonim-preview-direct-manipulation', {
+        const released = new CustomEvent('isonim-preview-direct-manipulation', {
           detail: {
             kind: 'spacing',
             property: property,
@@ -1433,7 +1451,9 @@ __ISONIM_SCENE_GRAPH_WALK__
             sourceKey: sourceKeyFor(selected),
             measurement: property + '=' + next
           }
-        }));
+        });
+        parent.dispatchEvent(released);
+        refusedRelease(released, selected, restore);
       }
     });
   }
@@ -3799,7 +3819,7 @@ proc installPreviewSelectionBridge*[R, E](r: R; frame: E; vm: EditorVM) =
 
     let directManipulationFromBrowser = proc(kind, propName, value, oldValue,
         handle, command, sourceKey, measurement: cstring; fromIndex,
-        toIndex: int) =
+        toIndex: int): cstring =
       let opKind =
         case ($kind)
         of "resize": dcokResize
@@ -3821,7 +3841,7 @@ proc installPreviewSelectionBridge*[R, E](r: R; frame: E; vm: EditorVM) =
         of "open-source": dcccOpenSource
         of "ask-ai": dcccAskAi
         else: dcccCopyStyles
-      discard vm.applyDirectCanvasOperation(DirectCanvasOperation(
+      let outcome = vm.applyDirectCanvasOperation(DirectCanvasOperation(
         kind: opKind,
         property: $propName,
         value: $value,
@@ -3832,10 +3852,22 @@ proc installPreviewSelectionBridge*[R, E](r: R; frame: E; vm: EditorVM) =
         fromIndex: fromIndex,
         toIndex: toIndex,
         measurement: $measurement))
+      # The answer the frame reads on its event: why the commit was refused
+      # ("" when it was accepted), so a refused resize or spacing release puts
+      # its preview back and shows the reason (`refusedRelease`).
+      if outcome.ok: cstring("")
+      else:
+        var reason = ""
+        for d in outcome.diagnostics:
+          if d.message.len > 0:
+            reason = d.message
+            break
+        if reason.len == 0: reason = "This canvas edit was refused."
+        cstring(reason)
     {.emit: ["""
       globalThis.__isonimPreviewBridge(""", frame, """, 'isonim-preview-direct-manipulation', function (event) {
           const d = event.detail || {};
-          """, directManipulationFromBrowser,
+          d.refused = """, directManipulationFromBrowser,
         """(
             d.kind || '', d.property || '', d.value || '', d.oldValue || '',
             d.handle || '', d.command || '', d.sourceKey || '',

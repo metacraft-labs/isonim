@@ -71,8 +71,8 @@ const pub=mkdtempSync(path.join(process.env.ISONIM_POPUP_ARTIFACTS||tmpdir(),'ca
 copyFileSync(bundle,pub+'/editor.js');
 for(const [from,to] of [['node_modules/fabric/dist/index.min.js','fabric.min.js'],['node_modules/paper/dist/paper-core.min.js','paper-core.min.js'],['node_modules/svgo/dist/svgo.browser.js','svgo.browser.js']])copyFileSync(repo+'/'+from,pub+'/'+to);
 const index=readFileSync(repo+'/src/isonim/editor/index.html','utf8');
-let rule='',prefixCss='';
-const page=()=>index.replace('<script src="editor.js"></script>','<script>window.__isonimShorthandCardRule='+JSON.stringify(rule)+';window.__isonimShorthandPrefixCss='+JSON.stringify(prefixCss)+';window.__isonimShorthandMapped="width,height";</script><script src="editor.js"></script>');
+let rule='',prefixCss='',sourceReplace='';
+const page=()=>index.replace('<script src="editor.js"></script>','<script>window.__isonimShorthandCardRule='+JSON.stringify(rule)+';window.__isonimShorthandPrefixCss='+JSON.stringify(prefixCss)+';window.__isonimShorthandSourceReplace='+JSON.stringify(sourceReplace)+';window.__isonimShorthandMapped="width,height";</script><script src="editor.js"></script>');
 const types={'.js':'text/javascript','.html':'text/html'};
 const server=createServer((req,res)=>{const url=new URL(req.url,'http://x');const name=url.pathname==='/'?'index.html':url.pathname.slice(1);
   if(name==='index.html'){res.writeHead(200,{'content-type':'text/html'});res.end(page());return;}
@@ -125,8 +125,8 @@ try {
     await frame().locator('[data-isonim-selected="true"]').waitFor();
     await handleOf().waitFor();
   }
-  async function open(startRule,{prefix='',zoom=0}={}){
-    rule=startRule;prefixCss=prefix;
+  async function open(startRule,{prefix='',zoom=0,replace=''}={}){
+    rule=startRule;prefixCss=prefix;sourceReplace=replace;
     await p.goto(origin+'/');
     await p.getByRole('button',{name:'Open Components section'}).click();
     await p.getByRole('button',{name:'Toggle DestinationCard stories'}).click();
@@ -631,11 +631,13 @@ try {
   }
 
   // 13. (c) A percentage gap starts from its used pixels: 10% of a 300px
-  // content box is 30px, and a 5px drag previews 35px.
+  // content box is 30px, and a 5px drag previews 35px. The percentage is the
+  // long-tail rule's own `gap` -- the rule the writer writes `gap` to -- so the
+  // written edit decides and renders (a gap another rule decides is refused:
+  // case 13b).
   {
-    await open('box-sizing: content-box; padding: 18px; border: 1px solid #CBD5E1; width: 300px;');
-    await card().evaluate(()=>{const st=document.createElement('style');st.textContent='.destination-card.long-tail-card{display:flex;gap:10%}';document.head.appendChild(st);});
-    await select();
+    await open('box-sizing: content-box; padding: 18px; border: 1px solid #CBD5E1; width: 300px;',
+      {replace:'gap: normal;\tgap: 10%;\ndisplay: block;\tdisplay: flex;'});
     await p.evaluate(()=>{window.__spacingCommits=[];window.addEventListener('isonim-preview-direct-manipulation',e=>window.__spacingCommits.push(e.detail.property+': '+e.detail.value));});
     const s=await frameScale();
     const history=await undoCount();
@@ -652,8 +654,57 @@ try {
     await assertPoll(()=>p.evaluate(()=>window.__spacingCommits),['gap: 35px'],'one edit, in pixels');
     await assertPoll(pending,0,'the gap edit settles');
     assert.equal(await undoCount(),history+1);
-    assert.match(await source(),/gap: 35px;/);
+    assert.match(await source(),/\.long-tail-card \{[^}]*gap: 35px;/);
+    await assertPoll(()=>computed('column-gap'),'35px','the written gap renders');
     cases.push('a percentage gap is dragged from its used pixels and written once in pixels');
+  }
+
+  // 13b. A canvas drag whose edit the editor refuses at the act -- a rule of
+  // the page outranks the rule the writer would write -- leaves nothing in
+  // the preview: on release it shows what the file renders again, the reason
+  // is shown beside the selection, and nothing is staged or written (editor
+  // spec "Saving": a refusal the editor can know at the act is made at the
+  // act, so a refused change never reaches the preview). The spacing handle
+  // on a gap and on padding, and the width and height handles. isonim-pm issue
+  // 2026-11-18-a-refused-canvas-gap-drag-stays-in-the-preview-and-the-canvas-
+  // resize-gui-expects-the-refused-edit.
+  for(const [label,css,handle,prop,start,why,dx,dy] of [
+    ['gap','.destination-card.long-tail-card{display:flex;gap:10%}','Adjust selected spacing','column-gap','10%',/`\.destination-card\.long-tail-card` decides gap for this element/,0,5],
+    ['padding','.destination-card.long-tail-card{padding:18px}','Adjust selected spacing','padding-top','18px',/`\.destination-card\.long-tail-card` decides padding for this element/,0,5],
+    ['width','.destination-card.long-tail-card{width:300px}','Resize selected element','width','300px',/`\.destination-card\.long-tail-card` decides width for this element/,-20,0],
+    ['height','.destination-card.long-tail-card{height:200px}','Adjust selected element height','height','200px',/`\.destination-card\.long-tail-card` decides height for this element/,0,-20],
+    // With a transition on the property: the snap-back is not animated -- the
+    // value at release is the one from before the drag, and no transition
+    // runs (review R1 of case-13 round 1).
+    ['width with a transition','.destination-card.long-tail-card{width:300px;transition:width 2s linear}','Resize selected element','width','300px',/`\.destination-card\.long-tail-card` decides width for this element/,-40,0],
+    ['gap with a transition','.destination-card.long-tail-card{display:flex;gap:10%;transition:gap 2s linear}','Adjust selected spacing','column-gap','10%',/`\.destination-card\.long-tail-card` decides gap for this element/,0,5]]){
+    await open('box-sizing: content-box; padding: 18px; border: 1px solid #CBD5E1; width: 300px;');
+    await card().evaluate((n,css)=>{const st=document.createElement('style');st.textContent=css;document.head.appendChild(st);},css);
+    await select();
+    const s=await frameScale();
+    const history=await undoCount();
+    const before=await source();
+    assert.equal(await computed(prop),start,label+': the page rule decides');
+    const animated=label.endsWith('with a transition');
+    if(animated)await countTransitions();
+    await dragOn(frame().getByLabel(handle,{exact:true}),dx*s,dy*s,2);
+    await assertPoll(async()=>(await computed(prop))!==start,true,label+': the drag previews');
+    await p.mouse.up();
+    await note().waitFor({state:'visible'});
+    assert.match(await note().textContent(),why,label+': the reason is shown beside the selection');
+    assert.equal(await computed(prop),start,label+': the preview shows what the file renders at once');
+    if(animated){
+      assert.equal(await card().evaluate(n=>n.getAnimations().length),0,label+': no animation runs after the release');
+      await p.waitForTimeout(300);
+      assert.equal(await card().evaluate(()=>window.__transitions),0,label+': no transition ran ('+await transitionLog()+')');
+    }
+    await p.waitForTimeout(1500);
+    assert.equal(await computed(prop),start,label+': and still does');
+    assert.equal(await card().evaluate(n=>n.getAttribute('style')).then(v=>/(^|;)\s*(gap|padding|width|height)\s*:/.test(v||'')),false,label+': no dragged declaration is left on the card');
+    assert.equal(await undoCount(),history,label+': nothing in history');
+    assert.equal(await pending(),0,label+': nothing staged');
+    assert.equal(await source(),before,label+': nothing written');
+    cases.push('a refused '+label+' drag: the preview is put back at release and the reason is shown; nothing is staged or written');
   }
 
   // 14. (d) A transform on `body` moves and scales the overlay's containing

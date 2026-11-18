@@ -17,6 +17,10 @@
 ## extra class `window.__isonimShorthandCardClass` names (`2xl`, which
 ## Chromium serialises in a selector as `.\32 xl`).
 ##
+## `window.__isonimShorthandSourceReplace` holds `from<TAB>to` lines replaced
+## in the foundation source before the page starts (the canvas resize GUI's
+## percentage gap, written in the long-tail rule the writer writes `gap` to).
+##
 ## Further properties of the card rule are mapped when
 ## `window.__isonimShorthandMapped` names them (comma-separated): the canvas
 ## resize handle's cases (`tests/test_editor_canvas_resize_gui.mjs`) map
@@ -86,6 +90,13 @@ proc main() =
         ".destination-card { " & rule & " }")
     else: DemoFoundationInitialSource
   foundationSource[].add extraCss()
+  # `window.__isonimShorthandSourceReplace`: `from<TAB>to` lines applied to
+  # the foundation source, for a case that needs another value in a rule the
+  # example already has (the long-tail rule's `gap`, say).
+  for line in pageString("__isonimShorthandSourceReplace").splitLines():
+    let tab = line.find('\t')
+    if tab > 0:
+      foundationSource[] = foundationSource[].replace(line[0 ..< tab], line[tab + 1 .. ^1])
   # Text placed at the start of the preview's stylesheet, before every rule
   # (`window.__isonimShorthandPrefixCss`; added to the document, not to the
   # foundation source, whose first `.destination-card` the example's page
