@@ -91,7 +91,15 @@ var runTopCb*: proc(comp: ComputationBase)
 # old and new inputs, and a node whose memo inputs all turn out unchanged
 # does not run at all.
 
+var ownerMarked* {.threadvar.}: bool
+  ## Set when a computation that owns children is marked during the current
+  ## outermost flush. Only then can a queued node have an out-of-date owner,
+  ## so `runTop` walks owner chains only then (the common case, many leaf
+  ## effects and no re-running parent, skips the walk entirely).
+var flushDepth {.threadvar.}: int
+
 proc enqueue(comp: ComputationBase) {.inline.} =
+  if comp.owned.len > 0: ownerMarked = true
   if comp.pure: Updates.add(comp)
   else: Effects.add(comp)
 
@@ -152,6 +160,7 @@ proc flushUpdates*() =
             if internalFlushReturned: ifsReturned else: ifsUnwound
         activeFlushEpoch = nil
   inc ExecCount
+  inc flushDepth
   let pendingUpdates = Updates
   let pendingEffects = Effects
   Updates = newNativeSeq[ComputationBase]()
@@ -171,6 +180,8 @@ proc flushUpdates*() =
         inc i
     completed = true
   finally:
+    dec flushDepth
+    if flushDepth == 0: ownerMarked = false
     if not completed:
       # An exception abandons the rest of this flush and propagates
       # unchanged. The abandoned nodes must stay reachable by later writes:

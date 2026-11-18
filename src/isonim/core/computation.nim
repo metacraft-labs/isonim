@@ -85,7 +85,7 @@ proc runTop*(comp: ComputationBase) =
   ## child, because re-running it may dispose the child (a branch that is no
   ## longer shown), which then must not run at all.
   if comp.state == csClean or comp.fn == nil: return
-  refreshOwners(comp.owner)
+  if ownerMarked: refreshOwners(comp.owner)
   if comp.fn != nil and comp.state != csClean:
     refresh(comp)
 
