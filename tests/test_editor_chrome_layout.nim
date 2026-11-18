@@ -2336,6 +2336,119 @@ suite "M-EVP-9 sidebar quick nav":
 # RS-M11: Web keeps the iframe; non-Web mounts the canvas.
 # ---------------------------------------------------------------------------
 
+proc componentsOnlyWorkspace(): seq[StoryGroup] =
+  ## A workspace that declares only components, the shape of an embedder
+  ## that has not declared its whole screens as pages: every other
+  ## section of the sidebar is empty.
+  result.add StoryGroup(
+    name: "Panels", kind: skComponent, expanded: true,
+    items: @[StoryItem(name: "Populated", kind: skComponent,
+      group: "Panels")])
+
+proc sectionEmptyNote(sidebar: MockNode; sectionId: string): MockNode =
+  findByAttr(sidebar, "data-sidebar-section-empty", sectionId)
+
+proc sectionHeaderFor(sidebar: MockNode; label: string): MockNode =
+  findByAttr(sidebar, "aria-label", "Open " & label & " section")
+
+suite "Sidebar empty section":
+  # An expanded section with no stories used to show nothing at all under
+  # its header (the CodeTracer instance's Pages section). It now says what
+  # belongs there and how a workspace declares it, by the same rule that
+  # disables the section's quick-nav icon (M-EVP-9).
+
+  test "an expanded section with no stories says what belongs there":
+    createRoot do (dispose: proc()):
+      let r = MockRenderer()
+      let vm = createEditorVM()
+      vm.sidebar.groups.val = componentsOnlyWorkspace()
+      let sidebar = renderSidebar[MockRenderer, MockNode](r, vm)
+      check vm.sidebar.sections.val.isExpanded(ssPages)
+
+      let pagesNote = sectionEmptyNote(sidebar, "pages")
+      require pagesNote != nil
+      check pagesNote.styles.getOrDefault("display") == "block"
+      let text = pagesNote.textContent
+      check "No pages" in text
+      check "page preview" in text
+      check "skPage" in text
+      check sectionHeaderFor(sidebar, "Pages").attributes.getOrDefault(
+        "data-section-empty") == "true"
+      # The note is in the section's body, so collapsing the section hides
+      # it with the rest of the body.
+      require pagesNote.parent != nil
+      check pagesNote.parent.styles.getOrDefault("display") == "flex"
+      vm.sidebar.toggleSection(ssPages)
+      check pagesNote.parent.styles.getOrDefault("display") == "none"
+
+      # Every empty section names its own kinds; the populated one shows
+      # its stories and no note.
+      check "skFlow" in sectionEmptyNote(sidebar, "user-journeys").textContent
+      check "skFoundation" in sectionEmptyNote(sidebar, "foundations").textContent
+      check "skGuideline" in sectionEmptyNote(sidebar, "guidelines").textContent
+      let componentsNote = sectionEmptyNote(sidebar, "components")
+      require componentsNote != nil
+      check componentsNote.styles.getOrDefault("display") == "none"
+      check sectionHeaderFor(sidebar, "Components").attributes.getOrDefault(
+        "data-section-empty") == "false"
+      check findByAttr(sidebar, "data-story-row", "Panels/Populated") != nil
+      dispose()
+
+  test "the note and the quick-nav icon agree, and follow the groups":
+    createRoot do (dispose: proc()):
+      let r = MockRenderer()
+      let vm = createEditorVM()
+      vm.sidebar.groups.val = componentsOnlyWorkspace()
+      let sidebar = renderSidebar[MockRenderer, MockNode](r, vm)
+      let strip = findByAttr(sidebar, "data-sidebar-quicknav", "true")
+      let pagesIcon = quickNavIconForKind(strip, skPage)
+      let pagesNote = sectionEmptyNote(sidebar, "pages")
+      require pagesIcon != nil
+      require pagesNote != nil
+      check pagesIcon.attributes.getOrDefault("aria-disabled") == "true"
+      check pagesNote.styles.getOrDefault("display") == "block"
+
+      # A workspace whose groups gain a page (a catalog refresh) drops the
+      # note and enables the icon together.
+      var groups = vm.sidebar.groups.val
+      groups.add StoryGroup(name: "Layouts", kind: skPage, expanded: true,
+        items: @[StoryItem(name: "Default Debug", kind: skPage,
+          group: "Layouts")])
+      vm.sidebar.groups.val = groups
+      check pagesIcon.attributes.getOrDefault("aria-disabled") == "false"
+      check pagesNote.styles.getOrDefault("display") == "none"
+      check sectionHeaderFor(sidebar, "Pages").attributes.getOrDefault(
+        "data-section-empty") == "false"
+
+      # A group with no stories does not make its section non-empty.
+      vm.sidebar.groups.val = componentsOnlyWorkspace() & @[StoryGroup(
+        name: "Empty Pages", kind: skPage, expanded: true)]
+      check pagesNote.styles.getOrDefault("display") == "block"
+      dispose()
+
+  test "a workspace with pages lists them under Pages, without the note":
+    createRoot do (dispose: proc()):
+      let r = MockRenderer()
+      let vm = createEditorVM()
+      vm.sidebar.groups.val = seedTwoWorkspacesWithNoFlows()
+      let sidebar = renderSidebar[MockRenderer, MockNode](r, vm)
+      check sectionEmptyNote(sidebar, "pages").styles.getOrDefault(
+        "display") == "none"
+      check sectionEmptyNote(sidebar, "user-journeys").styles.getOrDefault(
+        "display") == "block"
+      let pageRow = findByAttr(sidebar, "data-story-row", "Task Pages/" &
+        seedTwoWorkspacesWithNoFlows()[4].items[0].name)
+      require pageRow != nil
+      # The row sits in the Pages section's body, and selecting it opens the
+      # page preview (the "Sidebar drives view selection" table).
+      let pagesSection = findByAttr(sidebar, "data-quicknav-section", "pages")
+      check findByAttr(pagesSection, "data-story-row",
+        pageRow.attributes["data-story-row"]) == pageRow
+      pageRow.fireEvent("click")
+      check vm.activeView.val == evPagePreview
+      check vm.selectedStory.val.kind == skPage
+      dispose()
+
 suite "RS-M11 component detail mount differentiation":
 
   test "pbWeb + showProject keeps the iframe and hides the canvas":

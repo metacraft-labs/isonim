@@ -267,6 +267,35 @@ func groupInSection(group: StoryGroup; section: SidebarSection): bool =
   of ssGuidelines:
     group.kind == skGuideline
 
+func sectionEmptyText(section: SidebarSection): string =
+  ## What an expanded section with no stories says in place of its tree:
+  ## what belongs in the section, and how a workspace puts it there (a
+  ## ``StoryGroup`` of the section's ``StoryKind`` in
+  ## ``EditorWorkspace.storyGroups``; ``groupInSection`` is the mapping).
+  ## Without it an empty section expands to nothing, which reads as a
+  ## failure to load rather than as a workspace that declares no such
+  ## stories.
+  case section
+  of ssUserJourneys:
+    "No user journeys. A journey is a sequence of pages joined by the " &
+      "user's actions. A workspace lists one by declaring a story group " &
+      "of kind skFlow."
+  of ssPages:
+    "No pages. A page is a whole screen with realistic data, shown in the " &
+      "page preview at a screen size. A workspace lists one by declaring " &
+      "a story group of kind skPage."
+  of ssComponents:
+    "No components. A component is one UI element in one state. A " &
+      "workspace lists one by declaring a story group of kind skComponent " &
+      "or skPattern."
+  of ssFoundations:
+    "No foundations. Foundations are the design tokens and the vector " &
+      "symbols. A workspace lists them by declaring a story group of kind " &
+      "skFoundation or skVectorSymbol."
+  of ssGuidelines:
+    "No guidelines. A guideline is a usage rule with examples. A " &
+      "workspace lists one by declaring a story group of kind skGuideline."
+
 func groupShowsStoriesInSidebar(group: StoryGroup): bool =
   ## User Journeys are opened as journey rows; their step/page cards live on
   ## the storyboard canvas and navigate to the matching Pages story.
@@ -478,12 +507,20 @@ proc bindSidebarGroupFilter[R, E](r: R; node: E; vm: EditorVM;
       if matchesSidebarSearch(vm.sidebar.searchQuery.val, captured): "flex"
       else: "none")
 
-proc bindSidebarSectionState[R, E](r: R; header, disclosure, body: E;
-    vm: EditorVM; section: SidebarSection) =
+proc bindSidebarSectionState[R, E](r: R; header, disclosure, body,
+    emptyNote: E; vm: EditorVM; section: SidebarSection) =
   let captured = section
   createRenderEffect proc() =
     let expanded = vm.sidebar.sections.val.isExpanded(captured)
     let active = vm.activeView.val == sectionView(captured)
+    # A section is empty by the same rule that disables its quick-nav icon
+    # (M-EVP-9), so the two never disagree. It reads ``groups``, so a
+    # workspace whose groups change (a catalog refresh) updates the note.
+    let empty = not vm.sidebar.categoryHasStories(
+      sectionToQuickNavKind(captured))
+    r.setAttribute(header, "data-section-empty",
+        if empty: "true" else: "false")
+    r.setStyle(emptyNote, "display", if empty: "block" else: "none")
     r.setAttribute(disclosure, "aria-expanded",
         if expanded: "true" else: "false")
     r.setTextContent(disclosure, if expanded: "\xE2\x96\xBE" else: "\xE2\x96\xB8")
@@ -2005,6 +2042,8 @@ proc renderSidebar*[R, E](r: R; vm: EditorVM): E =
           var sectionHeader: E
           var sectionDisclosure: E
           var sectionBody: E
+          var sectionEmptyNote: E
+          let sEmptyText = sectionEmptyText(section)
 
           let qnSectionId = quickNavSectionId(sectionToQuickNavKind(section))
           tdiv(display = "flex", flex_direction = "column", gap = "2px",
@@ -2220,9 +2259,20 @@ proc renderSidebar*[R, E](r: R; vm: EditorVM): E =
                     if gShowsStories:
                       r.bindSidebarGroupState(groupHeader, groupBody,
                         groupChevron, vm, gName)
+              # Shown, by ``bindSidebarSectionState``, only while the
+              # section has no stories: it says what belongs here and how
+              # a workspace declares it, so an expanded empty section is
+              # never a blank gap under its header.
+              tdiv(ref = sectionEmptyNote,
+                    `data-sidebar-section-empty` = qnSectionId,
+                    display = "none",
+                    padding = "4px 8px 8px 18px",
+                    font_size = sidebarBodyFont, line_height = "1.45",
+                    color = textSecondary, white_space = "normal"):
+                text sEmptyText
           block:
             r.bindSidebarSectionState(sectionHeader, sectionDisclosure,
-              sectionBody, vm, section)
+              sectionBody, sectionEmptyNote, vm, section)
 
   # 2026-05-28: drag-resize handle. A 4 px-wide strip pinned to the
   # right edge of the sidebar; cursor: col-resize. The JS-side
