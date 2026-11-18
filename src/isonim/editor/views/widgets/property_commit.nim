@@ -260,8 +260,11 @@ proc applyPreviewStyle*(elementId, domPath, property, value: string;
   ##
   ## Recorded as well as dispatched, keyed by element and property, so a frame
   ## rebuilt before the source catches up gets the edit back on start. The
-  ## records are short strings rather than the whole stylesheet, so there is
-  ## nothing to cap or expire, and re-applying is idempotent.
+  ## records are short strings rather than the whole stylesheet, and
+  ## re-applying is idempotent. They are forgotten when the preview's
+  ## document is recomputed from a source that carries them
+  ## (`forgetPreviewDeclarations`): a record outliving that is replayed over
+  ## a later write made by a path that records nothing.
   ##
   ## A responsive override (``condition``, a `@media` prelude) is set in the
   ## element's rule repeated under that condition -- the rule is added to the
@@ -337,8 +340,9 @@ proc applyPreviewStyle*(elementId, domPath, property, value: string;
 
       // No cell: the value lives in the stylesheet. Remember it as well as
       // applying it, so a frame rebuilt before the source catches up gets it
-      // back on start. Short records rather than a stylesheet, so there is
-      // nothing to cap or expire, and applying twice is a no-op.
+      // back on start. Short records rather than a stylesheet, and applying
+      // twice is a no-op; forgotten when the preview's document is rebuilt
+      // from a source that carries them (`forgetPreviewDeclarations`).
       const store = window.__isonimPreviewDeclarations ||
         (window.__isonimPreviewDeclarations = {});
       const key = id + '|' + property + (condition ? '|' + condition : '');
@@ -363,6 +367,30 @@ proc applyPreviewStyle*(elementId, domPath, property, value: string;
     discard value
     discard rule
     result = true
+
+proc forgetPreviewDeclarations*() =
+  ## Forget every value `applyPreviewStyle` is keeping for a rebuilt frame:
+  ## the source the preview is rebuilt from now carries them
+  ## (`EditorVM.previewSourceCaughtUp`).
+  ##
+  ## A record answers "what must a frame rebuilt from a document that
+  ## predates this edit show". Once the document is recomputed from the
+  ## written source, that document answers it. Kept, the record is a value
+  ## from before the write, and the reload puts it back over whatever the
+  ## file says by then: an undo's `width: 300px` replayed over the reload of
+  ## a canvas resize that wrote 270px. The records are keyed by element and
+  ## property and every recording path replaces its own, so only a path that
+  ## records nothing (the canvas resize and spacing handles, an agent
+  ## proposal) ever found a stale one -- which is why it looked like content
+  ## the history had seen before.
+  ##
+  ## A frame showing the values keeps them: this forgets what to put back, it
+  ## changes no document.
+  when defined(js):
+    {.emit: """
+      if (typeof window !== 'undefined' && window.__isonimPreviewDeclarations)
+        window.__isonimPreviewDeclarations = {};
+    """.}
 
 proc previewOverrideValue*(elementId, domPath, property,
     condition: string): string =

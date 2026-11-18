@@ -37,7 +37,7 @@
 
 import std/[options, random, strutils, tables, unittest]
 
-import isonim/core/[computation, owner, signals]
+import isonim/core/[batch, computation, owner, signals]
 import isonim/editor/types
 import isonim/editor/viewmodels
 import isonim/editor/workspace
@@ -1125,4 +1125,177 @@ suite "The inspector, the preview and the file agree around an accepted proposal
       vm.step(eckRedo, "scroll", foundation, overflowIs("scroll"))
       vm.step(eckUndo, "hidden", foundation, overflowIs("hidden"))
       vm.step(eckUndo, "auto", foundation, overflowIs("auto"))
+      dispose()
+
+suite "A write tells the preview its source has caught up":
+  ## isonim-pm issue 2026-11-16-the-preview-does-not-follow-a-write-that-
+  ## repeats-content-written-before-an-undo; editor spec "Visual box model"
+  ## (the preview shows the same values before the write and after it, and
+  ## through undo and redo) and "Saving". The preview keeps the values an
+  ## inspector commit, an undo or a redo showed, for a frame rebuilt from a
+  ## document that predates them. It may forget them only when that document
+  ## is recomputed from a source that carries them, or the next reload puts
+  ## an older edit back over the file -- and must NOT forget them on a write
+  ## that requests no reload, because `preview.current` still holds the
+  ## document from before that write and a rebuild of the frame (View, then
+  ## Edit) needs them (review of round 1, V1).
+  ##
+  ## `EditorVM.previewSourceCaughtUp` is that moment: bumped by a successful
+  ## write together with, and before, the reload it requests, and by a native
+  ## catalog compiled with nothing pending; not by a write that requests no
+  ## reload, a failed write, a staging-only project or a catalog refresh with
+  ## edits pending. A canvas gesture keeps no record, so its write always
+  ## requests the reload, even together with a commit that showed its value
+  ## (review V2). The browser half is
+  ## `tests/test_editor_preview_follows_write_gui.mjs`.
+
+  proc caughtUp(vm: EditorVM): int = vm.previewSourceCaughtUp.val
+
+  template seenAtReload(vm: EditorVM): ref seq[int] =
+    ## The `previewSourceCaughtUp` value each preview reload request saw:
+    ## the bump has to come first, so the reloaded frame finds no record.
+    block:
+      let seen = new(seq[int])
+      var last = vm.livePreviewReloadGeneration.val
+      createRenderEffect proc() =
+        let generation = vm.livePreviewReloadGeneration.val
+        if generation != last:
+          last = generation
+          seen[].add untrack(proc(): int = vm.previewSourceCaughtUp.val)
+      seen
+
+  test "a written commit that showed its value keeps the records":
+    # Outside a browser `applyPreviewStyle` reports the value shown, as the
+    # preview does for this edit: its write requests no reload, so the
+    # preview's document still predates it and nothing may be forgotten.
+    # (An undo or a redo is shown by the view's effect on
+    # `previewValueRequest`, which a headless VM does not run; the GUI test
+    # covers them.)
+    createRoot proc(dispose: proc()) =
+      let foundation = new(string)
+      foundation[] = DemoFoundationInitialSource
+      let vm = wanderlustVm(foundation)
+      let seen = vm.seenAtReload()
+      check vm.commitInspectorValue("overflow", "scroll", sskSharedClass).ok
+      check vm.previewShowsPendingEdits.val
+      vm.save()
+      check foundation[].contains("overflow: scroll;")
+      check vm.caughtUp == 0
+      check seen[].len == 0
+      dispose()
+
+  test "a canvas write requests the reload and bumps it first":
+    # The canvas handles stage through `applyDirectCanvasOperation` and keep
+    # no record; their write is the one whose reload a stale record was put
+    # back over.
+    createRoot proc(dispose: proc()) =
+      let foundation = new(string)
+      foundation[] = DemoFoundationInitialSource
+      let vm = wanderlustVm(foundation)
+      let seen = vm.seenAtReload()
+      let spaced = vm.applyDirectCanvasSpacing("padding", "20px")
+      check spaced.ok
+      check spaced.diagnostics.len == 0
+      check vm.caughtUp == 0
+      vm.save()
+      check foundation[] != DemoFoundationInitialSource
+      check foundation[].contains("20px")
+      check vm.caughtUp == 1
+      check seen[] == @[1]
+      dispose()
+
+  test "a canvas edit written with a commit that showed its value still reloads":
+    # Review V2: the commit (or an undo) says the preview is current, but the
+    # canvas value is only held by the frame, so the one write that carries
+    # both must rebuild the preview's document from the file.
+    createRoot proc(dispose: proc()) =
+      let foundation = new(string)
+      foundation[] = DemoFoundationInitialSource
+      let vm = wanderlustVm(foundation)
+      let seen = vm.seenAtReload()
+      check vm.commitInspectorValue("overflow", "scroll", sskSharedClass).ok
+      check vm.runEditorCommand(eckUndo).status == ecsSucceeded
+      check vm.previewShowsPendingEdits.val
+      check not vm.previewMissesPendingEdits.val
+      check vm.applyDirectCanvasSpacing("padding", "20px").ok
+      check vm.previewMissesPendingEdits.val
+      vm.save()
+      check foundation[].contains("20px")
+      check vm.caughtUp == 1
+      check seen[] == @[1]
+      dispose()
+
+  test "an accepted agent proposal reloads and bumps it":
+    createRoot proc(dispose: proc()) =
+      let scratch = new(string)
+      scratch[] = DemoFoundationInitialSource
+      let planner = wanderlustVm(scratch)
+      check planner.commitInspectorValue("overflow", "auto", sskSharedClass).ok
+      var plan = planner.inspector.pendingSourceEdits.val[0]
+      plan.historyId = 0
+      let foundation = new(string)
+      foundation[] = DemoFoundationInitialSource
+      let vm = wanderlustVm(foundation)
+      let seen = vm.seenAtReload()
+      let id = vm.chat.addAgentEditProposal(AgentEditProposal(
+        title: "Overflow", summary: "Set overflow to auto",
+        sourceEdits: @[plan], selectedEditIndexes: @[0],
+        validity: aepvCurrent))
+      check vm.acceptAgentProposedEdit(id).ok
+      check vm.caughtUp == 1
+      check seen[] == @[1]
+      dispose()
+
+  test "a failed write does not bump it":
+    createRoot proc(dispose: proc()) =
+      let foundation = new(string)
+      foundation[] = DemoFoundationInitialSource
+      let vm = wanderlustVm(foundation)
+      vm.workspaceEditAdapter.writeFile = proc(file, content: string): WorkspaceOperationResult =
+        WorkspaceOperationResult(ok: false, message: "refused")
+      check vm.applyDirectCanvasSpacing("padding", "20px").ok
+      check vm.runEditorCommand(eckSave).status != ecsSucceeded
+      check vm.inspector.pendingSourceEdits.val.len == 1
+      check vm.caughtUp == 0
+      dispose()
+
+  test "a staging-only project does not bump it":
+    # Its preview is not rebuilt from what it staged, so the records are
+    # still what a rebuilt frame needs -- even for a canvas write.
+    createRoot proc(dispose: proc()) =
+      let foundation = new(string)
+      foundation[] = DemoFoundationInitialSource
+      let vm = wanderlustVm(foundation)
+      vm.workspaceEditAdapter.stagingOnly = true
+      check vm.applyDirectCanvasSpacing("padding", "20px").ok
+      vm.save()
+      check vm.caughtUp == 0
+      dispose()
+
+  test "a catalog refresh bumps it only with nothing pending, before its reload":
+    createRoot proc(dispose: proc()) =
+      let foundation = new(string)
+      foundation[] = DemoFoundationInitialSource
+      let vm = wanderlustVm(foundation)
+      let seen = vm.seenAtReload()
+      var refreshed = newEditorWorkspace(
+        title = "Wanderlust batched write",
+        storyGroups = @[StoryGroup(name: "DestinationCard", kind: skComponent,
+          expanded: true, items: @[StoryItem(name: "Default", kind: skComponent,
+            group: "DestinationCard")])],
+        foundationTokens = demoFoundationTokens(),
+        designSystemSchema = demoDesignSystemSchema(),
+        permissions = EditorWorkspacePermissions(readSource: true,
+          writeSource: true),
+        editAdapter = vm.workspaceEditAdapter)
+      refreshed.id = vm.workspaceId
+      check vm.commitInspectorValue("overflow", "scroll", sskSharedClass).ok
+      vm.refreshWorkspaceCatalog(refreshed)
+      check vm.caughtUp == 0 # an edit is pending: a rebuilt frame needs it
+      check seen[] == @[0]
+      vm.save()
+      check vm.caughtUp == 0 # written, no reload requested
+      vm.refreshWorkspaceCatalog(refreshed)
+      check vm.caughtUp == 1
+      check seen[] == @[0, 1]
       dispose()

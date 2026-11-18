@@ -1848,6 +1848,15 @@ test-editor-canvas-resize-gui:
     nim js --hints:off --path:src --path:. --path:../nim-everywhere/src --path:../isonim-render-serve/src --path:../nim-acp/src --path:../nim-agent-harbor/src --path:../nim-agents/src -o:build/editor-shorthand/editor.js tests/helpers/editor_shorthand_order_workspace.nim
     timeout --signal=TERM --kill-after=15s 1800s "${ISONIM_SCENARIO_NODE:-node}" tests/test_editor_canvas_resize_gui.mjs
 
+# The preview shows what the last write put in the file after a canvas resize
+# that follows an undo or a redo (isonim-pm issue 2026-11-16-the-preview-does-
+# not-follow-a-write-that-repeats-content-written-before-an-undo; editor spec
+# "Visual box model"). Same host as the canvas resize cases.
+test-editor-preview-follows-write-gui:
+    mkdir -p build/editor-shorthand
+    nim js --hints:off --path:src --path:. --path:../nim-everywhere/src --path:../isonim-render-serve/src --path:../nim-acp/src --path:../nim-agent-harbor/src --path:../nim-agents/src -o:build/editor-shorthand/editor.js tests/helpers/editor_shorthand_order_workspace.nim
+    timeout --signal=TERM --kill-after=15s 1800s "${ISONIM_SCENARIO_NODE:-node}" tests/test_editor_preview_follows_write_gui.mjs
+
 test-editor-c4a-gestures: isonim-review-build editor-inspector-build
     timeout --signal=TERM --kill-after=15s 180s "${ISONIM_SCENARIO_NODE:-node}" tests/test_editor_inspector_gestures_gui.mjs
 

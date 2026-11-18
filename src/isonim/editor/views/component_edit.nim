@@ -2612,8 +2612,10 @@ __ISONIM_SCENE_GRAPH_WALK__
     // head script that defines the resolver: there, the body does not exist
     // yet.
     //
-    // Short records rather than a stylesheet, so there is nothing to cap or
-    // expire, and applying twice is a no-op.
+    // Short records rather than a stylesheet, and applying twice is a no-op.
+    // The editor forgets them when this document is recomputed from a source
+    // that carries them (`forgetPreviewDeclarations`), so none is put back
+    // over a later write.
     try {
       const pending = parent.__isonimPreviewDeclarations;
       if (pending) {

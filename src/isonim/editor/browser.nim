@@ -8,7 +8,7 @@ when not defined(js):
 
 import std/[dom, strutils]
 
-import isonim/core/[computation, owner, signals]
+import isonim/core/[batch, computation, owner, signals]
 import isonim/editor/control_browser
 import isonim/editor/dom_renderer
 import isonim/editor/streaming_preview
@@ -19,6 +19,7 @@ import isonim/editor/viewmodels
 import isonim/editor/workspace
 import isonim/editor/editable_cells
 import isonim/editor/views/shell
+import isonim/editor/views/widgets/property_commit
 import isonim/editor/design_review/editor_agent_adapter
 from isonim/editor/design_review/browser_agent_client import BrowserAgentClient
 
@@ -1102,6 +1103,19 @@ proc exposeWindowEditorHandle*(vm: EditorVM) =
 
   onCleanup proc() =
     {.emit: "if (window.__isonimAutoSaveTimer) clearTimeout(window.__isonimAutoSaveTimer); window.__isonimAutoSaveTimer = null;".}
+
+  # The preview's document is being recomputed from a source that carries
+  # every edit: forget the values the preview was keeping for a frame rebuilt
+  # from an older document, so the reload that follows shows the file and not
+  # an older edit (`EditorVM.previewSourceCaughtUp`). Here rather than in a preview view:
+  # both preview views replay the records, and either may be the one mounted.
+  when defined(js):
+    var lastSourceCaughtUp = untrack(proc(): int = vm.previewSourceCaughtUp.val)
+    createRenderEffect proc() =
+      let caughtUp = vm.previewSourceCaughtUp.val
+      if caughtUp == lastSourceCaughtUp: return
+      lastSourceCaughtUp = caughtUp
+      forgetPreviewDeclarations()
 
   # Auto-save. The VM bumps a generation when a commit stages an edit; the
   # debounce lives here because the VM has no timer and should not grow one

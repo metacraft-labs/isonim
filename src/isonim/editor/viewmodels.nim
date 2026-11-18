@@ -582,6 +582,30 @@ type
       ## Bumped when a write ends without reloading the preview (it failed, or
       ## the project only stages edits): the preview releases a canvas drag's
       ## held value (see `component_edit`), since no reload will replace it.
+    previewSourceCaughtUp*: Signal[int]
+      ## Bumped when the document the preview is rebuilt from is about to be
+      ## recomputed from a source that carries every edit committed so far:
+      ## a write that wrote the whole journal AND requests the preview's
+      ## reload (`livePreviewReloadGeneration`, which recomputes
+      ## `preview.current` from the written source), or a native project's
+      ## compiled catalog with nothing pending. The preview then forgets the
+      ## values it was keeping for a rebuilt frame
+      ## (`property_commit.forgetPreviewDeclarations`).
+      ##
+      ## Those records are what an inspector commit, an undo or a redo shows,
+      ## kept so that a rebuild of the frame from a document that predates
+      ## them puts them back. Kept past such a reload, they are put back over
+      ## a file that has moved on: an undo's 300px was replayed over the
+      ## reload of a later canvas resize that wrote 270px, and the preview
+      ## kept 300px while the file said 270px (isonim-pm issue 2026-11-16-
+      ## the-preview-does-not-follow-a-write-that-repeats-content-written-
+      ## before-an-undo). Bumped before the reload is requested, so the
+      ## reloaded frame finds none.
+      ##
+      ## Never on a write that requests no reload (the commits it carries
+      ## already showed their values): `preview.current` still holds the
+      ## document from before that write, and a rebuild of the frame that is
+      ## not a reload (View, then Edit) needs the records to show it.
     previewRenderedWidth*: Signal[int]
       ## The width in CSS pixels the preview iframe is ACTUALLY laid out at,
       ## or 0 before anything has measured it.
@@ -7343,6 +7367,16 @@ proc applyDirectCanvasOperation*(editor: EditorVM;
   ## staged.
   result = editor.stageDirectCanvasOperation(operation)
   if result.ok:
+    # A canvas gesture's value is on screen only as the frame's own hold (an
+    # inline style, the edited text, the moved node): the preview keeps no
+    # record of it, and a rebuild of the frame from `preview.current` loses
+    # it. So its write must reload the preview from the written source, even
+    # when the same write carries a commit or an undo that showed its value
+    # (`previewMissesPendingEdits`). Without this, an undo and a resize
+    # written together requested no reload, and View then Edit showed the
+    # width from before the resize while the file held the new one.
+    if result.sourceEdit.property.len > 0:
+      editor.previewMissesPendingEdits.val = true
     editor.scheduleStagedWrite()
 
 proc applyDirectCanvasResize*(editor: EditorVM; property,
@@ -11802,6 +11836,14 @@ proc applyWorkspaceFileEdits*(editor: EditorVM): WorkspaceEditResult {.discardab
   editor.previewShowsPendingEdits.val = false
   editor.previewMissesPendingEdits.val = false
   if not adapter.stagingOnly and not previewIsUpToDate:
+    # The reload rebuilds the preview's document from the written source, so
+    # that document now carries every value the preview was keeping for a
+    # rebuilt frame (`previewSourceCaughtUp`): forget them first, or the
+    # reload puts an older edit back over this write. Only here: a write that
+    # requests no reload leaves `preview.current` holding the document from
+    # before it, and the records are what a later rebuild of the frame (View,
+    # then Edit) needs to show the write.
+    editor.previewSourceCaughtUp.val = editor.previewSourceCaughtUp.val + 1
     editor.livePreviewReloadGeneration.val = editor.livePreviewReloadGeneration.val + 1
   else:
     editor.previewHoldRelease.val = editor.previewHoldRelease.val + 1
@@ -15499,6 +15541,7 @@ proc createEditorVM*(): EditorVM =
   let previewShowsPendingEdits = createSignal(false)
   let previewMissesPendingEdits = createSignal(false)
   let previewHoldRelease = createSignal(0)
+  let previewSourceCaughtUp = createSignal(0)
   let previewRenderedWidth = createSignal(0)
   # The width every breakpoint question is asked at: what the preview is
   # really laid out at when that is known, and the chip's nominal width until
@@ -15639,6 +15682,7 @@ proc createEditorVM*(): EditorVM =
     previewShowsPendingEdits: previewShowsPendingEdits,
     previewMissesPendingEdits: previewMissesPendingEdits,
     previewHoldRelease: previewHoldRelease,
+    previewSourceCaughtUp: previewSourceCaughtUp,
     previewRenderedWidth: previewRenderedWidth,
     activeBreakpoint: activeBreakpoint,
     workspacePermissions: workspacePermissions,

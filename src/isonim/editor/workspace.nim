@@ -375,6 +375,11 @@ proc refreshWorkspaceCatalog*(vm: EditorVM; workspace: EditorWorkspace) =
     for index, item in group.items:
       if item.group == selected.group and item.name == selected.name and item.kind == selected.kind:
         vm.selectedStory.val = StoryRef(group: item.group, name: item.name, kind: item.kind, index: index)
+  # A catalog compiled with nothing pending carries every edit committed so
+  # far, so the preview rebuilt from it must not have an older edit's value
+  # put back over it (`EditorVM.previewSourceCaughtUp`). Before the reload.
+  if not pending:
+    vm.previewSourceCaughtUp.val = vm.previewSourceCaughtUp.val + 1
   vm.livePreviewReloadGeneration.val = vm.livePreviewReloadGeneration.val + 1
 
 proc applyWorkspace*(vm: EditorVM; workspace: EditorWorkspace) =
