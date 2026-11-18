@@ -282,6 +282,12 @@ test-c:
     # Resources register with their owner; a root enumerates the live ones
     # created under it (`ownedResourceStates`).
     nim c -r tests/test_resource_registry.nim
+    # Injected-service primitives: streamed responses, simulated network
+    # conditions and readiness marks.
+    nim c -r tests/test_service_streams.nim
+    nim c -r --mm:refc --out:build/tests/test_service_streams_refc tests/test_service_streams.nim
+    nim c -r tests/test_network_profile.nim
+    nim c -r tests/test_readiness_marks.nim
     # NH-M0 & NH-M5 / HX-S-0: Native HCR shim tests (inactive path & active linked path)
     nim c -r tests/test_native_hcr_shim.nim
     # NH-M2: the native HMR runtime, in BOTH its gating configurations.
@@ -345,6 +351,12 @@ test-js: build-tailwind
     "${ISONIM_SCENARIO_NODE:-node}" tests/test_nondet_partial_window.mjs
     nim js -r tests/test_context.nim
     nim js -r tests/test_resource_registry.nim
+    nim js -d:nodejs --out:build/test_service_streams.js tests/test_service_streams.nim
+    python3 tools/run_nim_js_test.py build/test_service_streams.js
+    nim js -d:nodejs --out:build/test_network_profile.js tests/test_network_profile.nim
+    python3 tools/run_nim_js_test.py build/test_network_profile.js
+    nim js -d:nodejs --out:build/test_readiness_marks.js tests/test_readiness_marks.nim
+    python3 tools/run_nim_js_test.py build/test_readiness_marks.js
     nim js -r tests/test_rxcore.nim
     nim js -r tests/test_dsl.nim
     nim js -r tests/test_dsl_helper_calls.nim

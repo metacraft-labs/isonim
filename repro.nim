@@ -421,6 +421,9 @@ const isonimTestSpecs: seq[IsonimTestSpec] = @[
   spec("test_context"),
   spec("test_rxcore"),
   spec("test_resource_async"),      # imports nim_everywhere + /async_compat
+  spec("test_service_streams"),     # injected-service primitives
+  spec("test_network_profile"),
+  spec("test_readiness_marks"),
   # --- DSL / SSR / streaming / round-trip ---
   spec("test_dsl"),
   spec("test_dsl_ssr"),
