@@ -41,6 +41,12 @@
  *      document that still declares it removes it, twice without harm, and
  *      leaves the lower rule's declaration;
  *   6. a recorded place that does not name this document's rules is a no-op.
+ * Mounted preview (`tests/helpers/editor_reset_mount_browser.nim`: a project
+ * that mounts its UI into a document with a <head>):
+ *   10. a removal made through `applyPreviewStyle` survives the document
+ *       being rebuilt and the UI mounted again -- put back by the replay
+ *       after the mount (`preview_mount.nim`), since the bridge's replay runs
+ *       before the project has mounted anything.
  *
  * The host is the shorthand-order host
  * (`tests/helpers/editor_shorthand_order_workspace.nim`: the editor example
@@ -57,6 +63,9 @@ import {fileURLToPath} from 'node:url';
 const repo=path.resolve(path.dirname(fileURLToPath(import.meta.url)),'..');
 const bundle=repo+'/build/editor-shorthand/editor.js';
 assert(existsSync(bundle),'build the host first: nim js -o:build/editor-shorthand/editor.js tests/helpers/editor_shorthand_order_workspace.nim');
+// The mounted-preview host (`tests/helpers/editor_reset_mount_browser.nim`).
+const mountBundle=repo+'/build/editor-reset-mount/editor.js';
+assert(existsSync(mountBundle),'build the mount host first: nim js -o:build/editor-reset-mount/editor.js tests/helpers/editor_reset_mount_browser.nim');
 const pub=mkdtempSync(path.join(process.env.ISONIM_POPUP_ARTIFACTS||tmpdir(),'reset-rebuild-'));
 copyFileSync(bundle,pub+'/editor.js');
 for(const [from,to] of [['node_modules/fabric/dist/index.min.js','fabric.min.js'],['node_modules/paper/dist/paper-core.min.js','paper-core.min.js'],['node_modules/svgo/dist/svgo.browser.js','svgo.browser.js']])copyFileSync(repo+'/'+from,pub+'/'+to);
@@ -76,6 +85,15 @@ const server=createServer((req,res)=>{const url=new URL(req.url,'http://x');cons
   res.writeHead(200,{'content-type':types[path.extname(file)]||'application/octet-stream'});res.end(readFileSync(file));});
 // A fixed port when one is given (ISONIM_RESET_REBUILD_PORT), otherwise any.
 await new Promise(resolve=>server.listen(Number(process.env.ISONIM_RESET_REBUILD_PORT||0),'127.0.0.1',resolve));
+const mountPub=mkdtempSync(path.join(process.env.ISONIM_POPUP_ARTIFACTS||tmpdir(),'reset-mount-'));
+copyFileSync(mountBundle,mountPub+'/editor.js');
+writeFileSync(mountPub+'/index.html','<!doctype html><html><head><style>html,body{height:100%;margin:0;overflow:hidden}</style></head><body><script src="editor.js"></script></body></html>');
+const mountServer=createServer((req,res)=>{const name=new URL(req.url,'http://x').pathname;const file=name==='/'?'index.html':name.slice(1);
+  const at=path.join(mountPub,path.basename(file));if(!existsSync(at)){res.writeHead(404);res.end();return;}
+  res.writeHead(200,{'content-type':at.endsWith('.js')?'text/javascript':'text/html'});res.end(readFileSync(at));});
+// The next port after the main host's when one is given.
+await new Promise(resolve=>mountServer.listen(process.env.ISONIM_RESET_REBUILD_PORT?Number(process.env.ISONIM_RESET_REBUILD_PORT)+1:0,'127.0.0.1',resolve));
+const mountOrigin='http://127.0.0.1:'+mountServer.address().port;
 const origin='http://127.0.0.1:'+server.address().port;
 const foundation='examples/wanderlust/design-system/foundations.css';
 const proof={head:process.env.ISONIM_TEST_HEAD||'working copy',cases:[],failures:[],errors:[]};
@@ -348,6 +366,45 @@ try {
     trail.push(r);
   });
 
+  // Mounted preview: the project mounts its UI into a document with a
+  // <head>. The bridge's replay at the end of <body> runs before the mount
+  // (no element yet), so only the replay after the mount (`preview_mount`)
+  // can put a removal back. The removal goes through `applyPreviewStyle`;
+  // the rebuild is the VM's reload of the same project document.
+  await caseRun('mounted preview: a removal survives the document rebuilt and re-mounted',async(trail)=>{
+    const mp=await browser.newPage({viewport:{width:1440,height:900}});mp.setDefaultTimeout(60000);
+    mp.on('pageerror',e=>proof.errors.push('mount: '+e.message));
+    await mp.route(url=>!url.href.startsWith(mountOrigin),route=>route.abort());
+    try{
+      await mp.goto(mountOrigin+'/');
+      await mp.waitForFunction(()=>window.__resetMount);
+      assert.equal(await mp.evaluate(()=>window.__resetMount.select()),true,'a component story is selected');
+      // Into the component's edit view, where the edit document (and the
+      // declaration runtime) is.
+      for(const m of ['view','edit']){const b=mp.locator('[aria-label="Preview mode"]').getByRole('button',{name:'Switch to '+m+' mode',exact:true});await b.first().click();}
+      await mp.waitForFunction(()=>JSON.parse(window.__resetMount.snapshot()).view==='evComponentEdit');
+      const frameSel='iframe[title="Editable component preview"]';
+      const button=()=>mp.evaluate(s=>{const d=document.querySelector(s)?.contentDocument;const b=d?.querySelector('#fixture-action');return b?{width:getComputedStyle(b).width,runtime:typeof d.defaultView.__isonimSetDeclaration==='function'}:null;},frameSel);
+      const mountedOk=async(want,what)=>{const deadline=Date.now()+60000;let last;while(Date.now()<deadline){last=await button();if(last&&last.width===want)return;await mp.waitForTimeout(100);}throw new Error(what+': the mounted button is '+JSON.stringify(last)+', want width '+want+' ('+await mp.evaluate(()=>window.__resetMount.snapshot()+' frames '+[...document.querySelectorAll('iframe')].map(f=>f.title).join('|'))+')');};
+      await mountedOk('160px','mounted');
+      assert.equal((await button()).runtime,true,'the edit document has the declaration runtime (it has a <head>)');
+      assert.equal(await mp.evaluate(()=>window.__resetMount.removeWidth()),true,'the removal is shown');
+      await mountedOk('120px','after the removal (the lower `button` rule decides)');
+      const record=await mp.evaluate(()=>JSON.stringify(Object.values(window.__isonimPreviewDeclarations||{}).map(r=>({p:r.property,v:r.value,at:r.removedFrom||''}))));
+      trail.push({record});
+      const kept=JSON.parse(record).find(r=>r.p==='width'&&r.v==='');
+      assert.ok(kept&&kept.at&&JSON.parse(kept.at).name==='.fixture','the removal is kept at its place');
+      // Rebuild: a new document from the same project document, mounted again.
+      const marked=await mp.evaluate(s=>{const w=document.querySelector(s).contentWindow;w.__mountMark=1;return true;},frameSel);
+      assert.ok(marked);
+      const mountsBefore=JSON.parse(await mp.evaluate(()=>window.__resetMount.snapshot())).mounts;
+      await mp.evaluate(()=>window.__resetMount.reload());
+      await mp.waitForFunction(([s,n])=>{const w=document.querySelector(s)?.contentWindow;return !!w&&!w.__mountMark&&w.document.readyState==='complete'&&!!w.document.querySelector('#fixture-action')&&JSON.parse(window.__resetMount.snapshot()).mounts>n;},[frameSel,mountsBefore]);
+      await mountedOk('120px','after the document is rebuilt and re-mounted');
+      trail.push({after:await button()});
+    }finally{await mp.close();}
+  });
+
   writeFileSync(pub+'/proof.json',JSON.stringify(proof,null,2));
   for(const c of proof.cases)console.log((c.ok?'ok   ':'FAIL ')+c.name+(c.ok?'':' -- '+c.error));
   assert.deepEqual(proof.failures,[],'every case keeps the removal');
@@ -356,4 +413,5 @@ try {
 } finally {
   if(browser)await browser.close();
   await new Promise(resolve=>server.close(resolve));
+  await new Promise(resolve=>mountServer.close(resolve));
 }

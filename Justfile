@@ -1869,6 +1869,16 @@ test-editor-preview-follows-write-gui:
     nim js --hints:off --path:src --path:. --path:../nim-everywhere/src --path:../isonim-render-serve/src --path:../nim-acp/src --path:../nim-agent-harbor/src --path:../nim-agents/src -o:build/editor-shorthand/editor.js tests/helpers/editor_shorthand_order_workspace.nim
     timeout --signal=TERM --kill-after=15s 1800s "${ISONIM_SCENARIO_NODE:-node}" tests/test_editor_preview_follows_write_gui.mjs
 
+# A written Reset (or any removal) stays removed when the preview is rebuilt
+# without a write, View then Edit, in a document preview and a mounted one
+# (isonim-pm issue 2026-11-18-after-a-reset-the-preview-shows-the-removed-
+# declaration-again-on-view-then-edit; editor spec "Visual box model").
+test-editor-reset-rebuild-gui:
+    mkdir -p build/editor-shorthand build/editor-reset-mount
+    nim js --hints:off --path:src --path:. --path:../nim-everywhere/src --path:../isonim-render-serve/src --path:../nim-acp/src --path:../nim-agent-harbor/src --path:../nim-agents/src -o:build/editor-shorthand/editor.js tests/helpers/editor_shorthand_order_workspace.nim
+    nim js --hints:off --path:src --path:. --path:../nim-everywhere/src --path:../isonim-render-serve/src --path:../nim-acp/src --path:../nim-agent-harbor/src --path:../nim-agents/src -o:build/editor-reset-mount/editor.js tests/helpers/editor_reset_mount_browser.nim
+    timeout --signal=TERM --kill-after=15s 3600s "${ISONIM_SCENARIO_NODE:-node}" tests/test_editor_reset_rebuild_gui.mjs
+
 test-editor-c4a-gestures: isonim-review-build editor-inspector-build
     timeout --signal=TERM --kill-after=15s 180s "${ISONIM_SCENARIO_NODE:-node}" tests/test_editor_inspector_gestures_gui.mjs
 
