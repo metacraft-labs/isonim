@@ -14,9 +14,10 @@
 ##   operation produced it, or the request fails after one latency at the
 ##   profile's failure rate (and never reaches the service).
 ## - `NetworkSimulator.simulateStream` wraps a streamed operation: the first
-##   chunk waits the latency, every chunk waits its own transfer time behind
-##   the previous one, and order is preserved. Cancelling the wrapped stream
-##   cancels the source.
+##   chunk waits the latency, every later chunk its own transfer time behind
+##   the previous one (and the latency too, if it was produced after the
+##   previous one arrived), and order is preserved. Cancelling the wrapped
+##   stream cancels the source.
 ##
 ## A service interface is wrapped by applying these to each of its
 ## operations — one wrapper per interface, written once, used for every
@@ -158,11 +159,13 @@ proc simulateStream*[T](sim: NetworkSimulator; opName: string;
                         source: ServiceStream[T];
                         sizeOf: proc(chunk: T): int {.closure.}):
     ServiceStream[T] =
-  ## Deliver `source` through the simulated connection. The first event
-  ## waits one latency (plus jitter) after it was produced; every chunk then
-  ## also waits its own transfer time, behind the previous delivery, so a
-  ## slow connection stretches a stream out and never reorders it. The end
-  ## of the stream (done or error) follows the last chunk. At the failure
+  ## Deliver `source` through the simulated connection. Every event arrives
+  ## one latency (plus the stream's jitter) after it was produced, plus its
+  ## own transfer time, and never before the previous delivery: chunks
+  ## produced in a burst arrive one transfer time apart after the first one's
+  ## latency, and a chunk produced later still travels the latency. A slow
+  ## connection therefore stretches a stream out and never reorders it. The
+  ## end of the stream (done or error) follows the last chunk. At the failure
   ## rate, the stream fails after one latency without subscribing to
   ## `source`.
   result = proc(sink: StreamSink[T]): StreamSubscription =
@@ -177,7 +180,9 @@ proc simulateStream*[T](sim: NetworkSimulator; opName: string;
     var queue: seq[PendingDelivery[T]]
     var timer: TimerHandle
     var lastAt = int64.low
-    var first = true
+    # One latency (with its jitter) for the whole stream, so a later chunk
+    # can never overtake an earlier one.
+    let delay = (latency + sim.jitter()).int64
 
     proc deliver(item: PendingDelivery[T]) =
       case item.kind
@@ -198,12 +203,10 @@ proc simulateStream*[T](sim: NetworkSimulator; opName: string;
 
     proc enqueue(pending: PendingDelivery[T]; bytes: int) =
       var item = pending
-      let now = monotonicNowMs()
-      var at = now
-      if first:
-        at += (latency + sim.jitter()).int64
-        first = false
-      at = max(at, lastAt) + sim.profile.transferMs(bytes).int64
+      # Every event travels the latency; behind an earlier delivery it also
+      # waits its turn, so a burst arrives one transfer time apart.
+      let at = max(monotonicNowMs() + delay, lastAt) +
+        sim.profile.transferMs(bytes).int64
       lastAt = at
       item.atMs = at
       queue.add item

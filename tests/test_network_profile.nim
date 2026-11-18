@@ -76,6 +76,22 @@ suite "network profiles":
     check log.done == 1
     check log.doneAt - start == 120
 
+  test "a chunk produced after earlier deliveries still travels the latency":
+    let ctx = newFakeAsyncContext()
+    ctx.install()
+    defer: ctx.uninstall()
+    let sim = newNetworkSimulator(NetworkProfile(name: "t", label: "T",
+      latencyMs: 100))
+    let log = Log()
+    let start = monotonicNowMs()
+    discard sim.simulateStream("s", pacedStream(@["a", "b"],
+      intervalMs = 300), textBytes)(sinkFor(log))
+    ctx.settle()
+    ctx.step(400)
+    check log.chunkAt.len == 2
+    check log.chunkAt[0] - start == 100
+    check log.chunkAt[1] - start == 400
+
   test "the instant profile adds no delay and keeps order":
     let ctx = newFakeAsyncContext()
     ctx.install()
