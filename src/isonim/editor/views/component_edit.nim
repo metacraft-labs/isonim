@@ -2212,9 +2212,39 @@ __ISONIM_SCENE_GRAPH_WALK__
       sourceKey: sourceKeyFor(selected),
       measurement: stableSelector(selected)
     }, extra || {});
-    parent.dispatchEvent(new CustomEvent('isonim-preview-direct-manipulation', {
+    const sent = new CustomEvent('isonim-preview-direct-manipulation', {
       detail: detail
-    }));
+    });
+    parent.dispatchEvent(sent);
+    return sent;
+  }
+  // A canvas command or gesture that changed the preview before asking (a
+  // context command's Paste styles or Reset, inline text, a reorder): when
+  // the editor refuses it at the act (`detail.refused`, as for a handle's
+  // release, `refusedRelease`), `putBack` restores what the preview showed
+  // before -- at once, transitions held -- and the reason is shown beside the
+  // selection. One that changed nothing (Detach, Wrap, ...) only shows the
+  // reason. Editor spec "Saving": a refused change never reaches the preview.
+  function refusedCommand(sent, el, putBack) {
+    const reason = sent && sent.detail && sent.detail.refused;
+    if (!reason || !el) return false;
+    if (putBack) {
+      const hold = holdTransitions(el);
+      putBack();
+      hold.release();
+    }
+    if (window.__isonimSelectedElement === el) showBoxMessage(el, String(reason));
+    return true;
+  }
+  // The element's own inline declaration of ``property`` (value and
+  // priority), and a function that puts it back.
+  function inlineKeeper(el, property) {
+    const value = el.style.getPropertyValue(property);
+    const priority = el.style.getPropertyPriority(property);
+    return function () {
+      if (value) el.style.setProperty(property, value, priority);
+      else el.style.removeProperty(property);
+    };
   }
   function showContextMenu(event, el) {
     const existing = document.getElementById('isonim-editor-context-menu');
@@ -2248,16 +2278,19 @@ __ISONIM_SCENE_GRAPH_WALK__
         } else if (command === 'paste-styles') {
           const copied = styleClipboard || firstEditableStyle(el);
           if (copied) {
+            const putBack = inlineKeeper(el, copied.property);
             el.style.setProperty(copied.property, copied.value);
-            dispatchContextCommand(command, copied);
+            refusedCommand(dispatchContextCommand(command, copied), el, putBack);
           }
         } else if (command === 'reset') {
           const reset = firstEditableStyle(el);
           const value = reset.property === 'color' ? 'inherit' : '0px';
+          const putBack = inlineKeeper(el, reset.property);
           el.style.setProperty(reset.property, value);
-          dispatchContextCommand(command, { property: reset.property, value: value, oldValue: reset.value });
+          refusedCommand(dispatchContextCommand(command,
+            { property: reset.property, value: value, oldValue: reset.value }), el, putBack);
         } else {
-          dispatchContextCommand(command);
+          refusedCommand(dispatchContextCommand(command), el, null);
         }
         menu.remove();
       });
@@ -2404,6 +2437,8 @@ __ISONIM_SCENE_GRAPH_WALK__
     }
     selectElement(selected);
     const before = String(selected.textContent || '').trim().replace(/\s+/g, ' ');
+    // The markup before editing, put back if the edit is refused.
+    const beforeMarkup = selected.innerHTML;
     selected.setAttribute('contenteditable', 'true');
     selected.setAttribute('data-isonim-inline-editing', 'true');
     selected.focus();
@@ -2424,7 +2459,7 @@ __ISONIM_SCENE_GRAPH_WALK__
       // Reporting it staged a no-op source edit every time a click burst
       // passed through the double-click that opens the editor.
       if (next === before) return;
-      parent.dispatchEvent(new CustomEvent('isonim-preview-direct-manipulation', {
+      const sent = new CustomEvent('isonim-preview-direct-manipulation', {
         detail: {
           kind: 'inline-text',
           property: 'text',
@@ -2433,7 +2468,9 @@ __ISONIM_SCENE_GRAPH_WALK__
           sourceKey: sourceKeyFor(selected),
           measurement: 'text=' + next.length
         }
-      }));
+      });
+      parent.dispatchEvent(sent);
+      refusedCommand(sent, selected, function () { selected.innerHTML = beforeMarkup; });
     }
     function keyCommit(keyEvent) {
       if (keyEvent.key === 'Enter') {
@@ -2464,8 +2501,9 @@ __ISONIM_SCENE_GRAPH_WALK__
       const siblings = Array.from(parentEl.children).filter(isSelectable);
       const index = siblings.indexOf(selected);
       const toIndex = moveEvent.clientY > startY ? Math.min(siblings.length - 1, index + 1) : Math.max(0, index - 1);
+      const putBack = inlineKeeper(selected, 'order');
       selected.style.order = String(toIndex);
-      parent.dispatchEvent(new CustomEvent('isonim-preview-direct-manipulation', {
+      const sent = new CustomEvent('isonim-preview-direct-manipulation', {
         detail: {
           kind: 'reorder',
           property: 'order',
@@ -2476,7 +2514,9 @@ __ISONIM_SCENE_GRAPH_WALK__
           sourceKey: source,
           measurement: 'order=' + toIndex
         }
-      }));
+      });
+      parent.dispatchEvent(sent);
+      refusedCommand(sent, selected, putBack);
       stop();
       moveEvent.preventDefault();
     }
@@ -3929,6 +3969,9 @@ proc installPreviewSelectionBridge*[R, E](r: R; frame: E; vm: EditorVM) =
           if d.message.len > 0:
             reason = d.message
             break
+        # A command that runs another editor command (Create variant,
+        # Duplicate, Delete) says why in its command state.
+        if reason.len == 0: reason = outcome.commandState.diagnostic
         if reason.len == 0: reason = "This canvas edit was refused."
         cstring(reason)
     {.emit: ["""

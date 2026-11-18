@@ -2578,6 +2578,58 @@ suite "Editor ViewModels (M27 workspace file writes)":
       # on disk; what is on disk is walked back with Undo instead.
       check vm.inspector.undoStack.val.len == 4
       check vm.workspaceEditStage.val == wesClean
+
+      # A gesture's owned plan is asked the row's act-time questions before
+      # it is staged (isonim-pm issue 2026-11-18-a-canvas-drag-in-a-read-only-
+      # workspace-is-staged-instead-of-refused-at-the-act; editor spec
+      # "Saving"): the writer's own statement, then a workspace read-only for
+      # source changes, each refusing with its reason and staging nothing.
+      check vm.selectInspectorElement(ElementRef(id: "root",
+        sourceKey: "card.root", schemaKey: "components.card", tag: "article",
+        sourceFile: layoutFile, sourceLine: 1,
+        properties: @[
+          prop("width", "360px", layoutFile, "components.card.width", 1),
+          prop("gap", "24px", tokenFile, "tokens.card.gap", 1)
+        ]))
+      let historyBefore = vm.inspector.undoStack.val.len
+      vm.workspaceEditAdapter.editRefusal = proc(plan: SourceEditPlan;
+          schema: WorkspaceEditableSchemaEntry): string =
+        "The test writer refuses " & plan.property & " here."
+      for operation in [
+          DirectCanvasOperation(kind: dcokResize, property: "width",
+            value: "400px", handle: "se", measurement: "width=400px"),
+          DirectCanvasOperation(kind: dcokContextCommand, command: dcccPasteStyles,
+            property: "width", value: "380px", oldValue: "360px",
+            sourceKey: "card.root")]:
+        let refused = vm.applyDirectCanvasOperation(operation)
+        check not refused.ok
+        check refused.diagnostics.len == 1 and
+          "The test writer refuses width here." in refused.diagnostics[0].message
+        check vm.inspector.pendingSourceEdits.val.len == 0
+        check vm.inspector.undoStack.val.len == historyBefore
+      vm.workspaceEditAdapter.editRefusal = nil
+      vm.workspacePermissions.val = EditorWorkspacePermissions(readSource: true,
+        writeSource: false)
+      let readOnly = vm.applyDirectCanvasOperation(DirectCanvasOperation(
+        kind: dcokSpacing, property: "gap", value: "30px",
+        handle: "spacing", measurement: "gap=30px"))
+      check not readOnly.ok
+      check readOnly.diagnostics.len == 1 and
+        readOnly.diagnostics[0].message == "This workspace is read-only for source changes."
+      check vm.inspector.pendingSourceEdits.val.len == 0
+      check vm.inspector.undoStack.val.len == historyBefore
+      check readFile(layoutFile).contains("360px")
+      for command in [dcccPasteStyles, dcccReset, dcccDetach, dcccPromote,
+          dcccWrap]:
+        let refusedCommand = vm.applyDirectCanvasOperation(DirectCanvasOperation(
+          kind: dcokContextCommand, command: command, property: "width",
+          value: "380px", oldValue: "360px", sourceKey: "card.root"))
+        check not refusedCommand.ok
+        check refusedCommand.diagnostics.len == 1 and
+          refusedCommand.diagnostics[0].message ==
+            "This workspace is read-only for source changes."
+        check vm.inspector.pendingSourceEdits.val.len == 0
+        check vm.inspector.undoStack.val.len == historyBefore
       dispose()
 
   test "workspace_edit_adapter_applies_transactional_file_changes":
@@ -2817,9 +2869,38 @@ suite "Editor ViewModels (M27 workspace file writes)":
       check vm.vectorEditor.adapter.val.hasCapability(vacDrawingTools)
       dispose()
 
+  test "a vector edit in a read-only workspace is refused at the act":
+    # isonim-pm issue 2026-11-18-a-canvas-drag-in-a-read-only-workspace-is-
+    # staged-instead-of-refused-at-the-act (the vector editor's canvas, review
+    # observation of ro-canvas round 1); editor spec "Saving".
+    createRoot proc(dispose: proc()) =
+      let vm = createEditorVM()
+      check not vm.workspacePermissions.val.writeSource
+      vm.vectorEditor.symbols.val = @[
+        VectorSymbol(name: "Logo", category: "Icons",
+          svgContent: "<path d=\"M0 0h24v24H0z\" />",
+          tags: @["brand"], width: 24, height: 24)
+      ]
+      check vm.selectVectorSymbol(0)
+      let doc = vm.vectorEditor.document.val
+      for outcome in [vm.addVectorPolygon(), vm.setVectorDocumentViewBox("0 0 40 40"),
+          vm.commitBrowserVectorSvg("<svg viewBox=\"0 0 24 24\"><path d=\"M1 1h22v22H1z\" /></svg>")]:
+        check not outcome.ok
+        check outcome.diagnostics.len == 1 and
+          outcome.diagnostics[0].message == "This workspace is read-only for source changes."
+        check vm.vectorEditor.document.val == doc
+        check vm.vectorEditor.undoStack.val.len == 0
+        check vm.inspector.pendingSourceEdits.val.len == 0
+      check vm.vectorEditor.diagnostics.val.len == 1
+      dispose()
+
   test "vector_editor_model_supports_shapes_paths_layers_and_symbols":
     createRoot proc(dispose: proc()) =
       let vm = createEditorVM()
+      # Vector edits stage source edits, which a workspace read-only for
+      # source changes (the default) refuses at the act (the next test).
+      vm.workspacePermissions.val = EditorWorkspacePermissions(readSource: true,
+        writeSource: true)
       vm.vectorEditor.symbols.val = @[
         VectorSymbol(name: "Logo", category: "Icons",
           svgContent: "<path d=\"M0 0h24v24H0z\" />",

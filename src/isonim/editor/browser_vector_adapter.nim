@@ -533,6 +533,69 @@ proc mountFabricVectorEditor*[E](host: E; symbolName, initialSvg,
       this.recordSourceChange('path-handle-drag');
       return true;
     },
+    // The canvas as the editor last accepted it: each object with the
+    // properties a drawing, a move, a style or a path edit changes. A change
+    // the editor refuses at the act (a workspace read-only for source
+    // changes) is taken back to it by `restoreAccepted`, without going
+    // through a tool (a shape tool's setTool adds a shape) and without
+    // recording a source change, so a refusal cannot cause another one.
+    acceptedProps(obj) {
+      const keys = ['left', 'top', 'width', 'height', 'scaleX', 'scaleY',
+        'angle', 'skewX', 'skewY', 'flipX', 'flipY', 'fill', 'stroke',
+        'strokeWidth', 'opacity', 'visible', 'rx', 'ry', 'radius', 'text'];
+      const props = {};
+      keys.forEach((key) => { if (obj[key] !== undefined) props[key] = obj[key]; });
+      if (Array.isArray(obj.path)) props.path = JSON.parse(JSON.stringify(obj.path));
+      if (Array.isArray(obj.points)) props.points = JSON.parse(JSON.stringify(obj.points));
+      return props;
+    },
+    acceptCurrent() {
+      this.accepted = canvas.getObjects().map((obj) => ({ obj, props: this.acceptedProps(obj) }));
+      // The Paper.js editable path behind the canvas's editable-path shape:
+      // its nodes, the selected nodes, its undo/redo stacks and which canvas
+      // object draws it. A path-node edit changes these as well as the
+      // canvas.
+      this.acceptedPath = {
+        pathData: this.pathDataFromPaper(),
+        selected: Array.from(this.selectedSegmentIndices || []),
+        editable: this.editablePathObject,
+        history: (this.pathHistory || []).slice(),
+        redo: (this.pathRedo || []).slice()
+      };
+      host.dataset.vectorAcceptedCount = String(this.accepted.length);
+    },
+    restoreAccepted() {
+      if (!this.accepted) return false;
+      const keep = new Set(this.accepted.map((entry) => entry.obj));
+      canvas.discardActiveObject();
+      canvas.getObjects().slice().forEach((obj) => { if (!keep.has(obj)) canvas.remove(obj); });
+      this.accepted.forEach((entry, index) => {
+        if (!canvas.getObjects().includes(entry.obj)) canvas.add(entry.obj);
+        entry.obj.set(entry.props);
+        if (typeof entry.obj.setCoords === 'function') entry.obj.setCoords();
+        if (typeof canvas.moveObjectTo === 'function') canvas.moveObjectTo(entry.obj, index);
+      });
+      // The editable path as accepted: its nodes and selection, its history,
+      // and the canvas object that draws it again (the one just restored;
+      // a refused node edit had replaced it). Not through renderEditablePath
+      // or restorePathSnapshot, which would draw a new object and record a
+      // source change.
+      const path = this.acceptedPath;
+      if (path && path.pathData) {
+        this.selectedSegmentIndices = new Set(path.selected.length ? path.selected : [0]);
+        this.setPaperPathData(path.pathData, 'path-restore');
+        this.pathHistory = path.history.slice();
+        this.pathRedo = path.redo.slice();
+        host.dataset.vectorPathUndoDepth = String(this.pathHistory.length);
+        host.dataset.vectorPathRedoDepth = String(this.pathRedo.length);
+      }
+      if (path) this.editablePathObject = path.editable;
+      canvas.renderAll();
+      this.syncSelection();
+      if (typeof this.syncPathOverlay === 'function') this.syncPathOverlay();
+      host.dataset.vectorRestoredCount = String((Number(host.dataset.vectorRestoredCount) || 0) + 1);
+      return true;
+    },
     recordSourceChange(operation) {
       const exported = this.sourceSvg();
       this.sourceChangeSeq += 1;
@@ -704,6 +767,7 @@ proc mountFabricVectorEditor*[E](host: E; symbolName, initialSvg,
         host.dataset.vectorImportBacked = 'fabric';
         host.dataset.vectorImportedCount = String(imported.length);
         this.syncSelection();
+        if (options.accept) this.acceptCurrent();
         if (!options.silent) this.recordSourceChange('import');
       }).catch((error) => {
         host.dataset.vectorImportBacked = 'error';
@@ -900,7 +964,10 @@ proc mountFabricVectorEditor*[E](host: E; symbolName, initialSvg,
     }
   });
   state.initEditablePath();
-  state.importSvg(initialSvg, { silent: true });
+  // The loaded symbol is the first accepted canvas (taken again once the
+  // asynchronous import has added its objects).
+  state.acceptCurrent();
+  state.importSvg(initialSvg, { silent: true, accept: true });
   state.setTool(activeTool);
   state.syncSelection();
   import('./svgo.browser.js').then((svgo) => {
@@ -956,6 +1023,25 @@ proc runFabricVectorAction*[E](host: E; action: string) =
   if (action === 'path-nudge-right') editor.nudgeSelectedPathNodes(4, 0);
   if (action === 'path-undo') editor.undoPathOperation();
   if (action === 'path-redo') editor.redoPathOperation();
+})()
+  """].}
+
+proc acceptFabricVectorEdits*[E](host: E) =
+  ## The canvas as it is now is what the editor accepted.
+  {.emit: ["""
+(() => {
+  const editor = """, host, """ && """, host, """.__isonimVectorEditor;
+  if (editor) editor.acceptCurrent();
+})()
+  """].}
+
+proc restoreFabricVectorEdits*[E](host: E) =
+  ## Take a refused change off the canvas: back to the last accepted canvas,
+  ## recording no source change.
+  {.emit: ["""
+(() => {
+  const editor = """, host, """ && """, host, """.__isonimVectorEditor;
+  if (editor) editor.restoreAccepted();
 })()
   """].}
 

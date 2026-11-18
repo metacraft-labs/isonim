@@ -71,8 +71,8 @@ const pub=mkdtempSync(path.join(process.env.ISONIM_POPUP_ARTIFACTS||tmpdir(),'ca
 copyFileSync(bundle,pub+'/editor.js');
 for(const [from,to] of [['node_modules/fabric/dist/index.min.js','fabric.min.js'],['node_modules/paper/dist/paper-core.min.js','paper-core.min.js'],['node_modules/svgo/dist/svgo.browser.js','svgo.browser.js']])copyFileSync(repo+'/'+from,pub+'/'+to);
 const index=readFileSync(repo+'/src/isonim/editor/index.html','utf8');
-let rule='',prefixCss='',sourceReplace='';
-const page=()=>index.replace('<script src="editor.js"></script>','<script>window.__isonimShorthandCardRule='+JSON.stringify(rule)+';window.__isonimShorthandPrefixCss='+JSON.stringify(prefixCss)+';window.__isonimShorthandSourceReplace='+JSON.stringify(sourceReplace)+';window.__isonimShorthandMapped="width,height";</script><script src="editor.js"></script>');
+let rule='',prefixCss='',sourceReplace='',readOnly='';
+const page=()=>index.replace('<script src="editor.js"></script>','<script>window.__isonimShorthandCardRule='+JSON.stringify(rule)+';window.__isonimShorthandPrefixCss='+JSON.stringify(prefixCss)+';window.__isonimShorthandSourceReplace='+JSON.stringify(sourceReplace)+';window.__isonimShorthandReadOnly='+JSON.stringify(readOnly)+';window.__isonimShorthandMapped="width,height";</script><script src="editor.js"></script>');
 const types={'.js':'text/javascript','.html':'text/html'};
 const server=createServer((req,res)=>{const url=new URL(req.url,'http://x');const name=url.pathname==='/'?'index.html':url.pathname.slice(1);
   if(name==='index.html'){res.writeHead(200,{'content-type':'text/html'});res.end(page());return;}
@@ -125,8 +125,8 @@ try {
     await frame().locator('[data-isonim-selected="true"]').waitFor();
     await handleOf().waitFor();
   }
-  async function open(startRule,{prefix='',zoom=0,replace=''}={}){
-    rule=startRule;prefixCss=prefix;sourceReplace=replace;
+  async function open(startRule,{prefix='',zoom=0,replace='',readonly=false}={}){
+    rule=startRule;prefixCss=prefix;sourceReplace=replace;readOnly=readonly?'1':'';
     await p.goto(origin+'/');
     await p.getByRole('button',{name:'Open Components section'}).click();
     await p.getByRole('button',{name:'Toggle DestinationCard stories'}).click();
@@ -700,11 +700,152 @@ try {
     }
     await p.waitForTimeout(1500);
     assert.equal(await computed(prop),start,label+': and still does');
+    if(animated){
+      // The hold the restore ran under is released: no `transition` is left
+      // in the card's style attribute, and the page's transition is back.
+      assert.equal(await card().evaluate(n=>/transition/.test(n.getAttribute('style')||'')),false,label+': no transition hold is left on the card');
+      assert.equal(await computed('transition-duration'),'2s',label+': the page\'s transition is back');
+    }
     assert.equal(await card().evaluate(n=>n.getAttribute('style')).then(v=>/(^|;)\s*(gap|padding|width|height)\s*:/.test(v||'')),false,label+': no dragged declaration is left on the card');
     assert.equal(await undoCount(),history,label+': nothing in history');
     assert.equal(await pending(),0,label+': nothing staged');
     assert.equal(await source(),before,label+': nothing written');
     cases.push('a refused '+label+' drag: the preview is put back at release and the reason is shown; nothing is staged or written');
+  }
+
+  // 13c. A workspace read-only for source changes: every canvas handle's
+  // release is refused at the act, with the reason a row's commit gives
+  // ("This workspace is read-only for source changes."), shown beside the
+  // selection; the preview is put back at release and nothing is staged or
+  // written. The resize handles (width, height), the spacing handle on
+  // padding and on a gap, and the margin and padding box handles. isonim-pm
+  // issue 2026-11-18-a-canvas-drag-in-a-read-only-workspace-is-staged-
+  // instead-of-refused-at-the-act; editor spec "Saving".
+  {
+    const readOnlyWhy=/This workspace is read-only for source changes\./;
+    for(const [label,handle,prop,dx,dy,opts] of [
+      ['width','Resize selected element','width',-20,0,{}],
+      ['height','Adjust selected element height','height',0,-20,{}],
+      ['padding (spacing handle)','Adjust selected spacing','padding-top',0,5,{}],
+      ['gap (spacing handle)','Adjust selected spacing','column-gap',0,5,{replace:'gap: normal;\tgap: 10%;\ndisplay: block;\tdisplay: flex;'}],
+      ['padding top (box handle)','Adjust padding top','padding-top',0,-5,{}],
+      ['margin top (box handle)','Adjust margin top','margin-top',0,-5,{}]]){
+      await open('box-sizing: content-box; padding: 18px; border: 1px solid #CBD5E1; width: 300px; height: 200px; margin: 10px;',{...opts,readonly:true});
+      const s=await frameScale();
+      const history=await undoCount();
+      const before=await source();
+      const start=await computed(prop);
+      await dragOn(frame().getByLabel(handle,{exact:true}),dx*s,dy*s,2);
+      await assertPoll(async()=>(await computed(prop))!==start,true,label+': the drag previews');
+      await p.mouse.up();
+      await note().waitFor({state:'visible'});
+      assert.match(await note().textContent(),readOnlyWhy,label+': the row\'s reason is shown beside the selection');
+      // At once: read as soon as the reason is shown, not after a reload.
+      assert.equal(await computed(prop),start,label+': the preview is put back at release');
+      await p.waitForTimeout(1500);
+      assert.equal(await computed(prop),start,label+': and stays put back');
+      assert.equal(await card().evaluate(n=>n.getAttribute('style')).then(v=>/(^|;)\s*(gap|padding|width|height|margin)[a-z-]*\s*:/.test(v||'')),false,label+': no dragged declaration is left on the card');
+      assert.equal(await undoCount(),history,label+': nothing in history');
+      assert.equal(await pending(),0,label+': nothing staged');
+      assert.equal(await source(),before,label+': nothing written');
+      cases.push('read-only workspace: a '+label+' drag is refused at release with the row\'s reason and put back; nothing is staged');
+    }
+  }
+
+  // 13d. The same in a read-only workspace for the canvas commands that are
+  // not handles: the context menu's Paste styles and Reset (which change the
+  // preview before asking), Detach, Promote and Wrap (which change nothing
+  // first), inline text and a reorder. Each is refused at the act with the
+  // row's reason, shown beside the selection at once; whatever it changed in
+  // the preview is put back at once; nothing is staged or written. isonim-pm
+  // issue 2026-11-18-a-canvas-drag-in-a-read-only-workspace-is-staged-
+  // instead-of-refused-at-the-act (review R1/R2 of ro-canvas round 1).
+  {
+    const readOnlyWhy=/This workspace is read-only for source changes\./;
+    const startRule='box-sizing: content-box; padding: 18px; border: 1px solid #CBD5E1; width: 300px; height: 200px; margin: 10px;';
+    const settledRefusal=async(label,history,before)=>{
+      assert.equal(await undoCount(),history,label+': nothing in history');
+      assert.equal(await pending(),0,label+': nothing staged');
+      assert.equal(await source(),before,label+': nothing written');
+    };
+    for(const menuItem of ['Paste styles','Reset','Detach style','Promote style','Wrap selection']){
+      const label='context '+menuItem;
+      await open(startRule,{readonly:true});
+      const history=await undoCount(),before=await source(),start=await computed('padding-top');
+      const inlineDecls=()=>card().evaluate(n=>{const o={};for(const k of n.style)o[k]=n.style.getPropertyValue(k)+(n.style.getPropertyPriority(k)?' !'+n.style.getPropertyPriority(k):'');return o;});
+      const inlineBefore=await inlineDecls();
+      await card().click({button:'right',position:{x:5,y:5}});
+      await frame().getByRole('menuitem',{name:menuItem,exact:true}).click();
+      await note().waitFor({state:'visible'});
+      assert.match(await note().textContent(),readOnlyWhy,label+': the row\'s reason is shown beside the selection');
+      assert.equal(await computed('padding-top'),start,label+': the preview is put back at once');
+      assert.deepEqual(await inlineDecls(),inlineBefore,label+': the card\'s inline declarations are as before');
+      await p.waitForTimeout(1500);
+      assert.equal(await computed('padding-top'),start,label+': and stays');
+      await settledRefusal(label,history,before);
+      cases.push('read-only workspace: '+label+' is refused with the row\'s reason and leaves the preview as it was');
+    }
+    // Create variant, Duplicate and Delete run their editor command, and the
+    // reason shown is that command's own (review N1/V3 of ro-canvas round
+    // 2): read-only, the workspace's; writable, the permission this
+    // workspace does not grant.
+    for(const [menuItem,readonly,why] of [
+      ['Create variant',true,readOnlyWhy],
+      ['Create variant',false,/This workspace does not allow variant creation\./],
+      ['Duplicate',false,/This workspace does not allow duplicate operations\./],
+      ['Delete',false,/This workspace does not allow delete operations\./]]){
+      const label='context '+menuItem+(readonly?' (read-only)':' (writable)');
+      await open(startRule,{readonly});
+      const history=await undoCount(),before=await source(),start=await computed('padding-top');
+      await card().click({button:'right',position:{x:5,y:5}});
+      await frame().getByRole('menuitem',{name:menuItem,exact:true}).click();
+      await note().waitFor({state:'visible'});
+      assert.match(await note().textContent(),why,label+': the command\'s reason is shown beside the selection');
+      assert.equal(await computed('padding-top'),start,label+': the preview is unchanged');
+      await settledRefusal(label,history,before);
+      cases.push(label+' is refused with its command\'s reason shown beside the selection');
+    }
+    {
+      const label='inline text';
+      await open(startRule,{readonly:true});
+      const history=await undoCount(),before=await source();
+      const leaf=card().locator('h1');
+      const textBefore=(await leaf.textContent()).trim();
+      await leaf.dblclick();
+      await frame().locator('[data-isonim-inline-editing="true"]').waitFor();
+      await p.keyboard.press('ControlOrMeta+A');await p.keyboard.type('Edited title');await p.keyboard.press('Enter');
+      await note().waitFor({state:'visible'});
+      assert.match(await note().textContent(),readOnlyWhy,label+': the row\'s reason is shown beside the selection');
+      assert.equal((await leaf.textContent()).trim(),textBefore,label+': the text is put back at once');
+      await p.waitForTimeout(1500);
+      assert.equal((await leaf.textContent()).trim(),textBefore,label+': and stays');
+      await settledRefusal(label,history,before);
+      cases.push('read-only workspace: an inline text edit is refused with the row\'s reason and the text is put back');
+    }
+    {
+      const label='reorder';
+      await open(startRule,{readonly:true});
+      const history=await undoCount(),before=await source();
+      await card().locator('h1').click({position:{x:4,y:4}});
+      const sel=frame().locator('[data-isonim-selected="true"]');
+      assert.equal(await sel.evaluate(n=>n.tagName),'H1');
+      const b=await sel.boundingBox();
+      const x=b.x+Math.min(12,b.width/3),y=b.y+Math.min(8,b.height/3);
+      const heading=card().locator('h1');
+      await p.mouse.move(x,y);await p.mouse.down();
+      for(let i=1;i<=4;i++)await p.mouse.move(x,y+i*6);
+      // The reorder is asked for while the pointer moves; read its answer
+      // before the release, whose click climbs the selection to the card
+      // (and so hides the note, as any new selection does).
+      await note().waitFor({state:'visible'});
+      assert.match(await note().textContent(),readOnlyWhy,label+': the row\'s reason is shown beside the selection');
+      assert.equal(await heading.evaluate(n=>n.style.order),'',label+': its order is put back at once');
+      await p.mouse.up();
+      await p.waitForTimeout(1500);
+      assert.equal(await heading.evaluate(n=>n.style.order),'',label+': and stays');
+      await settledRefusal(label,history,before);
+      cases.push('read-only workspace: a reorder is refused with the row\'s reason and its order is put back');
+    }
   }
 
   // 14. (d) A transform on `body` moves and scales the overlay's containing

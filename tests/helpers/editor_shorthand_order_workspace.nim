@@ -21,6 +21,14 @@
 ## in the foundation source before the page starts (the canvas resize GUI's
 ## percentage gap, written in the long-tail rule the writer writes `gap` to).
 ##
+## `window.__isonimShorthandReadOnly` set to `1` makes the workspace read-only
+## for source changes (the canvas resize GUI's read-only cases); unset, the
+## workspace is writable as before. `window.__isonimShorthandSetWriteSource`
+## (defined by this script) changes that while the page runs.
+## `window.__isonimShorthandVectorSymbols` set gives the workspace the editor
+## example's source-backed Compass symbol (the vector refusal GUI); unset,
+## the workspace has no vector symbols, as before.
+##
 ## Further properties of the card rule are mapped when
 ## `window.__isonimShorthandMapped` names them (comma-separated): the canvas
 ## resize handle's cases (`tests/test_editor_canvas_resize_gui.mjs`) map
@@ -41,6 +49,7 @@ import examples/wanderlust/stories as wanderlust
 import isonim/editor
 import isonim/editor/browser
 import isonim/editor/demo_workspace
+import isonim/core/signals
 
 const MappedSides = ["padding-top", "padding-right", "padding-bottom",
   "padding-left", "margin-top", "margin-right", "margin-bottom", "margin-left",
@@ -82,7 +91,10 @@ proc main() =
   let groups = wanderlust.buildWanderlustStoryboard()
   let vectorSource = new(string)
   let foundationSource = new(string)
-  vectorSource[] = "<svg/>"
+  vectorSource[] =
+    if pageString("__isonimShorthandVectorSymbols").len > 0:
+      "<svg xmlns=\"http://www.w3.org/2000/svg\" viewBox=\"0 0 24 24\"><path d=\"M12 2l4 14-4-2-4 2 4-14z\" /></svg>"
+    else: "<svg/>"
   let rule = startingRule()
   foundationSource[] =
     if rule.len > 0:
@@ -154,6 +166,17 @@ proc main() =
     flowSteps = wanderlust.wanderlustFlowSteps(groups),
     foundationTokens = demoFoundationTokens(),
     designSystemSchema = schema,
+    # `window.__isonimShorthandVectorSymbols` set: the editor example's
+    # Compass symbol, source-backed by the example's vector writer, opened
+    # first in the vector view (the vector refusal GUI). Unset: no symbols,
+    # as before.
+    vectorSymbols = (if pageString("__isonimShorthandVectorSymbols").len > 0:
+      @[VectorSymbol(name: "Compass", category: "Icons",
+        svgContent: "<path d=\"M12 2l4 14-4-2-4 2 4-14z\" />",
+        tags: @["travel", "navigation"], width: 24, height: 24)]
+      else: @[]),
+    initialVectorSymbol = (if pageString("__isonimShorthandVectorSymbols").len > 0:
+      some(0) else: none(int)),
     initialInspectorElement = some(demoInspectorElement()),
     responsiveBreakpoints = demoResponsiveBreakpoints(foundationSource[]),
     previewHook = proc(story: StoryRef; platform: Platform): ProjectPreview =
@@ -181,8 +204,16 @@ proc main() =
             "<head><link rel=\"stylesheet\" href=\"" & link & "\">"),
     id = "wanderlust-shorthand-order",
     permissions = EditorWorkspacePermissions(readSource: true,
-      writeSource: true),
+      writeSource: pageString("__isonimShorthandReadOnly") != "1"),
     editAdapter = adapter)
-  discard mountEditor(workspace)
+  let vm = mountEditor(workspace)
+  # `window.__isonimShorthandSetWriteSource(on)`: grant or withdraw source
+  # writes while the page runs (the vector canvas's case of a refusal after
+  # accepted edits). Unused, it changes nothing.
+  let setWriteSource = proc(on: bool) =
+    var permissions = vm.workspacePermissions.val
+    permissions.writeSource = on
+    vm.workspacePermissions.val = permissions
+  {.emit: ["window.__isonimShorthandSetWriteSource = function (on) { ", setWriteSource, "(!!on); };"].}
 
 main()

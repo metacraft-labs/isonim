@@ -7091,9 +7091,26 @@ func propertyOrDefault(element: ElementRef; property, fallback: string): Propert
     sourceLine: element.sourceLine, schemaKey: element.schemaKey & "." & property,
     directStyleAllowed: true)
 
+const ReadOnlySourceRefusal = "This workspace is read-only for source changes."
+  ## The reason a row's commit gives in a workspace read-only for source
+  ## changes (`property_commit.commitInspectorValue`); a canvas gesture gives
+  ## the same one.
+
 proc stageDirectCanvasPlan(editor: EditorVM; operation: DirectCanvasOperation;
     beforeElement, afterElement: ElementRef; prop: PropertyInfo;
     plan: SourceEditPlan): DirectCanvasOperationResult =
+  # The questions a row's commit asks at the act (`sourcePlanCommitRefusal`:
+  # the schema admission, the writer's own statement, a rule another
+  # declaration overrides for the element), asked of the plan the gesture
+  # stages, before anything is staged.
+  let refusal = editor.sourcePlanCommitRefusal(plan)
+  if refusal.len > 0:
+    result = DirectCanvasOperationResult(ok: false, operation: operation,
+      diagnostics: @[PropertyEditDiagnostic(kind: pedSchemaViolation,
+        message: refusal & " Nothing was changed.", file: plan.file,
+        line: plan.line, property: plan.property)])
+    editor.inspector.editDiagnostics.val = result.diagnostics
+    return
   let record = EditRecord(
     file: plan.file,
     line: plan.line,
@@ -7216,6 +7233,23 @@ proc stageDirectCanvasOperation(editor: EditorVM;
     op.property = op.command.directCanvasPropertyFor()
   if op.property.len == 0:
     op.property = "style"
+
+  # A gesture or command that stages a source edit is refused at the act in a
+  # workspace that is read-only for source changes, as a row's commit is
+  # (`property_commit.commitInspectorValue`), with the row's reason: staging
+  # an edit that can never be written would put it in the preview, the
+  # history and the journal first (editor spec "Saving"). Commands that stage
+  # nothing themselves (Open source, Duplicate, Ask AI, Copy styles, ...)
+  # are not.
+  let stages = op.kind != dcokContextCommand or
+    op.command in {dcccPasteStyles, dcccReset, dcccDetach, dcccPromote, dcccWrap}
+  if stages and not editor.workspacePermissions.val.writeSource:
+    result = DirectCanvasOperationResult(ok: false, operation: op,
+      diagnostics: @[PropertyEditDiagnostic(kind: pedSchemaViolation,
+        message: ReadOnlySourceRefusal, file: beforeElement.sourceFile,
+        line: beforeElement.sourceLine, property: op.property)])
+    editor.inspector.editDiagnostics.val = result.diagnostics
+    return
 
   case op.kind
   of dcokResize, dcokSpacing, dcokReorder:
@@ -14515,8 +14549,21 @@ func diagnoseUnsupportedVectorPathEditing*(doc: VectorDocument): seq[VectorDiagn
         objectId: obj.id,
         schemaKey: obj.source.schemaKey)
 
+func vectorReadOnlyRefusal(operation: VectorOperationKind): VectorOperationResult =
+  ## A vector edit in a workspace read-only for source changes: refused at the
+  ## act with the reason a row's commit gives, before the document, its
+  ## history or the journal move (editor spec "Saving").
+  VectorOperationResult(ok: false, operation: operation,
+    diagnostics: @[VectorDiagnostic(kind: vdkUnsupportedOperation,
+      message: ReadOnlySourceRefusal)])
+
 proc commitVectorDocument(editor: EditorVM; operation: VectorOperationKind;
     beforeDoc, afterDoc: VectorDocument): VectorOperationResult =
+  if not editor.workspacePermissions.val.writeSource:
+    result = vectorReadOnlyRefusal(operation)
+    result.document = beforeDoc
+    editor.vectorEditor.diagnostics.val = result.diagnostics
+    return
   let unsupportedSource =
     beforeDoc.sourceSvgForDiagnostics & "\n" & afterDoc.sourceSvgForDiagnostics
   let unsupported = unsupportedSource.diagnoseUnsupportedVectorSvgFeatures(
@@ -14551,6 +14598,11 @@ proc commitVectorSourceSnapshot*(editor: EditorVM; operation: VectorOperationKin
   ## Bridge a mature browser vector adapter export back into the headless
   ## source-edit journal. The browser owns interaction geometry; the ViewModel
   ## owns the persisted SVG snapshot and M27 save transaction.
+  if not editor.workspacePermissions.val.writeSource:
+    result = vectorReadOnlyRefusal(operation)
+    result.document = editor.vectorEditor.document.val
+    editor.vectorEditor.diagnostics.val = result.diagnostics
+    return
   let normalized = exportedSvg.optimizeVectorSvg
   if normalized.len == 0 or "<svg" notin normalized:
     return VectorOperationResult(ok: false, operation: operation,

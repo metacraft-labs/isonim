@@ -114,6 +114,8 @@ proc renderVectorEditor*[R, E](r: R; vm: EditorVM): E =
   ## usage-context panel).
   let tools = vectorTools()
   var fabricHost: E
+  var refusalNote: E
+  let vectorRefusal = createSignal("")
 
   let container = ui(r):
     tdiv(class = "editor-preview",
@@ -383,6 +385,14 @@ proc renderVectorEditor*[R, E](r: R; vm: EditorVM): E =
                 border = "1px solid " & border,
                 border_radius = "4px",
                 overflow = "hidden")
+          # A refused canvas edit's reason (a workspace read-only for source
+          # changes), under the canvas until the next accepted edit.
+          tdiv(ref = refusalNote, `role` = "alert",
+                `data-vector-refusal` = "true",
+                padding = "6px 10px", border_radius = "4px",
+                background_color = bgSurface,
+                border = "1px solid " & border, color = textPrimary,
+                font_size = "12px", display = "none")
 
         # Rulers (top + left)
         tdiv(position = "absolute", top = "0", left = "0", right = "0",
@@ -441,7 +451,19 @@ proc renderVectorEditor*[R, E](r: R; vm: EditorVM): E =
     r.addEventListener(fabricHost, "isonim-vector-source-change", proc() =
       let exported = currentFabricVectorSvg(fabricHost)
       if exported.len > 0:
-        discard vm.commitBrowserVectorSvg(exported))
+        let outcome = vm.commitBrowserVectorSvg(exported)
+        if outcome.ok:
+          acceptFabricVectorEdits(fabricHost)
+          vectorRefusal.val = ""
+        else:
+          # Refused at the act (a workspace read-only for source changes):
+          # the change is taken off the canvas, back to the canvas the
+          # editor last accepted -- not through the active tool, which would
+          # draw again and be refused again -- and the reason is shown.
+          restoreFabricVectorEdits(fabricHost)
+          vectorRefusal.val =
+            if outcome.diagnostics.len > 0: outcome.diagnostics[0].message
+            else: "This vector edit was refused.")
     createRenderEffect proc() =
       var symbolName = "Vector Symbol"
       var svgContent = ""
@@ -452,6 +474,13 @@ proc renderVectorEditor*[R, E](r: R; vm: EditorVM): E =
         svgContent = symbols[selected].svgContent
       mountFabricVectorEditor(fabricHost, symbolName, svgContent,
         vm.vectorEditor.activeTool.val.toolSlug)
+    # The refusal's reason, beside the canvas, until the next accepted edit.
+    createRenderEffect proc() =
+      let reason = vectorRefusal.val
+      r.setTextContent(refusalNote, reason)
+      r.setAttribute(refusalNote, "data-vector-refusal-visible",
+        if reason.len > 0: "true" else: "false")
+      r.setStyle(refusalNote, "display", if reason.len > 0: "block" else: "none")
 
   # Right: Properties panel
   let propsPanel = ui(r):

@@ -2311,3 +2311,94 @@ suite "an edit of a rule another declaration decides for the element":
       check commitInspectorValue(vm, "padding", "", sskLocalInstance).ok
       check vm.inspector.pendingSourceEdits.val.len == 1
       dispose()
+
+suite "a canvas gesture is refused at the act where a row's commit would be":
+  # isonim-pm issue 2026-11-18-a-canvas-drag-in-a-read-only-workspace-is-
+  # staged-instead-of-refused-at-the-act; editor spec "Saving": a refusal the
+  # editor can know at the act is made at the act, so a refused change never
+  # reaches the preview, the history or the journal. The canvas stages
+  # through `applyDirectCanvasOperation`; the frame puts a refused release
+  # back and shows this reason (the canvas resize GUI's read-only cases).
+  const readOnly = "This workspace is read-only for source changes."
+
+  proc staged(vm: EditorVM): (int, int) =
+    (vm.inspector.undoStack.val.len, vm.inspector.pendingSourceEdits.val.len)
+
+  test "a read-only workspace refuses every staging gesture with the row's reason":
+    createRoot proc(dispose: proc()) =
+      let foundation = new(string)
+      foundation[] = DemoFoundationInitialSource
+      let vm = boxVm(foundation, writable = false)
+      # The row refuses with this reason too.
+      let row = commitInspectorValue(vm, "padding", "20px", sskSharedClass)
+      check not row.ok
+      check row.message == readOnly
+      for operation in [
+          DirectCanvasOperation(kind: dcokResize, property: "width", value: "280px"),
+          DirectCanvasOperation(kind: dcokResize, property: "height", value: "80px"),
+          DirectCanvasOperation(kind: dcokSpacing, property: "padding", value: "20px"),
+          DirectCanvasOperation(kind: dcokSpacing, property: "gap", value: "12px"),
+          DirectCanvasOperation(kind: dcokReorder, property: "order", value: "1"),
+          DirectCanvasOperation(kind: dcokInlineText, property: "text", value: "Hello"),
+          DirectCanvasOperation(kind: dcokContextCommand, command: dcccReset,
+            property: "padding"),
+          DirectCanvasOperation(kind: dcokContextCommand, command: dcccPasteStyles,
+            property: "padding", value: "20px"),
+          DirectCanvasOperation(kind: dcokContextCommand, command: dcccDetach,
+            property: "padding", value: "18px"),
+          DirectCanvasOperation(kind: dcokContextCommand, command: dcccPromote,
+            property: "padding", value: "18px"),
+          DirectCanvasOperation(kind: dcokContextCommand, command: dcccWrap,
+            property: "padding", value: "18px")]:
+        let outcome = vm.applyDirectCanvasOperation(operation)
+        check not outcome.ok
+        check outcome.diagnostics.len == 1 and
+          outcome.diagnostics[0].message == readOnly
+        check vm.staged() == (0, 0)
+      check foundation[] == DemoFoundationInitialSource
+      # A command that stages nothing is not a source change.
+      check vm.applyDirectCanvasOperation(DirectCanvasOperation(
+        kind: dcokContextCommand, command: dcccCopyStyles)).ok
+      check vm.staged() == (0, 0)
+      # Commands that run another editor command are that command's to
+      # refuse (here the workspace grants none of them); they stage nothing.
+      for command in [dcccCreateVariant, dcccDuplicate, dcccDelete]:
+        let ran = vm.applyDirectCanvasOperation(DirectCanvasOperation(
+          kind: dcokContextCommand, command: command))
+        check not ran.ok
+        check ran.commandState.diagnostic.len > 0
+        check vm.staged() == (0, 0)
+      dispose()
+
+  test "a canvas gesture asks the row's other act-time questions of the plan it stages":
+    createRoot proc(dispose: proc()) =
+      # The card's padding is decided by `#wl-card` (as the preview's cascade
+      # measured it): a row commit of padding at the card rule is refused, and
+      # so is the spacing handle's, with the same reason, before staging.
+      var element = boxElement()
+      element.matchedRules = @[".destination-card", "#wl-card"]
+      for prop in element.properties.mitems:
+        if prop.name == "padding": prop.cascadeDecider = "#wl-card"
+      let foundation = new(string)
+      foundation[] = DemoFoundationInitialSource
+      let vm = boxVm(foundation, element = element)
+      let row = commitInspectorValue(vm, "padding", "20px", sskSharedClass)
+      check not row.ok
+      let outcome = vm.applyDirectCanvasOperation(DirectCanvasOperation(
+        kind: dcokSpacing, property: "padding", value: "20px"))
+      check not outcome.ok
+      check outcome.diagnostics.len == 1 and
+        "`#wl-card` decides padding for this element" in outcome.diagnostics[0].message
+      check vm.staged() == (0, 0)
+      check foundation[] == DemoFoundationInitialSource
+      dispose()
+
+  test "a writable workspace stages the same gesture":
+    createRoot proc(dispose: proc()) =
+      let foundation = new(string)
+      foundation[] = DemoFoundationInitialSource
+      let vm = boxVm(foundation)
+      check vm.applyDirectCanvasOperation(DirectCanvasOperation(
+        kind: dcokSpacing, property: "padding", value: "20px")).ok
+      check vm.staged() == (1, 1)
+      dispose()
