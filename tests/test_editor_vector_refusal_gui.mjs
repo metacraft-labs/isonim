@@ -19,7 +19,9 @@
  * pointer drag: the Paper.js editable path, its handles and its canvas shape
  * go back to the accepted ones. (5) Writable, writes withdrawn, two refused
  * nudges, writes granted, one accepted nudge: one nudge from the accepted
- * path, one editable path.
+ * path, one editable path. (6) The path's undo/redo stacks: an accepted
+ * nudge and undo, a refused nudge, then an accepted redo restores the
+ * nudged node.
  *
  * No mocks: the editor example's real vector view, fabric adapter and
  * writer (`tests/helpers/editor_shorthand_order_workspace.nim`), served by a
@@ -62,10 +64,26 @@ try {
   const events=()=>p.evaluate(()=>window.__vectorEvents);
   const pending=()=>p.evaluate(()=>window.__isonimEditor.pendingSourceEdits());
   const note=()=>p.locator('[data-vector-refusal]');
+  const noteShown=()=>note().isVisible();
+  // The vector symbol file's written content (the demo workspace's write
+  // receipt; the test host publishes its starting content at load): an edit
+  // is written once this changes, not merely once nothing is pending --
+  // which also holds before the edit's deferred commit has staged anything.
+  const vectorFile='examples/wanderlust/design-system/vector-symbols.svg';
+  const sources=()=>p.evaluate(f=>{const s=window.__isonimDemoSources;return s&&typeof s[f]==='string'?s[f]:null;},vectorFile);
   async function assertPoll(read,expected,what,ms=20000){
     const deadline=Date.now()+ms;let last;
     while(Date.now()<deadline){last=await read();try{assert.deepEqual(last,expected);return;}catch{}await p.waitForTimeout(100);}
     assert.deepEqual(last,expected,what);
+  }
+  // An accepted edit made after `before` was read: its source is written,
+  // then nothing is left pending and the canvas marks the source saved.
+  async function written(before,what){
+    assert.equal(typeof before,'string',what+': the vector file held content before the edit');
+    await assertPoll(async()=>(await sources())!==before,true,what+': the source is written');
+    await assertPoll(pending,0,what+': nothing left pending');
+    await assertPoll(()=>host().getAttribute('data-vector-source-pending'),'0',what+': the canvas marks the source saved');
+    return sources();
   }
   async function openVector(ro){
     readOnly=ro?'1':'';
@@ -75,6 +93,7 @@ try {
     // canvas is taken once they are.
     await assertPoll(async()=>(await host().getAttribute('data-vector-accepted-count'))===(await host().getAttribute('data-vector-object-count'))&&(await count())>0,true,'the symbol is loaded');
     await p.waitForTimeout(500);
+    assert.match(await sources()||'',/<svg/,'the vector file\'s starting content is published');
     await p.evaluate(()=>{window.__vectorEvents=0;document.addEventListener('isonim-vector-source-change',()=>{window.__vectorEvents++;},true);});
   }
   const draw=(tool)=>p.getByRole('button',{name:'Select '+tool+' vector tool',exact:true}).click();
@@ -151,15 +170,54 @@ try {
     for(let i=0;i<2;i++){await action('path-nudge-right');await note().waitFor({state:'visible'});await p.waitForTimeout(500);}
     assert.deepEqual(await pathState(),accepted,'after two refused nudges the path is the accepted one');
     await p.evaluate(()=>window.__isonimShorthandSetWriteSource(true));
+    const sourcesBefore=await sources();
     await action('path-nudge-right');
     await assertPoll(async()=>(await pathState()).nodes[0],[accepted.nodes[0][0]+4,accepted.nodes[0][1]],'the accepted nudge moves node 0 once from the accepted position');
+    // The node moves at the click; the commit that writes the nudge and
+    // clears the earlier refusal's note runs a moment later (review T1).
+    await written(sourcesBefore,'the accepted nudge');
+    await assertPoll(noteShown,false,'no refusal shown after the accepted nudge');
     const after=await pathState();
     assert.equal(after.count,accepted.count,'no duplicate editable path');
     assert.equal(after.editablePaths,1,'one editable path');
     assert.equal(after.editableOnCanvas,true,'the editable-path reference is on the canvas');
-    await assertPoll(pending,0,'the nudge is written');
-    assert.equal(await note().isVisible(),false,'no refusal shown after the accepted nudge');
     cases.push('writable, writes withdrawn then granted: two refused nudges leave no trace, and the next accepted nudge writes one nudge from the accepted path');
+  }
+
+  {
+    // 6. The editable path's undo and redo stacks are part of what a refusal
+    // puts back (review A1 of ro-canvas round 4): writable, an accepted
+    // nudge, an accepted path-undo (redo depth 1); writes withdrawn, a
+    // refused nudge -- the undo and redo depths are as before it, the path is
+    // the accepted one; writes granted, an accepted path-redo puts node 0
+    // back at the nudged position.
+    const depths=async()=>[Number(await host().getAttribute('data-vector-path-undo-depth')||0),Number(await host().getAttribute('data-vector-path-redo-depth')||0)];
+    await openVector(false);
+    const start=await pathState();
+    const startSources=await sources();
+    await action('path-nudge-right');
+    await assertPoll(async()=>(await pathState()).nodes[0],[start.nodes[0][0]+4,start.nodes[0][1]],'the accepted nudge');
+    const nudgedSources=await written(startSources,'the accepted nudge');
+    const nudged=(await pathState()).nodes[0];
+    await action('path-undo');
+    await assertPoll(async()=>(await pathState()).nodes[0],start.nodes[0],'the accepted undo');
+    const undoneSources=await written(nudgedSources,'the accepted undo');
+    const beforeRefusal=await depths();
+    assert.equal(beforeRefusal[1],1,'one redo after the undo');
+    const acceptedPath=await pathState();
+    await p.evaluate(()=>window.__isonimShorthandSetWriteSource(false));
+    await action('path-nudge-right');
+    await note().waitFor({state:'visible'});
+    await p.waitForTimeout(500);
+    assert.deepEqual(await depths(),beforeRefusal,'the refused nudge leaves the undo and redo depths as they were');
+    assert.deepEqual(await pathState(),acceptedPath,'and the path as accepted');
+    assert.equal(await sources(),undoneSources,'and nothing written');
+    await p.evaluate(()=>window.__isonimShorthandSetWriteSource(true));
+    await action('path-redo');
+    await assertPoll(async()=>(await pathState()).nodes[0],nudged,'the accepted redo puts node 0 back at the nudged position');
+    assert.equal(await written(undoneSources,'the accepted redo'),nudgedSources,'the redo writes the nudged source again');
+    await assertPoll(noteShown,false,'no refusal shown after the accepted redo');
+    cases.push('a refused nudge keeps the editable path\'s undo and redo stacks: the next accepted redo restores the nudged node');
   }
 
   assert.deepEqual(errors,[]);

@@ -27,7 +27,8 @@
 ## (defined by this script) changes that while the page runs.
 ## `window.__isonimShorthandVectorSymbols` set gives the workspace the editor
 ## example's source-backed Compass symbol (the vector refusal GUI); unset,
-## the workspace has no vector symbols, as before.
+## the workspace has no vector symbols, as before. With it, the symbol file's
+## starting content is in `window.__isonimDemoSources` from the start.
 ##
 ## Further properties of the card rule are mapped when
 ## `window.__isonimShorthandMapped` names them (comma-separated): the canvas
@@ -129,6 +130,14 @@ proc main() =
     kind: skComponent, index: 0)
   var schema = demoDesignSystemSchema()
   var adapter = demoVectorEditAdapter(vectorSource, foundationSource)
+  # The vector file's starting content is published (in
+  # `window.__isonimDemoSources`) before any edit reads it, so a write receipt
+  # compares against what the file held: the adapter otherwise publishes a
+  # file on its first read, which would look like a write.
+  if pageString("__isonimShorthandVectorSymbols").len > 0:
+    for entry in adapter.schema:
+      if entry.key == "symbols.compass.svg":
+        exposeDemoSource(entry.file, vectorSource[])
   if orderless():
     adapter.ruleDeclarations = nil
     adapter.editRule = nil
