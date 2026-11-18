@@ -71,8 +71,10 @@ proc cancel*(s: StreamSubscription) =
   ## `onCancel` hooks run once. Ignored after the stream has ended.
   if s.isNil or not s.isActive: return
   s.cancelled = true
-  let hooks = s.cancelHooks
-  s.cancelHooks.setLen(0)
+  # Swap rather than copy-then-clear: under --mm:refc a `let` copy of a seq
+  # may share the buffer that setLen(0) then empties.
+  var hooks: seq[proc() {.closure.}]
+  swap(hooks, s.cancelHooks)
   for hook in hooks: hook()
 
 proc newStreamEmitter*[T](sink: StreamSink[T]): StreamEmitter[T] =

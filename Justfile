@@ -285,6 +285,7 @@ test-c:
     # Injected-service primitives: streamed responses, simulated network
     # conditions and readiness marks.
     nim c -r tests/test_service_streams.nim
+    nim c -r --mm:refc --out:build/tests/test_service_streams_refc tests/test_service_streams.nim
     nim c -r tests/test_network_profile.nim
     nim c -r tests/test_readiness_marks.nim
     # NH-M0 & NH-M5 / HX-S-0: Native HCR shim tests (inactive path & active linked path)
