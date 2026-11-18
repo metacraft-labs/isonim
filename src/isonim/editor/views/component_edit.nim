@@ -2641,7 +2641,7 @@ __ISONIM_SCENE_GRAPH_WALK__
       if (pending) {
         Object.keys(pending).forEach(function (key) {
           const d = pending[key];
-          window.__isonimSetDeclaration(d.id, d.path, d.property, d.value, d.scope, d.condition || '', d.rule || '');
+          window.__isonimSetDeclaration(d.id, d.path, d.property, d.value, d.scope, d.condition || '', d.rule || '', d.removedFrom || '');
         });
       }
     } catch (e) {}
@@ -2656,8 +2656,11 @@ __ISONIM_SCENE_GRAPH_WALK__
       const shown = window.__isonimSetDeclaration(String(d.id || ''), String(d.path || ''),
                                     String(d.property || ''),
                                     String(d.value == null ? '' : d.value), String(d.scope || 'sskLocalInstance'),
-                                    String(d.condition || ''), String(d.rule || '')) === true;
+                                    String(d.condition || ''), String(d.rule || ''),
+                                    String(d.removedFrom || '')) === true;
       d.applied = d.applied === true || shown;
+      // Where a removal was made, so the editor can record it (`applyPreviewStyle`).
+      if (shown && !d.removedFrom) d.removedFrom = window.__isonimLastRemoval() || '';
     } catch (e) {}
   });
 
@@ -3412,6 +3415,59 @@ proc editablePreviewDocument*(documentHtml: string;
     try { return el.matches(rule.selectorText) ? rule : null; } catch (e) { return null; }
   }
 
+  // A removal, recorded so a frame rebuilt from a document that predates it
+  // removes the same declaration again (`applyPreviewStyle` keeps the record):
+  // the rule it was removed from, named and counted among the rules carrying
+  // that name in document order, or 'inline' for the element's own style.
+  // Replayed only there: re-resolving the deciding rule after the removal
+  // would find a lower rule and remove a declaration nothing removed.
+  function styleRulesNamed(name) {
+    var found = [];
+    function visit(rules) {
+      for (var i = 0; i < rules.length; i++) {
+        var rule = rules[i];
+        if (rule.type === CSSRule.STYLE_RULE && ruleIdentity(rule) === name) found.push(rule);
+        if (rule.cssRules && rule.cssRules.length) visit(rule.cssRules);
+      }
+    }
+    var sheets = [].slice.call(document.styleSheets).concat(document.adoptedStyleSheets || []);
+    for (var s = 0; s < sheets.length; s++) {
+      if (isEditorSheet(sheets[s])) continue;
+      var rules = null;
+      try { rules = sheets[s].cssRules; } catch (e) { continue; }
+      visit(rules);
+    }
+    return found;
+  }
+  function removalPlace(el, style, rule) {
+    if (style === el.style) return 'inline';
+    if (!rule) return '';
+    var name = ruleIdentity(rule);
+    var same = styleRulesNamed(name);
+    var index = same.indexOf(rule);
+    return index < 0 ? '' : JSON.stringify({ name: name, index: index, count: same.length });
+  }
+  function removeAtPlace(id, path, property, place) {
+    var el = elementFor(id, path);
+    if (!el) return false;
+    if (place === 'inline') { el.style.removeProperty(property); return true; }
+    var at = null;
+    try { at = JSON.parse(place); } catch (e) { return false; }
+    var same = styleRulesNamed(String(at && at.name));
+    // The document has the rules the removal saw, or it is not that document.
+    // Assumed, not checked: a document with the same number of rules by
+    // that name has them in the same order. The documents a record is
+    // replayed into are the preview's own document before and after the
+    // edits this session made, none of which reorders rules; a project
+    // rebuild that did would be the write's reload, which forgets the
+    // records (`previewSourceCaughtUp`).
+    if (same.length !== at.count || !same[at.index]) return false;
+    same[at.index].style.removeProperty(property);
+    return true;
+  }
+  var lastRemoval = '';
+  window.__isonimLastRemoval = function () { return lastRemoval; };
+
   // A normal inline declaration cannot win against an active important rule.
   // Local edits must refuse that owner instead of mutating its shared rule.
   // This scans important precedence only, independently of `resolveRule`.
@@ -3552,7 +3608,7 @@ proc editablePreviewDocument*(documentHtml: string;
       var names = [property].concat(SHORTHANDS[property] || []);
       return names.some(function (name) { return style.getPropertyValue(name) !== ''; });
     }
-    var style = null, verify = false;
+    var style = null, verify = false, owner = null, tokenTarget = false;
     // What the element renders for the edited property (its longhands for a
     // shorthand), read to verify an edit that a sheet the resolver could not
     // read might override.
@@ -3574,10 +3630,12 @@ proc editablePreviewDocument*(documentHtml: string;
         var written = namedRule(el, String(rule));
         if (!written) return false;
         style = written.style;
+        owner = written;
       } else {
         var resolved = resolveRule(el, property, !local);
         if (!resolved.sound) return false;
         style = resolved.rule ? resolved.rule.style : el.style;
+        owner = resolved.rule || null;
         // A sheet that could not be read may decide the property: shown only
         // if the element is then seen to render it (`verify`).
         if (resolved.unread && resolved.rule) verify = true;
@@ -3592,6 +3650,7 @@ proc editablePreviewDocument*(documentHtml: string;
       var token = /^var\(\s*(--[\w-]+)(?:\s*,[^)]*)?\s*\)$/.exec(declared.trim());
       if (token) {
         property = token[1];
+        tokenTarget = true;
         var tokenRule = resolveRule(document.documentElement, property, false);
         if (!tokenRule.sound) return false;
         style = tokenRule.rule ? tokenRule.rule.style : document.documentElement.style;
@@ -3634,10 +3693,18 @@ proc editablePreviewDocument*(documentHtml: string;
         return false;
       }
     }
+    // A token's removal is not recorded by place (its property is the
+    // variable, not the one the record names): not replayed.
+    if (value === '' && !tokenTarget) lastRemoval = removalPlace(el, style, owner);
     return true;
   }
-  window.__isonimSetDeclaration = function (id, path, property, value, scope, condition, rule) {
-    var shown = setDeclaration(id, path, property, value, scope, condition, rule) === true;
+  // ``removedFrom``: a recorded removal (`removalPlace`), replayed where it
+  // was made and nowhere else.
+  window.__isonimSetDeclaration = function (id, path, property, value, scope, condition, rule, removedFrom) {
+    lastRemoval = '';
+    var shown = (value === '' && !condition && removedFrom)
+      ? removeAtPlace(id, path, property, String(removedFrom))
+      : setDeclaration(id, path, property, value, scope, condition, rule) === true;
     // The editor's own frame script listens (a canvas drag's release keeps
     // its preview while the edit it committed could not be shown).
     try {

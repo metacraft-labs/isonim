@@ -1299,3 +1299,56 @@ suite "A write tells the preview its source has caught up":
       check vm.caughtUp == 1
       check seen[] == @[0, 1]
       dispose()
+
+suite "A written removal keeps its preview record":
+  ## isonim-pm issue 2026-11-18-after-a-reset-the-preview-shows-the-removed-
+  ## declaration-again-on-view-then-edit; editor spec "Visual box model" and
+  ## "Saving" (Reset is a commit like any other). A Reset (an empty commit)
+  ## and an undo that takes a declaration back out show the removal in the
+  ## preview, so their write requests no reload and the preview's document
+  ## still predates it: the preview must keep the removal's record (now
+  ## recorded as the removal from the rule it was made in, in the browser;
+  ## `tests/test_editor_reset_rebuild_gui.mjs`). These cases pin the VM half
+  ## of that design: such a write neither reloads nor tells the preview to
+  ## forget (`previewSourceCaughtUp`), exactly like a commit of a value.
+
+  test "a written Reset requests no reload and keeps the records":
+    createRoot proc(dispose: proc()) =
+      let foundation = new(string)
+      foundation[] = DemoFoundationInitialSource
+      let vm = wanderlustVm(foundation)
+      let reloads = vm.livePreviewReloadGeneration.val
+      let reset = vm.commitInspectorValue("overflow", "", sskSharedClass)
+      check reset.ok
+      check reset.message == ""
+      check vm.previewShowsPendingEdits.val
+      check not vm.previewMissesPendingEdits.val
+      vm.save()
+      check not foundation[].contains(" overflow: visible;")
+      check vm.livePreviewReloadGeneration.val == reloads
+      check vm.previewSourceCaughtUp.val == 0
+      dispose()
+
+  test "a written undo of an added declaration requests no reload and keeps the records":
+    createRoot proc(dispose: proc()) =
+      let foundation = new(string)
+      foundation[] = DemoFoundationInitialSource
+      let vm = wanderlustVm(foundation)
+      check vm.commitInspectorValue("overflow", "", sskSharedClass).ok
+      vm.save()
+      check vm.commitInspectorValue("overflow", "hidden", sskSharedClass).ok
+      vm.save()
+      check foundation[].contains(" overflow: hidden;")
+      let reloads = vm.livePreviewReloadGeneration.val
+      check vm.runEditorCommand(eckUndo).status == ecsSucceeded
+      # The view's effect on `previewValueRequest` shows the removal (and
+      # marks the preview current); a headless VM has no view, so the
+      # request is checked instead.
+      check vm.inspector.previewValueRequest.val.property == "overflow"
+      check vm.inspector.previewValueRequest.val.value == ""
+      vm.previewShowsPendingEdits.val = true
+      vm.save()
+      check not foundation[].contains(" overflow: hidden;")
+      check vm.livePreviewReloadGeneration.val == reloads
+      check vm.previewSourceCaughtUp.val == 0
+      dispose()

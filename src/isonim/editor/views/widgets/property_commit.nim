@@ -348,15 +348,35 @@ proc applyPreviewStyle*(elementId, domPath, property, value: string;
       const key = id + '|' + property + (condition ? '|' + condition : '');
       const record = { id: id, path: path, property: property, value: value,
                        scope: scope, condition: condition, rule: rule };
-      // An emptied override is recorded too: its removal has to be re-applied
-      // to a frame rebuilt from a stylesheet that still declares it.
-      if (value === '' && !condition) delete store[key];
-      else store[key] = record;
-      // The frame's listener says whether it could show it (`applied`).
+      // The frame's listener says whether it could show it (`applied`) and,
+      // for a removal, where it removed the declaration (`removedFrom`).
       const detail = Object.assign({}, record);
       window.dispatchEvent(new CustomEvent('isonim-preview-set-declaration', {
         detail: detail
       }));
+      // A removal is recorded too, as the removal of that declaration from
+      // the rule it was removed from: a frame rebuilt from a document that
+      // still declares it (a Reset's write requests no reload, and the
+      // preview's document predates it) has to lose it again. Re-resolving
+      // the rule instead would find a lower rule and remove a declaration
+      // nothing removed, so a removal whose place is not known is not kept.
+      // An emptied override is recorded as before: its rule is the
+      // override's own.
+      //
+      // The records replay in the order the frame applied them: a record
+      // made again moves to the end. Updated in place, a key keeps its first
+      // position, and a shorthand recorded again (its removal, or a value)
+      // replayed BEFORE the sides recorded since its first commit: `padding:
+      // 20px` committed (its sides recorded after it as followers), then
+      // Reset, replayed the sides' 20px over the removal on the next
+      // rebuild. In the order applied, a replay does what the frame did --
+      // a shorthand set or removed after its sides resets them in its rule,
+      // a side set after its shorthand stays -- so no record needs to know
+      // which properties another covers.
+      delete store[key];
+      if (value === '' && !condition) {
+        if (detail.removedFrom) store[key] = Object.assign(record, { removedFrom: detail.removedFrom });
+      } else store[key] = record;
       return detail.applied === true;
       })(""", writeCell, ");"].}
     result = applied
