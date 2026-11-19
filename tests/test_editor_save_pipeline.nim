@@ -1650,3 +1650,143 @@ suite "An accepted proposal asks the questions its commit would":
       check vm.inspector.pendingSourceEdits.val.len == 0
       check foundation[] == DemoFoundationInitialSource
       dispose()
+
+suite "A native-inspector composition refuses at the act what it cannot write":
+  ## isonim-pm issue 2026-11-04-a-native-inspector-edit-outside-the-rows-that-
+  ## cannot-be-written-stays-dirty-silently; editor spec "Saving": a refusal
+  ## the editor can know at the act is made at the act, so a refused change
+  ## never reaches the preview, the history or the journal first.
+  ##
+  ## A native-inspector composition writes only through its native worker,
+  ## from the inspector's property fields; it has no workspace edit adapter,
+  ## so nothing can write an edit staged in the journal. Every other path
+  ## that stages one -- canvas gestures and context commands, component
+  ## properties and states, foundation tokens, vector edits -- refuses it at
+  ## the act with the reason, staging nothing and recording no history.
+  ##
+  ## Stand-in, justified: the composition is reached by setting what
+  ## `source_browser.attachSourceProject` sets for it (`hasAsyncSourceProject`
+  ## with no edit adapter). The real attachment needs the browser and the
+  ## native worker's control transport, which a headless suite does not have;
+  ## the GUI half, `tests/test_editor_native_dirty_gui.mjs`, uses the real one.
+  ## Everything else is the production VM.
+  proc nativeEditor(project: MemoryProject): EditorVM =
+    result = newEditor(project)
+    result.workspaceEditAdapter = nil
+    result.hasAsyncSourceProject = true
+    result.sourceAdapterReady.val = true
+
+  const reason = "This project's native source writer changes source only " &
+    "through the inspector's property fields; this edit cannot be written. " &
+    "Nothing was changed."
+
+  template nothingStaged(vm: EditorVM) =
+    check vm.inspector.pendingSourceEdits.val.len == 0
+    check vm.inspector.undoStack.val.len == 0
+    check vm.autoSaveGeneration.val == 0
+    check vm.workspaceEditStage.val != wesDirty
+
+  test "a canvas resize, spacing or inline text edit is refused":
+    createRoot proc(dispose: proc()) =
+      let vm = nativeEditor(MemoryProject())
+      check vm.selectInspectorElement(ElementRef(id: "topbar", tag: "header",
+        sourceKey: "dom.topbar", schemaKey: "dom.topbar",
+        sourceFile: ComponentFile, sourceLine: 1,
+        properties: @[topbarPad("0px")]))
+      let before = vm.inspector.selectedElement.val
+      for result in [vm.applyDirectCanvasSpacing("padding-top", "8px"),
+          vm.applyDirectCanvasResize("width", "80px"),
+          vm.applyDirectCanvasInlineText("Hello")]:
+        check not result.ok
+        check result.diagnostics.len == 1
+        check result.diagnostics[0].message == reason
+      check vm.inspector.selectedElement.val == before
+      vm.nothingStaged()
+      dispose()
+
+  test "a canvas context command that stages is refused; one that stages nothing is not":
+    createRoot proc(dispose: proc()) =
+      let vm = nativeEditor(MemoryProject())
+      check vm.selectInspectorElement(ElementRef(id: "topbar", tag: "header",
+        sourceKey: "dom.topbar", schemaKey: "dom.topbar",
+        sourceFile: ComponentFile, sourceLine: 1,
+        properties: @[topbarPad("4px")]))
+      let reset = vm.applyDirectCanvasOperation(DirectCanvasOperation(
+        kind: dcokContextCommand, command: dcccReset, property: "padding-top"))
+      check not reset.ok
+      check reset.diagnostics[0].message == reason
+      let copied = vm.applyDirectCanvasOperation(DirectCanvasOperation(
+        kind: dcokContextCommand, command: dcccCopyStyles))
+      check copied.ok
+      vm.nothingStaged()
+      dispose()
+
+  test "a component property or state edit is refused":
+    createRoot proc(dispose: proc()) =
+      let vm = nativeEditor(MemoryProject())
+      let tone = vm.tone()
+      let edited = vm.editComponentProperty("StatusBadge", "default", "tone", "success")
+      check edited.status == pesRejected
+      check edited.diagnostics[0].message == reason
+      check vm.tone() == tone
+      let state = vm.editComponentStateControl("StatusBadge", "default", "loading", "true")
+      check state.status == pesRejected
+      check vm.variants.undoStack.val.len == 0
+      vm.nothingStaged()
+      dispose()
+
+  test "a foundation token edit is refused":
+    createRoot proc(dispose: proc()) =
+      let vm = nativeEditor(MemoryProject())
+      let edited = vm.editFoundationToken("space.card", "24px")
+      check edited.status == pesRejected
+      check edited.diagnostics[0].message == reason
+      check vm.token() == "16px"
+      check vm.foundations.undoStack.val.len == 0
+      vm.nothingStaged()
+      dispose()
+
+  test "a vector edit is refused":
+    createRoot proc(dispose: proc()) =
+      let project = MemoryProject()
+      let vm = nativeEditor(project)
+      check vm.selectVectorSymbol(0)
+      let before = vm.vectorEditor.document.val.exportVectorDocumentSvg
+      let edited = vm.setVectorObjectProperty(VectorPropertyEditRequest(
+        objectId: "box", kind: vpkFill, value: "#22C55E"))
+      check not edited.ok
+      check edited.diagnostics[0].message == reason
+      check vm.vectorEditor.document.val.exportVectorDocumentSvg == before
+      check vm.vectorEditor.undoStack.val.len == 0
+      vm.nothingStaged()
+      dispose()
+
+  test "a browser vector snapshot is refused":
+    # The vector canvas's second entry point (`commitBrowserVectorSvg` ->
+    # `commitVectorSourceSnapshot`), from the review of round 1 (FX3).
+    createRoot proc(dispose: proc()) =
+      let vm = nativeEditor(MemoryProject())
+      check vm.selectVectorSymbol(0)
+      let before = vm.vectorEditor.document.val.exportVectorDocumentSvg
+      let edited = vm.commitBrowserVectorSvg(
+        "<svg viewBox=\"0 0 24 24\"><path d=\"M1 1h22v22H1z\" /></svg>")
+      check not edited.ok
+      check edited.diagnostics.len > 0 and edited.diagnostics[0].message == reason
+      check vm.vectorEditor.document.val.exportVectorDocumentSvg == before
+      vm.nothingStaged()
+      dispose()
+
+  test "a catalog-only composition still keeps its preview-only canvas edit":
+    # Not refused: it claims no persistence (spec "Native project source
+    # capabilities"); unchanged by this rule.
+    createRoot proc(dispose: proc()) =
+      let vm = newEditor(MemoryProject())
+      vm.workspaceEditAdapter = nil
+      vm.sourceAdapterReady.val = true
+      check vm.selectInspectorElement(ElementRef(id: "topbar", tag: "header",
+        sourceKey: "dom.topbar", schemaKey: "dom.topbar",
+        sourceFile: ComponentFile, sourceLine: 1,
+        properties: @[topbarPad("0px")]))
+      check vm.applyDirectCanvasSpacing("padding-top", "8px").ok
+      check vm.inspector.pendingSourceEdits.val.len == 1
+      dispose()

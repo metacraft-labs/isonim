@@ -7097,6 +7097,30 @@ func propertyOrDefault(element: ElementRef; property, fallback: string): Propert
     directStyleAllowed: true)
 
 const ReadOnlySourceRefusal = "This workspace is read-only for source changes."
+
+proc stagedWriteRefusal(editor: EditorVM): string =
+  ## Why an edit staged into the source journal (a canvas gesture, a
+  ## component property or state, a foundation token, a vector edit) can
+  ## never be written here, or "".
+  ##
+  ## A native-inspector composition (`hasAsyncSourceProject`) writes through
+  ## its native worker, and only from the inspector's property fields
+  ## (`inspectorSourceCommit`); it has no workspace edit adapter, and every
+  ## write of the journal goes through one (`requireWorkspaceAdapter`). An
+  ## edit staged there was previewed, put in history and left pending, and
+  ## since nothing could write it nothing was scheduled: it stayed dirty with
+  ## no report (isonim-pm issue 2026-11-04-a-native-inspector-edit-outside-
+  ## the-rows-that-cannot-be-written-stays-dirty-silently). Editor spec
+  ## "Saving": a refusal the editor can know at the act is made at the act,
+  ## so it is refused before the preview, the history or the journal move.
+  ##
+  ## A catalog-only composition (no native inspector, no adapter) is not
+  ## refused: it keeps preview-only edits by design and claims no source
+  ## persistence (spec "Native project source capabilities").
+  if editor.hasAsyncSourceProject and editor.workspaceEditAdapter.isNil:
+    return "This project's native source writer changes source only " &
+      "through the inspector's property fields; this edit cannot be " &
+      "written. Nothing was changed."
   ## The reason a row's commit gives in a workspace read-only for source
   ## changes (`property_commit.commitInspectorValue`); a canvas gesture gives
   ## the same one.
@@ -7248,10 +7272,15 @@ proc stageDirectCanvasOperation(editor: EditorVM;
   # are not.
   let stages = op.kind != dcokContextCommand or
     op.command in {dcccPasteStyles, dcccReset, dcccDetach, dcccPromote, dcccWrap}
-  if stages and not editor.workspacePermissions.val.writeSource:
+  # And where nothing can write what it would stage (`stagedWriteRefusal`).
+  let refusal =
+    if not stages: ""
+    elif not editor.workspacePermissions.val.writeSource: ReadOnlySourceRefusal
+    else: editor.stagedWriteRefusal()
+  if refusal.len > 0:
     result = DirectCanvasOperationResult(ok: false, operation: op,
       diagnostics: @[PropertyEditDiagnostic(kind: pedSchemaViolation,
-        message: ReadOnlySourceRefusal, file: beforeElement.sourceFile,
+        message: refusal, file: beforeElement.sourceFile,
         line: beforeElement.sourceLine, property: op.property)])
     editor.inspector.editDiagnostics.val = result.diagnostics
     return
@@ -9732,6 +9761,15 @@ proc editFoundationToken*(editor: EditorVM; key, newValue: string): FoundationEd
   if diagnostics.len > 0:
     editor.foundations.diagnostics.val = diagnostics
     return FoundationEditResult(status: pesRejected, diagnostics: diagnostics)
+  # Refused at the act where nothing could write it (`stagedWriteRefusal`).
+  let unwritable = editor.stagedWriteRefusal()
+  if unwritable.len > 0:
+    let diagnostic = FoundationEditDiagnostic(kind: fedMissingTokenSchema,
+      message: unwritable, key: key, file: token.sourceFile,
+      line: token.sourceLine)
+    editor.foundations.diagnostics.val = @[diagnostic]
+    return FoundationEditResult(status: pesRejected,
+      diagnostics: @[diagnostic])
 
   var plan = token.sourcePlan(newValue)
   editor.inspector.stampHistoryEntry(plan)
@@ -10495,6 +10533,15 @@ proc validateComponentVariantEdit(variant: ComponentVariantDefinition;
 
 proc editComponentVariantField*(editor: EditorVM; component, variantKey, fieldName,
     newValue: string): ComponentVariantEditResult {.discardable.} =
+  # Refused at the act where nothing could write it (`stagedWriteRefusal`).
+  block:
+    let unwritable = editor.stagedWriteRefusal()
+    if unwritable.len > 0:
+      let diagnostic = ComponentVariantDiagnostic(kind: cvdMissingVariantSchema,
+        message: unwritable, component: component, variantKey: variantKey)
+      editor.variants.diagnostics.val = @[diagnostic]
+      return ComponentVariantEditResult(status: pesRejected,
+        diagnostics: @[diagnostic])
   var variantIndex = -1
   var fieldIndex = -1
   var variant = ComponentVariantDefinition()
@@ -10546,6 +10593,15 @@ proc editComponentVariantField*(editor: EditorVM; component, variantKey, fieldNa
 proc editComponentProperty*(editor: EditorVM; component, variantKey,
     propertyName, newValue: string; mode = cpemManual): ComponentVariantEditResult {.
         discardable.} =
+  # Refused at the act where nothing could write it (`stagedWriteRefusal`).
+  block:
+    let unwritable = editor.stagedWriteRefusal()
+    if unwritable.len > 0:
+      let diagnostic = ComponentVariantDiagnostic(kind: cvdMissingVariantSchema,
+        message: unwritable, component: component, variantKey: variantKey)
+      editor.variants.diagnostics.val = @[diagnostic]
+      return ComponentVariantEditResult(status: pesRejected,
+        diagnostics: @[diagnostic])
   var variantIndex = -1
   var propIndex = -1
   var variant = ComponentVariantDefinition()
@@ -10601,6 +10657,15 @@ proc editComponentProperty*(editor: EditorVM; component, variantKey,
 proc editComponentStateControl*(editor: EditorVM; component, variantKey,
     stateKey, newValue: string; mode = cpemManual): ComponentVariantEditResult {.
         discardable.} =
+  # Refused at the act where nothing could write it (`stagedWriteRefusal`).
+  block:
+    let unwritable = editor.stagedWriteRefusal()
+    if unwritable.len > 0:
+      let diagnostic = ComponentVariantDiagnostic(kind: cvdMissingVariantSchema,
+        message: unwritable, component: component, variantKey: variantKey)
+      editor.variants.diagnostics.val = @[diagnostic]
+      return ComponentVariantEditResult(status: pesRejected,
+        diagnostics: @[diagnostic])
   var variantIndex = -1
   var stateIndex = -1
   var variant = ComponentVariantDefinition()
@@ -10653,6 +10718,15 @@ proc editComponentStateControl*(editor: EditorVM; component, variantKey,
 
 proc createStoryForComponentState*(editor: EditorVM; component, variantKey,
     stateKey: string): ComponentVariantEditResult {.discardable.} =
+  # Refused at the act where nothing could write it (`stagedWriteRefusal`).
+  block:
+    let unwritable = editor.stagedWriteRefusal()
+    if unwritable.len > 0:
+      let diagnostic = ComponentVariantDiagnostic(kind: cvdMissingVariantSchema,
+        message: unwritable, component: component, variantKey: variantKey)
+      editor.variants.diagnostics.val = @[diagnostic]
+      return ComponentVariantEditResult(status: pesRejected,
+        diagnostics: @[diagnostic])
   var variantIndex = -1
   var stateIndex = -1
   var variant = ComponentVariantDefinition()
@@ -14674,6 +14748,13 @@ proc commitVectorDocument(editor: EditorVM; operation: VectorOperationKind;
     result.document = beforeDoc
     editor.vectorEditor.diagnostics.val = result.diagnostics
     return
+  let unwritable = editor.stagedWriteRefusal()
+  if unwritable.len > 0:
+    result = vectorReadOnlyRefusal(operation)
+    result.diagnostics[0].message = unwritable
+    result.document = beforeDoc
+    editor.vectorEditor.diagnostics.val = result.diagnostics
+    return
   let unsupportedSource =
     beforeDoc.sourceSvgForDiagnostics & "\n" & afterDoc.sourceSvgForDiagnostics
   let unsupported = unsupportedSource.diagnoseUnsupportedVectorSvgFeatures(
@@ -14710,6 +14791,13 @@ proc commitVectorSourceSnapshot*(editor: EditorVM; operation: VectorOperationKin
   ## owns the persisted SVG snapshot and M27 save transaction.
   if not editor.workspacePermissions.val.writeSource:
     result = vectorReadOnlyRefusal(operation)
+    result.document = editor.vectorEditor.document.val
+    editor.vectorEditor.diagnostics.val = result.diagnostics
+    return
+  let unwritable = editor.stagedWriteRefusal()
+  if unwritable.len > 0:
+    result = vectorReadOnlyRefusal(operation)
+    result.diagnostics[0].message = unwritable
     result.document = editor.vectorEditor.document.val
     editor.vectorEditor.diagnostics.val = result.diagnostics
     return
