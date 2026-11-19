@@ -581,6 +581,51 @@ suite "Detach gives the element an inline override of the shared value":
       check vm.inspector.undoStack.val.len == 12
       dispose()
 
+  test "a scope chip or Detach chosen after the scope options re-ran keeps its callback alive":
+    ## isonim-pm issue 2026-10-22-a-compact-choice-callback-can-free-its-own-
+    ## environment. When the row's scope options are recomputed with the
+    ## same chips (`refresh` here; a shared edit that changes the property
+    ## but not the chip set does the same), the strip keeps its chips and
+    ## only takes the new options, whose wrapped callbacks the strip's
+    ## latest options -- and Detach's action -- alone hold. Choosing one then
+    ## re-renders the strip from its own callback. Under ARC/ORC the running
+    ## callback must stay alive through both entry points, the chip and
+    ## Detach (a use-after-free otherwise: `just test-asan-compact-choice`).
+    createRoot proc(dispose: proc()) =
+      let project = ClassRuleProject()
+      let vm = newEditor(project,
+        topbarSchema(classNode(TopbarKey, "padding-top")), topbar)
+      var wiring = vm.inspectorRowWiring("padding-top")
+      let refresh = createSignal(0)
+      let computeScopeOptions = wiring.scopeOptions
+      wiring.scopeOptions = proc(): seq[CompactChoiceOption] =
+        discard refresh.val
+        computeScopeOptions()
+      let r = MockRenderer()
+      let row = r.mountPropertyRow(r.createElement("div"), propertyRowText(
+        "Top", createSignal("0px"), wiring = wiring))
+      let detach = row.findByAttr("data-property-row-detach", "true")
+      for round in 0 ..< 3:
+        refresh.val = refresh.val + 1
+        row.findByAttr("aria-label",
+          "Apply shared class scope for padding-top").fireEvent("click")
+        check wiring.selectedSourceScope().get.kind == sskSharedClass
+        check detach.styles.getOrDefault("display") == "inline-flex"
+        refresh.val = refresh.val + 1
+        detach.fireEvent("click")
+        check wiring.selectedSourceScope().get.kind == sskLocalInstance
+        check detach.styles.getOrDefault("display") == "none"
+        refresh.val = refresh.val + 1
+        row.findByAttr("aria-label",
+          "Apply shared class scope for padding-top").fireEvent("click")
+        refresh.val = refresh.val + 1
+        row.findByAttr("aria-label",
+          "Apply local instance scope for padding-top").fireEvent("click")
+        check wiring.selectedSourceScope().get.kind == sskLocalInstance
+      check wiring.commitMessage.val == ""
+      check vm.inspector.undoStack.val.len == 12
+      dispose()
+
 suite "Reset's reactive availability asks the writer at the local scope too":
   test "the editor example's selector-list rule disables a local Reset":
     ## IsoNim's own example: its writer refuses a rule shared by a selector

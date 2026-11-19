@@ -8,6 +8,29 @@
 setup:
     git -C "{{justfile_directory()}}" submodule update --init --recursive
 
+# Native ORC build of the compact choice strip's tests under AddressSanitizer
+# (isonim-pm issue 2026-10-22-a-compact-choice-callback-can-free-its-own-
+# environment): a choice that rebuilds the strip's options must not free the
+# running callback -- the strip's own chips (`test_choice_row_activation`) and
+# a mounted property row's scope chips and Detach over repeated rounds
+# (`test_editor_shared_scope_ownership`). `-d:useMalloc` lets ASan see every
+# allocation; the runtime is linked statically so it comes first even when
+# the shell preloads a library. Leaks are checked too (`tests/asan/lsan.supp`
+# names only a preloaded shim's own allocations).
+test-asan-compact-choice:
+    #!/usr/bin/env bash
+    set -euo pipefail
+    cd "{{justfile_directory()}}"
+    mkdir -p build/asan
+    for t in test_choice_row_activation test_editor_shared_scope_ownership; do
+      nim c --hints:off --mm:orc -d:useMalloc --debugger:native \
+        --passC:-fsanitize=address --passC:-fno-omit-frame-pointer \
+        --passL:-fsanitize=address --passL:-static-libasan \
+        --out:build/asan/$t tests/$t.nim
+      ASAN_OPTIONS=detect_leaks=1:halt_on_error=1 \
+        LSAN_OPTIONS=suppressions=tests/asan/lsan.supp build/asan/$t
+    done
+
 # Fail loudly when a declared submodule is not provisioned, instead of letting
 # it surface as an opaque Nim error deep inside a consumer's import graph.
 # Wired into CI ahead of the test recipes; also runnable by hand.

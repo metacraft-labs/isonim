@@ -1,0 +1,7 @@
+# LeakSanitizer suppressions for `just test-asan-compact-choice`.
+#
+# Development shells that preload a command-trace shim (LD_PRELOAD, e.g.
+# the agent-harbor shim) report that shim's own constructor allocations as
+# leaks of every process; they are not this program's. Nothing of isonim is
+# suppressed here.
+leak:libah_command_trace_shim.so

@@ -1,7 +1,7 @@
 ## MockRenderer substitutes only event transport; the production DSL and chip
 ## builders install the handlers whose invocation counts are asserted here.
-import std/unittest
-import isonim/core/[owner, computation]
+import std/[tables, unittest]
+import isonim/core/[owner, computation, signals]
 import isonim/testing/mock_dom
 import isonim/renderers/[native, terminal_demo]
 import isonim/editor/views/choice_row
@@ -33,6 +33,62 @@ suite "Compact choice activation":
             let activated = enabled and key in ["Enter", " "]
             check calls == beforeKey + int(activated)
             check ev.defaultPrevented == activated
+      dispose()
+
+  test "a choice that replaces the strip's options keeps its own callback alive":
+    ## isonim-pm issue 2026-10-22-a-compact-choice-callback-can-free-its-own-
+    ## environment. Choosing writes the signal the options are computed from,
+    ## so the reactive strip replaces its options -- and drops the closures
+    ## of the old ones -- while the chosen callback is still running; the
+    ## callback then reads its own captured state. Under ARC/ORC that state
+    ## must still be alive (a use-after-free otherwise, which the native
+    ## AddressSanitizer run of this test reports: `just test-asan-compact-choice`).
+    ## Before each choice the options are recomputed with the same labels
+    ## (`refresh`): the strip keeps its chips and only takes the new
+    ## options, so the chosen callback is one only the strip's latest
+    ## options hold -- as a property row's are after any re-run of its
+    ## scope options.
+    createRoot do (dispose: proc()):
+      let round = createSignal(0)
+      let refresh = createSignal(0)
+      var log: seq[string]
+      # A row wraps its choices (a property row's `thenCommit` wraps the
+      # scope's handler): the option holds the wrapper, and the wrapper alone
+      # holds the inner callback.
+      proc wrapped(inner: proc()): proc() =
+        result = proc() = inner()
+      proc optionFor(n, i: int): CompactChoiceOption =
+        # Heap state of the inner callback's own, read after the choice has
+        # replaced the options.
+        let tag = new(string)
+        tag[] = "round " & $n & " option " & $i
+        let inner = proc() =
+          round.val = round.val + 1
+          log.add tag[]
+        CompactChoiceOption(label: tag[], ariaLabel: "Option " & $i,
+          enabled: true, onChoose: wrapped(inner))
+      proc optionsFor(n: int): seq[CompactChoiceOption] =
+        @[optionFor(n, 0), optionFor(n, 1)]
+      let strip = renderCompactChoiceRow[MockRenderer, MockNode](
+        MockRenderer(), "", "Choices", proc(): seq[CompactChoiceOption] =
+          discard refresh.val
+          optionsFor(round.val), visibleLimit = 2)
+      proc chip(ariaLabel: string): MockNode =
+        proc walk(node: MockNode): MockNode =
+          if node.attributes.getOrDefault("aria-label") == ariaLabel: return node
+          for child in node.children:
+            let found = walk(child)
+            if found != nil: return found
+        walk(strip.root)
+      for n in 0 .. 2:
+        let option = chip("Option " & $(n mod 2))
+        check option != nil
+        refresh.val = refresh.val + 1
+        check chip("Option " & $(n mod 2)) == option
+        option.fireEvent("click")
+        check round.val == n + 1
+        check log.len == n + 1
+        check log[^1] == "round " & $n & " option " & $(n mod 2)
       dispose()
 
 template checkRendererKeys(R, N, Event: typedesc) =
