@@ -659,6 +659,33 @@ suite "A page rule the project does not opt in withholds a class rule only where
     check offered("", "div:where(.zz, .yy) { width: 5px !important; }") == all
     check offered("", "div:where(.zz, .panel) { width: 5px !important; }") == sides
 
+  test "an escaped comma is part of a name (review SP3/SP3b)":
+    # `.a\,b` is the one class `a,b` (CSS Syntax 4.3.7), not the list `.a`,
+    # `b`: an element with the classes `a` and `b` is not matched, and the
+    # important width does not withhold the class rule's row (SP3b). The
+    # element that does carry `a,b` is matched, and it does (SP3).
+    check offered("", ".a\\,b { width: 90px !important; }",
+      "<div class='panel a b'></div>") == all
+    check offered("", ".a\\,b { width: 90px !important; }",
+      "<div class='panel a,b'></div>") == sides
+
+  test "an :is() argument is judged by its subject compound (review SP12)":
+    # `:is(.a .panel)` matches a `.panel` inside an `.a`: its subject is
+    # `.panel`, which the element is, and the ancestor cannot be ruled out
+    # here, so the important width could decide and withholds the row.
+    # Judged by its leading compound (`.a`, which the element is not) the
+    # argument read as one that cannot match, and the row was offered for a
+    # width the page rule may decide.
+    check offered("", ":is(.a .panel) { width: 90px !important; }") == sides
+    # An argument whose subject the element is not still cannot match.
+    check offered("", ":is(.a .zz) { width: 90px !important; }") == all
+    # The subject is read through its escapes: `.pan\65 l` is `.panel`
+    # (CSS Syntax 4.3.7; the space ends the hex escape and is not a
+    # combinator), so the argument matches and the width is withheld (review
+    # SP19). Split at whitespace with escapes ignored, its last token `l`
+    # does not match, and the row was offered.
+    check offered("", ":where(.pan\\65 l) { width: 90px !important; }") == sides
+
   test "an escaped space is part of a name":
     # `.panel\ x` is the class `panel x`, which no element carries.
     check offered("", ".panel\\ x.y { width: 5px; }", "<div class='panel panelx y'></div>") == all

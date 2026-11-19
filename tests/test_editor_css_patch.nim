@@ -1196,3 +1196,15 @@ suite "the editor's writers ask before writing a selector list or inserting":
     check not cssInsertionHome("#a { }\n#a { }\n", "#a", "width")
     check not cssInsertionHome("#a { }\n@media (max-width:600px) { #a { width:2px; } }\n", "#a", "width")
     check not cssInsertionHome("#b { }\n", "#a", "width")
+
+suite "A selector list is split only at its top-level commas":
+  ## Shared-noeffect review probe SP3b (isonim-pm UX-M3): an escaped comma is
+  ## part of the name it occurs in (CSS Syntax 4.3.7), so `.a\,b` is one
+  ## member, the class `a,b` -- not the list `.a` / `b`. The splitter skips
+  ## escapes, strings and comments (`skipCssOpaque`) before it looks for a
+  ## comma; without that it split here.
+  test "an escaped comma, a string or a comment does not split the list":
+    check splitSelectorList(".a\\,b") == @[".a\\,b"]
+    check splitSelectorList(".a\\,b, .c") == @[".a\\,b", ".c"]
+    check splitSelectorList("[data-x=\"a,b\"].zz") == @["[data-x=\"a,b\"].zz"]
+    check splitSelectorList(".zz/* , */.yy") == @[".zz/* , */.yy"]
