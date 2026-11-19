@@ -1,19 +1,24 @@
-/** A native-inspector composition refuses at the act the canvas edits it
- * cannot write (Chromium).
+/** In a native-inspector composition the canvas size and spacing handles
+ * write through the native worker, and an agent proposal is refused at
+ * acceptance (Chromium).
  *
  * isonim-pm issue 2026-11-04-a-native-inspector-edit-outside-the-rows-that-
- * cannot-be-written-stays-dirty-silently; editor spec "Saving": a refusal the
- * editor can know at the act is made at the act, so a refused change never
- * reaches the preview, the history or the journal first; an edit staged
- * while no source adapter is ready is reported where it was made.
+ * cannot-be-written-stays-dirty-silently and the native follow-up; editor
+ * spec "Edit Mode" (resize handles on the selection box allow direct
+ * width/height manipulation), "Saving" (a refusal the editor can know at the
+ * act is made at the act; a refused change never reaches the preview, the
+ * history or the journal) and "Native project source capabilities" (the
+ * native worker writes through the guarded operation).
  *
- * The native composition writes through its native worker, only from the
- * inspector's property fields; it has no workspace edit adapter, so a canvas
- * resize or spacing drag staged into the journal could never be written. It
- * used to be previewed, put in history and left pending, with no report.
- * Each case: the drag previews, the release is refused with the reason shown
- * on the canvas, the preview is put back, nothing is staged or put in
- * history, the stage stays clean, and the project file is unchanged.
+ * The native composition writes through its native worker; it has no
+ * workspace edit adapter, so anything staged in the journal could never be
+ * written. The width, height and spacing handles now commit through the row
+ * pipeline of the property they drag, as the margin and padding handles
+ * already did, and the value written is the one the preview showed. A
+ * release the field would refuse (a read-only workspace) is refused, put
+ * back, with the reason on the canvas. An agent proposal's plans could never
+ * be written, so accepting one is refused with the reason on the proposal.
+ * Control: the inspector row still writes.
  *
  * Setup is the inspector-source GUI's (`tests/test_editor_inspector_source_gui.mjs`):
  * the real mounted production inspector, the native authenticated source
@@ -73,43 +78,88 @@ try {
   assert(await page.evaluate(()=>window.__popupAcceptance.sameClient()),'HMR retains the backend client');
  };
 
- const reason="This project's native source writer changes source only through the inspector's property fields; this edit cannot be written. Nothing was changed.";
  const frame=page.frameLocator('iframe[title="Editable component preview"]');
  const message=()=>frame.locator('#isonim-editor-box-drag-message').textContent().catch(()=>'');
  const original=source();
  const startState=await snapshot();
  assert.equal(startState.sourcePlans,0);assert.equal(startState.undoCount,0);
- async function refusedDrag(name,label,dx,dy){
-  const handle=frame.getByLabel(label,{exact:true});
-  await handle.waitFor();
-  const before=await previewWidth();
+ // Native-followup (b): the width, height and spacing handles commit through
+ // the native worker, as the row and the margin/padding handles do.
+ const ruleOf=(id)=>(source().match(new RegExp('#'+id+' \\{[^}]*\\}'))||[''])[0];
+ async function writtenDrag(name,label,dx,dy,property,id='action'){
+  const actionRule=()=>ruleOf(id);
+  await page.locator('[data-scene-graph-row="'+id+'"]').click();
+  const handle=frame.getByLabel(label,{exact:true});await handle.waitFor();
+  const before=await snapshot(),ruleBefore=actionRule();
   const box=await handle.boundingBox();const x=box.x+box.width/2,y=box.y+box.height/2;
   await page.mouse.move(x,y);await page.mouse.down();
   for(let i=1;i<=3;i++)await page.mouse.move(x+dx*i/3,y+dy*i/3);
-  const during=await page.evaluate(()=>{const f=[...document.querySelectorAll('iframe')].find(f=>f.getClientRects().length&&f.contentDocument?.querySelector('#action'));const t=f.contentDocument.querySelector('#action');const cs=f.contentWindow.getComputedStyle(t);return {width:cs.width,padding:cs.paddingTop};});
+  const shown=await page.evaluate(p=>{const f=[...document.querySelectorAll('iframe')].find(f=>f.getClientRects().length&&f.contentDocument?.querySelector('#'+p[1]));return f.contentWindow.getComputedStyle(f.contentDocument.querySelector('#'+p[1])).getPropertyValue(p[0]);},[property==='padding'?'padding-left':property,id]);
   await page.mouse.up();
-  // Waited on state: the reason on the canvas, or the state that shows the
-  // edit was not refused.
-  const deadline=Date.now()+60000;
-  while(Date.now()<deadline&&!(await message()).includes(reason.slice(0,40)))await page.waitForTimeout(100);
-  if(!(await message()).includes(reason.slice(0,40))){const s=await snapshot();throw new Error(name+': no refusal on the canvas; stage '+s.stage+', staged plans '+s.sourcePlans+', history '+s.undoCount+', preview width '+(await previewWidth())+', file '+(source()===original?'unchanged':'changed'));}
-  assert.equal((await message()).trim(),reason,name+': the reason is shown on the canvas');
-  assert.equal(await previewWidth(),before,name+': the preview is put back');
-  const state=await snapshot();
-  assert.equal(state.sourcePlans,0,name+': nothing is staged');
-  assert.equal(state.undoCount,0,name+': nothing is put in history');
-  assert.equal(state.stage,'wesClean',name+': the stage stays clean');
-  assert.equal(source(),original,name+': the project file is unchanged');
-  record(name+': refused at the act, put back, reason shown, nothing staged');
-  return during;
+  // Waited on state: the write applied, or a refusal shown on the canvas.
+  const deadline=Date.now()+240000;let state=await snapshot();
+  while(Date.now()<deadline&&!(state.stage==='wesClean'&&state.undoCount===before.undoCount+1)&&!(await message()).trim()){await page.waitForTimeout(200);state=await snapshot();}
+  if(!(state.stage==='wesClean'&&state.undoCount===before.undoCount+1))throw new Error(name+': not written; stage '+state.stage+', history '+state.undoCount+', canvas message '+JSON.stringify((await message()).trim())+', preview showed '+shown);
+  const rule=actionRule();
+  assert.notEqual(rule,ruleBefore,name+': the native worker wrote the file');
+  const written=(rule.match(new RegExp('(?:^|[ {;])'+property+':([^;]+);'))||[])[1];
+  assert.ok(written,name+': the rule declares '+property+' ('+rule+')');
+  if(property!=='padding')assert.equal(written,shown,name+': the value written is the one the preview showed');
+  const after=await snapshot();
+  assert.equal(after.sourcePlans,0,name+': nothing is left staged');
+  assert.equal(after.stage,'wesClean',name+': the write completed');
+  assert.equal((await message()).trim(),'',name+': no refusal');
+  record(name+': written through the native worker ('+property+':'+written+')');
  }
- await page.locator('[data-scene-graph-row="action"]').click();
- const resized=await refusedDrag('canvas resize','Resize selected element',-30,0);
- assert.notEqual(resized.width,'120px','the resize drag previewed before its release');
- await page.locator('[data-scene-graph-row="action"]').click();
- await refusedDrag('canvas spacing','Adjust selected spacing',0,6);
+ await writtenDrag('canvas resize','Resize selected element',-30,0,'width');
+ // The height handle takes the same route as the width handle; in this
+ // fixture's preview an !important height declaration holds every button's
+ // height, which refuses the height handle at the press ("height does not
+ // follow the drag"), so it is not driven here.
+ await writtenDrag('canvas spacing','Adjust selected spacing',0,6,'padding');
+ // A refusal the native field would make at the act (a read-only
+ // workspace): the release is refused, the preview put back, the reason shown.
+ {
+  await page.evaluate(()=>window.__popupAcceptance.readOnly(true));
+  await page.locator('[data-scene-graph-row="action"]').click();
+  const handle=frame.getByLabel('Resize selected element',{exact:true});await handle.waitFor();
+  const before=await previewWidth(),state0=await snapshot(),file0=source();
+  const box=await handle.boundingBox();const x=box.x+box.width/2,y=box.y+box.height/2;
+  await page.mouse.move(x,y);await page.mouse.down();for(let i=1;i<=3;i++)await page.mouse.move(x-20*i/3,y);await page.mouse.up();
+  const deadline=Date.now()+30000;
+  while(Date.now()<deadline&&!(await message()).trim())await page.waitForTimeout(100);
+  assert.match((await message()).trim(),/read-only/,'the reason is shown on the canvas');
+  assert.equal(await previewWidth(),before,'the preview is put back');
+  const state=await snapshot();
+  assert.equal(state.undoCount,state0.undoCount,'nothing is put in history');assert.equal(state.sourcePlans,0,'nothing staged');
+  assert.equal(source(),file0,'the file is unchanged');
+  await page.evaluate(()=>window.__popupAcceptance.readOnly(false));
+  record('a native canvas release the field would refuse is refused at release and put back');
+ }
+ // Native-followup (a): an agent proposal accepted in this composition is
+ // refused at acceptance (its plans could never be written), with the reason
+ // on the proposal, which stays proposed; nothing staged, the stage not failed.
+ {
+  await page.locator('[data-scene-graph-row="action"]').click();
+  const proposalFile=source();
+  const id=await page.evaluate(()=>window.__popupAcceptance.propose('width','140px'));
+  await page.locator('[data-toolbar-cluster="mode"] [aria-label="Switch to view mode"]').click();
+  const accept=page.getByRole('button',{name:'Accept agent edit '+id,exact:true});
+  await accept.waitFor();await accept.click();
+  const card=page.locator('[data-agent-proposal="'+id+'"]');
+  const note=card.locator('[data-agent-proposal-refusal="true"]');
+  await note.waitFor({timeout:20000}).catch(async()=>{throw new Error('no refusal on the proposal; card '+JSON.stringify(await card.innerText())+' status '+await card.getAttribute('data-agent-proposal-status')+' snapshot '+JSON.stringify(await snapshot()).slice(0,300));});
+  assert.equal((await note.textContent()).trim(),"This project's native source writer changes source only through the inspector's property fields; this proposal cannot be written.",'the reason is on the proposal');
+  assert.match(await card.getAttribute('data-agent-proposal-status'),/proposed/,'the proposal stays proposed');
+  const state=await snapshot();
+  assert.equal(state.sourcePlans,0,'nothing is staged');assert.notEqual(state.stage,'wesFailed','no failed write');
+  assert.equal(source(),proposalFile,'the project file is unchanged');
+  record('an accepted agent proposal is refused at acceptance, reason on the proposal, nothing staged');
+  await page.locator('[data-toolbar-cluster="mode"] [aria-label="Switch to edit mode"]').click();
+  await page.locator('[data-scene-graph-row="action"]').click();
+ }
  // The inspector row still writes through the native worker (control).
- await input.fill('130px');await input.press('Enter');await waitApplied(1);
+ const rowBefore=(await snapshot()).undoCount;await input.fill('130px');await input.press('Enter');await waitApplied(rowBefore+1);
  assert(source().includes('width:130px;'),'the native row still writes');
  record('the inspector row still writes through the native worker');
  assert.deepEqual(proof.errors,[]);assert.deepEqual(proof.agentRequests,[]);

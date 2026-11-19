@@ -1776,6 +1776,33 @@ suite "A native-inspector composition refuses at the act what it cannot write":
       vm.nothingStaged()
       dispose()
 
+  test "accepting an agent proposal is refused":
+    # Native-followup (a): the proposal's plans would be journaled and could
+    # never be written; refused at acceptance, nothing staged, the stage not
+    # failed, the reason on the proposal, which stays proposed.
+    createRoot proc(dispose: proc()) =
+      let vm = nativeEditor(MemoryProject())
+      let id = vm.chat.addAgentEditProposal(AgentEditProposal(
+        title: "Gap", summary: "Set gap to 8px",
+        sourceEdits: @[SourceEditPlan(file: ComponentFile, line: 4,
+          property: "gap", oldValue: "4px", newValue: "8px",
+          expectedOldValue: "4px", schemaKey: "badge.gap", scope: pesLocal)],
+        selectedEditIndexes: @[0], validity: aepvCurrent))
+      let accepted = vm.acceptAgentProposedEdit(id)
+      check not accepted.ok
+      check accepted.diagnostics.len == 1
+      check accepted.diagnostics[0].message == "This project's native " &
+        "source writer changes source only through the inspector's " &
+        "property fields; this proposal cannot be written. Nothing was changed."
+      var proposal: AgentEditProposal
+      for candidate in vm.chat.proposedEdits.val:
+        if candidate.id == id: proposal = candidate
+      check proposal.status == aepsProposed
+      check proposal.refusal.startsWith("This project's native source writer")
+      check vm.workspaceEditStage.val != wesFailed
+      vm.nothingStaged()
+      dispose()
+
   test "a catalog-only composition still keeps its preview-only canvas edit":
     # Not refused: it claims no persistence (spec "Native project source
     # capabilities"); unchanged by this rule.

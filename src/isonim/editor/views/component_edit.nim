@@ -1304,6 +1304,22 @@ __ISONIM_SCENE_GRAPH_WALK__
   // snap-back), and the reason is shown beside the selection, as a box
   // handle's refusal is (editor spec "Saving": a refused change never
   // reaches the preview).
+  // The late answer to a release the editor sent to a native project's
+  // writer (`detail.pending`; editor spec "Edit Mode": the resize handles
+  // edit width and height like the property's row): the preview keeps the
+  // dragged value until then; a refusal puts it back with the reason, as an
+  // act-time refusal does, and an accepted write is shown by the rebuilt
+  // catalog's preview.
+  function lateRelease(selected, restore) {
+    return function (ok, message) {
+      if (ok) return;
+      const hold = holdTransitions(selected);
+      restore();
+      hold.release();
+      if (window.__isonimSelectedElement === selected)
+        showBoxMessage(selected, String(message || 'This canvas edit was refused.'));
+    };
+  }
   function refusedRelease(released, selected, restore) {
     const reason = released.detail && released.detail.refused;
     if (!reason) return;
@@ -1389,7 +1405,8 @@ __ISONIM_SCENE_GRAPH_WALK__
             sourceLine: source.line,
             handle: axis === 'width' ? 'se' : 'height',
             sourceKey: sourceKeyFor(selected),
-            measurement: axis + '=' + next
+            measurement: axis + '=' + next,
+            settle: lateRelease(selected, restore)
           }
         });
         parent.dispatchEvent(released);
@@ -1449,7 +1466,8 @@ __ISONIM_SCENE_GRAPH_WALK__
             sourceLine: source.line,
             handle: 'spacing',
             sourceKey: sourceKeyFor(selected),
-            measurement: property + '=' + next
+            measurement: property + '=' + next,
+            settle: lateRelease(selected, restore)
           }
         });
         parent.dispatchEvent(released);
@@ -3992,9 +4010,44 @@ proc installPreviewSelectionBridge*[R, E](r: R; frame: E; vm: EditorVM) =
         if reason.len == 0: reason = outcome.commandState.diagnostic
         if reason.len == 0: reason = "This canvas edit was refused."
         cstring(reason)
+    # A native project writes through its worker, from the property's own
+    # field (`inspectorSourceCommit`), and the margin and padding handles
+    # already commit there through the box model's field pipeline. The
+    # width, height and spacing handles do the same: their release commits
+    # through the row pipeline of the property they drag
+    # (`commitBoxModelField` over that property's `inspectorRowWiring`) --
+    # the same scope, act-time refusals, history and native write -- instead
+    # of staging a plan nothing in this composition can write. The frame
+    # holds its preview until the worker answers (`detail.settle`).
+    let nativeCanvasCommit = proc(kind, propName, value: cstring;
+        settle: proc(ok: bool; message: cstring)): bool =
+      if vm.inspectorSourceCommit == nil: return false
+      let property = $propName
+      if $kind notin ["resize", "spacing"] or
+          property notin ["width", "height", "gap", "padding"]:
+        return false
+      var disposeWiring: proc()
+      var wiring: InspectorRowWiring
+      createRoot proc(dispose: proc()) =
+        disposeWiring = dispose
+        wiring = inspectorRowWiring(vm, property)
+      discard commitBoxModelField(vm, property, wiring, $value,
+        proc(outcome: BoxModelCommitOutcome) =
+          settle(outcome.ok, cstring(outcome.message))
+          if disposeWiring != nil: disposeWiring())
+      true
     {.emit: ["""
       globalThis.__isonimPreviewBridge(""", frame, """, 'isonim-preview-direct-manipulation', function (event) {
           const d = event.detail || {};
+          if (typeof d.settle === 'function' && """, nativeCanvasCommit, """(
+              String(d.kind || ''), String(d.property || ''), String(d.value || ''),
+              function (ok, message) {
+                try { d.settle(ok, message); } catch (error) {}
+              })) {
+            d.refused = '';
+            d.pending = true;
+            return;
+          }
           d.refused = """, directManipulationFromBrowser,
         """(
             d.kind || '', d.property || '', d.value || '', d.oldValue || '',

@@ -81,6 +81,23 @@ proc attemptCatalogOnlyProperty(property, value: cstring): cstring =
   ## Physical rows and compiled browser outcomes are exercised separately.
   let outcome = editor.commitInspectorValue($property, $value, sskLocalInstance)
   cstring($(%*{"ok": outcome.ok, "message": outcome.message}))
+proc propose(property, value: cstring): cstring =
+  ## Test-only: an agent proposal setting ``property`` of the selected
+  ## element to ``value``, as an agent's proposal carries it (a source plan,
+  ## owned by no history entry), for the native-followup GUI. Staged
+  ## nowhere; the chat's real Accept button accepts it.
+  var plan = SourceEditPlan(property: $property, newValue: $value,
+    scope: pesLocal)
+  for candidate in editor.inspector.selectedElement.val.properties:
+    if candidate.name == $property:
+      plan.file = candidate.sourceFile
+      plan.line = candidate.sourceLine
+      plan.oldValue = candidate.value
+      plan.expectedOldValue = candidate.value
+      plan.schemaKey = candidate.schemaKey
+  cstring(editor.chat.addAgentEditProposal(AgentEditProposal(
+    title: "Set " & $property, summary: "Set " & $property & " to " & $value,
+    sourceEdits: @[plan], selectedEditIndexes: @[0], validity: aepvCurrent)))
 proc snapshot(): cstring =
   var properties = newJArray()
   for property in editor.inspector.selectedElement.val.properties:
@@ -101,4 +118,4 @@ proc snapshot(): cstring =
     "sourceInFlight": editor.sourceProjectBuildInFlight, "sourceOperationSerial": editor.sourceProjectOperationSerial,
     "sourceMappingObservers": (if editor.sourceProjectMappings != nil: editor.sourceProjectMappings.observers.len else: 0),
     "sourceGeneration": editor.preview.sourceGeneration.val, "properties": properties}))
-{.emit: ["window.__popupAcceptance = {attemptCatalogOnlyProperty:", attemptCatalogOnlyProperty, ",attemptSelectedNativeProperty:", attemptSelectedNativeProperty, ",catalogOnlyAttempt:", catalogOnlyAttempt, ", observerDetails:", observerDetails, ", openStory:", openStory, ", history:", history, ", clear:", clear, ", activeView:", activeView, ", unmount:", unmount, ", remount:", remount, ", sameClient:", sameClient, ", readOnly:", readOnly, ", tokens:", tokens, ", select:", select, ", snapshot:", snapshot, "};"].}
+{.emit: ["window.__popupAcceptance = {attemptCatalogOnlyProperty:", attemptCatalogOnlyProperty, ",attemptSelectedNativeProperty:", attemptSelectedNativeProperty, ",catalogOnlyAttempt:", catalogOnlyAttempt, ", observerDetails:", observerDetails, ", openStory:", openStory, ", history:", history, ", clear:", clear, ", activeView:", activeView, ", unmount:", unmount, ", remount:", remount, ", sameClient:", sameClient, ", readOnly:", readOnly, ", tokens:", tokens, ", select:", select, ", propose:", propose, ", snapshot:", snapshot, "};"].}

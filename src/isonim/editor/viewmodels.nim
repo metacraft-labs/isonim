@@ -12829,6 +12829,15 @@ proc proposalAcceptRefusal(editor: EditorVM; plans: seq[SourceEditPlan]): string
   ## element: it is accepted from the chat, whatever the inspector selects.
   if not editor.workspacePermissions.val.writeSource:
     return "This workspace is read-only for source changes."
+  # A native-inspector composition writes only through its native worker,
+  # from the inspector's property fields (`stagedWriteRefusal`): a
+  # proposal's plans would be journaled and could never be written -- the
+  # write failed visibly and left them pending. Its other questions are the
+  # worker's, as for its inspector commits; this one is known at the act.
+  if editor.stagedWriteRefusal().len > 0:
+    return "This project's native source writer changes source only " &
+      "through the inspector's property fields; this proposal cannot be " &
+      "written."
   for plan in plans:
     result = editor.sourcePlanAdmissionRefusal(plan)
     if result.len == 0: result = editor.writerEditRefusal(plan)
