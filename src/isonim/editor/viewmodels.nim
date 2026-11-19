@@ -5480,6 +5480,11 @@ proc sourcePlanAdmissionRefusal(editor: EditorVM;
   if plan.planKind == cspPropertyRemoval and not resolved.entry.removable:
     let file =
       if resolved.entry.file.len > 0: resolved.entry.file else: plan.file
+    # Named as what would be removed: a token entry's removal is the
+    # removal of the token's definition, not of the declaration that uses it.
+    if resolved.entry.kind == wskToken and resolved.entry.property.startsWith("--"):
+      return "This project's source writer cannot remove the " &
+        resolved.entry.property & " token from " & file & "."
     return "This project's source writer cannot remove the " & plan.property &
       " declaration from " & file & "."
   ""
@@ -12693,6 +12698,14 @@ proc setAgentProposalStatus(chat: AgentChatVM; id: string;
         found = true
   found
 
+func ownProposalPatches(patches: seq[WorkspaceFilePatch]): seq[WorkspaceFilePatch] =
+  ## The patches of a write that a proposal's own plans made. The write also
+  ## carries whatever the inspector had pending (plans owned by a history
+  ## entry); those are undone through that history, not by the proposal's
+  ## Revert.
+  for patch in patches:
+    if patch.plan.historyId <= 0: result.add patch
+
 proc setAgentProposalRefusal(chat: AgentChatVM; id, refusal: string) =
   chat.proposedEdits.update proc(prev: seq[AgentEditProposal]): seq[
       AgentEditProposal] =
@@ -12700,6 +12713,22 @@ proc setAgentProposalRefusal(chat: AgentChatVM; id, refusal: string) =
     for proposal in result.mitems:
       if proposal.id == id:
         proposal.refusal = refusal
+
+proc proposalRevertRefusal(editor: EditorVM; plans: seq[SourceEditPlan]): string =
+  ## Why reverting is refused at the act, or "": the workspace is writable,
+  ## and each restoration can still find the lines the acceptance wrote
+  ## (`restoreSourceWrite`, the check an undo of a written edit makes).
+  if not editor.workspacePermissions.val.writeSource:
+    return "This workspace is read-only for source changes."
+  let adapter = editor.workspaceEditAdapter
+  if adapter.isNil or adapter.readFile.isNil or editor.hasAsyncSourceProject:
+    return
+  for plan in plans:
+    if not plan.restoreWrite.recorded: continue
+    let read = adapter.readFile(plan.restoreWrite.file)
+    if not read.ok: continue
+    let restored = restoreSourceWrite(read.content, plan.restoreWrite, "Revert")
+    if not restored.ok: return restored.message
 
 proc rejectAgentProposedEdit*(editor: EditorVM; id: string): bool {.discardable.} =
   editor.chat.setAgentProposalStatus(id, aepsRejected)
@@ -12767,7 +12796,10 @@ proc acceptAgentProposedEdit*(editor: EditorVM; id: string;
   # Asked before anything is journaled: a refusal leaves the journal, the
   # histories, the preview and the files as they were, and says why on the
   # proposal (`AgentEditProposal.refusal`).
-  let refusal = editor.proposalAcceptRefusal(accepted)
+  let refusal =
+    if proposal.status in {aepsAccepted, aepsPartiallyAccepted}:
+      "This proposal is already accepted."
+    else: editor.proposalAcceptRefusal(accepted)
   editor.chat.setAgentProposalRefusal(id, refusal)
   if refusal.len > 0:
     return WorkspaceEditResult(ok: false, stage: editor.workspaceEditStage.val,
@@ -12776,12 +12808,20 @@ proc acceptAgentProposedEdit*(editor: EditorVM; id: string;
   for plan in accepted:
     editor.inspector.journalSourceEdit(plan)
   editor.workspaceEditStage.val = wesDirty
+  # Nothing has shown a proposal's edits in the preview, so the write that
+  # carries them must rebuild the preview from the file -- even when the
+  # same write carries an inspector edit that showed its own value
+  # (`previewMissesPendingEdits`). Without it, a proposal accepted while such
+  # an edit was pending was written and never shown, also after View then
+  # Edit (the preview's document still predated both).
+  editor.previewMissesPendingEdits.val = true
   result = editor.applyWorkspaceFileEdits()
   if result.ok:
     let status =
       if accepted.len == proposal.sourceEdits.len: aepsAccepted
       else: aepsPartiallyAccepted
-    discard editor.chat.setAgentProposalStatus(id, status, result.patches)
+    discard editor.chat.setAgentProposalStatus(id, status,
+      result.patches.ownProposalPatches)
   else:
     discard editor.chat.setAgentProposalStatus(id, aepsFailed)
 
@@ -12798,13 +12838,27 @@ proc revertAgentProposedEdit*(editor: EditorVM; id: string): WorkspaceEditResult
     return WorkspaceEditResult(ok: false, stage: wesFailed,
       diagnostics: @[workspaceDiagnostic(wedMissingSchema,
         "Agent edit proposal was not found.")])
+  if proposal.status notin {aepsAccepted, aepsPartiallyAccepted}:
+    let reason = "Only an accepted proposal can be reverted."
+    editor.chat.setAgentProposalRefusal(id, reason)
+    return WorkspaceEditResult(ok: false, stage: editor.workspaceEditStage.val,
+      diagnostics: @[workspaceDiagnostic(wedPatchFailed,
+        reason & " Nothing was changed.")])
   var reversals: seq[SourceEditPlan] = @[]
-  for patch in proposal.appliedPatches:
+  for patch in proposal.appliedPatches.ownProposalPatches:
+    # Revert puts back exactly the lines the acceptance's write replaced,
+    # through that write's receipt, as an undo of a written edit does
+    # (`restorePlan`). Swapping the plan's values was not enough: a removal
+    # stayed a removal, so the writer was handed the removal of a
+    # declaration that was no longer there, refused it, and the reversal
+    # stayed journaled, failing every later write.
     var reverse = patch.plan
     swap(reverse.oldValue, reverse.newValue)
-    reverse.expectedOldValue = reverse.oldValue
+    reverse.expectedOldValue = ""
     reverse.previewBefore = patch.afterContent
     reverse.previewAfter = patch.beforeContent
+    reverse.restoreWrite = sourceWriteReceipt(patch.file, patch.beforeContent,
+      patch.afterContent)
     reversals.add reverse
   if reversals.len == 0:
     for plan in proposal.sourceEdits:
@@ -12819,12 +12873,23 @@ proc revertAgentProposedEdit*(editor: EditorVM; id: string): WorkspaceEditResult
     return WorkspaceEditResult(ok: false, stage: wesFailed,
       diagnostics: @[workspaceDiagnostic(wedPatchFailed,
         "Agent edit proposal has no reversible source edits.")])
+  # Asked at the act, before anything is journaled: a revert the write
+  # would refuse is refused here, with the reason on the proposal.
+  let refusal = editor.proposalRevertRefusal(reversals)
+  editor.chat.setAgentProposalRefusal(id, refusal)
+  if refusal.len > 0:
+    return WorkspaceEditResult(ok: false, stage: editor.workspaceEditStage.val,
+      diagnostics: @[workspaceDiagnostic(wedPatchFailed,
+        refusal & " Nothing was changed.")])
   for plan in reversals:
     editor.inspector.journalSourceEdit(plan)
   editor.workspaceEditStage.val = wesDirty
+  # As for the acceptance: nothing has shown the revert in the preview.
+  editor.previewMissesPendingEdits.val = true
   result = editor.applyWorkspaceFileEdits()
   if result.ok:
-    discard editor.chat.setAgentProposalStatus(id, aepsReverted, result.patches)
+    discard editor.chat.setAgentProposalStatus(id, aepsReverted,
+      result.patches.ownProposalPatches)
   else:
     discard editor.chat.setAgentProposalStatus(id, aepsFailed)
 

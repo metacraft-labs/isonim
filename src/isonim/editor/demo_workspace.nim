@@ -437,9 +437,19 @@ func removeDemoDeclaration(plan: SourceEditPlan; content: string;
   ## occurrence), or when the declaration no longer says what the editor
   ## showed.
   let file = if schema.file.len > 0: schema.file else: plan.file
+  # A token definition's removal (only where its entry states it can be
+  # removed: none of the example's does) removes the variable's own
+  # declaration, the entry's property, not the property that uses it --
+  # which is where the preview removes it too. The value the editor showed
+  # is the using property's, so it is not compared against the variable's.
+  let token = schema.kind == wskToken and schema.property.startsWith("--")
+  let removing = if token: schema.property else: plan.property
+  # The refusal names what was to be removed: a property's declaration
+  # (Reset), or a token's definition.
+  let what = if token: "remove the " & removing & " token" else: "reset " & plan.property
   proc refuse(kind: WorkspaceEditDiagnosticKind; why: string): WorkspacePatchResult =
     WorkspacePatchResult(ok: false, diagnostics: @[WorkspaceEditDiagnostic(
-      kind: kind, message: "Refused to reset " & plan.property & ": " & why &
+      kind: kind, message: "Refused to " & what & ": " & why &
         " No source was changed.", file: file, schemaKey: plan.schemaKey,
       property: plan.property)])
   # The entry states whether this writer can remove its declaration; the
@@ -448,13 +458,6 @@ func removeDemoDeclaration(plan: SourceEditPlan; content: string;
   if not schema.removable:
     return refuse(wedPatchFailed, "the " & schema.key & " entry does not " &
       "state that its declaration can be removed.")
-  # A token definition's removal (only where its entry states it can be
-  # removed: none of the example's does) removes the variable's own
-  # declaration, the entry's property, not the property that uses it --
-  # which is where the preview removes it too. The value the editor showed
-  # is the using property's, so it is not compared against the variable's.
-  let token = schema.kind == wskToken and schema.property.startsWith("--")
-  let removing = if token: schema.property else: plan.property
   let found = content.demoDeclarations(removing)
   if found.len == 0:
     return refuse(wedPatchFailed, file & " has no " & removing &

@@ -705,9 +705,17 @@ proc renderChatPanel*[R, E](r: R; vm: EditorVM): E =
             text "Rebase"
         listen(rebaseBtn, "click", proc() =
           discard vm.rebaseAgentProposedEdit(proposalId))
-        r.appendChild(actions, acceptBtn)
-        r.appendChild(actions, rejectBtn)
-        r.appendChild(actions, revertBtn)
+        # Each control only where its operation applies: Accept and Reject
+        # to a proposal not yet applied (a reverted or failed one may be
+        # accepted again), Revert to an applied one. An accepted card kept
+        # offering Accept, whose second click could only be refused.
+        let applied = proposal.status in {aepsAccepted, aepsPartiallyAccepted}
+        if not applied and proposal.status != aepsRejected:
+          r.appendChild(actions, acceptBtn)
+        if proposal.status in {aepsProposed, aepsFailed}:
+          r.appendChild(actions, rejectBtn)
+        if applied:
+          r.appendChild(actions, revertBtn)
         r.appendChild(actions, rerunBtn)
         if proposal.validity != aepvCurrent:
           r.appendChild(actions, rebaseBtn)

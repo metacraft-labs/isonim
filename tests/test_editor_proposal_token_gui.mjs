@@ -61,7 +61,7 @@ const server=createServer((req,res)=>{const url=new URL(req.url,'http://x');cons
 await new Promise(resolve=>server.listen(Number(process.env.ISONIM_PROPOSAL_TOKEN_PORT||0),'127.0.0.1',resolve));
 const origin='http://127.0.0.1:'+server.address().port;
 const foundation='examples/wanderlust/design-system/foundations.css';
-const NOT_REMOVABLE="This project's source writer cannot remove the padding declaration from "+foundation+'.';
+const NOT_REMOVABLE="This project's source writer cannot remove the --wl-space-card token from "+foundation+'.';
 const proof={head:process.env.ISONIM_TEST_HEAD||'working copy',cases:[],failures:[],errors:[]};
 let browser;
 try {
@@ -116,6 +116,34 @@ try {
     await button.click();
   }
   const proposalCard=(id)=>p.locator('[data-agent-proposal="'+id+'"]');
+  const cardButton=(label,id)=>p.getByRole('button',{name:label+' agent edit '+id,exact:true});
+  const cardStatus=(id)=>proposalCard(id).getAttribute('data-agent-proposal-status');
+  const cardRule=async()=>((await source()).match(/\.destination-card \{[^}]*\}/)||[''])[0];
+  // A box-model field edit that is still pending (inside the auto-save
+  // debounce, the page clock paused) when the proposal is accepted.
+  async function pendingFieldThenAccept(id){
+    await select();
+    const layout=p.locator('[data-inspector-section-header="layout"]');
+    if((await layout.getAttribute('aria-expanded'))!=='true')await layout.click();
+    const toggle=p.getByRole('button',{name:'Show box model controls'});
+    if((await toggle.getAttribute('aria-expanded'))!=='true')await toggle.click();
+    const f=p.getByRole('textbox',{name:'Padding top',exact:true});
+    await f.click();await f.press('ControlOrMeta+A');
+    const now=await p.evaluate(()=>Date.now());
+    await p.clock.pauseAt(now+60000);
+    let pendingBefore=-1;
+    try{
+      await p.keyboard.type('30');await f.press('Enter');
+      pendingBefore=await pending();
+      // View mode (the chat); waited on from node, since page-side waits do
+      // not run on a paused clock.
+      await modeButton('view').click();
+      const b=cardButton('Accept',id);const deadline=Date.now()+60000;
+      while(!(await b.count())&&Date.now()<deadline)await new Promise(r=>setTimeout(r,200));
+      await b.click();
+    }finally{await p.clock.resume();}
+    assert.equal(pendingBefore,1,'the field edit is pending when the proposal is accepted');
+  }
   const paddingRow=async()=>{
     await select();
     const section=p.locator('[data-inspector-section-header="component-properties"]');
@@ -211,6 +239,69 @@ try {
     }finally{await p.clock.resume();}
     await assertPoll(async()=>[await pending(),await tokenDecl()],[0,''],'the write');
     await looks({padding:'0px',token:''},'after the write');
+    trail.push({preview:await look()});
+  });
+
+  // Follow-up (review PE1, PE2, P3).
+  await caseRun('a token removal accepted while a field edit is pending is shown, also after View and Edit',async(trail)=>{
+    await open({__isonimShorthandProposals:'1',__isonimShorthandRemovableTokens:'1'});
+    const id=await propose('padding','sskComponentToken');
+    await pendingFieldThenAccept(id);
+    await assertPoll(async()=>[await pending(),await tokenDecl(),await cardRule()],[0,'','.destination-card { padding: var(--wl-space-card); padding-top: 30px; }'],'both written in one write');
+    await toMode('edit');
+    const shown=()=>card().evaluate(n=>({top:getComputedStyle(n).paddingTop,left:getComputedStyle(n).paddingLeft}));
+    let r=await poll(shown,{top:'30px',left:'0px'});
+    if(!r.ok)throw new Error('after the write the preview shows '+JSON.stringify(r.last)+'; the file renders top 30px, left 0px');
+    await rebuild();
+    r=await poll(shown,{top:'30px',left:'0px'});
+    if(!r.ok)throw new Error('after View, then Edit the preview shows '+JSON.stringify(r.last)+'; the file renders top 30px, left 0px');
+    trail.push({preview:r.last});
+  });
+  await caseRun('a class removal accepted while a field edit is pending is shown, also after View and Edit',async(trail)=>{
+    await open({__isonimShorthandProposals:'1'});
+    const id=await propose('padding','sskSharedClass');
+    await pendingFieldThenAccept(id);
+    await assertPoll(async()=>[await pending(),await cardRule()],[0,'.destination-card { padding-top: 30px; }'],'both written in one write');
+    await toMode('edit');
+    const left=()=>card().evaluate(n=>getComputedStyle(n).paddingLeft);
+    let r=await poll(left,'0px');
+    if(!r.ok)throw new Error('after the write the preview shows padding-left '+r.last+'; the file renders 0px');
+    await rebuild();
+    r=await poll(left,'0px');
+    if(!r.ok)throw new Error('after View, then Edit the preview shows padding-left '+r.last+'; the file renders 0px');
+    trail.push({left:r.last});
+  });
+  await caseRun('Revert of an accepted token removal puts the variable back',async(trail)=>{
+    await open({__isonimShorthandProposals:'1',__isonimShorthandRemovableTokens:'1'});
+    const before=await source();
+    const id=await propose('padding','sskComponentToken');
+    await accept(id);
+    await assertPoll(async()=>[await pending(),await tokenDecl()],[0,''],'the acceptance is written');
+    assert.equal(await cardButton('Accept',id).count(),0,'an accepted card offers no Accept');
+    await cardButton('Revert',id).click();
+    await assertPoll(async()=>[await pending(),await source()],[0,before],'the revert puts back exactly what was removed');
+    await assertPoll(()=>cardStatus(id),'reverted','the proposal is reverted');
+    assert.equal(await proposalCard(id).locator('[data-agent-proposal-refusal="true"]').count(),0,'no refusal');
+    await toMode('edit');
+    await looks({padding:'16px',token:'16px'},'after the revert');
+    await rebuild();
+    await looks({padding:'16px',token:'16px'},'after the revert, View then Edit');
+    trail.push({preview:await look()});
+  });
+  await caseRun('Revert of an accepted class removal puts the declaration back',async(trail)=>{
+    await open({__isonimShorthandProposals:'1'});
+    const before=await source();
+    const id=await propose('padding','sskSharedClass');
+    await accept(id);
+    await assertPoll(async()=>[await pending(),await cardRule()],[0,'.destination-card { }'],'the acceptance is written');
+    await cardButton('Revert',id).click();
+    await assertPoll(async()=>[await pending(),await source()],[0,before],'the revert puts back exactly what was removed');
+    await assertPoll(()=>cardStatus(id),'reverted','the proposal is reverted');
+    // A reverted proposal can be accepted again; it offers no Revert.
+    assert.equal(await cardButton('Revert',id).count(),0,'a reverted card offers no Revert');
+    assert.equal(await cardButton('Accept',id).count(),1,'a reverted card offers Accept again');
+    await toMode('edit');
+    await looks({padding:'16px',token:'16px'},'after the revert');
     trail.push({preview:await look()});
   });
 

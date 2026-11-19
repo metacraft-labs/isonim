@@ -1422,6 +1422,14 @@ suite "An accepted proposal asks the questions its commit would":
       check vm.workspaceEditStage.val != wesFailed
       check foundation[] == before
 
+  template refusedAcceptedAgain(vm: EditorVM; foundation: ref string;
+      id: string; written: string) =
+    block:
+      let again = vm.acceptAgentProposedEdit(id)
+      check not again.ok
+      check vm.inspector.pendingSourceEdits.val.len == 0
+      check foundation[] == written
+
   test "a token removal its entry does not state is refused at acceptance with the Reset's reason":
     createRoot proc(dispose: proc()) =
       let foundation = new(string)
@@ -1429,7 +1437,7 @@ suite "An accepted proposal asks the questions its commit would":
       let vm = wanderlustVm(foundation)
       let reason = vm.propertyResetRefusal("padding", sskComponentToken)
       check reason == "This project's source writer cannot remove the " &
-        "padding declaration from " & DemoFoundationSource & "."
+        "--wl-space-card token from " & DemoFoundationSource & "."
       let id = vm.propose(scratchPlan("padding", "", sskComponentToken))
       vm.refusedUnchanged(foundation, id, reason)
       dispose()
@@ -1528,3 +1536,117 @@ suite "An accepted proposal asks the questions its commit would":
     check not patched.ok
     check patched.diagnostics.len == 1
     check patched.diagnostics[0].message.contains("does not state that its declaration can be removed")
+
+  # Follow-up (isonim-pm proposal follow-up, review PE1, PE2, P3).
+
+  test "a proposal accepted while a shown inspector edit is pending reloads the preview":
+    # PE1: the inspector edit showed its value, so the joined write would
+    # request no reload; the proposal's edit is shown by nothing.
+    createRoot proc(dispose: proc()) =
+      let foundation = new(string)
+      foundation[] = DemoFoundationInitialSource
+      let vm = wanderlustVm(foundation)
+      check vm.commitInspectorValue("overflow", "scroll", sskSharedClass).ok
+      check vm.previewShowsPendingEdits.val
+      let reloads = vm.livePreviewReloadGeneration.val
+      let caught = vm.previewSourceCaughtUp.val
+      let id = vm.propose(scratchPlan("padding", "", sskSharedClass))
+      check vm.acceptAgentProposedEdit(id).ok
+      check foundation[].contains(" overflow: scroll;")
+      check not foundation[].contains(".destination-card { padding: 18px; }")
+      check vm.livePreviewReloadGeneration.val == reloads + 1
+      check vm.previewSourceCaughtUp.val == caught + 1
+      dispose()
+
+  test "Revert of an accepted removal puts back exactly the removed declaration":
+    # PE2: the reversal swapped values but stayed a removal, which the
+    # writer refused, and it stayed journaled.
+    createRoot proc(dispose: proc()) =
+      let foundation = new(string)
+      foundation[] = DemoFoundationInitialSource
+      let vm = wanderlustVm(foundation)
+      let id = vm.propose(scratchPlan("padding", "", sskSharedClass))
+      check vm.acceptAgentProposedEdit(id).ok
+      check foundation[].contains(".destination-card { }")
+      let reverted = vm.revertAgentProposedEdit(id)
+      check reverted.ok
+      check reverted.diagnostics.len == 0
+      check vm.statusOf(id) == aepsReverted
+      check vm.inspector.pendingSourceEdits.val.len == 0
+      check foundation[] == DemoFoundationInitialSource
+      dispose()
+
+  test "Revert of an accepted token removal puts back the variable":
+    createRoot proc(dispose: proc()) =
+      let foundation = new(string)
+      foundation[] = DemoFoundationInitialSource
+      let vm = wanderlustVm(foundation)
+      for entry in vm.workspaceEditAdapter.schema.mitems:
+        if entry.kind == wskToken: entry.removable = true
+      let id = vm.propose(scratchPlan("padding", "", sskComponentToken))
+      check vm.acceptAgentProposedEdit(id).ok
+      check not foundation[].contains("--wl-space-card:")
+      check vm.revertAgentProposedEdit(id).ok
+      check vm.inspector.pendingSourceEdits.val.len == 0
+      check foundation[] == DemoFoundationInitialSource
+      dispose()
+
+  test "Revert puts back only the proposal's edit, not an inspector edit written with it":
+    createRoot proc(dispose: proc()) =
+      let foundation = new(string)
+      foundation[] = DemoFoundationInitialSource
+      let vm = wanderlustVm(foundation)
+      check vm.commitInspectorValue("overflow", "scroll", sskSharedClass).ok
+      let id = vm.propose(scratchPlan("padding", "", sskSharedClass))
+      check vm.acceptAgentProposedEdit(id).ok
+      check vm.revertAgentProposedEdit(id).ok
+      check foundation[].contains(".destination-card { padding: 18px; }")
+      check foundation[].contains(" overflow: scroll;")
+      dispose()
+
+  test "a Revert the write could not make is refused at the act, nothing journaled":
+    createRoot proc(dispose: proc()) =
+      let foundation = new(string)
+      foundation[] = DemoFoundationInitialSource
+      let vm = wanderlustVm(foundation)
+      let id = vm.propose(scratchPlan("padding", "", sskSharedClass))
+      check vm.acceptAgentProposedEdit(id).ok
+      # The file moves on in a way that loses the place the removal was
+      # made (another writer, outside the editor).
+      foundation[] = foundation[].replace(".destination-card { }",
+        ".destination-card { margin: 1px; }")
+      let before = foundation[]
+      let reverted = vm.revertAgentProposedEdit(id)
+      check not reverted.ok
+      check vm.refusalOf(id).startsWith("Revert refused")
+      check vm.statusOf(id) == aepsAccepted
+      check vm.inspector.pendingSourceEdits.val.len == 0
+      check foundation[] == before
+      dispose()
+
+  test "accepting an accepted proposal is refused, and it stays accepted":
+    createRoot proc(dispose: proc()) =
+      let foundation = new(string)
+      foundation[] = DemoFoundationInitialSource
+      let vm = wanderlustVm(foundation)
+      let id = vm.propose(scratchPlan("overflow", "scroll", sskSharedClass))
+      check vm.acceptAgentProposedEdit(id).ok
+      let written = foundation[]
+      vm.refusedAcceptedAgain(foundation, id, written)
+      check vm.refusalOf(id) == "This proposal is already accepted."
+      check vm.statusOf(id) == aepsAccepted
+      dispose()
+
+  test "a proposal that is not accepted cannot be reverted":
+    createRoot proc(dispose: proc()) =
+      let foundation = new(string)
+      foundation[] = DemoFoundationInitialSource
+      let vm = wanderlustVm(foundation)
+      let id = vm.propose(scratchPlan("overflow", "scroll", sskSharedClass))
+      let reverted = vm.revertAgentProposedEdit(id)
+      check not reverted.ok
+      check vm.refusalOf(id) == "Only an accepted proposal can be reverted."
+      check vm.statusOf(id) == aepsProposed
+      check vm.inspector.pendingSourceEdits.val.len == 0
+      check foundation[] == DemoFoundationInitialSource
+      dispose()
