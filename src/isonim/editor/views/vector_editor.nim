@@ -453,7 +453,7 @@ proc renderVectorEditor*[R, E](r: R; vm: EditorVM): E =
       if exported.len > 0:
         let outcome = vm.commitBrowserVectorSvg(exported)
         if outcome.ok:
-          acceptFabricVectorEdits(fabricHost)
+          acceptFabricVectorEdits(fabricHost, outcome.sourceEdit.historyId)
           vectorRefusal.val = ""
         else:
           # Refused at the act (a workspace read-only for source changes):
@@ -474,6 +474,13 @@ proc renderVectorEditor*[R, E](r: R; vm: EditorVM): E =
         svgContent = symbols[selected].svgContent
       mountFabricVectorEditor(fabricHost, symbolName, svgContent,
         vm.vectorEditor.activeTool.val.toolSlug)
+    # The editor's undo and redo of a vector edit (one timeline, editor
+    # spec "Saving") move the vector history; the canvas follows, showing
+    # what was accepted with the entry now on top of it.
+    createRenderEffect proc() =
+      let history = vm.vectorEditor.undoStack.val
+      showFabricVectorHistory(fabricHost,
+        if history.len > 0: history[^1].sourceEdit.historyId else: 0)
     # The refusal's reason, beside the canvas, until the next accepted edit.
     createRenderEffect proc() =
       let reason = vectorRefusal.val

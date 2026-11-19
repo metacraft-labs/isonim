@@ -177,6 +177,10 @@ proc mountFabricVectorEditor*[E](host: E; symbolName, initialSvg,
     pathHistory: [],
     pathRedo: [],
     editablePathObject: null,
+    acceptedSnapshot: null,
+    historySnapshots: new Map(),
+    shownHistoryId: undefined,
+    applyingSnapshot: false,
     fallbackPathData: 'M 100 160 L 148 205 L 232 108',
     nodeId(index) {
       return `node-${index}`;
@@ -388,14 +392,20 @@ proc mountFabricVectorEditor*[E](host: E; symbolName, initialSvg,
           const startY = event.clientY;
           const startNodeX = node.x;
           const startNodeY = node.y;
+          let moved = false;
           const move = (moveEvent) => {
             const dx = (moveEvent.clientX - startX) / canvas.getZoom();
             const dy = (moveEvent.clientY - startY) / canvas.getZoom();
+            if (dx === 0 && dy === 0) return;
+            moved = true;
             this.movePathNodeTo(node.id, startNodeX + dx, startNodeY + dy, false);
           };
           const up = () => {
             document.removeEventListener('pointermove', move);
             document.removeEventListener('pointerup', up);
+            // A click on a node selects it; only a drag that moved it is
+            // an edit.
+            if (!moved) return;
             this.recordSourceChange('path-pointer-drag');
             host.dataset.vectorPathPointerDrag = 'true';
           };
@@ -533,12 +543,9 @@ proc mountFabricVectorEditor*[E](host: E; symbolName, initialSvg,
       this.recordSourceChange('path-handle-drag');
       return true;
     },
-    // The canvas as the editor last accepted it: each object with the
-    // properties a drawing, a move, a style or a path edit changes. A change
-    // the editor refuses at the act (a workspace read-only for source
-    // changes) is taken back to it by `restoreAccepted`, without going
-    // through a tool (a shape tool's setTool adds a shape) and without
-    // recording a source change, so a refusal cannot cause another one.
+    // The canvas as the editor accepted it: each object with the properties
+    // a drawing, a move, a resize, a rotation, a skew, a style or a path edit
+    // changes.
     acceptedProps(obj) {
       const keys = ['left', 'top', 'width', 'height', 'scaleX', 'scaleY',
         'angle', 'skewX', 'skewY', 'flipX', 'flipY', 'fill', 'stroke',
@@ -549,51 +556,147 @@ proc mountFabricVectorEditor*[E](host: E; symbolName, initialSvg,
       if (Array.isArray(obj.points)) props.points = JSON.parse(JSON.stringify(obj.points));
       return props;
     },
-    acceptCurrent() {
-      this.accepted = canvas.getObjects().map((obj) => ({ obj, props: this.acceptedProps(obj) }));
-      // The Paper.js editable path behind the canvas's editable-path shape:
-      // its nodes, the selected nodes, its undo/redo stacks and which canvas
-      // object draws it. A path-node edit changes these as well as the
-      // canvas.
-      this.acceptedPath = {
-        pathData: this.pathDataFromPaper(),
-        selected: Array.from(this.selectedSegmentIndices || []),
-        editable: this.editablePathObject,
-        history: (this.pathHistory || []).slice(),
-        redo: (this.pathRedo || []).slice()
-      };
-      host.dataset.vectorAcceptedCount = String(this.accepted.length);
-    },
-    restoreAccepted() {
-      if (!this.accepted) return false;
-      const keep = new Set(this.accepted.map((entry) => entry.obj));
+    // A multi-selection's members hold coordinates relative to the
+    // selection; a snapshot of them is taken with the selection released (its
+    // transform applied to each member), then the same members are selected
+    // again. (fabric's SVG export already writes them at canvas positions.)
+    releasingSelection(fn) {
+      const active = canvas.getActiveObject();
+      if (!active || !(active instanceof fabricLib.ActiveSelection)) return fn();
+      const members = active.getObjects();
       canvas.discardActiveObject();
-      canvas.getObjects().slice().forEach((obj) => { if (!keep.has(obj)) canvas.remove(obj); });
-      this.accepted.forEach((entry, index) => {
-        if (!canvas.getObjects().includes(entry.obj)) canvas.add(entry.obj);
-        entry.obj.set(entry.props);
-        if (typeof entry.obj.setCoords === 'function') entry.obj.setCoords();
-        if (typeof canvas.moveObjectTo === 'function') canvas.moveObjectTo(entry.obj, index);
-      });
-      // The editable path as accepted: its nodes and selection, its history,
-      // and the canvas object that draws it again (the one just restored;
-      // a refused node edit had replaced it). Not through renderEditablePath
-      // or restorePathSnapshot, which would draw a new object and record a
-      // source change.
-      const path = this.acceptedPath;
-      if (path && path.pathData) {
-        this.selectedSegmentIndices = new Set(path.selected.length ? path.selected : [0]);
-        this.setPaperPathData(path.pathData, 'path-restore');
-        this.pathHistory = path.history.slice();
-        this.pathRedo = path.redo.slice();
-        host.dataset.vectorPathUndoDepth = String(this.pathHistory.length);
-        host.dataset.vectorPathRedoDepth = String(this.pathRedo.length);
+      try {
+        return fn();
+      } finally {
+        const kept = members.filter((obj) => canvas.getObjects().includes(obj));
+        if (kept.length > 1) {
+          canvas.setActiveObject(new fabricLib.ActiveSelection(kept, { canvas }));
+        } else if (kept.length === 1) {
+          canvas.setActiveObject(kept[0]);
+        }
       }
-      if (path) this.editablePathObject = path.editable;
-      canvas.renderAll();
-      this.syncSelection();
-      if (typeof this.syncPathOverlay === 'function') this.syncPathOverlay();
+    },
+    snapshotCanvas() {
+      return this.releasingSelection(() => ({
+        objects: canvas.getObjects().map((obj) => ({ obj, props: this.acceptedProps(obj) })),
+        // The Paper.js editable path behind the canvas's editable-path
+        // shape: its nodes, the selected nodes, its undo/redo stacks and
+        // which canvas object draws it. A path-node edit changes these as
+        // well as the canvas.
+        path: {
+          pathData: this.pathDataFromPaper(),
+          selected: Array.from(this.selectedSegmentIndices || []),
+          editable: this.editablePathObject,
+          history: (this.pathHistory || []).slice(),
+          redo: (this.pathRedo || []).slice()
+        }
+      }));
+    },
+    // `historyId` names the editor's vector history entry for the commit
+    // that accepted this canvas; an undo or redo that puts that entry on top
+    // of the history shows this canvas again (`showHistory`). Without one
+    // (the loaded symbol), the canvas is the one for the entry shown.
+    acceptCurrent(historyId) {
+      const snapshot = this.snapshotCanvas();
+      this.acceptedSnapshot = snapshot;
+      if (historyId !== undefined && historyId !== null && historyId >= 0) {
+        this.historySnapshots.set(historyId, snapshot);
+        this.shownHistoryId = historyId;
+      } else if (this.shownHistoryId !== undefined) {
+        this.historySnapshots.set(this.shownHistoryId, snapshot);
+      }
+      host.dataset.vectorAcceptedCount = String(snapshot.objects.length);
+    },
+    applySnapshot(snapshot) {
+      if (!snapshot) return false;
+      this.applyingSnapshot = true;
+      try {
+        const keep = new Set(snapshot.objects.map((entry) => entry.obj));
+        canvas.discardActiveObject();
+        canvas.getObjects().slice().forEach((obj) => { if (!keep.has(obj)) canvas.remove(obj); });
+        snapshot.objects.forEach((entry, index) => {
+          if (!canvas.getObjects().includes(entry.obj)) canvas.add(entry.obj);
+          entry.obj.set(entry.props);
+          if (typeof entry.obj.setCoords === 'function') entry.obj.setCoords();
+          if (typeof canvas.moveObjectTo === 'function') canvas.moveObjectTo(entry.obj, index);
+        });
+        // The editable path as accepted: its nodes and selection, its
+        // history, and the canvas object that draws it again (the one just
+        // restored; a refused node edit had replaced it). Not through
+        // renderEditablePath or restorePathSnapshot, which would draw a new
+        // object and record a source change.
+        const path = snapshot.path;
+        if (path && path.pathData) {
+          this.selectedSegmentIndices = new Set(path.selected.length ? path.selected : [0]);
+          this.setPaperPathData(path.pathData, 'path-restore');
+          this.pathHistory = path.history.slice();
+          this.pathRedo = path.redo.slice();
+          host.dataset.vectorPathUndoDepth = String(this.pathHistory.length);
+          host.dataset.vectorPathRedoDepth = String(this.pathRedo.length);
+        }
+        if (path) this.editablePathObject = path.editable;
+        canvas.renderAll();
+        this.syncSelection();
+        if (typeof this.syncPathOverlay === 'function') this.syncPathOverlay();
+      } finally {
+        this.applyingSnapshot = false;
+      }
+      return true;
+    },
+    // A change the editor refuses at the act (a workspace read-only for
+    // source changes) is taken back to the last accepted canvas, without
+    // going through a tool (a shape tool's setTool adds a shape) and
+    // without recording a source change, so a refusal cannot cause another.
+    restoreAccepted() {
+      if (!this.applySnapshot(this.acceptedSnapshot)) return false;
       host.dataset.vectorRestoredCount = String((Number(host.dataset.vectorRestoredCount) || 0) + 1);
+      return true;
+    },
+    // The editor's undo or redo of a vector edit: the canvas shows what was
+    // accepted with the entry now on top of the vector history, recording no
+    // source change (the undo or redo stages its own). An entry this canvas
+    // did not accept (one made before it was mounted) changes nothing.
+    showHistory(historyId) {
+      if (this.shownHistoryId === undefined) {
+        this.shownHistoryId = historyId;
+        if (this.acceptedSnapshot) this.historySnapshots.set(historyId, this.acceptedSnapshot);
+        return false;
+      }
+      if (historyId === this.shownHistoryId) return false;
+      const snapshot = this.historySnapshots.get(historyId);
+      if (!snapshot || !this.applySnapshot(snapshot)) return false;
+      this.acceptedSnapshot = snapshot;
+      this.shownHistoryId = historyId;
+      host.dataset.vectorHistoryShown = String(historyId);
+      return true;
+    },
+    // A move, resize, rotation or skew of canvas objects with the Select
+    // tool (fabric fires `object:modified` once, at the release, for the
+    // object or the multi-selection it transformed), or a canvas text edit:
+    // one source change. A transform of the editable path's shape moves the
+    // Paper.js path with it, so the next node edit starts where the shape
+    // is; that is still one change, not a node edit as well.
+    recordObjectModification(event) {
+      if (this.applyingSnapshot) return false;
+      const target = event && event.target;
+      if (!target) return false;
+      const members = target instanceof fabricLib.ActiveSelection ? target.getObjects() : [target];
+      if (this.editablePathObject && members.includes(this.editablePathObject)) {
+        this.releasingSelection(() => this.foldEditablePathTransform());
+      }
+      const action = (event.action || (event.transform && event.transform.action)) || 'modify';
+      host.dataset.vectorModifiedAction = action;
+      this.recordSourceChange(`object-${action}`);
+      return true;
+    },
+    foldEditablePathTransform() {
+      const obj = this.editablePathObject;
+      if (!obj || !this.paperPath || !Array.isArray(obj.path)) return false;
+      const util = fabricLib.util;
+      const data = util.joinPath(util.transformPath(obj.path, obj.calcTransformMatrix(), obj.pathOffset));
+      this.pushPathHistory();
+      if (!this.setPaperPathData(data, 'path-transform')) return false;
+      this.syncPathOverlay();
       return true;
     },
     recordSourceChange(operation) {
@@ -895,7 +998,6 @@ proc mountFabricVectorEditor*[E](host: E; symbolName, initialSvg,
         scaleY: (obj.scaleY || 1) * 1.1
       });
       obj.setCoords();
-      canvas.fire('object:modified', { target: obj });
       canvas.requestRenderAll();
       this.syncSelection();
       this.recordSourceChange('transform');
@@ -929,7 +1031,13 @@ proc mountFabricVectorEditor*[E](host: E; symbolName, initialSvg,
   canvas.on('selection:created', () => state.syncSelection());
   canvas.on('selection:updated', () => state.syncSelection());
   canvas.on('selection:cleared', () => state.syncSelection());
-  canvas.on('object:modified', () => state.syncSelection());
+  // Recorded once fabric has finished the transform: releasing a
+  // multi-selection while fabric still holds it as the current transform
+  // would end that transform again, and fire this event again.
+  canvas.on('object:modified', (event) => {
+    state.syncSelection();
+    globalThis.__isonimDeferView(host, () => state.recordObjectModification(event), 0);
+  });
   canvas.on('object:added', () => state.syncSelection());
   canvas.on('object:removed', () => state.syncSelection());
   host.addEventListener('keydown', (event) => {
@@ -1026,12 +1134,23 @@ proc runFabricVectorAction*[E](host: E; action: string) =
 })()
   """].}
 
-proc acceptFabricVectorEdits*[E](host: E) =
-  ## The canvas as it is now is what the editor accepted.
+proc acceptFabricVectorEdits*[E](host: E; historyId = -1) =
+  ## The canvas as it is now is what the editor accepted, with the vector
+  ## history entry `historyId` (none: the loaded symbol).
   {.emit: ["""
 (() => {
   const editor = """, host, """ && """, host, """.__isonimVectorEditor;
-  if (editor) editor.acceptCurrent();
+  if (editor) editor.acceptCurrent(""", historyId, """);
+})()
+  """].}
+
+proc showFabricVectorHistory*[E](host: E; historyId: int) =
+  ## The editor's vector history has the entry `historyId` on top (0: none):
+  ## show the canvas accepted with it, recording no source change.
+  {.emit: ["""
+(() => {
+  const editor = """, host, """ && """, host, """.__isonimVectorEditor;
+  if (editor) editor.showHistory(""", historyId, """);
 })()
   """].}
 
