@@ -109,9 +109,10 @@ try {
     return {x:r(c.x),y:r(c.y),scaleX:r(d.scaleX),scaleY:r(d.scaleY),angle:r(d.angle),skewX:r(d.skewX)};},name);
   const active=()=>p.evaluate(()=>{const e=document.querySelector('[data-vector-adapter="fabric"][role="application"]').__isonimVectorEditor;const a=e.canvas.getActiveObject();if(!a)return [];return a instanceof fabric.ActiveSelection?a.getObjects().map(o=>o.name).sort():[a.name];});
   const control=(name,corner)=>p.evaluate(([n,k])=>{const e=document.querySelector('[data-vector-adapter="fabric"][role="application"]').__isonimVectorEditor;const o=e.canvas.getActiveObject();const c=o&&o.oCoords&&o.oCoords[k];return c?[c.x,c.y]:null;},[name,corner]);
-  // Page coordinates of a canvas point, with the whole canvas in view (a
-  // toolbar click can scroll the page).
-  const at=async(x,y)=>{await p.evaluate(()=>{const c=document.querySelector('[data-vector-adapter="fabric"] canvas.upper-canvas');const r=c.getBoundingClientRect();if(r.top<0||r.left<0||r.bottom>innerHeight||r.right>innerWidth)c.scrollIntoView({block:'center',inline:'center'});});const b=await host().locator('canvas.upper-canvas').boundingBox();return [b.x+x,b.y+y];};
+  // Page coordinates of a canvas point. No scrolling into view first: the
+  // toolbar keeps every action on screen, and a click that scrolled the
+  // canvas away would put the pointer off it.
+  const at=async(x,y)=>{const b=await host().locator('canvas.upper-canvas').boundingBox();return [b.x+x,b.y+y];};
   async function drag(from,dx,dy,{shift=false}={}){
     const [sx,sy]=await at(from[0],from[1]);
     if(shift)await p.keyboard.down('Shift');
@@ -255,7 +256,6 @@ try {
     await p.waitForTimeout(800);
     assert.equal(await events(),2,'a node nudge is one source change');
     // A click on a node selects it and is no edit.
-    await at(0,0);
     await p.evaluate(()=>{const h=document.querySelector('[data-vector-adapter="fabric"][role="application"]');h.__isonimVectorEditor.selectPathNode('node-1');});
     const n0=host().locator('[data-vector-anchor="node-0"]');const nb=await n0.boundingBox();
     await p.mouse.click(nb.x+nb.width/2,nb.y+nb.height/2);

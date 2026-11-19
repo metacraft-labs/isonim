@@ -397,6 +397,9 @@ proc mountFabricVectorEditor*[E](host: E; symbolName, initialSvg,
             const dx = (moveEvent.clientX - startX) / canvas.getZoom();
             const dy = (moveEvent.clientY - startY) / canvas.getZoom();
             if (dx === 0 && dy === 0) return;
+            // The drag's first movement is its one path-history entry, as
+            // a nudge's is.
+            if (!moved) this.pushPathHistory();
             moved = true;
             this.movePathNodeTo(node.id, startNodeX + dx, startNodeY + dy, false);
           };
@@ -717,6 +720,17 @@ proc mountFabricVectorEditor*[E](host: E; symbolName, initialSvg,
     setTool(nextTool) {
       host.dataset.vectorTool = nextTool;
       canvas.isDrawingMode = nextTool === 'pencil';
+      // fabric 7 has no brush until one is set: without it the Pencil tool
+      // drew nothing. PencilBrush smooths the stroke (quadratic segments
+      // through decimated points).
+      if (nextTool === 'pencil' && fabricLib.PencilBrush &&
+          !(canvas.freeDrawingBrush instanceof fabricLib.PencilBrush)) {
+        const brush = new fabricLib.PencilBrush(canvas);
+        brush.color = '#F8FAFC';
+        brush.width = 3;
+        brush.decimate = 2;
+        canvas.freeDrawingBrush = brush;
+      }
       canvas.selection = nextTool === 'select';
       canvas.defaultCursor = nextTool === 'select' ? 'default' : 'crosshair';
       if (nextTool === 'rectangle') this.addRect();
@@ -1039,6 +1053,14 @@ proc mountFabricVectorEditor*[E](host: E; symbolName, initialSvg,
     globalThis.__isonimDeferView(host, () => state.recordObjectModification(event), 0);
   });
   canvas.on('object:added', () => state.syncSelection());
+  // A Pencil stroke, added once the pointer is released: one source change.
+  canvas.on('path:created', (event) => {
+    const stroke = event && event.path;
+    if (!stroke || state.applyingSnapshot) return;
+    stroke.set({ name: 'drawn-pencil', selectable: true });
+    state.syncSelection();
+    state.recordSourceChange('pencil-stroke');
+  });
   canvas.on('object:removed', () => state.syncSelection());
   host.addEventListener('keydown', (event) => {
     if (event.key === 'Delete' || event.key === 'Backspace') {
@@ -1047,12 +1069,6 @@ proc mountFabricVectorEditor*[E](host: E; symbolName, initialSvg,
       event.preventDefault();
     } else if ((event.metaKey || event.ctrlKey) && event.key.toLowerCase() === 'd') {
       state.duplicateSelected();
-      event.preventDefault();
-    } else if ((event.metaKey || event.ctrlKey) && event.key.toLowerCase() === 'z') {
-      state.undoPathOperation();
-      event.preventDefault();
-    } else if ((event.metaKey || event.ctrlKey) && event.key.toLowerCase() === 'y') {
-      state.redoPathOperation();
       event.preventDefault();
     } else if (event.key.toLowerCase() === 'g') {
       state.groupSelected();

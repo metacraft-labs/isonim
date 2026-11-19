@@ -320,10 +320,16 @@ proc renderVectorEditor*[R, E](r: R; vm: EditorVM): E =
             background_size = "16px 16px",
             overflow = "auto", padding = "28px 28px 40px 28px"):
 
+        # The column takes the canvas area's width, up to the canvas's own
+        # width and margin: its action row wraps to the width that is on
+        # screen, so no action is out of view and reaching one never
+        # scrolls the canvas. The canvas keeps its size; a narrower area
+        # scrolls to show the rest of it.
         tdiv(display = "flex", flex_direction = "column", gap = "8px",
-              min_width = "760px", width = "760px"):
+              width = "100%", max_width = "760px", min_width = "0"):
           tdiv(display = "flex", align_items = "center",
-                justify_content = "space-between"):
+                justify_content = "space-between", flex_wrap = "wrap",
+                gap = "8px"):
             span(font_size = "11px", color = textMuted):
               text "Fabric.js adapter handles selection, hit testing, transforms, grouping, drawing, and SVG export."
             # M-EVP-12 fix-cycle 3 (Finding C): cluster the 20 action
@@ -331,7 +337,12 @@ proc renderVectorEditor*[R, E](r: R; vm: EditorVM): E =
             # Object / Path / History+Export) separated by 1px hairline
             # dividers so the row reads as labelled tool clusters rather
             # than one continuous wall of identical pills.
+            # The clusters wrap inside the column, and a cluster wraps its
+            # buttons, so every action is on screen: on one row, the action
+            # row was more than twice the column's width, and reaching a
+            # button scrolled the canvas sideways out of view.
             tdiv(display = "flex", align_items = "center", gap = "0",
+                  flex_wrap = "wrap", row_gap = "8px",
                   `data-vector-action-row` = "true"):
               const actionClusters: array[5, seq[string]] = [
                 @["import-sample", "zoom-in", "zoom-out", "pan-right"],
@@ -349,7 +360,7 @@ proc renderVectorEditor*[R, E](r: R; vm: EditorVM): E =
                 # padding/margin from 10px to 14px and thicken the hairline
                 # from borderFaint to border so the 5 semantic groups read
                 # as distinct clusters at thumb scale.
-                tdiv(display = "flex", gap = "4px",
+                tdiv(display = "flex", gap = "4px", flex_wrap = "wrap",
                       padding = "0 14px 0 0",
                       margin_right = (if isLast: "0" else: "14px"),
                       border_right = (

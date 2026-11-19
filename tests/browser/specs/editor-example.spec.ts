@@ -1432,28 +1432,32 @@ test.describe("IsoNim packaged editor example", () => {
       await host.getAttribute("data-vector-path-undo-depth"),
     );
     expect(undoDepth).toBeGreaterThan(0);
+    const paperPathData = () =>
+      host.evaluate((node) => (node as any).__isonimVectorEditor.paperPath.pathData);
+    // The canvas has no undo of its own: Cmd/Ctrl+Z with it focused is the
+    // editor's undo, one timeline (editor spec "Saving"), and puts the canvas
+    // back to what it showed before the nudge; Cmd/Ctrl+Shift+Z redoes it.
     await page.keyboard.press(
       process.platform === "darwin" ? "Meta+Z" : "Control+Z",
     );
+    await expect.poll(paperPathData).toBe(handleEdit.pathData);
+    await page.keyboard.press(
+      process.platform === "darwin" ? "Meta+Shift+Z" : "Control+Shift+Z",
+    );
+    await expect.poll(paperPathData).toBe(nudgedPaperPath);
+    // The toolbar's path undo and redo step the path's own history.
+    await page.getByRole("button", { name: "Vector path-undo" }).click();
     await expect(host).toHaveAttribute(
       "data-vector-path-keyboard-operation",
       "path-undo",
     );
-    const undoPaperPath = await host.evaluate((node) => {
-      const editor = (node as any).__isonimVectorEditor;
-      return editor.paperPath.pathData;
-    });
-    expect(undoPaperPath).toBe(handleEdit.pathData);
+    expect(await paperPathData()).toBe(handleEdit.pathData);
     await page.getByRole("button", { name: "Vector path-redo" }).click();
     await expect(host).toHaveAttribute(
       "data-vector-path-keyboard-operation",
       "path-redo",
     );
-    const redoPaperPath = await host.evaluate((node) => {
-      const editor = (node as any).__isonimVectorEditor;
-      return editor.paperPath.pathData;
-    });
-    expect(redoPaperPath).toBe(nudgedPaperPath);
+    expect(await paperPathData()).toBe(nudgedPaperPath);
 
     await page.getByRole("button", { name: "Vector zoom-in" }).click();
     await page.getByRole("button", { name: "Vector zoom-in" }).click();
