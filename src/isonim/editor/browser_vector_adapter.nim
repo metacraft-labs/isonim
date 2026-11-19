@@ -388,12 +388,26 @@ proc mountFabricVectorEditor*[E](host: E; symbolName, initialSvg,
         });
         anchor.addEventListener('pointerdown', (event) => {
           anchor.setPointerCapture(event.pointerId);
+          const pointerId = event.pointerId;
           const startX = event.clientX;
           const startY = event.clientY;
           const startNodeX = node.x;
           const startNodeY = node.y;
+          // What the drag puts back when it is cancelled: the path, its
+          // selected nodes and its history before the drag.
+          const before = {
+            pathData: this.pathDataFromPaper(),
+            selected: Array.from(this.selectedSegmentIndices),
+            history: this.pathHistory.slice(),
+            redo: this.pathRedo.slice()
+          };
           let moved = false;
+          let ended = false;
+          // The anchor holding the pointer capture: moving the node redraws
+          // the overlay, so the capture moves to the node's new anchor.
+          let captor = anchor;
           const move = (moveEvent) => {
+            if (moveEvent.pointerId !== pointerId) return;
             const dx = (moveEvent.clientX - startX) / canvas.getZoom();
             const dy = (moveEvent.clientY - startY) / canvas.getZoom();
             if (dx === 0 && dy === 0) return;
@@ -402,22 +416,73 @@ proc mountFabricVectorEditor*[E](host: E; symbolName, initialSvg,
             if (!moved) this.pushPathHistory();
             moved = true;
             this.movePathNodeTo(node.id, startNodeX + dx, startNodeY + dy, false);
+            const next = overlay.querySelector(`[data-vector-anchor="${node.id}"]`);
+            if (next && next !== captor) {
+              captor = next;
+              try { next.setPointerCapture(pointerId); } catch (_) {}
+              next.addEventListener('lostpointercapture', lost);
+            }
           };
-          const up = () => {
+          const finish = () => {
+            ended = true;
             document.removeEventListener('pointermove', move);
             document.removeEventListener('pointerup', up);
+            document.removeEventListener('pointercancel', cancelled, true);
+            document.removeEventListener('keydown', escape, true);
+          };
+          const up = (upEvent) => {
+            if (upEvent.pointerId !== pointerId) return;
+            finish();
             // A click on a node selects it; only a drag that moved it is
             // an edit.
             if (!moved) return;
             this.recordSourceChange('path-pointer-drag');
             host.dataset.vectorPathPointerDrag = 'true';
           };
+          // Escape, pointer cancellation or a lost capture end the drag
+          // without an edit: the path, its selection and its history go
+          // back to before the drag, and nothing is recorded.
+          const cancel = (why) => {
+            if (ended) return;
+            finish();
+            if (captor.isConnected && captor.hasPointerCapture(pointerId)) {
+              captor.releasePointerCapture(pointerId);
+            }
+            host.dataset.vectorGestureCancelled = `node-${why}`;
+            if (!moved) return;
+            this.selectedSegmentIndices = new Set(before.selected.length ? before.selected : [0]);
+            this.setPaperPathData(before.pathData, 'path-drag-cancel');
+            this.pathHistory = before.history;
+            this.pathRedo = before.redo;
+            host.dataset.vectorPathUndoDepth = String(this.pathHistory.length);
+            host.dataset.vectorPathRedoDepth = String(this.pathRedo.length);
+            this.renderEditablePath();
+            this.syncPathOverlay();
+          };
+          const cancelled = (cancelEvent) => {
+            if (cancelEvent.pointerId === pointerId) cancel('pointercancel');
+          };
+          const escape = (keyEvent) => {
+            if (keyEvent.key !== 'Escape') return;
+            keyEvent.preventDefault();
+            keyEvent.stopPropagation();
+            cancel('escape');
+          };
+          // A capture lost by the anchor holding it. (The overlay's own
+          // redraw removes that anchor; a removed element's lost capture is
+          // fired at the document, not here, and the capture has already
+          // moved to the node's new anchor.)
+          function lost(lostEvent) {
+            if (lostEvent.pointerId === pointerId) cancel('lost-capture');
+          }
+          anchor.addEventListener('lostpointercapture', lost);
           document.addEventListener('pointermove', move);
           document.addEventListener('pointerup', up);
+          document.addEventListener('pointercancel', cancelled, true);
+          document.addEventListener('keydown', escape, true);
           globalThis.__isonimViewCleanup(host, () => {
-            document.removeEventListener('pointermove', move);
-            document.removeEventListener('pointerup', up);
-            if (anchor.hasPointerCapture(event.pointerId)) anchor.releasePointerCapture(event.pointerId);
+            finish();
+            if (captor.isConnected && captor.hasPointerCapture(pointerId)) captor.releasePointerCapture(pointerId);
           });
         });
         overlay.appendChild(anchor);
@@ -679,6 +744,35 @@ proc mountFabricVectorEditor*[E](host: E; symbolName, initialSvg,
     // one source change. A transform of the editable path's shape moves the
     // Paper.js path with it, so the next node edit starts where the shape
     // is; that is still one change, not a node edit as well.
+    cancelTransform() {
+      const transform = canvas._currentTransform;
+      if (!transform || !transform.target) return false;
+      const target = transform.target;
+      // fabric keeps the object's transform from before the drag in
+      // `transform.original`, but its originX/originY there are the
+      // transform's anchor -- the opposite corner or side of a resize or
+      // skew -- not the object's own origin, so they are left out: set
+      // back, they would displace the object.
+      const { originX, originY, ...original } = transform.original;
+      target.set(original);
+      target.setCoords();
+      target.isMoving = false;
+      canvas._currentTransform = null;
+      canvas.requestRenderAll();
+      this.syncSelection();
+      host.dataset.vectorGestureCancelled = 'transform';
+      return true;
+    },
+    cancelStroke() {
+      if (!canvas.isDrawingMode || !canvas._isCurrentlyDrawing) return false;
+      canvas._isCurrentlyDrawing = false;
+      const brush = canvas.freeDrawingBrush;
+      if (brush && typeof brush._reset === 'function') brush._reset();
+      canvas.clearContext(canvas.contextTop);
+      canvas.requestRenderAll();
+      host.dataset.vectorGestureCancelled = 'stroke';
+      return true;
+    },
     recordObjectModification(event) {
       if (this.applyingSnapshot) return false;
       const target = event && event.target;
@@ -1062,6 +1156,28 @@ proc mountFabricVectorEditor*[E](host: E; symbolName, initialSvg,
     state.recordSourceChange('pencil-stroke');
   });
   canvas.on('object:removed', () => state.syncSelection());
+  // A Select-tool drag (move, resize, rotation, skew) or a Pencil stroke
+  // in progress ends without an edit on Escape or pointer cancellation,
+  // and the canvas goes back to what it showed before the drag (the
+  // editor's drag contract). fabric does not cancel either itself.
+  const cancelCanvasGesture = (event) => {
+    const cancelled = state.cancelTransform() || state.cancelStroke();
+    if (cancelled && event) {
+      event.preventDefault();
+      event.stopPropagation();
+    }
+    return cancelled;
+  };
+  const cancelOnEscape = (event) => {
+    if (event.key === 'Escape') cancelCanvasGesture(event);
+  };
+  const cancelOnPointerCancel = (event) => { cancelCanvasGesture(null); };
+  document.addEventListener('keydown', cancelOnEscape, true);
+  document.addEventListener('pointercancel', cancelOnPointerCancel, true);
+  globalThis.__isonimViewCleanup(host, () => {
+    document.removeEventListener('keydown', cancelOnEscape, true);
+    document.removeEventListener('pointercancel', cancelOnPointerCancel, true);
+  });
   host.addEventListener('keydown', (event) => {
     if (event.key === 'Delete' || event.key === 'Backspace') {
       if (state.selectedPathNodes().length > 0) state.deleteSelectedPathNode();

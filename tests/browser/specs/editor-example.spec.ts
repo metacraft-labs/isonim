@@ -1070,6 +1070,12 @@ test.describe("IsoNim packaged editor example", () => {
   });
 
   test("e2e_vector_editor_pointer_keyboard_and_rendering", async ({ page }) => {
+    // Two full loads of the editor bundle -- the suite's beforeEach opens
+    // "/", then this test opens the vector view -- take 13s and 7s of the
+    // test's budget in a trace at load ~80, and the test's own ~80 actions
+    // ~10s; the default 30s timed it out on a loaded host. There is no
+    // fixed sleep to remove. The assertions are unchanged.
+    test.setTimeout(60_000);
     await page.goto("/?view=vector#vector-editor");
     await expect(page.getByText("Vector Editor")).toBeVisible();
 
@@ -1313,6 +1319,8 @@ test.describe("IsoNim packaged editor example", () => {
   });
 
   test("e2e_vector_path_browser_handle_polish", async ({ page }) => {
+    // The same two page loads as the pointer test above.
+    test.setTimeout(60_000);
     await page.setViewportSize(desktop);
     await page.goto("/?view=vector#vector-editor");
     const host = page.locator('[data-vector-adapter="fabric"]').first();
