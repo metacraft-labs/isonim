@@ -1352,3 +1352,179 @@ suite "A written removal keeps its preview record":
       check vm.livePreviewReloadGeneration.val == reloads
       check vm.previewSourceCaughtUp.val == 0
       dispose()
+
+suite "An accepted proposal asks the questions its commit would":
+  ## isonim-pm issue 2026-11-19-an-accepted-agent-proposal-can-write-a-token-
+  ## removal-the-preview-does-not-record; editor spec "Saving": "a commit"
+  ## means every path that stages a source edit, and a refusal the editor
+  ## can know at the act is made at the act. Accepting a proposal asks what
+  ## an inspector commit or Reset of the same edit asks before anything
+  ## moves -- writable workspace, schema admission (a removal only where the
+  ## entry states its writer can remove the declaration), the writer's own
+  ## statement, and for a removal that the write finds the one declaration --
+  ## and refuses with that reason on the proposal, staging nothing. Plans are
+  ## made on a scratch editor whose token entries are removable (as an
+  ## agent's proposal carries them, owned by no history entry); the editor
+  ## under test uses the example's production writer and schema.
+
+  proc scratchPlan(property, value: string; scope: SourceScopeChoiceKind):
+      SourceEditPlan =
+    let scratch = new(string)
+    scratch[] = DemoFoundationInitialSource
+    let vector = new(string)
+    vector[] = "<svg/>"
+    var adapter = demoVectorEditAdapter(vector, scratch)
+    for entry in adapter.schema.mitems:
+      if entry.kind == wskToken: entry.removable = true
+    adapter.editRefusal = nil
+    let vm = createEditorVM(newEditorWorkspace(title = "scratch",
+      storyGroups = @[StoryGroup(name: "DestinationCard", kind: skComponent,
+        expanded: true, items: @[StoryItem(name: "Default",
+          kind: skComponent, group: "DestinationCard")])],
+      initialStory = some(StoryRef(group: "DestinationCard", name: "Default",
+        kind: skComponent, index: 0)),
+      foundationTokens = demoFoundationTokens(),
+      designSystemSchema = demoDesignSystemSchema(),
+      permissions = EditorWorkspacePermissions(readSource: true,
+        writeSource: true),
+      editAdapter = adapter))
+    doAssert vm.selectInspectorElement(demoInspectorElement())
+    let made = vm.editSharedDesignProperty(property, value, scope)
+    doAssert made.status == pesAccepted, (if made.diagnostics.len > 0:
+      made.diagnostics[0].message else: "no plan")
+    result = vm.inspector.pendingSourceEdits.val[^1]
+    result.historyId = 0
+
+  proc propose(vm: EditorVM; plan: SourceEditPlan): string =
+    vm.chat.addAgentEditProposal(AgentEditProposal(title: "Proposal",
+      summary: "Proposal", sourceEdits: @[plan], selectedEditIndexes: @[0],
+      validity: aepvCurrent))
+
+  proc refusalOf(vm: EditorVM; id: string): string =
+    for proposal in vm.chat.proposedEdits.val:
+      if proposal.id == id: return proposal.refusal
+
+  proc statusOf(vm: EditorVM; id: string): AgentEditProposalStatus =
+    for proposal in vm.chat.proposedEdits.val:
+      if proposal.id == id: return proposal.status
+
+  template refusedUnchanged(vm: EditorVM; foundation: ref string;
+      id: string; reason: string) =
+    block:
+      let before = foundation[]
+      let accepted = vm.acceptAgentProposedEdit(id)
+      check not accepted.ok
+      check accepted.diagnostics.len == 1
+      check accepted.diagnostics[0].message == reason & " Nothing was changed."
+      check vm.refusalOf(id) == reason
+      check vm.statusOf(id) == aepsProposed
+      check vm.inspector.pendingSourceEdits.val.len == 0
+      check vm.workspaceEditStage.val != wesFailed
+      check foundation[] == before
+
+  test "a token removal its entry does not state is refused at acceptance with the Reset's reason":
+    createRoot proc(dispose: proc()) =
+      let foundation = new(string)
+      foundation[] = DemoFoundationInitialSource
+      let vm = wanderlustVm(foundation)
+      let reason = vm.propertyResetRefusal("padding", sskComponentToken)
+      check reason == "This project's source writer cannot remove the " &
+        "padding declaration from " & DemoFoundationSource & "."
+      let id = vm.propose(scratchPlan("padding", "", sskComponentToken))
+      vm.refusedUnchanged(foundation, id, reason)
+      dispose()
+
+  test "a proposal in a read-only workspace is refused at acceptance":
+    createRoot proc(dispose: proc()) =
+      let foundation = new(string)
+      foundation[] = DemoFoundationInitialSource
+      let vm = wanderlustVm(foundation)
+      vm.workspacePermissions.val = EditorWorkspacePermissions(
+        readSource: true, writeSource: false)
+      let id = vm.propose(scratchPlan("overflow", "scroll", sskSharedClass))
+      vm.refusedUnchanged(foundation, id,
+        "This workspace is read-only for source changes.")
+      dispose()
+
+  test "a proposal the writer states it cannot write is refused at acceptance":
+    createRoot proc(dispose: proc()) =
+      # The example's writer refuses a class rule shared by a selector list.
+      let shared = DemoFoundationInitialSource.replace(
+        ".destination-card { padding: 18px; }",
+        ".destination-card, .shared-card { padding: 18px; }")
+      let foundation = new(string)
+      foundation[] = shared
+      let vm = wanderlustVm(foundation)
+      let plan = scratchPlan("padding", "20px", sskSharedClass)
+      var entry: WorkspaceEditableSchemaEntry
+      for candidate in vm.workspaceEditAdapter.schema:
+        if candidate.key == plan.schemaKey: entry = candidate
+      let statement = vm.workspaceEditAdapter.editRefusal(plan, entry)
+      check statement.len > 0
+      let id = vm.propose(plan)
+      vm.refusedUnchanged(foundation, id, statement)
+      dispose()
+
+  test "a removal the write could not make is refused at acceptance":
+    createRoot proc(dispose: proc()) =
+      # Two `padding` declarations: the writer cannot tell which it owns.
+      let foundation = new(string)
+      foundation[] = DemoFoundationInitialSource & "\n.other { padding: 2px; }\n"
+      let vm = wanderlustVm(foundation)
+      let id = vm.propose(scratchPlan("padding", "", sskSharedClass))
+      let accepted = vm.acceptAgentProposedEdit(id)
+      check not accepted.ok
+      check vm.refusalOf(id).contains("2 padding declarations")
+      check vm.inspector.pendingSourceEdits.val.len == 0
+      check foundation[].contains(".destination-card { padding: 18px; }")
+      dispose()
+
+  test "an admitted proposal is written and its refusal cleared":
+    createRoot proc(dispose: proc()) =
+      let foundation = new(string)
+      foundation[] = DemoFoundationInitialSource
+      let vm = wanderlustVm(foundation)
+      let id = vm.propose(scratchPlan("overflow", "scroll", sskSharedClass))
+      vm.workspacePermissions.val = EditorWorkspacePermissions(
+        readSource: true, writeSource: false)
+      check not vm.acceptAgentProposedEdit(id).ok
+      check vm.refusalOf(id).len > 0
+      vm.workspacePermissions.val = EditorWorkspacePermissions(
+        readSource: true, writeSource: true)
+      check vm.acceptAgentProposedEdit(id).ok
+      check vm.refusalOf(id) == ""
+      check vm.statusOf(id) == aepsAccepted
+      check foundation[].contains(" overflow: scroll;")
+      dispose()
+
+  test "a removable token's removal is written as the variable's removal":
+    createRoot proc(dispose: proc()) =
+      let foundation = new(string)
+      foundation[] = DemoFoundationInitialSource
+      let vm = wanderlustVm(foundation)
+      for entry in vm.workspaceEditAdapter.schema.mitems:
+        if entry.kind == wskToken: entry.removable = true
+      let id = vm.propose(scratchPlan("padding", "", sskComponentToken))
+      check vm.acceptAgentProposedEdit(id).ok
+      check not foundation[].contains("--wl-space-card:")
+      check foundation[].contains(".destination-card { padding: 18px; }")
+      dispose()
+
+  test "the example's writer refuses a removal its entry does not state":
+    # Defense in depth: a caller that did not ask the act-time question.
+    let foundation = new(string)
+    foundation[] = DemoFoundationInitialSource
+    let vector = new(string)
+    vector[] = "<svg/>"
+    let adapter = demoVectorEditAdapter(vector, foundation)
+    var token: WorkspaceEditableSchemaEntry
+    for entry in adapter.schema:
+      if entry.key == "wanderlust.foundation.space.card": token = entry
+    check token.kind == wskToken
+    check not token.removable
+    let patched = adapter.patchFile(SourceEditPlan(property: "padding",
+      schemaKey: token.key, file: token.file, planKind: cspPropertyRemoval),
+      foundation[], token)
+    check not patched.ok
+    check patched.diagnostics.len == 1
+    check patched.diagnostics[0].message.contains("does not state that its declaration can be removed")

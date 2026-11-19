@@ -3479,13 +3479,26 @@ proc editablePreviewDocument*(documentHtml: string;
     }
     return found;
   }
-  function removalPlace(el, style, rule) {
-    if (style === el.style) return 'inline';
-    if (!rule) return '';
+  // A token's removal (``variable``) is made in the variable's own
+  // declaration -- the rule that declares it, or the root element's style --
+  // not in the element's: the place names it, and the replay removes the
+  // variable there, not the property the record is kept under.
+  function removalPlace(el, style, rule, variable) {
+    if (variable) {
+      if (style === document.documentElement.style)
+        return JSON.stringify({ root: true, variable: variable });
+      if (!rule) return '';
+    } else {
+      if (style === el.style) return 'inline';
+      if (!rule) return '';
+    }
     var name = ruleIdentity(rule);
     var same = styleRulesNamed(name);
     var index = same.indexOf(rule);
-    return index < 0 ? '' : JSON.stringify({ name: name, index: index, count: same.length });
+    if (index < 0) return '';
+    var at = { name: name, index: index, count: same.length };
+    if (variable) at.variable = variable;
+    return JSON.stringify(at);
   }
   function removeAtPlace(id, path, property, place) {
     var el = elementFor(id, path);
@@ -3493,7 +3506,11 @@ proc editablePreviewDocument*(documentHtml: string;
     if (place === 'inline') { el.style.removeProperty(property); return true; }
     var at = null;
     try { at = JSON.parse(place); } catch (e) { return false; }
-    var same = styleRulesNamed(String(at && at.name));
+    if (!at) return false;
+    // A token's removal is replayed on the variable (`removalPlace`).
+    var removed = at.variable ? String(at.variable) : property;
+    if (at.root) { document.documentElement.style.removeProperty(removed); return true; }
+    var same = styleRulesNamed(String(at.name));
     // The document has the rules the removal saw, or it is not that document.
     // Assumed, not checked: a document with the same number of rules by
     // that name has them in the same order. The documents a record is
@@ -3502,7 +3519,7 @@ proc editablePreviewDocument*(documentHtml: string;
     // rebuild that did would be the write's reload, which forgets the
     // records (`previewSourceCaughtUp`).
     if (same.length !== at.count || !same[at.index]) return false;
-    same[at.index].style.removeProperty(property);
+    same[at.index].style.removeProperty(removed);
     return true;
   }
   var lastRemoval = '';
@@ -3648,7 +3665,7 @@ proc editablePreviewDocument*(documentHtml: string;
       var names = [property].concat(SHORTHANDS[property] || []);
       return names.some(function (name) { return style.getPropertyValue(name) !== ''; });
     }
-    var style = null, verify = false, owner = null, tokenTarget = false;
+    var style = null, verify = false, owner = null, tokenTarget = '';
     // What the element renders for the edited property (its longhands for a
     // shorthand), read to verify an edit that a sheet the resolver could not
     // read might override.
@@ -3690,10 +3707,11 @@ proc editablePreviewDocument*(documentHtml: string;
       var token = /^var\(\s*(--[\w-]+)(?:\s*,[^)]*)?\s*\)$/.exec(declared.trim());
       if (token) {
         property = token[1];
-        tokenTarget = true;
+        tokenTarget = property;
         var tokenRule = resolveRule(document.documentElement, property, false);
         if (!tokenRule.sound) return false;
         style = tokenRule.rule ? tokenRule.rule.style : document.documentElement.style;
+        owner = tokenRule.rule || null;
         if (tokenRule.unread && tokenRule.rule) verify = true;
       }
     }
@@ -3733,9 +3751,9 @@ proc editablePreviewDocument*(documentHtml: string;
         return false;
       }
     }
-    // A token's removal is not recorded by place (its property is the
-    // variable, not the one the record names): not replayed.
-    if (value === '' && !tokenTarget) lastRemoval = removalPlace(el, style, owner);
+    // Where the removal was made, for its record (`removalPlace`): a token's
+    // removal at the variable's declaration.
+    if (value === '') lastRemoval = removalPlace(el, style, owner, tokenTarget);
     return true;
   }
   // ``removedFrom``: a recorded removal (`removalPlace`), replayed where it

@@ -155,6 +155,7 @@ proc main() =
   var mapped = @MappedSides
   for extra in pageString("__isonimShorthandMapped").split(','):
     if extra.strip().len > 0: mapped.add extra.strip()
+  var mappedEntries: seq[WorkspaceEditableSchemaEntry] = @[]
   for property in mapped:
     schema.nodes.add DesignSchemaNode(
       key: "classes.destination-card." & property,
@@ -163,11 +164,21 @@ proc main() =
       sourceSpan: SourceSpan(file: DemoFoundationSource, line: 9, column: 1,
         endLine: 9, endColumn: 80),
       stories: @[story], components: @["DestinationCard"], usageCount: 4)
-    adapter.schema.add WorkspaceEditableSchemaEntry(
+    mappedEntries.add WorkspaceEditableSchemaEntry(
       key: "classes.destination-card." & property, kind: wskSourceMap,
       file: DemoFoundationSource,
       path: "classes.destination-card." & property, story: story,
       property: property, removable: true)
+  adapter.schema.add mappedEntries
+  # `window.__isonimShorthandRemovableTokens`: the token definitions state
+  # that their writer can remove them (the example's state that it cannot),
+  # for the cases about a written token removal
+  # (`tests/test_editor_proposal_token_gui.mjs`). Unset, the example's
+  # entries are as they are.
+  let removableTokens = pageString("__isonimShorthandRemovableTokens").len > 0
+  if removableTokens:
+    for entry in adapter.schema.mitems:
+      if entry.kind == wskToken: entry.removable = true
   let workspace = newEditorWorkspace(
     title = "Wanderlust shorthand order",
     storyGroups = groups,
@@ -224,5 +235,48 @@ proc main() =
     permissions.writeSource = on
     vm.workspacePermissions.val = permissions
   {.emit: ["window.__isonimShorthandSetWriteSource = function (on) { ", setWriteSource, "(!!on); };"].}
+  # `window.__isonimShorthandProposals` set: `window.__isonimShorthandPropose(
+  # property, scope)` adds an agent proposal that removes ``property`` at
+  # ``scope`` (a `SourceScopeChoiceKind` name) for the selected element, as
+  # an agent's proposal carries it: the plan an identical editor's commit
+  # makes, owned by no history entry, staged nowhere. That editor is a
+  # scratch one over a copy of the source whose token definitions are
+  # removable, whose writer states nothing against an edit and which may
+  # write, so the plan can be made even where this editor would refuse it --
+  # which is what an acceptance has to ask again. Returns the
+  # proposal id, or "refused: <why>". Unset, nothing is installed.
+  if pageString("__isonimShorthandProposals").len > 0:
+    let propose = proc(property, scopeName: cstring): cstring =
+      let scratchFoundation = new(string)
+      scratchFoundation[] = foundationSource[]
+      let scratchVector = new(string)
+      scratchVector[] = vectorSource[]
+      var scratchAdapter = demoVectorEditAdapter(scratchVector, scratchFoundation)
+      scratchAdapter.schema.add mappedEntries
+      for entry in scratchAdapter.schema.mitems:
+        if entry.kind == wskToken: entry.removable = true
+      # And the writer states nothing against the edit, and the workspace is
+      # writable: the questions acceptance asks are this editor's, not the
+      # scratch one's.
+      scratchAdapter.editRefusal = nil
+      var scratchWorkspace = workspace
+      scratchWorkspace.editAdapter = scratchAdapter
+      scratchWorkspace.permissions.writeSource = true
+      let scratch = createEditorVM(scratchWorkspace)
+      discard scratch.selectInspectorElement(vm.inspector.selectedElement.val)
+      var scope = sskSharedClass
+      for kind in SourceScopeChoiceKind:
+        if $kind == $scopeName: scope = kind
+      let made = scratch.editSharedDesignProperty($property, "", scope)
+      if made.status != pesAccepted or scratch.inspector.pendingSourceEdits.val.len == 0:
+        return cstring("refused: " & (if made.diagnostics.len > 0:
+          made.diagnostics[0].message else: "no plan"))
+      var plan = scratch.inspector.pendingSourceEdits.val[^1]
+      plan.historyId = 0
+      cstring(vm.chat.addAgentEditProposal(AgentEditProposal(
+        title: "Remove " & $property, summary: "Remove " & $property,
+        sourceEdits: @[plan], selectedEditIndexes: @[0],
+        validity: aepvCurrent)))
+    {.emit: ["window.__isonimShorthandPropose = function (p, s) { return ", propose, "(p, s); };"].}
 
 main()

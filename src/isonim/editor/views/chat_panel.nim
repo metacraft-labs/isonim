@@ -621,6 +621,13 @@ proc renderChatPanel*[R, E](r: R; vm: EditorVM): E =
             span(font_size = "10px", color = textSecondary):
               text testSummary
         r.appendChild(card, summary)
+        # Why the last Accept was refused at the act (nothing was staged).
+        if proposal.refusal.len > 0:
+          let refusalNote = ui(r):
+            span(role = "status", `data-agent-proposal-refusal` = "true",
+                font_size = "10px", color = "#FBBF24"):
+              text proposal.refusal
+          r.appendChild(card, refusalNote)
         let actions = ui(r):
           tdiv(display = "flex", gap = "6px", flex_wrap = "wrap")
         let acceptBtn = ui(r):

@@ -1516,6 +1516,10 @@ type
     validity*: AgentEditProposalValidity
     validityDiagnostics*: seq[AgentDiagnosticSnapshot]
     basePendingEditCount*: int
+    refusal*: string
+      ## Why the last acceptance was refused at the act, or "": the same
+      ## question an inspector commit or Reset of that edit asks
+      ## (`acceptAgentProposedEdit`). Nothing was staged or written.
 
   # --- Review ---
   ViolationSeverity* = enum

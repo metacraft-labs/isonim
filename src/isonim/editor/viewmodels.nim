@@ -12693,8 +12693,44 @@ proc setAgentProposalStatus(chat: AgentChatVM; id: string;
         found = true
   found
 
+proc setAgentProposalRefusal(chat: AgentChatVM; id, refusal: string) =
+  chat.proposedEdits.update proc(prev: seq[AgentEditProposal]): seq[
+      AgentEditProposal] =
+    result = prev
+    for proposal in result.mitems:
+      if proposal.id == id:
+        proposal.refusal = refusal
+
 proc rejectAgentProposedEdit*(editor: EditorVM; id: string): bool {.discardable.} =
   editor.chat.setAgentProposalStatus(id, aepsRejected)
+
+proc proposalAcceptRefusal(editor: EditorVM; plans: seq[SourceEditPlan]): string =
+  ## Why accepting ``plans`` is refused at the act, or "" -- the questions an
+  ## inspector commit or Reset of the same edit asks before anything moves
+  ## (`sourcePlanCommitRefusal`), so an accepted proposal is a commit like
+  ## any other (editor spec "Saving": "a commit" means every path that stages
+  ## a source edit, and a refusal the editor can know at the act is made at
+  ## the act):
+  ##
+  ## * the workspace is writable;
+  ## * the project schema represents the plan, a responsive override goes to
+  ##   a writer that writes one, and a removal goes to an entry that states
+  ##   its writer can remove the declaration (`sourcePlanAdmissionRefusal`);
+  ## * the writer's own statement against the edit (`writerEditRefusal`);
+  ## * a removal finds exactly the one declaration it removes
+  ##   (`removalWriteRefusal`).
+  ##
+  ## Not asked: whether another rule decides the property for the selected
+  ## element (`decidedElsewhereRefusal`). That question is about what one
+  ## element renders, and a proposal is an edit of the source with no
+  ## element: it is accepted from the chat, whatever the inspector selects.
+  if not editor.workspacePermissions.val.writeSource:
+    return "This workspace is read-only for source changes."
+  for plan in plans:
+    result = editor.sourcePlanAdmissionRefusal(plan)
+    if result.len == 0: result = editor.writerEditRefusal(plan)
+    if result.len == 0: result = editor.removalWriteRefusal(plan)
+    if result.len > 0: return
 
 proc acceptAgentProposedEdit*(editor: EditorVM; id: string;
     editIndexes: seq[int] = @[]): WorkspaceEditResult {.discardable.} =
@@ -12728,6 +12764,15 @@ proc acceptAgentProposedEdit*(editor: EditorVM; id: string;
       diagnostics: @[workspaceDiagnostic(wedMissingSchema,
         "Agent edit proposal does not contain selected source edits.")])
 
+  # Asked before anything is journaled: a refusal leaves the journal, the
+  # histories, the preview and the files as they were, and says why on the
+  # proposal (`AgentEditProposal.refusal`).
+  let refusal = editor.proposalAcceptRefusal(accepted)
+  editor.chat.setAgentProposalRefusal(id, refusal)
+  if refusal.len > 0:
+    return WorkspaceEditResult(ok: false, stage: editor.workspaceEditStage.val,
+      diagnostics: @[workspaceDiagnostic(wedPatchFailed,
+        refusal & " Nothing was changed.")])
   for plan in accepted:
     editor.inspector.journalSourceEdit(plan)
   editor.workspaceEditStage.val = wesDirty

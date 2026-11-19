@@ -442,16 +442,29 @@ func removeDemoDeclaration(plan: SourceEditPlan; content: string;
       kind: kind, message: "Refused to reset " & plan.property & ": " & why &
         " No source was changed.", file: file, schemaKey: plan.schemaKey,
       property: plan.property)])
-  let found = content.demoDeclarations(plan.property)
+  # The entry states whether this writer can remove its declaration; the
+  # editor asks that at the act, and the writer holds to it here too, for a
+  # caller that did not ask.
+  if not schema.removable:
+    return refuse(wedPatchFailed, "the " & schema.key & " entry does not " &
+      "state that its declaration can be removed.")
+  # A token definition's removal (only where its entry states it can be
+  # removed: none of the example's does) removes the variable's own
+  # declaration, the entry's property, not the property that uses it --
+  # which is where the preview removes it too. The value the editor showed
+  # is the using property's, so it is not compared against the variable's.
+  let token = schema.kind == wskToken and schema.property.startsWith("--")
+  let removing = if token: schema.property else: plan.property
+  let found = content.demoDeclarations(removing)
   if found.len == 0:
-    return refuse(wedPatchFailed, file & " has no " & plan.property &
+    return refuse(wedPatchFailed, file & " has no " & removing &
       " declaration to remove.")
   if found.len > 1:
     return refuse(wedPatchFailed, file & " has " & $found.len & " " &
-      plan.property & " declarations, so the one this edit owns cannot be " &
+      removing & " declarations, so the one this edit owns cannot be " &
       "identified.")
   let declaration = found[0]
-  if plan.expectedOldValue.len > 0 and
+  if not token and plan.expectedOldValue.len > 0 and
       declaration.value != plan.expectedOldValue:
     return refuse(wedSourceConflict, file & " declares " & plan.property &
       ": " & declaration.value & ", not " & plan.expectedOldValue & ".")
