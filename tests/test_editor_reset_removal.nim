@@ -367,7 +367,10 @@ suite "removal is admitted per schema entry and refused at the act":
       foundation[] = DemoFoundationInitialSource
       let vm = demoVm(foundation)
       let reason = vm.propertyResetRefusal("border-radius", sskComponentToken)
-      check reason.contains("cannot remove the border-radius declaration")
+      # A token entry's removal is the removal of the token's definition,
+      # so the refusal names the token, not the declaration that uses it.
+      check reason == "This project's source writer cannot remove the " &
+        "--wl-radius-card token from " & DemoFoundationSource & "."
       let refused = vm.editSharedDesignProperty("border-radius", "",
         sskComponentToken)
       check refused.status == pesRejected
@@ -514,7 +517,10 @@ suite "Reset through the mounted property row":
       check reset.attributes.getOrDefault("aria-disabled") == "true"
       let reason = reset.attributes.getOrDefault("title")
       check reason == wiring.resetReason()
-      check reason.contains("cannot remove the border-radius declaration")
+      # A token entry's removal is the removal of the token's definition,
+      # so the refusal names the token, not the declaration that uses it.
+      check reason == "This project's source writer cannot remove the " &
+        "--wl-radius-card token from " & DemoFoundationSource & "."
       reset.fireEvent("click")
       check findByAttr(menu, "data-property-actions-message", "true").textContent ==
         reason
