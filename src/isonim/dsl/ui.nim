@@ -50,6 +50,7 @@ import ./scene_graph
 import ./style_provenance
 import ./style_binding
 import ./stable_ids
+import ./templates
 import ./private/input_privacy_policy
 # Bound, not left for the caller to import: every element of a `ui:` block
 # asks for its hydration key, and a consumer that never hydrates should not
@@ -506,6 +507,25 @@ proc emitProcCheck(stmts, rendererSym: NimNode; tagIdent: string;
 # Client mode (renderer-based element creation)
 # ---------------------------------------------------------------------------
 
+# Typed setters (see `templates.nim`): a hole that writes only text, or only a paint-only style
+# property, is written with the renderer's typed setter when it has one, which marks only that
+# kind of change; a renderer without one is written with the contract operation.
+const paintOnlyProperties = ["background-color", "opacity", "border-color", "outline-color"]
+
+proc tplEffect(body: NimNode): NimNode {.compileTime.} =
+  newCall(ident"createRenderEffect", newProc(params = [newEmptyNode()], body = newStmtList(body)))
+
+proc typedOr(rendererSym: NimNode; typed, plain: string; args: varargs[NimNode]): NimNode {.compileTime.} =
+  ## `renderer.<typed>(args)` when the renderer has it, `renderer.<plain>(args)` otherwise.
+  let typedCall = newCall(newDotExpr(rendererSym, ident(typed)))
+  let plainCall = newCall(newDotExpr(rendererSym, ident(plain)))
+  for a in args:
+    typedCall.add a.copyNimTree
+    plainCall.add a.copyNimTree
+  nnkWhenStmt.newTree(
+    nnkElifBranch.newTree(newCall(ident"compiles", typedCall), newStmtList(typedCall)),
+    nnkElse.newTree(newStmtList(plainCall)))
+
 proc processNode(rendererSym: NimNode; node: NimNode;
     stmts: NimNode): NimNode {.compileTime.}
 
@@ -633,6 +653,9 @@ proc processChildren(rendererSym, parentSym: NimNode; body: NimNode;
       stmts.add(child)
     inc i
 
+proc processElementMaybeTemplated(rendererSym: NimNode; node: NimNode;
+    stmts: NimNode): NimNode {.compileTime.}
+
 proc processNode(rendererSym: NimNode; node: NimNode;
     stmts: NimNode): NimNode {.compileTime.} =
   ## Process a single DSL node. Returns the NimNode symbol for the created element,
@@ -689,7 +712,7 @@ proc processNode(rendererSym: NimNode; node: NimNode;
         let effectBody = newProc(
           params = [newEmptyNode()],
           body = newStmtList(
-            newCall(newDotExpr(rendererCopy, ident"setTextContent"), txtCopy, arg)
+            typedOr(rendererCopy, "setNodeText", "setTextContent", txtCopy, arg)
           )
         )
         stmts.add(newCall(ident"createRenderEffect", effectBody))
@@ -706,6 +729,14 @@ proc processNode(rendererSym: NimNode; node: NimNode;
       return scopedInstanceExpr(node, node)
 
   # Handle element nodes: tagName(...): body or tagName: body
+  if node.kind in {nnkCall, nnkCommand}:
+    return processElementMaybeTemplated(rendererSym, node, stmts)
+
+  return nil
+
+proc processElement(rendererSym: NimNode; node: NimNode;
+    stmts: NimNode): NimNode {.compileTime.} =
+  ## The per-node code for one element and everything it nests: one renderer call per node.
   if node.kind in {nnkCall, nnkCommand}:
     let nameNode = node[0]
     var tagIdent: string
@@ -859,12 +890,16 @@ proc processNode(rendererSym: NimNode; node: NimNode;
               emitEditableAssign(stmts, rendererSym, elSym, node, "setStyle",
                                  sceneId, cssName, attrVal)
             else:
-              let effectBody = newProc(
-                params = [newEmptyNode()],
-                body = newStmtList(
+              let write =
+                if cssName in paintOnlyProperties:
+                  typedOr(rendererSym, "setPaintStyle", "setStyle",
+                          elSym, newStrLitNode(cssName), attrVal)
+                else:
                   newCall(newDotExpr(rendererSym, ident"setStyle"),
                           elSym, newStrLitNode(cssName), attrVal)
-                )
+              let effectBody = newProc(
+                params = [newEmptyNode()],
+                body = newStmtList(write)
               )
               stmts.add(newCall(ident"createRenderEffect", effectBody))
           elif not isDynamic(attrVal):
@@ -909,6 +944,201 @@ proc processNode(rendererSym: NimNode; node: NimNode;
     return elSym
 
   return nil
+
+# ---------------------------------------------------------------------------
+# Static subtree templates (see `templates.nim`)
+# ---------------------------------------------------------------------------
+#
+# An element whose subtree is fixed in shape — every tag, class, attribute and style a literal,
+# with only text, attribute and style values and event handlers changing — is described once as a
+# `StaticTemplate` and created with one `createFromTemplate` call by a renderer that implements it.
+# The per-node code is emitted beside it, in the other arm of a `when compiles`, so a renderer
+# without the call is unaffected. Templates are not used while the editor, the scene graph or
+# stable ids are compiled in: each of those wants a hook per element, which a template does not
+# give.
+
+var templateCounter {.compileTime.} = 0
+
+type
+  TplBuild = object
+    nodes: seq[NimNode]     ## a `TemplateNode` constructor per node
+    holes: int              ## how many holes so far
+    holeSyms: seq[NimNode]  ## the symbol each hole is bound to
+    actions: seq[NimNode]   ## what runs on the holes once the subtree exists
+
+proc tplHole(b: var TplBuild): (int, NimNode) {.compileTime.} =
+  result = (b.holes, genName("hole"))
+  b.holeSyms.add result[1]
+  inc b.holes
+
+proc tplNode(parent: int; tag, text, classes: string;
+             attrs, styles: seq[(string, string)]; hole: int): NimNode {.compileTime.} =
+  let attrsLit = newNimNode(nnkBracket)
+  for (k, v) in attrs: attrsLit.add nnkTupleConstr.newTree(newLit(k), newLit(v))
+  let stylesLit = newNimNode(nnkBracket)
+  for (k, v) in styles: stylesLit.add nnkTupleConstr.newTree(newLit(k), newLit(v))
+  let attrsSeq = if attrs.len > 0: prefix(attrsLit, "@")
+                 else: newCall(nnkBracketExpr.newTree(ident"newSeq", nnkTupleConstr.newTree(ident"string", ident"string")))
+  let stylesSeq = if styles.len > 0: prefix(stylesLit, "@")
+                  else: newCall(nnkBracketExpr.newTree(ident"newSeq", nnkTupleConstr.newTree(ident"string", ident"string")))
+  nnkObjConstr.newTree(bindSym"TemplateNode",
+    nnkExprColonExpr.newTree(ident"parent", newLit(parent)),
+    nnkExprColonExpr.newTree(ident"tag", newLit(tag)),
+    nnkExprColonExpr.newTree(ident"text", newLit(text)),
+    nnkExprColonExpr.newTree(ident"classes", newLit(classes)),
+    nnkExprColonExpr.newTree(ident"attrs", attrsSeq),
+    nnkExprColonExpr.newTree(ident"styles", stylesSeq),
+    nnkExprColonExpr.newTree(ident"hole", newLit(hole)))
+
+proc tplElement(rendererSym, node: NimNode; parent: int;
+                b: var TplBuild): bool {.compileTime.}
+
+proc tplChildren(rendererSym, body: NimNode; parent: int;
+                 b: var TplBuild): bool {.compileTime.} =
+  for child in body:
+    case child.kind
+    of nnkCall, nnkCommand:
+      let name = callHeadName(child)
+      if name == "text":
+        if child.len != 2: return false
+        let arg = child[1].copyNimTree
+        if not isDynamic(arg):
+          if arg.kind notin {nnkStrLit, nnkRStrLit, nnkTripleStrLit}: return false
+          b.nodes.add tplNode(parent, "", arg.strVal, "", @[], @[], -1)
+        else:
+          let (hole, sym) = tplHole(b)
+          b.nodes.add tplNode(parent, "", "", "", @[], @[], hole)
+          b.actions.add tplEffect(typedOr(rendererSym, "setNodeText", "setTextContent", sym, arg))
+      elif name.len > 0 and name != "raw" and isElementCall(name, child):
+        if not tplElement(rendererSym, child, parent, b): return false
+      else:
+        return false
+    of nnkIdent:
+      let tag = resolveTagName(child.strVal)
+      if not isVoidElement(tag): return false
+      b.nodes.add tplNode(parent, tag, "", "", @[], @[], -1)
+    of nnkStmtList:
+      if not tplChildren(rendererSym, child, parent, b): return false
+    else:
+      return false
+  true
+
+proc tplElement(rendererSym, node: NimNode; parent: int;
+                b: var TplBuild): bool {.compileTime.} =
+  if node.kind notin {nnkCall, nnkCommand}: return false
+  let tagIdent = callHeadName(node)
+  if tagIdent.len == 0: return false
+  let htmlTag = resolveTagName(tagIdent)
+  if explicitPublicPrivacy(node, htmlTag) == ipPublic: return false
+  let index = b.nodes.len
+  var classes = ""
+  var attrs, styles: seq[(string, string)]
+  var hole = -1
+  var holeSym: NimNode
+  template ensureHole() =
+    if hole < 0:
+      (hole, holeSym) = tplHole(b)
+  var pending: seq[NimNode]  # actions that need this element's hole, in authored order
+  var childBodies: seq[NimNode]
+  for i in 1 ..< node.len:
+    let arg = node[i]
+    case arg.kind
+    of nnkExprEqExpr:
+      if arg[0].kind == nnkRefTy:
+        ensureHole()
+        pending.add newAssignment(arg[1].copyNimTree, holeSym)
+        continue
+      let attrName = attrNameStr(arg[0])
+      let lowered = attrName.toLowerAscii
+      if lowered in ["data-isonim-record", "record", "public", "sensitive", "style"]:
+        return false
+      if isHydrationFlag(attrName):
+        continue
+      let value = arg[1].copyNimTree
+      if isEventHandler(attrName):
+        ensureHole()
+        pending.add newCall(newDotExpr(rendererSym, ident"addEventListener"),
+                            holeSym, newStrLitNode(eventName(attrName)), value)
+      elif attrName == "class":
+        if not isDynamic(value):
+          if value.kind notin {nnkStrLit, nnkRStrLit, nnkTripleStrLit}: return false
+          classes = value.strVal
+          when not defined(js):
+            for (prop, val) in expandTailwindClassesCompileTime(classes):
+              styles.add (prop, val)
+        else:
+          ensureHole()
+          pending.add tplEffect(newCall(newDotExpr(rendererSym, ident"setAttribute"),
+                                        holeSym, newStrLitNode("class"), value))
+      elif isStyleProperty(attrName):
+        let cssName = toStyleName(attrName)
+        if not isDynamic(value):
+          if value.kind notin {nnkStrLit, nnkRStrLit, nnkTripleStrLit}: return false
+          styles.add (cssName, value.strVal)
+        else:
+          ensureHole()
+          if cssName in paintOnlyProperties:
+            pending.add tplEffect(typedOr(rendererSym, "setPaintStyle", "setStyle",
+                                          holeSym, newStrLitNode(cssName), value))
+          else:
+            pending.add tplEffect(newCall(newDotExpr(rendererSym, ident"setStyle"),
+                                          holeSym, newStrLitNode(cssName), value))
+      else:
+        if not isDynamic(value):
+          if value.kind notin {nnkStrLit, nnkRStrLit, nnkTripleStrLit}: return false
+          attrs.add (attrName, value.strVal)
+        else:
+          ensureHole()
+          pending.add tplEffect(newCall(newDotExpr(rendererSym, ident"setAttribute"),
+                                        holeSym, newStrLitNode(attrName), value))
+    of nnkStmtList:
+      childBodies.add arg
+    of nnkCall, nnkCommand:
+      childBodies.add newStmtList(arg)
+    else:
+      discard
+  b.nodes.add tplNode(parent, htmlTag, "", classes, attrs, styles, hole)
+  b.actions.add pending
+  for body in childBodies:
+    if not tplChildren(rendererSym, body, index, b): return false
+  true
+
+proc processElementMaybeTemplated(rendererSym: NimNode; node: NimNode;
+    stmts: NimNode): NimNode {.compileTime.} =
+  ## An element, as a template a renderer can create in one call, with the per-node code beside
+  ## it for a renderer that cannot.
+  when sceneGraphEnabled or stableIdsEnabled or editRegimeEnabled:
+    return processElement(rendererSym, node, stmts)
+  else:
+    var build: TplBuild
+    if not tplElement(rendererSym, node, -1, build) or build.nodes.len < 2:
+      return processElement(rendererSym, node, stmts)
+    let perNode = newStmtList()
+    let elSym = processElement(rendererSym, node, perNode)
+    inc templateCounter
+    let tplSym = genName("tpl")
+    let outSym = genName("made")
+    let nodesLit = newNimNode(nnkBracket)
+    for n in build.nodes: nodesLit.add n
+    let templated = newStmtList()
+    templated.add nnkConstSection.newTree(nnkConstDef.newTree(tplSym, newEmptyNode(),
+      nnkObjConstr.newTree(bindSym"StaticTemplate",
+        nnkExprColonExpr.newTree(ident"id", newLit(templateCounter)),
+        nnkExprColonExpr.newTree(ident"nodes", prefix(nodesLit, "@")),
+        nnkExprColonExpr.newTree(ident"holes", newLit(build.holes)))))
+    templated.add newLetStmt(outSym,
+      newCall(newDotExpr(rendererSym, ident"createFromTemplate"), tplSym))
+    templated.add newLetStmt(elSym, nnkBracketExpr.newTree(outSym, newLit(0)))
+    for i, sym in build.holeSyms:
+      templated.add newLetStmt(sym, nnkBracketExpr.newTree(outSym, newLit(i + 1)))
+    for action in build.actions:
+      templated.add action
+    let probe = newCall(newDotExpr(rendererSym, ident"createFromTemplate"),
+                        nnkObjConstr.newTree(bindSym"StaticTemplate"))
+    stmts.add nnkWhenStmt.newTree(
+      nnkElifBranch.newTree(newCall(ident"compiles", probe), templated),
+      nnkElse.newTree(perNode))
+    elSym
 
 proc buildClientTree(renderer, body: NimNode): NimNode {.compileTime.} =
   ## The client arm's code generation.
