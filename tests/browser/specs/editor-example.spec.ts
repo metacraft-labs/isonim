@@ -280,6 +280,7 @@ async function setInspectorProperty(
   expectAccepted = true,
 ) {
   await openSourcePropertyRows(page);
+  const sourceBefore = await demoSourceContent(page, demoFoundationSource);
   const input = await sourcePropertyInput(page, property);
   await expect(input).toBeVisible();
   await input.evaluate((node: HTMLInputElement, nextValue) => {
@@ -295,7 +296,13 @@ async function setInspectorProperty(
     if (numeric && numberAndUnit?.[2]) {
       await expect(input.locator('xpath=ancestor::*[@data-property-row-css-property][1]').locator('[data-property-row-unit]')).toContainText(numberAndUnit[2]);
     }
-    await expect.poll(() => pendingSourceEdits(page)).toBeGreaterThan(0);
+    // The edit is staged, or the automatic write has already landed it: the
+    // write can clear the pending edit before this poll first reads it.
+    await expect
+      .poll(async () =>
+        (await pendingSourceEdits(page)) > 0 ||
+        (await demoSourceContent(page, demoFoundationSource)) !== sourceBefore)
+      .toBe(true);
     await expect(page.locator("[data-save-error]")).toBeHidden();
   }
 }
@@ -920,6 +927,10 @@ test.describe("IsoNim packaged editor example", () => {
   });
 
   test("e2e_long_tail_css_property_visual_evidence", async ({ page }) => {
+    // Twelve property commits, each written and checked in the preview: it
+    // took 1.1 to 2.4 min including server start, at a load of 67 to 106,
+    // which the default 30s cannot fit. The assertions are unchanged.
+    test.setTimeout(180_000);
     await openDestinationComponentEdit(page);
     const editFrame = page.frameLocator(
       'iframe[title="Editable component preview"]',

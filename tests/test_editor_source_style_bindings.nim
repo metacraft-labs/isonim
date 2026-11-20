@@ -6,7 +6,7 @@
 ## elements, as a project page embeds the constant (`page` below), because a
 ## stylesheet binds only the elements of pages that load it.
 import std/[unittest, json, os, tempfiles, strutils, algorithm]
-import isonim/editor/[source_style_bindings, source_catalog, css_patch, source_style_values, viewmodels, types]
+import isonim/editor/[source_style_bindings, source_catalog, css_patch, source_style_values, viewmodels, types, style_provenance_decode]
 
 proc page(body, source: string; consts = @["styles"]): string =
   ## `body` as a compiled page that loads `consts` of `source` (Nim text).
@@ -178,6 +178,93 @@ suite "Compiler owned stylesheet capabilities":
       check validateCssPropertyValue(PropertyInfo(name:"background-color",directStyleAllowed:true),
         PropertyEditRequest(property:"background-color",newValue:raw),
         parseCssPropertyValue("background-color",raw)).len > 0
+
+  test "every row property refuses a word it does not take and keeps the values it does":
+    # Editor spec "Planned interaction parity": invalid values are rejected
+    # without changing source. Validation fails closed, so a word a property
+    # has no grammar for is refused rather than written.
+    proc refusals(property, value: string): int =
+      validateCssPropertyValue(PropertyInfo(name: property, directStyleAllowed: true),
+        PropertyEditRequest(property: property, newValue: value, kind: pekCss),
+        parseCssPropertyValue(property, value)).len
+    for property in inspectorEditableCssProperties:
+      # These five check their values with their own grammars (ratio,
+      # number, filter and timing-function), which do not take every
+      # CSS-wide keyword yet; that refusal predates fail-closed keywords.
+      if property notin ["aspect-ratio", "opacity", "filter", "backdrop-filter",
+          "transition-timing-function"]:
+        for wide in ["inherit", "initial", "unset", "revert", "revert-layer"]:
+          checkpoint property & ": " & wide
+          check refusals(property, wide) == 0
+      # A font family is any author-chosen name, so a word is a family.
+      if property == "font-family": continue
+      # A list style may name a counter style the project defines, so one
+      # identifier is taken; two words are not a counter-style name.
+      let words = if property == "list-style-type": @["far fast"]
+                  else: @["far", "fast", "x-y", "far fast"]
+      for word in words:
+        checkpoint property & ": " & word
+        check refusals(property, word) > 0
+    # A property no grammar here covers takes only the CSS-wide keywords:
+    # the check fails closed rather than writing a word it cannot judge.
+    for property in ["column-count", "hyphens", "scroll-behavior", "resize"]:
+      checkpoint property & ": far / inherit"
+      check refusals(property, "far") > 0
+      check refusals(property, "inherit") == 0
+    let accepted = {
+      "transform": @["none", "rotate(5deg)", "scale(1.2) translateX(4px)", "var(--t)"],
+      "display": @["block", "flex", "inline-flex", "grid", "none", "inline flow-root",
+        "-webkit-box", "-webkit-inline-box"],
+      "flex-direction": @["row", "column-reverse"], "flex-wrap": @["wrap", "nowrap"],
+      "align-items": @["center", "flex-start", "baseline", "first baseline", "safe center"],
+      "justify-content": @["space-between", "center", "flex-end", "space-evenly", "normal"],
+      "grid-template-columns": @["none", "repeat(2, 1fr)", "1fr 2fr", "200px auto",
+        "[a] 1fr [b]", "repeat(auto-fill, minmax(120px, 1fr))", "subgrid"],
+      "grid-template-rows": @["auto 1fr", "min-content"],
+      "grid-auto-flow": @["row", "column", "dense", "row dense"],
+      "min-height": @["auto", "40px"], "max-height": @["none", "80vh"],
+      "background-color": @["#fff", "red", "transparent", "currentColor", "hsl(200 50% 50%)"],
+      "color": @["black", "currentcolor"], "outline-color": @["red", "currentColor", "auto", "invert"],
+      "border-color": @["red", "red blue", "transparent"],
+      "border-top-color": @["red"],
+      "box-shadow": @["none", "var(--s)", "0 1px 2px rgba(0,0,0,0.2)", "inset 0 0 4px #000",
+        "0 1px 2px red, 0 2px 4px blue"],
+      "border-width": @["1px", "thin", "medium", "0"],
+      "border-style": @["solid", "dashed", "none", "solid dashed"],
+      "background-image": @["none", "url(a.png)", "linear-gradient(red, blue)",
+        "url(a.png), linear-gradient(red, blue)"],
+      "background-size": @["auto", "cover", "contain", "50%"],
+      "outline-offset": @["2px", "0", "-1px"],
+      "filter": @["none", "blur(2px)"],
+      "transition-property": @["all", "none", "opacity", "opacity, transform", "--x"],
+      "transition-duration": @["200ms", "0.3s", "0s", "var(--d)"],
+      "transition-delay": @["0s", "100ms"],
+      "background-position": @["center", "left top"],
+      "background-repeat": @["no-repeat", "repeat-x", "repeat space", "round"],
+      "transition-timing-function": @["ease", "linear", "cubic-bezier(0.1, 0.2, 0.3, 1)", "steps(4)"],
+      "font": @["16px sans-serif", "bold 12px/1.5 Inter, sans-serif", "caption", "small serif"],
+      "font-family": @["Inter, sans-serif", "serif"],
+      "font-weight": @["400", "bold", "normal", "lighter", "650"],
+      "font-size": @["16px", "small", "larger", "120%"],
+      "line-height": @["1.5", "normal", "20px"],
+      "text-align": @["left", "center", "justify", "start"],
+      "text-decoration": @["none", "underline", "underline dotted", "line-through red"],
+      "text-transform": @["uppercase", "none"],
+      "list-style-type": @["disc", "none", "decimal", "lower-roman", "\"-\"",
+        "far", "x-y", "brand-mark", "_step"],
+      "text-wrap": @["wrap", "balance", "pretty", "nowrap"]}
+    for (property, values) in accepted:
+      for value in values:
+        checkpoint property & ": " & value
+        check refusals(property, value) == 0
+    # The added forms stay narrow: a counter-style name is one identifier,
+    # outline-color takes only auto and invert beyond colours, and display
+    # only the two legacy -webkit- boxes.
+    for (property, value) in [("list-style-type", "9lives"),
+        ("list-style-type", "a.b"), ("outline-color", "outline"),
+        ("display", "-webkit-flexbox")]:
+      checkpoint property & ": " & value
+      check refusals(property, value) > 0
 
   test "background current owner respects order and refuses unsupported resets outside allowlist":
     let body = "<div class='panel'></div>"

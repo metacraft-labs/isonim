@@ -15,6 +15,7 @@ import isonim/editor/preview_fullscreen
 import isonim/editor/html_classes
 import isonim/editor/css_patch
 import isonim/editor/css_color_literal
+import isonim/editor/css_value_grammar
 import isonim/editor/numeric_precision
 import isonim/editor/design_review/context_policy
 import isonim/editor/element_semantics
@@ -1567,13 +1568,6 @@ func cssSourcePlanKind*(prop: PropertyInfo; request: PropertyEditRequest;
   of poInherited:
     cspPropertyAddition
 
-proc tryParseFloatValue(raw: string; value: var float): bool =
-  try:
-    value = raw.parseFloat()
-    classify(value) notin {fcNan, fcInf, fcNegInf}
-  except ValueError:
-    false
-
 func propertyEvidenceRow(family: string; properties: seq[string];
     status: LongTailPropertyEvidenceStatus; sourceWrite, headlessValidation,
     browserBehavior, visualEvidence, metacraftEvidence: bool;
@@ -1785,88 +1779,6 @@ proc parseCssPropertyValue*(property, raw: string;
     return
   result.kind = cvkKeyword
 
-func cssFunctionName(raw: string): string =
-  let text = raw.strip().toLowerAscii()
-  let paren = text.find('(')
-  if paren <= 0:
-    return text
-  text[0 ..< paren]
-
-func cssFunctionCalls(raw: string): seq[string] =
-  for part in raw.splitWhitespace:
-    let fn = cssFunctionName(part)
-    if fn.len > 0:
-      result.add fn
-
-func isCompleteFunction(raw: string): bool =
-  let text = raw.strip()
-  if '(' notin text:
-    return true
-  text.count('(') == text.count(')') and text.endsWith(")")
-
-func validAspectRatio(raw: string): bool =
-  let text = raw.strip()
-  if text in ["auto", "inherit", "initial", "unset"]:
-    return true
-  let slash = text.find('/')
-  if slash <= 0 or slash >= text.len - 1:
-    return false
-  var left, right: float
-  tryParseFloatValue(text[0 ..< slash].strip(), left) and
-    tryParseFloatValue(text[slash + 1 .. ^1].strip(), right) and
-    left > 0 and right > 0
-
-func validKeywordForProperty(propName, raw: string): bool =
-  let text = raw.strip().toLowerAscii()
-  case propName
-  of "width", "height", "min-width", "min-height", "max-width", "max-height",
-      "top", "right", "bottom", "left", "inset", "margin", "margin-top",
-      "margin-right", "margin-bottom", "margin-left", "padding", "padding-top",
-      "padding-right", "padding-bottom", "padding-left", "gap", "row-gap",
-      "column-gap", "font-size", "letter-spacing", "word-spacing", "border-width",
-      "border-radius", "border-top-left-radius", "border-top-right-radius",
-      "border-bottom-right-radius", "border-bottom-left-radius", "border-top-width", "border-right-width", "border-bottom-width",
-      "border-left-width":
-    var numeric = 0.0
-    if tryParseFloatValue(text, numeric): return numeric == 0
-    if text in ["inherit", "initial", "unset", "revert", "revert-layer"]: return true
-    if text == "auto": return propName in ["width", "height", "min-width", "min-height",
-      "top", "right", "bottom", "left", "inset", "margin", "margin-top", "margin-right", "margin-bottom", "margin-left"]
-    if text == "none": return propName in ["max-width", "max-height"]
-    if text == "normal": return propName in ["gap", "row-gap", "column-gap", "letter-spacing", "word-spacing"]
-    if text in ["min-content", "max-content", "fit-content", "stretch"]:
-      return propName in ["width", "height", "min-width", "min-height", "max-width", "max-height"]
-    false
-  of "overflow", "overflow-x", "overflow-y":
-    text in ["visible", "hidden", "clip", "scroll", "auto"]
-  of "overscroll-behavior":
-    text in ["auto", "contain", "none"]
-  of "position":
-    text in ["static", "relative", "absolute", "fixed", "sticky"]
-  of "border-style":
-    text in ["none", "hidden", "dotted", "dashed", "solid", "double",
-      "groove", "ridge", "inset", "outset"]
-  of "text" & "-transform":
-    text in ["none", "capitalize", "uppercase", "lowercase", "inherit",
-      "initial", "unset"]
-  of "white-space":
-    text in ["normal", "nowrap", "pre", "pre-wrap", "pre-line",
-      "break-spaces", "inherit", "initial", "unset"]
-  of "text" & "-overflow":
-    text in ["clip", "ellipsis"]
-  of "background-size":
-    text in ["auto", "cover", "contain", "inherit", "initial", "unset"]
-  of "background-position":
-    text in ["left", "right", "top", "bottom", "center", "inherit",
-      "initial", "unset"] or text.splitWhitespace().allIt(it in [
-        "left", "right", "top", "bottom", "center"])
-  of "mix-blend-mode":
-    text in ["normal", "multiply", "screen", "overlay", "darken", "lighten",
-      "color-dodge", "color-burn", "hard-light", "soft-light", "difference",
-      "exclusion", "hue", "saturation", "color", "luminosity"]
-  else:
-    true
-
 func validFilterValue(raw: string): bool =
   let text = raw.strip().toLowerAscii()
   if text in ["none", "inherit", "initial", "unset"]:
@@ -1879,15 +1791,17 @@ func validFilterValue(raw: string): bool =
       return false
   true
 
-func validTransformValue(raw: string): bool =
+func validTransformValue(propName, raw: string): bool =
   let text = raw.strip().toLowerAscii()
-  if text in ["none", "inherit", "initial", "unset", "center", "top",
-      "bottom", "left", "right"]:
+  if text in cssWideKeywords or text == "none" or "var(" in text:
     return true
   if not isCompleteFunction(text):
     return false
   if '(' notin text:
-    return true
+    # `transform` takes only `none` or transform functions (CSS Transforms 1
+    # §6); `transform-origin` and the individual `translate`, `scale` and
+    # `rotate` properties take plain keyword, length and angle forms.
+    return propName != "transform"
   for fn in cssFunctionCalls(text):
     if fn notin ["matrix", "matrix3d", "perspective", "rotate", "rotate3d",
         "rotatex", "rotatey", "rotatez", "scale", "scale3d", "scalex",
@@ -1997,9 +1911,19 @@ proc validateCssPropertyValue*(prop: PropertyInfo; request: PropertyEditRequest;
     result.add cssDiagnostic(pedInvalidCssValue, prop,
       "Filter values must use supported CSS filter functions.")
   if propName in ["transform", "transform-origin", "translate", "scale",
-      "rotate"] and not validTransformValue(raw):
+      "rotate"] and not validTransformValue(propName, raw):
     result.add cssDiagnostic(pedInvalidCssValue, prop,
       "Transform values must use supported CSS transform functions.")
+  if propName in ["transition-property", "transition-duration",
+      "transition-delay"] and not validTransitionValue(propName, raw):
+    result.add cssDiagnostic(pedInvalidCssValue, prop,
+      if propName == "transition-property":
+        "Transition property must be all, none, or CSS property names."
+      else:
+        "Transition times must be comma-separated durations in s or ms.")
+  if propName in ["box-shadow", "text-shadow"] and not validShadowValue(raw):
+    result.add cssDiagnostic(pedInvalidCssValue, prop,
+      "Shadow values must be none or complete shadow layers.")
   if propName == "aspect-ratio" and not validAspectRatio(raw):
     result.add cssDiagnostic(pedInvalidCssValue, prop,
       "Aspect ratio must be auto or a positive width / height pair.")

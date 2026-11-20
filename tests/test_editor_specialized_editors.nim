@@ -86,6 +86,52 @@ proc editorVm(foundation: ref string; writable = true): EditorVM =
     editAdapter = demoVectorEditAdapter(vector, foundation)))
   check result.selectInspectorElement(effectCard())
 
+proc declaredVm(foundation: ref string; extra: openArray[(string, string)]): EditorVM =
+  ## `editorVm` with ``extra`` declared in the example's `.long-tail-card`
+  ## rule and mapped like its other declarations (the example declares no
+  ## border-color of its own).
+  let vector = new(string)
+  vector[] = "<svg/>"
+  let story = StoryRef(group: "DestinationCard", name: "Default",
+    kind: skComponent, index: 0)
+  var adapter = demoVectorEditAdapter(vector, foundation)
+  var schema = demoDesignSystemSchema()
+  var element = effectCard()
+  for (property, value) in extra:
+    for entry in adapter.schema:
+      if entry.property == "filter":
+        var copy = entry
+        copy.key = "classes.destination-card." & property
+        copy.path = "classes.long-tail-card." & property
+        copy.property = property
+        adapter.schema.add copy
+        break
+    for node in schema.nodes:
+      if node.key == "classes.destination-card.filter":
+        var copy = node
+        copy.key = "classes.destination-card." & property
+        copy.property = property
+        copy.value = value
+        schema.nodes.add copy
+        break
+    element.properties.add PropertyInfo(name: property, value: value,
+      origin: poTailwindClass, originDetail: "class:long-tail-card",
+      sourceFile: DemoFoundationSource, sourceLine: 10,
+      schemaKey: "classes.destination-card." & property,
+      sharedCount: 4, directStyleAllowed: true)
+  result = createEditorVM(newEditorWorkspace(
+    title = "Wanderlust specialized editors fixture",
+    storyGroups = @[StoryGroup(name: "DestinationCard", kind: skComponent,
+      expanded: true, items: @[StoryItem(name: "Default", kind: skComponent,
+        group: "DestinationCard")])],
+    initialStory = some(story),
+    foundationTokens = demoFoundationTokens(),
+    designSystemSchema = schema,
+    permissions = EditorWorkspacePermissions(readSource: true,
+      writeSource: true),
+    editAdapter = adapter))
+  check result.selectInspectorElement(element)
+
 proc findByAttr(node: MockNode; name, value: string): MockNode =
   if node == nil: return nil
   if node.kind == mnkElement and node.attributes.getOrDefault(name) == value:
@@ -1180,4 +1226,101 @@ suite "exposed CSS parameters":
       for property in ["backdrop-filter", "transition-property", "transition-delay"]:
         check display(findByAttr(effects, "data-exposed-css-property", property)) == "none"
       check display(findByAttr(layout, "data-exposed-css-property", "padding")) == "none"
+      dispose()
+
+suite "Section rows the specialized editors sit beside":
+  ## D1-11, -25, -30, -33, -35, -36: each section's own text row for the
+  ## property (not its component-properties row) commits through its row's
+  ## pipeline, is written inside the class rule, undoes to the exact bytes,
+  ## and refuses an invalid value at the act, its text kept with the reason.
+  template sectionRowCase(name, section, property, good, invalid: static string) {.dirty.} =
+    test name:
+      createRoot proc(dispose: proc()) =
+        let r = MockRenderer()
+        let foundation = new(string)
+        foundation[] = DemoFoundationInitialSource
+        let vm = editorVm(foundation)
+        let panel = renderInspectorPanel[MockRenderer, MockNode](r, vm)
+        let body = findByAttr(panel, "data-inspector-section-body", section)
+        need(body)
+        let row = findByAttr(body, "data-exposed-css-property", property)
+        need(row)
+        check display(row) == "flex"
+        let input = findByAttr(row, "data-property-row-input", "true")
+        need(input)
+        r.setInputValue(input, good)
+        input.fireEvent("input")
+        input.fireEvent("change")
+        check vm.value(property) == good
+        vm.write()
+        check longTail(property, good) in foundation[]
+        check vm.stacks == (1, 0)
+        r.setInputValue(input, invalid)
+        input.fireEvent("input")
+        input.fireEvent("change")
+        check vm.value(property) == good
+        check vm.stacks == (1, 0)
+        check vm.inspector.pendingSourceEdits.val.len == 0
+        # The refused text stays in the field with its reason, for
+        # correction (editor spec, colour fields and raw CSS).
+        check r.inputValue(input) == invalid
+        let message = findByAttr(row, "data-property-row-message", "true")
+        need(message)
+        check attr(message, "data-property-row-message-visible") == "true"
+        check textOf(message).len > 0
+        check vm.runEditorCommand(eckUndo).status == ecsSucceeded
+        vm.write()
+        check foundation[] == DemoFoundationInitialSource
+        dispose()
+
+  sectionRowCase("Layout's aspect-ratio row commits, undoes and refuses an invalid ratio",
+    "layout", "aspect-ratio", "16 / 9", "banana")
+  sectionRowCase("Fill's background-size row commits, undoes and refuses an invalid size",
+    "fill", "background-size", "cover", "huge")
+  sectionRowCase("Stroke's outline-offset row commits, undoes and refuses an invalid length",
+    "stroke", "outline-offset", "2px", "far")
+  sectionRowCase("Effects' filter row commits, undoes and refuses an invalid filter",
+    "effects", "filter", "blur(2px)", "glow(4px)")
+  sectionRowCase("Effects' transform row commits, undoes and refuses an invalid transform",
+    "effects", "transform", "rotate(5deg)", "spin(3)")
+  sectionRowCase("Effects' transition-duration row commits, undoes and refuses an invalid duration",
+    "effects", "transition-duration", "200ms", "fast")
+
+suite "Stroke's colour row":
+  test "an owned border-color commits from a typed hex and from the picker, and undoes exactly":
+    ## D1-27: the Stroke section's colour row, beyond the refusal the source
+    ## GUI covers: both entries reach the same plan, history and file.
+    createRoot proc(dispose: proc()) =
+      let r = MockRenderer()
+      let foundation = new(string)
+      foundation[] = DemoFoundationInitialSource.replace(" filter: none;",
+        " filter: none; border-color: #3B82F6;")
+      let start = foundation[]
+      let vm = declaredVm(foundation, [("border-color", "#3B82F6")])
+      let panel = renderInspectorPanel[MockRenderer, MockNode](r, vm)
+      let stroke = findByAttr(panel, "data-inspector-section-body", "stroke")
+      need(stroke)
+      let row = findByAttr(stroke, "data-property-row-css-property", "border-color")
+      need(row)
+      let hex = findByAttr(row, "data-property-row-input", "true")
+      need(hex)
+      r.setInputValue(hex, "#FF0000")
+      hex.fireEvent("input")
+      hex.fireEvent("change")
+      check vm.value("border-color").toUpperAscii == "#FF0000"
+      vm.write()
+      check longTail("border-color", vm.value("border-color")) in foundation[]
+      check vm.stacks == (1, 0)
+      let swatch = findByAttr(row, "data-property-row-swatch", "true")
+      need(swatch)
+      swatch.fireEvent("click")
+      r.applyColor(panel, "#00FF00")
+      check vm.value("border-color").toUpperAscii == "#00FF00"
+      vm.write()
+      check longTail("border-color", vm.value("border-color")) in foundation[]
+      check vm.stacks == (2, 0)
+      for _ in 0 ..< 2:
+        check vm.runEditorCommand(eckUndo).status == ecsSucceeded
+        vm.write()
+      check foundation[] == start
       dispose()

@@ -1704,6 +1704,30 @@ suite "A native-inspector composition refuses at the act what it cannot write":
       vm.nothingStaged()
       dispose()
 
+  test "a canvas reorder is refused":
+    ## D1-47: the reorder is refused at the act like the other canvas
+    ## gestures, and its order stays where it was.
+    createRoot proc(dispose: proc()) =
+      let vm = nativeEditor(MemoryProject())
+      check vm.selectInspectorElement(ElementRef(id: "topbar", tag: "header",
+        sourceKey: "dom.topbar", schemaKey: "dom.topbar",
+        sourceFile: ComponentFile, sourceLine: 1,
+        properties: @[topbarPad("0px"), PropertyInfo(name: "order",
+          value: "0", sourceFile: ComponentFile, sourceLine: 1,
+          schemaKey: "dom.topbar.order", directStyleAllowed: true)]))
+      let before = vm.inspector.selectedElement.val
+      let reordered = vm.applyDirectCanvasOperation(DirectCanvasOperation(
+        kind: dcokReorder, property: "order", oldValue: "0", value: "2",
+        fromIndex: 0, toIndex: 2, sourceKey: "dom.topbar",
+        measurement: "order=2"))
+      check not reordered.ok
+      check reordered.diagnostics.len == 1
+      if reordered.diagnostics.len == 1:
+        check reordered.diagnostics[0].message == reason
+      check vm.inspector.selectedElement.val == before
+      vm.nothingStaged()
+      dispose()
+
   test "a canvas context command that stages is refused; one that stages nothing is not":
     createRoot proc(dispose: proc()) =
       let vm = nativeEditor(MemoryProject())

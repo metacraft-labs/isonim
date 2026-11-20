@@ -70,6 +70,45 @@ suite "Phase G section_position":
         check findByAttr(root, "data-position-flip", slug) != nil
       dispose()
 
+  test "every alignment, distribute and flip button is disabled and does nothing":
+    ## D1-03: the strip is shown but cannot edit source, so each button says
+    ## so (aria-disabled) and a click, Enter or Space changes nothing: no
+    ## selection, history, journal or value.
+    createRoot do (dispose: proc()):
+      let r = MockRenderer()
+      let root = r.createElement("div")
+      let vm = createEditorVM()
+      discard vm.selectInspectorElement(ElementRef(id: "card", tag: "div",
+        properties: @[PropertyInfo(name: "left", value: "10px"),
+          PropertyInfo(name: "top", value: "20px"),
+          PropertyInfo(name: "text-align", value: "left"),
+          PropertyInfo(name: "align-self", value: "top")]))
+      mountSectionPosition[MockRenderer, MockNode](r, root, vm)
+      var buttons: seq[MockNode]
+      for (attr, slugs) in [("data-position-align", @["left", "center", "right"]),
+          ("data-position-valign", @["top", "middle", "bottom"]),
+          ("data-position-distribute", @["spacing"]),
+          ("data-position-flip", @["horizontal", "vertical"])]:
+        for slug in slugs:
+          let button = findByAttr(root, attr, slug)
+          check button != nil
+          if button != nil: buttons.add button
+      check buttons.len == 9
+      let before = vm.inspector.selectedElement.val
+      for button in buttons:
+        check button.attributes.getOrDefault("aria-disabled") == "true"
+        let active = button.attributes.getOrDefault("data-position-align-active")
+        button.fireEvent("click")
+        for keyName in ["Enter", " "]:
+          button.fireEventWith("keydown", MockEvent(`type`: "keydown",
+            target: button, currentTarget: button, key: keyName))
+        check button.attributes.getOrDefault("aria-disabled") == "true"
+        check button.attributes.getOrDefault("data-position-align-active") == active
+      check vm.inspector.selectedElement.val == before
+      check vm.inspector.undoStack.val.len == 0
+      check vm.inspector.pendingSourceEdits.val.len == 0
+      dispose()
+
   test "empty-state hides when an element is selected":
     createRoot do (dispose: proc()):
       let r = MockRenderer()

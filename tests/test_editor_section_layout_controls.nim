@@ -83,6 +83,53 @@ proc layoutVm(foundation: ref string; writable = true;
     editAdapter = adapter))
   check result.selectInspectorElement(layoutCard())
 
+proc sizedVm(foundation: ref string; extra: openArray[(string, string)]): EditorVM =
+  ## `layoutVm` with ``extra`` declared in the example's `.long-tail-card`
+  ## rule and mapped like its other declarations (the example declares no
+  ## min-height or max-height of its own).
+  let vector = new(string)
+  vector[] = "<svg/>"
+  let story = StoryRef(group: "DestinationCard", name: "Default",
+    kind: skComponent, index: 0)
+  var adapter = demoVectorEditAdapter(vector, foundation)
+  var schema = demoDesignSystemSchema()
+  var element = layoutCard()
+  for (property, value) in extra:
+    for entry in adapter.schema:
+      if entry.property == "min-width":
+        var copy = entry
+        copy.key = "classes.destination-card." & property
+        copy.path = "classes.long-tail-card." & property
+        copy.property = property
+        adapter.schema.add copy
+        break
+    for node in schema.nodes:
+      if node.key == "classes.destination-card.min-width":
+        var copy = node
+        copy.key = "classes.destination-card." & property
+        copy.property = property
+        copy.value = value
+        schema.nodes.add copy
+        break
+    element.properties.add PropertyInfo(name: property, value: value,
+      origin: poTailwindClass, originDetail: "class:long-tail-card",
+      sourceFile: DemoFoundationSource, sourceLine: 10,
+      schemaKey: "classes.destination-card." & property,
+      sharedCount: 4, directStyleAllowed: true)
+  result = createEditorVM(newEditorWorkspace(
+    title = "Wanderlust layout controls fixture",
+    storyGroups = @[StoryGroup(name: "DestinationCard", kind: skComponent,
+      expanded: true, items: @[StoryItem(name: "Default", kind: skComponent,
+        group: "DestinationCard")])],
+    initialStory = some(story),
+    foundationTokens = demoFoundationTokens(),
+    designSystemSchema = schema,
+    responsiveBreakpoints = demoResponsiveBreakpoints(foundation[]),
+    permissions = EditorWorkspacePermissions(readSource: true,
+      writeSource: true),
+    editAdapter = adapter))
+  check result.selectInspectorElement(element)
+
 proc findByAttr(node: MockNode; name, value: string): MockNode =
   if node == nil: return nil
   if node.kind == mnkElement and node.attributes.getOrDefault(name) == value:
@@ -476,6 +523,44 @@ suite "the auto layout, grid and constraint rows":
         check vm.runEditorCommand(eckUndo).status == ecsSucceeded
         vm.write()
       check foundation[] == DemoFoundationInitialSource
+      dispose()
+
+  test "min-height and max-height commit through their rows, undo exactly and refuse an invalid value":
+    ## D1-15: the constraint rows for the minimum and maximum height, like
+    ## min-width's above.
+    createRoot proc(dispose: proc()) =
+      let r = MockRenderer()
+      let foundation = new(string)
+      foundation[] = DemoFoundationInitialSource.replace(" min-width: auto;",
+        " min-width: auto; min-height: auto; max-height: none;")
+      let start = foundation[]
+      let vm = sizedVm(foundation, [("min-height", "auto"), ("max-height", "none")])
+      let panel = renderInspectorPanel[MockRenderer, MockNode](r, vm)
+      vm.inspector.layoutControlsShown.val = true
+      for property in ["min-height", "max-height"]:
+        check display(findByAttr(panel, "data-layout-controls-property", property)) == "flex"
+      r.typeRow(panel, "min-h", "40px")
+      check vm.value("min-height") == "40px"
+      vm.write()
+      r.typeRow(panel, "max-h", "320px")
+      check vm.value("max-height") == "320px"
+      vm.write()
+      check longTail("min-height", "40px") in foundation[]
+      check longTail("max-height", "320px") in foundation[]
+      check vm.stacks == (2, 0)
+      # An invalid value is refused at the act: nothing moves, the field is
+      # put back.
+      r.typeRow(panel, "max-h", "tall")
+      check vm.value("max-height") == "320px"
+      check vm.stacks == (2, 0)
+      check vm.inspector.pendingSourceEdits.val.len == 0
+      let field = findByAttr(panel.row("max-h"), "data-property-row-input", "true")
+      need(field)
+      check r.inputValue(field) == "320px"
+      for _ in 0 ..< 2:
+        check vm.runEditorCommand(eckUndo).status == ecsSucceeded
+        vm.write()
+      check foundation[] == start
       dispose()
 
   test "a row's value is validated and refused at the act":
