@@ -2402,3 +2402,97 @@ suite "a canvas gesture is refused at the act where a row's commit would be":
         kind: dcokSpacing, property: "padding", value: "20px")).ok
       check vm.staged() == (1, 1)
       dispose()
+
+suite "a shorthand edit moves only the sides it decides":
+  ## Editor spec "Visual box model": "a shorthand edit moves the sides the
+  ## shorthand decides", "The preview shows the same values, before the
+  ## write and after it", and the reverse case "A value edit of a side that a
+  ## later or `!important` shorthand in the same rule still overrides is
+  ## refused at the act with that reason, and nothing changes"; "Edit Mode"'s
+  ## spacing handle: a release another declaration decides for the element
+  ## is refused at the act ("Saving").
+  const AllLater = "padding: 18px; padding-top: 24px; padding-right: 2px; " &
+    "padding-bottom: 3px; padding-left: 4px;"
+  const Overridden = "The `padding-top`, `padding-right`, `padding-bottom` " &
+    "and `padding-left` declarations in `.destination-card` override " &
+    "`padding`, so this edit would not change it."
+
+  proc laterSides(): ElementRef =
+    result = boxElement()
+    for prop in result.properties.mitems:
+      case prop.name
+      of "padding-top": prop.value = "24px"
+      of "padding-right": prop.value = "2px"
+      of "padding-bottom": prop.value = "3px"
+      of "padding-left": prop.value = "4px"
+      else: discard
+
+  test "the all-sides field is refused at the act when every side is declared after it":
+    createRoot proc(dispose: proc()) =
+      let r = MockRenderer()
+      let foundation = new(string)
+      foundation[] = withCardRule(AllLater)
+      let vm = boxVm(foundation, element = laterSides())
+      let panel = renderInspectorPanel[MockRenderer, MockNode](r, vm)
+      r.commitField(panel, "Padding, all sides", "20")
+      check textOf(panel.boxMessage) == "Padding, all sides: " & Overridden &
+        " Nothing was changed."
+      check vm.inspector.pendingSourceEdits.val.len == 0
+      check vm.inspector.undoStack.val.len == 0
+      check vm.sides("padding-") == @["24px", "2px", "3px", "4px"]
+      check foundation[] == withCardRule(AllLater)
+      dispose()
+
+  test "a spacing drag asks which sides the shorthand moves, changing nothing":
+    createRoot proc(dispose: proc()) =
+      let foundation = new(string)
+      # One side declared after the shorthand: the other three move.
+      foundation[] = withCardRule("padding: 18px; padding-left: 4px;")
+      var element = boxElement()
+      for prop in element.properties.mitems:
+        if prop.name == "padding-left": prop.value = "4px"
+      var vm = boxVm(foundation, element = element)
+      let partial = vm.canvasShorthandSides("padding", "19px")
+      check partial.refusal == ""
+      check partial.known
+      check partial.sides == @["padding-top", "padding-right", "padding-bottom"]
+      # Every side declared after it: none moves, with the field's reason.
+      foundation[] = withCardRule(AllLater)
+      vm = boxVm(foundation, element = laterSides())
+      let none = vm.canvasShorthandSides("padding", "19px")
+      check none.refusal == Overridden
+      check none.sides.len == 0
+      # The shorthand alone: every side.
+      foundation[] = withCardRule("padding: 18px;")
+      vm = boxVm(foundation)
+      check vm.canvasShorthandSides("padding", "19px").sides ==
+        @["padding-top", "padding-right", "padding-bottom", "padding-left"]
+      check vm.inspector.pendingSourceEdits.val.len == 0
+      check vm.inspector.undoStack.val.len == 0
+      check foundation[] == withCardRule("padding: 18px;")
+      dispose()
+
+  test "a native catalog's owners: a shorthand every side owns itself against is refused":
+    ## The catalog states which declaration decides each side
+    ## (`sourceOwner`); a side it says nothing about follows the shorthand.
+    var element = boxElement()
+    proc owned(element: var ElementRef; owners: openArray[(string, string)]) =
+      for prop in element.properties.mitems:
+        for (name, owner) in owners:
+          if prop.name == name: prop.sourceOwner = owner
+    element.owned({"padding": "padding", "padding-top": "padding-top",
+      "padding-right": "padding-right", "padding-bottom": "padding-bottom",
+      "padding-left": "padding-left"})
+    check element.nativeShorthandOverridden("padding") == "The `padding-top`, " &
+      "`padding-right`, `padding-bottom` and `padding-left` declarations in " &
+      "its rule override `padding`, so this edit would not change it."
+    # A side the shorthand decides: the edit moves it, so it is not refused.
+    element.owned({"padding-left": "padding"})
+    check element.nativeShorthandOverridden("padding") == ""
+    # The shorthand not a declaration of the rule: a shorthand added would
+    # decide every side, so it is not refused.
+    var bare = boxElement()
+    bare.owned({"padding-top": "padding-top", "padding-right": "padding-right",
+      "padding-bottom": "padding-bottom", "padding-left": "padding-left"})
+    check bare.nativeShorthandOverridden("padding") == ""
+    check bare.nativeShorthandOverridden("padding-top") == ""

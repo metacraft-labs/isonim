@@ -1397,6 +1397,48 @@ func editTargetAtWidth*(css, selector, property: string; width: int;
   ## takes a width instead of guessing.
   css.targetIndex(selector, property).editTarget(width, answers)
 
+const quadShorthandSides = [
+  ("padding", ["padding-top", "padding-right", "padding-bottom", "padding-left"]),
+  ("margin", ["margin-top", "margin-right", "margin-bottom", "margin-left"]),
+  ("border-radius", ["border-top-left-radius", "border-top-right-radius",
+    "border-bottom-right-radius", "border-bottom-left-radius"])]
+
+func shorthandDecidedSides(css: string; body: RuleSpan;
+    shorthand: string): tuple[known: bool; sides: seq[string]] =
+  ## The sides the simple shorthand ``shorthand`` decides in the rule
+  ## ``body``: each side the rule does not declare after it (a side declared
+  ## later with the same priority, or `!important` over a normal shorthand,
+  ## keeps its own value). ``known`` is false when ``shorthand`` is not one
+  ## or the rule does not declare it.
+  var sides: seq[string] = @[]
+  for (name, quad) in quadShorthandSides:
+    if name == shorthand: sides = @quad
+  if sides.len == 0: return
+  let own = css.findDeclaration(body, shorthand)
+  if own.valueStart < 0: return
+  result.known = true
+  let ownImportant = css[own.valueStart ..< own.valueEnd].cssValueParts().important
+  for side in sides:
+    let decl = css.findDeclaration(body, side)
+    if decl.valueStart >= 0:
+      let important = css[decl.valueStart ..< decl.valueEnd].cssValueParts().important
+      if important and not ownImportant: continue
+      if important == ownImportant and decl.nameStart > own.nameStart: continue
+    result.sides.add side
+
+func shorthandSidesAt*(css, selector, shorthand: string; width: int;
+    answers: openArray[CssConditionAnswer] = []): tuple[known: bool;
+      sides: seq[string]] =
+  ## `shorthandDecidedSides` in the rule an edit of ``shorthand`` for
+  ## ``selector`` writes at ``width`` (`editTargetAtWidth`). Unknown when
+  ## that rule cannot be told or does not declare it.
+  let target = css.editTargetAtWidth(selector, shorthand, width, answers)
+  if target.undecided or not target.found: return
+  for rule in css.allRules():
+    if rule.bodyStart != target.ruleStart: continue
+    return css.shorthandDecidedSides(RuleSpan(selector: rule.selector,
+      bodyStart: rule.bodyStart, bodyEnd: rule.bodyEnd), shorthand)
+
 func inRuleOverride(css: string; body: RuleSpan; property: string): string =
   ## The declaration in the rule ``body`` that would still decide
   ## ``property`` after a value edit of it (the declaration kept with its
@@ -1564,8 +1606,25 @@ proc patchCssDeclarationAtUnguarded(css, selector, property,
   if target.found:
     for rule in css.allRules():
       if rule.bodyStart != target.ruleStart: continue
-      let overrider = css.inRuleOverride(RuleSpan(selector: rule.selector,
-        bodyStart: rule.bodyStart, bodyEnd: rule.bodyEnd), property)
+      let span = RuleSpan(selector: rule.selector, bodyStart: rule.bodyStart,
+        bodyEnd: rule.bodyEnd)
+      # The reverse: a shorthand every side of which the rule declares after
+      # it (or `!important` over it) decides no side, so the write would
+      # change nothing that renders either.
+      let decided = css.shorthandDecidedSides(span, property)
+      if decided.known and decided.sides.len == 0:
+        var named: seq[string] = @[]
+        for (name, quad) in quadShorthandSides:
+          if name == property:
+            for side in quad: named.add "`" & side & "`"
+        return CssPatchResult(ok: false, outcome: cpoAmbiguous,
+          message: "`" & property & "` for `" & selector & "` cannot be " &
+            "edited here: in " & rule.describe(selector) & ", " &
+            named[0 ..< named.len - 1].join(", ") & " and " & named[^1] &
+            " are each declared after it or `!important` over it, so it " &
+            "decides no side and the edit would change nothing that renders. " &
+            "Edit those declarations instead.")
+      let overrider = css.inRuleOverride(span, property)
       if overrider.len > 0:
         return CssPatchResult(ok: false, outcome: cpoAmbiguous,
           message: "`" & property & "` for `" & selector & "` cannot be " &

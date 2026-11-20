@@ -5100,6 +5100,46 @@ func shorthandGroup(property: string): tuple[found: bool; shorthand: string;
     if property == shorthand or property in sides:
       return (true, shorthand, @sides)
 
+func shorthandOverriddenReason*(shorthand: string; sides: seq[string];
+    rule: string): string =
+  ## Why an edit of ``shorthand`` would change nothing that renders: each of
+  ## ``sides`` is decided by its own declaration in the same rule, declared
+  ## after the shorthand or `!important` over it. ``rule`` names the rule
+  ## when the writer does ("" otherwise).
+  var named: seq[string] = @[]
+  for side in sides: named.add "`" & side & "`"
+  let listed =
+    if named.len <= 1: named.join("")
+    else: named[0 ..< named.len - 1].join(", ") & " and " & named[^1]
+  let where = if rule.len > 0: " in `" & rule & "`" else: " in its rule"
+  "The " & listed & " declarations" & where & " override `" & shorthand &
+    "`, so this edit would not change it."
+
+func nativeShorthandOverridden*(element: ElementRef;
+    property: string): string =
+  ## In a native source project, whose catalog states which declaration
+  ## decides each side in its rule (`PropertyInfo.sourceOwner`): the reason
+  ## an edit of the simple shorthand ``property`` would move no side -- every
+  ## side is decided by its own declaration -- or "". A side the catalog
+  ## says nothing about follows the shorthand ("Visual box model": without
+  ## either, every side follows the shorthand).
+  let group = shorthandGroup(property)
+  if not group.found or property != group.shorthand: return ""
+  # The shorthand must itself be a declaration of the rule: sides that are
+  # their own owners because nothing else is declared would follow a
+  # shorthand added after them.
+  var declared = false
+  for prop in element.properties:
+    if prop.name == property and prop.sourceOwner == property: declared = true
+  if not declared: return ""
+  var own: seq[string] = @[]
+  for side in group.sides:
+    for prop in element.properties:
+      if prop.name == side and prop.sourceOwner == side:
+        own.add side
+  if own.len == group.sides.len:
+    return shorthandOverriddenReason(property, own, "")
+
 const UnknownSide* = "?"
 
 func ruleSideWinner*(declarations: seq[WorkspaceRuleDeclaration];
@@ -5688,6 +5728,59 @@ proc editCssProperty*(editor: EditorVM; property, newValue: string;
   editor.editInspectorProperty(PropertyEditRequest(
     property: property, newValue: newValue, kind: pekCss, scope: scope,
     origin: origin))
+
+proc canvasShorthandSides*(editor: EditorVM; shorthand, value: string):
+    tuple[refusal: string; known: bool; sides: seq[string]] =
+  ## For a canvas drag of the simple shorthand ``shorthand`` (the spacing
+  ## handle's uniform padding) on the selection, asked when the drag starts:
+  ## the sides an edit of it to ``value`` would move once written (``known``
+  ## false when that cannot be told -- then every side follows), or why it
+  ## would move none (editor spec "Visual box model": a shorthand edit moves
+  ## the sides the shorthand decides; "Edit Mode": a release another
+  ## declaration decides for the element is refused at the act). Changes
+  ## nothing: the edit is planned and drafted in memory only, as a commit
+  ## plans it (`editInspectorProperty`).
+  let element = untrack(proc(): ElementRef = editor.inspector.selectedElement.val)
+  let group = shorthandGroup(shorthand)
+  if element.tag.len == 0 or not group.found or shorthand != group.shorthand:
+    return
+  if editor.hasAsyncSourceProject:
+    # The writer's own statement first: its refusal of the shorthand (every
+    # side declared after it) and the sides it decides.
+    for prop in element.properties:
+      if prop.name == shorthand:
+        if prop.nativeEditRefusal.len > 0:
+          return (prop.nativeEditRefusal, true, @[])
+        if prop.nativeShorthandSidesStated:
+          return ("", true, prop.nativeShorthandSides)
+    let refusal = element.nativeShorthandOverridden(shorthand)
+    if refusal.len > 0: return (refusal, true, @[])
+    # The catalog states each side's owner; a side it says nothing about
+    # follows.
+    var stated = false
+    for side in group.sides:
+      for prop in element.properties:
+        if prop.name == side:
+          if prop.sourceOwner.len > 0: stated = true
+          if prop.sourceOwner.len == 0 or prop.sourceOwner == shorthand:
+            result.sides.add side
+    result.known = stated
+    if not stated: result.sides = @[]
+    return
+  var prepared = untrack(proc(): PreparedPropertyEdit =
+    editor.inspector.preparePropertyEdit(PropertyEditRequest(
+      property: shorthand, newValue: value, kind: pekCss, scope: pesLocal,
+      origin: peoInspector)))
+  if prepared.outcome.status != pesAccepted: return
+  if untrack(proc(): string =
+      editor.sourcePlanCommitRefusal(prepared.transaction.sourceEdit)).len > 0:
+    return
+  let overridden = untrack(proc(): string =
+    editor.withRuleOrderedSides(prepared.transaction))
+  if overridden.len > 0: return (overridden, true, @[])
+  if prepared.transaction.shorthandSidesKnown:
+    result.known = true
+    result.sides = prepared.transaction.shorthandMovedSides
 
 proc editLayoutProperty*(editor: EditorVM; property, newValue: string;
     scope = pesUnspecified; origin = peoInspector): PropertyEditResult {.discardable.} =
@@ -11366,6 +11459,20 @@ proc settleRuleSides(adapter: WorkspaceEditAdapter;
         else:
           "A later `" & group.shorthand & "` declaration" & ruleName) &
         " overrides " & plan.property & ", so this edit would not change it."
+  # The reverse: an edit of the shorthand whose every side the same rule
+  # declares after it (or `!important` over it) moves no side, so it would
+  # change nothing that renders either: refused at the act with that reason
+  # (editor spec "Visual box model": a shorthand edit moves the sides the
+  # shorthand decides; "Saving").
+  if plan.property == group.shorthand and plan.newValue.strip().len > 0:
+    var own: seq[string] = @[]
+    for side in group.sides:
+      let winner = ruleSideWinner(afterRule.declarations, group.shorthand, side)
+      if winner >= 0 and afterRule.declarations[winner].property == side:
+        own.add side
+    if own.len == group.sides.len:
+      return shorthandOverriddenReason(group.shorthand, own, target)
+  var movedSides: seq[string] = @[]
   var followersBefore, followersAfter: seq[(string, string)] = @[]
   for i, side in group.sides:
     var captured, compared, capturedAuthored, deciding = ""
@@ -11409,6 +11516,10 @@ proc settleRuleSides(adapter: WorkspaceEditAdapter;
       followersBefore.add (side, before.values[i])
     if decidedAfter and overlaps and settable(after.values[i]):
       followersAfter.add (side, after.values[i])
+    if plan.property == group.shorthand and decidedAfter:
+      let winner = ruleSideWinner(afterRule.declarations, group.shorthand, side)
+      if winner >= 0 and afterRule.declarations[winner].property == group.shorthand:
+        movedSides.add side
     if not exposed:
       continue
     for prop in transaction.afterElement.properties.mitems:
@@ -11427,6 +11538,9 @@ proc settleRuleSides(adapter: WorkspaceEditAdapter;
           prop.authoredValue = capturedAuthored
   transaction.sideFollowersBefore = followersBefore
   transaction.sideFollowersAfter = followersAfter
+  if plan.property == group.shorthand:
+    transaction.shorthandMovedSides = movedSides
+    transaction.shorthandSidesKnown = true
 
 proc draftedDeclarationFile(editor: EditorVM; adapter: WorkspaceEditAdapter;
     journal: seq[SourceEditPlan]; plan: SourceEditPlan): tuple[ok: bool;

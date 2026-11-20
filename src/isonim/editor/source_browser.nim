@@ -271,6 +271,18 @@ proc attachSourceProject*(vm: EditorVM; base: EditorWorkspace; inspectorEditing 
             if property.sourceOwner != owner:
               property.sourceOwner = owner
               changed = true
+            # For a simple shorthand, the sides it decides in the rule its
+            # edit writes, as the writer states them (`decides`).
+            let decides = mapping{"decides", property.name}
+            let sidesStated = decides != nil and decides.kind == JArray
+            var sides: seq[string] = @[]
+            if sidesStated:
+              for side in decides: sides.add side.getStr()
+            if property.nativeShorthandSidesStated != sidesStated or
+                property.nativeShorthandSides != sides:
+              property.nativeShorthandSidesStated = sidesStated
+              property.nativeShorthandSides = sides
+              changed = true
             # The worker's removal statement for this declaration rides on the
             # property, as its authored value does, so Reset and Fill Delete
             # read it with the selection and never subscribe to the mappings.
@@ -444,6 +456,15 @@ proc attachSourceProject*(vm: EditorVM; base: EditorWorkspace; inspectorEditing 
       # Refused here, at the act and before any request, where the entry
       # states that its writer cannot remove it (editor spec "Saving").
       let removal = value.strip().len == 0
+      # A shorthand whose every side its rule declares after it moves no
+      # side: the write would change nothing that renders, so it is refused
+      # here, at the act, as the reverse case is (editor spec "Visual box
+      # model": a shorthand edit moves the sides the shorthand decides).
+      if not removal:
+        let overridden = vm.inspector.selectedElement.val.nativeShorthandOverridden(property)
+        if overridden.len > 0:
+          done(false, overridden)
+          return
       var removalKey = ""
       if removal:
         let refusal = vm.inspectorSourceRemovalRefusal(element, property, scope)

@@ -127,3 +127,5 @@ func withoutNativeStatements*(property: PropertyInfo): PropertyInfo =
   result.nativeRemovalRefusal = ""
   result.nativeEditRefusal = ""
   result.sourceOwner = ""
+  result.nativeShorthandSides = @[]
+  result.nativeShorthandSidesStated = false

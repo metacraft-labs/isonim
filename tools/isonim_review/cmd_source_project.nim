@@ -181,6 +181,7 @@ proc describeEditableStyles(root: string; manifest: JsonNode; overrideFile = "";
     var values = newJObject()
     var removals = newJObject()
     var edits = newJObject()
+    var decides = newJObject()
     var conditions = newJObject()
     var cases = newJObject()
     let css = nimConstBody(source, entry{"const"}.getStr())
@@ -207,16 +208,27 @@ proc describeEditableStyles(root: string; manifest: JsonNode; overrideFile = "";
         values[name] = %stated.value
         removals[name] = %removalStatement(source, entry, name)
         edits[name] = %stated.edit
+      # Which sides a simple shorthand decides in the rule its edit writes
+      # (editor spec "Visual box model": a shorthand edit moves the sides the
+      # shorthand decides), so a canvas drag previews only those.
+      proc decided(given: seq[CssConditionAnswer]) =
+        let sides = css.shorthandSidesAt(entry{"selector"}.getStr(), name,
+          viewportWidth, given)
+        if sides.known: decides[name] = %sides.sides
       if answered:
         # The act: the request's answers, and its width for the conditions
         # the width decides.
         let stated = probe(answers, viewportWidth)
-        if stated.stated: state(stated)
+        if stated.stated:
+          state(stated)
+          decided(answers)
         continue
       let involved = css.editConditions(entry{"selector"}.getStr(), name)
       if involved.len == 0:
         let stated = probe(@[], viewportWidth)
-        if stated.stated: state(stated)
+        if stated.stated:
+          state(stated)
+          decided(@[])
         continue
       # A `px` width condition is decided from the preview's width, sent
       # with the edit; only the others are asked of the preview, and only
@@ -275,7 +287,7 @@ proc describeEditableStyles(root: string; manifest: JsonNode; overrideFile = "";
       "storyId": entry{"storyId"}.getStr(), "file": entry{"file"}.getStr(),
       "const": entry{"const"}, "selector": entry{"selector"}, "properties": entry{"properties"},
       "sourceHash": $secureHash(source), "values": values, "removals": removals, "edits": edits,
-      "conditions": conditions, "cases": cases})
+      "decides": decides, "conditions": conditions, "cases": cases})
 
 proc bindingSnapshot(root: string): JsonNode =
   let file = safePath(root, bindingSidecarRelPath)

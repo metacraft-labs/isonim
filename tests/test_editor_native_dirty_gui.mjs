@@ -116,7 +116,10 @@ try {
  // fixture's preview an !important height declaration holds every button's
  // height, which refuses the height handle at the press ("height does not
  // follow the drag"), so it is not driven here.
- await writtenDrag('canvas spacing','Adjust selected spacing',0,6,'padding');
+ // On the secondary button, whose `padding` decides every side: the action
+ // button declares each side after its `padding`, so a drag of it is
+ // refused at the press (`tests/test_editor_native_field_gui.mjs`).
+ await writtenDrag('canvas spacing','Adjust selected spacing',0,6,'padding','secondary-action');
  // A refusal the native field would make at the act (a read-only
  // workspace): the release is refused, the preview put back, the reason shown.
  {

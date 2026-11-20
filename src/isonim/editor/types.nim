@@ -647,6 +647,11 @@ type
       ## property whose declaration decides it in its rule, as the catalog
       ## reports it (`sourceDeclarations`) -- the side itself, or its
       ## shorthand when the shorthand comes later. "" when not reported.
+    nativeShorthandSides*: seq[string]
+    nativeShorthandSidesStated*: bool
+      ## For a simple shorthand in a native source project whose writer
+      ## states it (`decides`): the sides the shorthand decides in the rule
+      ## its edit writes, so a canvas drag previews only those.
     nativeSourceShared*: bool ## Compiler binding owns a shared CSS rule, never a local override.
     nativeSourceToken*: bool ## Verified direct reference edits its declared literal token owner.
     nativeSourceOffered*: bool
@@ -1449,6 +1454,13 @@ type
       ## The preview sets them, in order, after the edited declaration, so a
       ## CSSOM shorthand -- which resets every longhand in its block -- shows
       ## what the source renders. Empty for every other edit.
+    shorthandMovedSides*: seq[string]
+    shorthandSidesKnown*: bool
+      ## For an edit of a simple shorthand whose writer reports the rule's
+      ## declarations: the sides the edited shorthand decides once written
+      ## (``shorthandSidesKnown`` true), so a canvas drag previews only those
+      ## (editor spec "Visual box model": a shorthand edit moves the sides
+      ## the shorthand decides).
     previewRule*: string
       ## For a shared class edit whose writer reports the rule it writes
       ## (`WorkspaceRuleDeclarations.rule`): that rule's name, as the

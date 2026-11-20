@@ -1216,11 +1216,26 @@ __ISONIM_SCENE_GRAPH_WALK__
       entry.el.removeAttribute('data-isonim-box-drag-preview');
     renderBoxPreviews();
   }
+  // The reason beside the selection lasts until the next drag or another
+  // selection ("Visual box model"), not until the preview's document is
+  // rebuilt: a native write that lands after a later release was refused
+  // (its own write still in flight) replaces the document, and the reason
+  // went with it, leaving two drags and one edit unexplained. So it is kept
+  // in the editor's window with the element it is about, and shown again
+  // when the rebuilt document selects that element.
+  function keptBoxMessage(value) {
+    try {
+      if (value !== undefined) parent.__isonimCanvasMessage = value;
+      return parent.__isonimCanvasMessage || null;
+    } catch (error) { return null; }
+  }
   function hideBoxMessage() {
+    keptBoxMessage(null);
     const note = document.getElementById('isonim-editor-box-drag-message');
     if (note) note.remove();
   }
   function showBoxMessage(el, text) {
+    keptBoxMessage({ element: identityFor(el), text: String(text) });
     const note = ensureLayoutGuide('isonim-editor-box-drag-message');
     note.setAttribute('role', 'alert');
     note.dataset.layoutGuide = 'box-drag-message';
@@ -1310,13 +1325,17 @@ __ISONIM_SCENE_GRAPH_WALK__
   // dragged value until then; a refusal puts it back with the reason, as an
   // act-time refusal does, and an accepted write is shown by the rebuilt
   // catalog's preview.
+  // An accepted answer that changed nothing (the value already in place)
+  // writes nothing and rebuilds nothing, so the preview is put back to what
+  // the file renders, without a reason ("Visual box model": a drag back to
+  // the value in place commits nothing).
   function lateRelease(selected, restore) {
-    return function (ok, message) {
-      if (ok) return;
+    return function (ok, message, changed) {
+      if (ok && changed !== false) return;
       const hold = holdTransitions(selected);
       restore();
       hold.release();
-      if (window.__isonimSelectedElement === selected)
+      if (!ok && window.__isonimSelectedElement === selected)
         showBoxMessage(selected, String(message || 'This canvas edit was refused.'));
     };
   }
@@ -1427,21 +1446,50 @@ __ISONIM_SCENE_GRAPH_WALK__
       (style.display === 'flex' || style.display === 'grid' || style.gap !== 'normal')
         ? 'gap'
         : 'padding';
+    // Uniform padding moves only the sides the shorthand decides: a side its
+    // rule declares after it keeps its own value ("Visual box model": a
+    // shorthand edit moves the sides the shorthand decides). The editor says
+    // which, when the drag starts (`canvasShorthandSides`); when it moves
+    // none the press is refused with the reason, as a resize the cascade
+    // holds is. Unknown: every side follows.
+    let previewed = [property];
+    let startSide = 'padding-top';
+    if (property === 'padding') {
+      const asked = new CustomEvent('isonim-preview-spacing-sides', {
+        detail: { property: 'padding',
+                  value: (Math.round(parseFloat(style.paddingTop) || 0) + 1) + 'px',
+                  refused: '', sides: null }
+      });
+      parent.dispatchEvent(asked);
+      if (asked.detail.refused) {
+        showBoxMessage(selected, String(asked.detail.refused));
+        return;
+      }
+      const sides = asked.detail.sides;
+      if (Array.isArray(sides) && sides.length > 0 && sides.length < 4) {
+        previewed = sides.slice();
+        startSide = sides[0];
+      }
+    }
     const startSpacing = property === 'gap' ? usedGap(selected, style)
-      : parseFloat(style.paddingTop) || 0;
+      : parseFloat(style.getPropertyValue(startSide)) || 0;
     const source = parseSource(selected.getAttribute('data-isonim-src'));
     const marker = 'data-isonim-spacing-adjusted';
     // The preview shows the dragged value at once, as for the resize handles.
     const transitions = holdTransitions(selected);
     const before = {
-      value: selected.style.getPropertyValue(property),
-      priority: selected.style.getPropertyPriority(property),
+      values: previewed.map(function (name) {
+        return [name, selected.style.getPropertyValue(name),
+          selected.style.getPropertyPriority(name)];
+      }),
       marked: selected.hasAttribute(marker)
     };
     let next = '';
     const restore = function () {
-      if (before.value) selected.style.setProperty(property, before.value, before.priority);
-      else selected.style.removeProperty(property);
+      before.values.forEach(function (entry) {
+        if (entry[1]) selected.style.setProperty(entry[0], entry[1], entry[2]);
+        else selected.style.removeProperty(entry[0]);
+      });
       if (!before.marked) selected.removeAttribute(marker);
       transitions.release();
       if (window.__isonimSelectedElement === selected) placeHandles(selected);
@@ -1449,7 +1497,7 @@ __ISONIM_SCENE_GRAPH_WALK__
     startHandleDrag(handleEl, event, {
       move: function (dx, dy) {
         next = Math.max(0, Math.round(startSpacing + dy / scaled.scaleY)) + 'px';
-        selected.style.setProperty(property, next);
+        previewed.forEach(function (name) { selected.style.setProperty(name, next); });
         selected.setAttribute(marker, 'true');
         placeHandles(selected);
       },
@@ -2126,7 +2174,13 @@ __ISONIM_SCENE_GRAPH_WALK__
     if (!el || el === document.documentElement || el === document.body) return;
     // A drag belongs to the element it was started on.
     if (handleDrag && handleDrag.element !== el) cancelHandleDrag();
-    if (el !== window.__isonimSelectedElement) hideBoxMessage();
+    let keptReason = '';
+    if (el !== window.__isonimSelectedElement) {
+      const kept = keptBoxMessage();
+      if (!window.__isonimSelectedElement && kept && kept.element === identityFor(el))
+        keptReason = kept.text;
+      else hideBoxMessage();
+    }
     // Selecting something else ends inline text editing. The click handler
     // calls preventDefault, so the browser never moves focus by itself and
     // an element left editing by a double-click would otherwise stay
@@ -2141,6 +2195,7 @@ __ISONIM_SCENE_GRAPH_WALK__
     window.__isonimSelectedElement = el;
     drillSync(el);
     placeHandles(el);
+    if (keptReason) showBoxMessage(el, keptReason);
     const source = parseSource(el.getAttribute('data-isonim-src'));
     // The selection and hover chrome are overlays (`syncOutlines`), so the
     // element's computed style is the document's own.
@@ -4020,7 +4075,7 @@ proc installPreviewSelectionBridge*[R, E](r: R; frame: E; vm: EditorVM) =
     # of staging a plan nothing in this composition can write. The frame
     # holds its preview until the worker answers (`detail.settle`).
     let nativeCanvasCommit = proc(kind, propName, value: cstring;
-        settle: proc(ok: bool; message: cstring)): bool =
+        settle: proc(ok, changed: bool; message: cstring)): bool =
       if vm.inspectorSourceCommit == nil: return false
       let property = $propName
       if $kind notin ["resize", "spacing"] or
@@ -4033,16 +4088,24 @@ proc installPreviewSelectionBridge*[R, E](r: R; frame: E; vm: EditorVM) =
         wiring = inspectorRowWiring(vm, property)
       discard commitBoxModelField(vm, property, wiring, $value,
         proc(outcome: BoxModelCommitOutcome) =
-          settle(outcome.ok, cstring(outcome.message))
+          settle(outcome.ok, outcome.changed, cstring(outcome.message))
           if disposeWiring != nil: disposeWiring())
       true
+    # Asked when a spacing drag of uniform padding starts: which sides the
+    # shorthand moves, so the drag previews only those, or why it moves none,
+    # so the press is refused with that reason (`canvasShorthandSides`).
+    let canvasShorthandQuery = proc(property, value: cstring): cstring =
+      # `known<US>sides,...<US>refusal`.
+      let answer = vm.canvasShorthandSides($property, $value)
+      cstring((if answer.known: "1" else: "0") & "\x1f" &
+        answer.sides.join(",") & "\x1f" & answer.refusal)
     {.emit: ["""
       globalThis.__isonimPreviewBridge(""", frame, """, 'isonim-preview-direct-manipulation', function (event) {
           const d = event.detail || {};
           if (typeof d.settle === 'function' && """, nativeCanvasCommit, """(
               String(d.kind || ''), String(d.property || ''), String(d.value || ''),
-              function (ok, message) {
-                try { d.settle(ok, message); } catch (error) {}
+              function (ok, changed, message) {
+                try { d.settle(ok, message, changed); } catch (error) {}
               })) {
             d.refused = '';
             d.pending = true;
@@ -4055,6 +4118,15 @@ proc installPreviewSelectionBridge*[R, E](r: R; frame: E; vm: EditorVM) =
             d.measurement || '', Number(d.fromIndex || 0),
             Number(d.toIndex || 0)
           );
+      });
+      globalThis.__isonimPreviewBridge(""", frame, """, 'isonim-preview-spacing-sides', function (event) {
+          const d = event.detail || {};
+          try {
+            const answer = String(""", canvasShorthandQuery, """(
+              String(d.property || ''), String(d.value || ''))).split('\x1f');
+            d.refused = answer[2] || '';
+            d.sides = answer[0] === '1' ? (answer[1] ? answer[1].split(',') : []) : null;
+          } catch (error) {}
       });
     """].}
 

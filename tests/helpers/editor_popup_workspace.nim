@@ -101,7 +101,8 @@ proc propose(property, value: cstring): cstring =
 proc snapshot(): cstring =
   var properties = newJArray()
   for property in editor.inspector.selectedElement.val.properties:
-    properties.add %*{"name": property.name, "value": property.value}
+    properties.add %*{"name": property.name, "value": property.value,
+      "owner": property.sourceOwner}
   var bindings = newJObject()
   for property in ["color", "background-color"]:
     let binding = editor.inspectorBindingFor(property)

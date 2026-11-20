@@ -987,6 +987,35 @@ suite "css_patch: the preview's answers, and the cascade details Chromium checke
       check not r.ok
       check r.outcome == cpoAmbiguous
 
+  test "a shorthand edit whose every side the rule declares after it is refused, with the reason":
+    ## Editor spec "Visual box model": a shorthand edit moves the sides the
+    ## shorthand decides; with none, the write would change nothing that
+    ## renders ("Saving"). The reverse of the case below.
+    for css in [
+        ".x { padding: 1px; padding-top: 2px; padding-right: 3px; padding-bottom: 4px; padding-left: 5px; }\n",
+        ".x { padding-top: 2px !important; padding-right: 3px !important; padding: 1px; padding-bottom: 4px; padding-left: 5px; }\n"]:
+      let r = patchCssDeclarationAt(css, ".x", "padding", "9px", 850)
+      check not r.ok
+      check r.outcome == cpoAmbiguous
+      check "`padding-top`, `padding-right`, `padding-bottom` and `padding-left` are each declared after it or `!important` over it, so it decides no side" in r.message
+      check r.content == ""
+      check css.shorthandSidesAt(".x", "padding", 850) == (true, newSeq[string]())
+    # One side the shorthand still decides: written, and that side is told.
+    let partial = ".x { padding: 1px; padding-left: 5px; }\n"
+    let r = patchCssDeclarationAt(partial, ".x", "padding", "9px", 850)
+    check r.ok
+    check r.content == ".x { padding: 9px; padding-left: 5px; }\n"
+    check partial.shorthandSidesAt(".x", "padding", 850) ==
+      (true, @["padding-top", "padding-right", "padding-bottom"])
+    # An earlier side, or an `!important` shorthand over a normal later side,
+    # follows the shorthand.
+    check ".x { padding-top: 2px; padding: 1px; }".shorthandSidesAt(".x",
+      "padding", 850).sides.len == 4
+    check ".x { padding: 1px !important; padding-top: 2px; }".shorthandSidesAt(".x",
+      "padding", 850).sides.len == 4
+    # Not declared in the rule: not told.
+    check not ".x { padding-top: 2px; }".shorthandSidesAt(".x", "padding", 850).known
+
   test "a value edit a shorthand in the same rule would still override is refused, with the reason":
     for (css, by) in [
         (".x { padding: 1px !important; }\n", "`!important` `padding`"),

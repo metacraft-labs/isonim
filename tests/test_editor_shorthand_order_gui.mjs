@@ -1104,6 +1104,51 @@ try {
     '.hover\\:p-4':false,'.a:nth-child(2n+1)':false,':root .a':false,'.a:not(.b)':false,':where(.a):is(.b)':false,'.a::before':false,'[data-x=":hover"]':false,'.\\32 xl':false,'.a:lang(en)':false,'.a:has(> .b)':false});
   cases.push('only pseudo-classes known to be static leave a selector static; escapes and attribute values are not pseudo-classes');
 
+  // 65-68. A shorthand edit moves only the sides it decides (editor spec
+  // "Visual box model": "a shorthand edit moves the sides the shorthand
+  // decides", "The preview shows the same values, before the write and after
+  // it"; "Edit Mode": a spacing release another declaration decides for the
+  // element is refused at the act). Every side declared after the shorthand:
+  // the all-sides field and the spacing handle are refused at the act.
+  {
+    const all='padding: 18px; padding-top: 24px; padding-right: 2px; padding-bottom: 3px; padding-left: 4px;';
+    const why='The `padding-top`, `padding-right`, `padding-bottom` and `padding-left` declarations in `.destination-card` override `padding`, so this edit would not change it.';
+    await open(all);
+    await commit('Padding, all sides','20');
+    const note=p.locator('[data-box-model-message]');await note.waitFor({state:'visible'});
+    assert.equal((await note.textContent()).trim(),'Padding, all sides: '+why+' Nothing was changed.');
+    await p.waitForTimeout(1500);
+    assert.equal(await pending(),0);assert.equal(await cardRule(),'.destination-card { '+all+' }');
+    assert.deepEqual(await rendered('padding-'),['24px','2px','3px','4px']);
+    cases.push('the all-sides field is refused at the act when every side is declared after the shorthand');
+    const pf=()=>p.frameLocator('iframe[title="Editable component preview"]');
+    const drag=async(dy)=>{const h=pf().getByLabel('Adjust selected spacing',{exact:true});await h.waitFor();const b=await h.boundingBox();const x=b.x+b.width/2,y=b.y+b.height/2;
+      await p.mouse.move(x,y);await p.mouse.down();for(let i=1;i<=3;i++)await p.mouse.move(x,y+dy*i/3);const mid=await rendered('padding-');await p.mouse.up();return mid;};
+    await open(all);
+    const mid=await drag(6);
+    assert.deepEqual(mid,['24px','2px','3px','4px'],'nothing moves while the pointer moves');
+    assert.equal((await pf().locator('#isonim-editor-box-drag-message').textContent()).trim(),why,'the reason is on the canvas');
+    await p.waitForTimeout(1500);
+    assert.equal(await pending(),0);assert.equal(await cardRule(),'.destination-card { '+all+' }');
+    assert.deepEqual(await rendered('padding-'),['24px','2px','3px','4px']);
+    cases.push('the spacing handle is refused at the press when every side is declared after the shorthand');
+    // One side declared after it: the drag previews the three sides the
+    // shorthand moves, and the written file renders the same.
+    await open('padding: 18px; padding-left: 4px;');
+    const partial=await drag(6);
+    assert.equal(partial[3],'4px','the left side does not move');
+    assert.ok(partial[0]!=='18px'&&partial[0]===partial[1]&&partial[1]===partial[2],'the shorthand\'s sides move together: '+partial);
+    await settle('.destination-card { padding: '+partial[0]+'; padding-left: 4px; }');
+    assert.deepEqual(await rendered('padding-'),partial,'the preview after the write shows what it showed before it');
+    cases.push('a spacing drag previews only the sides the shorthand moves, and the write renders the same');
+    // The shorthand alone: every side moves (control).
+    await open('padding: 18px;');
+    const whole=await drag(6);
+    assert.ok(whole.every(v=>v===whole[0])&&whole[0]!=='18px',''+whole);
+    await settle('.destination-card { padding: '+whole[0]+'; }');
+    cases.push('a spacing drag of a shorthand that decides every side moves every side');
+  }
+
   // 64. A class whose name spells a state (`hover:p-4`, Tailwind's escaped
   // `.hover\:p-4`) is a class: a rule with it that decides is a ground for
   // refusal like any other.
