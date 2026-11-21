@@ -966,7 +966,14 @@ suite "Editor ViewModels (M26 source-backed CSS property editors)":
       check invalidToken.status == pesRejected
       check invalidToken.diagnostics.anyIt(it.kind == pedInvalidTokenReference)
 
-      let invalidUnit = vm.editCssProperty("padding", "12pt", pesLocal)
+      # `pt` is a CSS length unit (CSS Values 4 §6.2), so `12pt` is a valid
+      # padding and is written; a unit CSS does not define is refused.
+      let absoluteUnit = vm.editCssProperty("padding", "12pt", pesLocal)
+      check absoluteUnit.status == pesAccepted
+      check vm.inspector.selectedElement.val.properties.anyIt(
+        it.name == "padding" and it.value == "12pt")
+
+      let invalidUnit = vm.editCssProperty("padding", "12pts", pesLocal)
       check invalidUnit.status == pesRejected
       check invalidUnit.diagnostics.anyIt(it.kind == pedInvalidCssValue)
 

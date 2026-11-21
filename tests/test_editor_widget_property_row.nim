@@ -36,6 +36,7 @@ import std/[math, options, sequtils, strutils, tables, unittest]
 import isonim/core/[signals, computation, owner]
 import isonim/editor/types
 import isonim/editor/viewmodels
+import isonim/editor/css_value_grammar
 import isonim/editor/numeric_precision
 import isonim/editor/views/choice_row
 import isonim/editor/views/widgets/property_row
@@ -1322,10 +1323,10 @@ suite "a typed value is checked against its property's CSS grammar":
         ("border-radius", "4px / 8px"), ("border-radius", "1px 2px 3px 4px / 5px 6px"),
         ("border-top-left-radius", "4px 8px"), ("border-width", "1px 2px"),
         ("border-width", "thin 2px medium"), ("inset", "0 auto"),
-        ("overflow", "hidden auto")]:
+        ("overflow", "hidden auto"), ("padding", "4px 12pt")]:
       accepts(p, v)
     for (p, v) in [("padding", "1px 2px 3px 4px 5px"), ("padding", "4px -2px"),
-        ("padding", "4px auto"), ("padding", "4px 12pt"), ("margin", "0, auto"),
+        ("padding", "4px auto"), ("padding", "4px 12qq"), ("margin", "0, auto"),
         ("margin", "4px / 2px"), ("gap", "1px 2px 3px"),
         ("border-radius", "4px / 8px / 2px"), ("border-radius", "4px -1px"),
         ("border-top-left-radius", "1px 2px 3px"),
@@ -1438,7 +1439,7 @@ suite "a typed value is checked against its property's CSS grammar":
         ("border-width", "revert-layer 1px"), ("gap", "1px inherit"),
         ("overflow", "initial initial"), ("overflow", "unset hidden"),
         ("border-radius", "revert / 2px"), ("border-radius", "2px / inherit"),
-        ("border-top-left-radius", "inherit 2px"), ("padding", "inherit var(--x)")]:
+        ("border-top-left-radius", "inherit 2px")]:
       refuses(p, v)
     # Math is type-checked (CSS Values 4 §10.9): `+`/`-` need one type, `*`
     # a number side, `/` a number divisor; a zero divisor is not finite and
@@ -1474,8 +1475,12 @@ suite "a typed value is checked against its property's CSS grammar":
     # quotes or parentheses (CSS Values 4 §4.5, CSS Syntax 3 §4.3.6).
     for v in ["url(#f)", "url(a.svg#f)", "url(\"a b.svg#f\")", "url('x')"]:
       accepts("filter", v)
-    for v in ["url(a b)", "url(\"a)", "url(a\"b)", "url(a(b))", "url()"]:
+    for v in ["url(a b)", "url(\"a)", "url(a\"b)", "url(a(b))"]:
       refuses("filter", v)
+    # An empty url() is a url token resolving to an invalid resource (CSS
+    # Values 4 §4.5.1): the value is valid.
+    for v in ["url()", "url( )"]:
+      accepts("filter", v)
     # Math inside transform arguments is type-checked too, and auto-repeat
     # grid tracks follow CSS Grid 2 §7.2.3.1.
     for v in ["rotate(calc())", "rotate(calc(banana))", "rotate(min(1px))",
@@ -1595,3 +1600,186 @@ suite "a typed value is checked against its property's CSS grammar":
     # A hex escape ends at one whitespace, and CRLF counts as one.
     for v in ["\\31\r\n23", "\\31\n23", "\\31\t23"]:
       accepts("font-family", v)
+
+  test "one declaration value, non-negative ranges, every length unit, whole CSS-wide keywords, and the transform, font and transition grammars":
+    # isonim-pm issues 2026-11-20 "A value containing var() skips
+    # validation", "The editor accepts negative values for properties that
+    # have none", "Valid CSS length units such as cm, pt and ex are refused",
+    # and 2026-11-21 "A CSS-wide keyword is accepted as one part of a list or
+    # shorthand value", "Transform, font and transition properties accept
+    # almost any single token". Editor spec "Planned interaction parity": a
+    # value valid for its property is written; invalid values are rejected
+    # without changing source.
+    proc reasons(property, value: string): seq[string] =
+      for d in validateCssPropertyValue(PropertyInfo(name: property,
+          directStyleAllowed: true),
+          PropertyEditRequest(property: property, newValue: value, kind: pekCss),
+          parseCssPropertyValue(property, value)):
+        result.add d.message
+    proc accepts(property, value: string) =
+      checkpoint "accepts " & property & ": " & value
+      check reasons(property, value).len == 0
+    proc refuses(property, value: string) =
+      checkpoint "refuses " & property & ": " & value
+      check reasons(property, value).len > 0
+    # A var() may stand for any value (CSS Variables 1 §3.1), but the text
+    # around it is one declaration value: no `;` (CSS Syntax 3 §5.4.4), no
+    # `!important` (CSS Cascade 5 §6.4), no brace, and nothing left open.
+    for (p, v) in [("width", "calc(1px + var(--a))"), ("padding", "var(--a, 1px 2px)"),
+        ("width", "var(--a) var(--b)"), ("width", "var(--a,)"),
+        ("width", "var(--a, var(--b, 2px))"), ("width", "var(--1)"),
+        ("font-family", "var(--font), serif"), ("font-family", "\"a;b\", var(--f)"),
+        ("width", "var(--a, \"x;y\")"), ("width", "var(--a /* c */)"),
+        ("transform", "translate(var(--x), 2px)"), ("box-shadow", "var(--s)")]:
+      accepts(p, v)
+    for (p, v) in [("font-family", "var(--x); color: red"), ("width", "var(--a);"),
+        ("width", "var(--x); color: var(--y)"), ("width", "var(--a) !important"),
+        ("width", "var(--a)!important"), ("width", "var(--a) }"), ("width", "var(--a) {"),
+        ("width", "var(--a)} a{color:red"), ("width", "var(--a"), ("width", "var(--a))"),
+        ("width", "var(--a, [1px)"), ("width", "var(--a) /* open"),
+        ("width", "var(--a, \"x)"), ("transition", "var(--t) !important"),
+        ("box-shadow", "var(--s); x"), ("transform", "var(--t) }"),
+        # The reference itself: a custom property name, then only a fallback.
+        ("width", "var(a)"), ("width", "var(-a)"), ("width", "var(--)"), ("width", "var()"),
+        ("width", "var(--a b)"), ("width", "var(--a 1px)"), ("width", "var(--a/**/b)")]:
+      refuses(p, v)
+    # Properties with no negative values: CSS Sizing 3 §3.1-3.3, Fonts 4
+    # §2.5, Inline 3 §4.2, Box Alignment 3 §8.1, Backgrounds 3 §4.3; also as
+    # one part of a multi-part value.
+    for (p, v) in [("line-height", "-1"), ("line-height", "-1px"), ("font-size", "-1px"),
+        ("font-size", "-10%"), ("height", "-100vh"), ("height", "-100dvh"),
+        ("width", "-10%"), ("min-width", "-1px"), ("max-height", "-1vh"), ("gap", "-1px"),
+        ("row-gap", "-1px"), ("gap", "-1px 2px"), ("gap", "1px -2px"), ("gap", "normal -1px"),
+        ("border-width", "-1px"), ("border-width", "-1px 2px"), ("border-width", "1px -2px"),
+        ("border-top-width", "-1px"), ("padding", "-1cm")]:
+      refuses(p, v)
+    for (p, v) in [("height", "0"), ("height", "-0px"), ("line-height", "0"),
+        ("line-height", "1.5"), ("font-size", "0"), ("gap", "0 1px"), ("margin", "-1px"),
+        ("letter-spacing", "-1px"), ("top", "-10%"), ("width", "calc(-1px)"),
+        ("height", "max(-1px, 2px)")]:
+      accepts(p, v)
+    # The reason a row shows first names the part it refuses.
+    check reasons("gap", "-1px 2px")[0] == "In '-1px': gap cannot be negative."
+    check reasons("border-width", "1px -1px")[0] == "In '-1px': border-width cannot be negative."
+    check reasons("padding", "4px -2px")[0].startsWith("In '-2px': ")
+    # Every CSS length unit (CSS Values 4 §6.1-6.2, Containment 3 §6.1),
+    # case-insensitive, as a single value and as a part.
+    for (p, v) in [("margin", "1cm"), ("padding", "12pt"), ("padding", "1pc"),
+        ("width", "10mm"), ("width", "40Q"), ("width", "1in"), ("width", "2ex"),
+        ("width", "2rex"), ("width", "2cap"), ("width", "2ic"), ("line-height", "1lh"),
+        ("line-height", "1rlh"), ("width", "50vi"), ("width", "50svmin"),
+        ("width", "50dvmax"), ("width", "10cqw"), ("width", "50cqmin"), ("width", "1PX"),
+        ("padding", "1cm 2mm 3pt 4in"), ("margin", "1ex auto"), ("font-size", "12pt")]:
+      accepts(p, v)
+    for (p, v) in [("width", "1cmm"), ("width", "1pts"), ("width", "1qq"), ("width", "1c"),
+        ("width", "1cq"), ("width", "1.cm"), ("width", "1.px"), ("height", "1.%"),
+        ("width", "cm"), ("width", "1 cm"),
+        ("width", "1deg")]:
+      refuses(p, v)
+    # A CSS-wide keyword is the entire value or nothing (CSS Cascade 5 §7.3;
+    # no <custom-ident> spells one, CSS Values 4 §4.2).
+    for (p, v) in [("font-family", "Arial, inherit"), ("font-family", "inherit, Arial"),
+        ("box-shadow", "1px 1px red, inherit"), ("box-shadow", "1px 1px inherit"),
+        ("transition", "opacity 1s, inherit"), ("transition", "revert opacity 1s"),
+        ("font", "inherit 12px Arial"), ("font", "12px inherit"),
+        ("font", "12px serif, inherit")]:
+      refuses(p, v)
+    # Beside a var() the value is valid at parse time (CSS Variables 1 §3.1).
+    for (p, v) in [("font-family", "var(--f), inherit"), ("padding", "inherit var(--x)"),
+        ("box-shadow", "inherit var(--x)"), ("transition", "inherit var(--t)"),
+        ("width", "inherit var(--a)")]:
+      accepts(p, v)
+    for (p, v) in [("font-family", "\"inherit\", Arial"), ("font", "inherit"),
+        ("transition", "inherit"), ("box-shadow", "unset")]:
+      accepts(p, v)
+    # The multi-component grammar keeps refusing a CSS-wide part on its own,
+    # for any caller, whatever each part's own rule says.
+    let anyPart: CssComponentCheck = proc(property, value: string): bool = true
+    for v in ["inherit 2px", "1px initial", "unset unset"]:
+      checkpoint "grammar refuses margin: " & v
+      check not cssValueAcceptedByGrammar("margin", v, anyPart)
+    check cssValueAcceptedByGrammar("margin", "1px 2px", anyPart)
+    # rotate, translate and scale (CSS Transforms 2 §4) and transform-origin
+    # (Transforms 1 §8).
+    for (p, v) in [("rotate", "1deg"), ("rotate", "-45deg"), ("rotate", "0.5turn"),
+        ("rotate", "x 45deg"), ("rotate", "45deg y"), ("rotate", "1 1 0 45deg"),
+        ("rotate", "none"), ("rotate", "calc(10deg + 5deg)"), ("rotate", "0deg"),
+        ("rotate", "x 0deg"), ("transform", "rotate(0)"), ("translate", "10px"),
+        ("translate", "50% 10px"), ("translate", "10px 20px 30px"),
+        ("translate", "calc(1px)"), ("translate", "-10px -2em"), ("scale", "1.5"),
+        ("scale", "150%"), ("scale", "1 2 3"), ("scale", "-1"), ("scale", "calc(2)"),
+        ("transform-origin", "top left"), ("transform-origin", "50% 50%"),
+        ("transform-origin", "right bottom 10px"), ("transform-origin", "calc(50% + 1px) top")]:
+      accepts(p, v)
+    for (p, v) in [("rotate", "banana"), ("rotate", "45"), ("rotate", "45px"), ("rotate", "x"),
+        ("rotate", "x y 45deg"), ("rotate", "1 1 45deg"), ("rotate", "w 45deg"),
+        ("rotate", "rotate(45deg)"),
+        # The rotate property takes an <angle>, never a bare zero (CSS
+        # Transforms 2 §4, CSS Values 4 §7.1).
+        ("rotate", "0"), ("rotate", "x 0"), ("rotate", "0 z"), ("rotate", "1 0 0 0"),
+        ("rotate", "-0"), ("rotate", "+0"), ("translate", "banana"), ("translate", "10px 20px 30%"),
+        ("translate", "1px 2px 3px 4px"), ("translate", "10"), ("translate", "left"),
+        ("scale", "banana"), ("scale", "1 2 3 4"), ("scale", "1px"), ("scale", "scale(2)"),
+        ("transform-origin", "banana"), ("transform-origin", "left right"),
+        ("transform-origin", "10px left"), ("transform-origin", "10px 20px 30%"),
+        ("transform-origin", "1")]:
+      refuses(p, v)
+    # The font shorthand (CSS Fonts 4 §2.8): a size and a family are needed.
+    for v in ["12px Arial", "12px/1.5 Arial, sans-serif", "bold 12px Arial",
+        "italic small-caps bold condensed 12px/2 serif", "700 12px serif",
+        "normal normal 12px serif", "oblique 10deg 12px serif",
+        "large \"Helvetica Neue\", serif", "12px/normal serif", "caption", "0 serif"]:
+      accepts("font", v)
+    for v in ["12px", "bold", "bold Arial", "Arial 12px", "12px/ Arial", "12px/-1 Arial",
+        "-12px Arial", "bold bold 12px serif", "italic oblique 12px serif",
+        "normal normal normal normal normal 12px serif", "12px serif,", "1001 12px serif",
+        "oblique 100deg 12px serif", "calc(12px)"]:
+      refuses("font", v)
+    # The transition shorthand (CSS Transitions 1 §2.5, Transitions 2 §3.1).
+    for v in ["opacity", "opacity 1s", "opacity 1s ease-in 0.5s", "1s opacity",
+        "all 200ms linear, color 1s", "none", "opacity 1s -0.5s",
+        "opacity 1s steps(2, end)", "--my-prop 1s", "opacity 1s allow-discrete",
+        "calc(1s)"]:
+      accepts("transition", v)
+    for v in ["1px", "-1s", "opacity 1s 2s 3s", "opacity -1s", "opacity color 1s",
+        "opacity 1s ease linear", "none, opacity 1s", "opacity 1s,", "opacity 1",
+        "default 1s", "opacity 1s steps(0)"]:
+      refuses("transition", v)
+    # flex-grow and flex-shrink are non-negative numbers (CSS Flexbox 1
+    # §7.3.1-7.3.2); order is an integer (CSS Display 3 §5.1).
+    for (p, v) in [("flex-grow", "0"), ("flex-grow", "1.5"), ("flex-shrink", "2"),
+        ("order", "-3"), ("order", "0"), ("order", "+2")]:
+      accepts(p, v)
+    for (p, v) in [("flex-grow", "-1"), ("flex-grow", "-0.5"), ("flex-shrink", "-1"),
+        ("order", "1.5"), ("order", "2.0"), ("order", "1e2"), ("order", "1px")]:
+      refuses(p, v)
+    # perspective: `none | <length [0,∞]>` (CSS Transforms 2 §6.1);
+    # text-indent: `<length-percentage> && hanging? && each-line?`, negative
+    # allowed (CSS Text 3 §8.1).
+    for (p, v) in [("perspective", "none"), ("perspective", "0"), ("perspective", "100px"),
+        ("perspective", "calc(-1px)"), ("perspective", "2cm"), ("text-indent", "-1em"),
+        ("text-indent", "2em hanging"), ("text-indent", "10% each-line hanging"),
+        ("text-indent", "0")]:
+      accepts(p, v)
+    for (p, v) in [("perspective", "-1px"), ("perspective", "10%"), ("perspective", "auto"),
+        ("perspective", "1px 2px"), ("text-indent", "hanging"), ("text-indent", "1em 2em"),
+        ("text-indent", "1em hanging hanging"), ("text-indent", "auto")]:
+      refuses(p, v)
+    # <paint> for fill and stroke (CSS Fill and Stroke 3 §2.1, §3.1), `auto |
+    # <color>` for caret-color and accent-color (CSS UI 4 §6.2.1, §6.3), and
+    # the flex shorthand (CSS Flexbox 1 §7.1).
+    for (p, v) in [("fill", "none"), ("stroke", "none"), ("fill", "context-fill"),
+        ("fill", "url(#g) red"), ("fill", "#fff"), ("caret-color", "auto"),
+        ("accent-color", "auto"), ("caret-color", "red"), ("flex", "1 1 calc(10% + 1px)"),
+        ("flex", "2 2 10%"), ("flex", "1"), ("flex", "auto"), ("flex", "none"),
+        ("flex", "0 0 auto"), ("flex", "10px 1"), ("flex", "1 30px"), ("flex", "content"),
+        ("flex", "0 1 0"), ("flex", "1 1 0"), ("flex", "0px 1 1"), ("flex", "0 0"),
+        ("flex", "0")]:
+      accepts(p, v)
+    for (p, v) in [("fill", "auto"), ("fill", "none red"), ("caret-color", "none"),
+        ("accent-color", "invert"), ("flex", "-1"), ("flex", "1 1 -1px"), ("flex", "1 2 3"),
+        ("flex", "auto auto"), ("flex", "1 -1"), ("flex", "1px 2px"),
+        # A unitless zero not preceded by two factors is a factor (CSS
+        # Flexbox 1 §7.1), so the trailing 1 would be a basis.
+        ("flex", "0 1 1"), ("flex", "0 0 1")]:
+      refuses(p, v)

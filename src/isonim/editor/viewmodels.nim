@@ -1668,7 +1668,7 @@ func hasUnsupportedNumericUnit(raw: string): bool =
     return false
 
   let suffix = text[index .. ^1].toLowerAscii()
-  if suffix in editorLengthUnits or suffix in ["%", "ms", "s"]:
+  if suffix in cssLengthUnits or suffix in ["%", "ms", "s"]:
     return false
   suffix.allIt(it.isAlphaAscii)
 
@@ -1766,7 +1766,8 @@ proc parseCssPropertyValue*(property, raw: string;
   # (`contents`, `stretch`, `list-item`, a custom `brand-ticks`).
   if not cssIdentifier(text):
     let (number, unit) = splitCssDimension(text)
-    if number.len > 0 and (unit in editorLengthUnits or unit in ["ms", "s"]):
+    if number.len > 0 and (unit.toLowerAscii() in cssLengthUnits or
+        unit in ["ms", "s"]):
       result.kind = cvkLength
       result.unit = unit
       discard tryParseFloatValue(number, result.numeric)
@@ -1788,27 +1789,68 @@ proc parseCssPropertyValue*(property, raw: string;
     return
   result.kind = cvkKeyword
 
-func validTransformValue(propName, raw: string): bool =
+func validTransformValue(raw: string): bool =
+  ## `transform: none | <transform-list>`: transform functions with their
+  ## argument counts and types (CSS Transforms 1 §6, §11).
   let text = raw.strip().toLowerAscii()
   if text in cssWideKeywords or text == "none" or "var(" in text:
     return true
-  if not isCompleteFunction(text):
-    return false
-  if propName == "transform":
-    # `none` or transform functions with their argument counts and types
-    # (CSS Transforms 1 §6, §11).
-    return validTransformList(text)
-  if '(' notin text:
-    # `transform-origin` and the individual `translate`, `scale` and
-    # `rotate` properties take plain keyword, length and angle forms.
-    return true
-  for fn in cssFunctionCalls(text):
-    if fn notin ["matrix", "matrix3d", "perspective", "rotate", "rotate3d",
-        "rotatex", "rotatey", "rotatez", "scale", "scale3d", "scalex",
-        "scaley", "scalez", "skew", "skewx", "skewy", "translate",
-        "translate3d", "translatex", "translatey", "translatez"]:
-      return false
-  true
+  isCompleteFunction(text) and validTransformList(text)
+
+const ownGrammarProperties = ["rotate", "translate", "scale",
+  "transform-origin", "font", "transition", "perspective", "text-indent",
+  "flex"]
+  ## Properties judged as a whole by their own grammar, not by the value
+  ## kinds and units of the single-value rules.
+
+func ownGrammarProblem(propName, raw: string): string =
+  ## Why ``raw`` is not a value of ``propName`` (one of
+  ## `ownGrammarProperties`), or "" when it is one.
+  let text = raw.strip().toLowerAscii()
+  if text in cssWideKeywords or "var(" in text: return ""
+  case propName
+  of "rotate":
+    if validRotateProperty(text): ""
+    else: "rotate takes none, an angle, or an axis (x, y, z or three numbers) and an angle."
+  of "translate":
+    if validTranslateProperty(text): ""
+    else: "translate takes none, or one or two lengths or percentages and an optional z length."
+  of "scale":
+    if validScaleProperty(text): ""
+    else: "scale takes none, or one to three numbers or percentages."
+  of "transform-origin":
+    if validTransformOrigin(text): ""
+    else: "transform-origin takes position keywords or lengths and percentages for x and y, and an optional z length."
+  of "font":
+    if validFontShorthandValue(text): ""
+    else: "font takes a system font, or optional style, variant, weight and width, then a size, an optional / line-height, and a family list."
+  of "perspective":
+    if validPerspectiveProperty(text): ""
+    else: "perspective takes none or a non-negative length."
+  of "text-indent":
+    if validTextIndent(text): ""
+    else: "text-indent takes a length or percentage, with optional hanging and each-line."
+  of "flex":
+    if validFlexShorthand(text): ""
+    else: "flex takes none, or a grow factor, an optional shrink factor and a basis (non-negative factors; basis auto, content or a non-negative length or percentage)."
+  of "transition":
+    if validTransitionShorthand(text): ""
+    else: "transition takes comma-separated transitions, each a property, a non-negative duration, an easing function and a delay, each at most once."
+  else: ""
+
+const nonNegativeLengthProperties = ["width", "height", "min-width",
+  "min-height", "max-width", "max-height", "block-size", "inline-size",
+  "min-block-size", "min-inline-size", "max-block-size", "max-inline-size",
+  "font-size", "line-height", "gap", "row-gap", "column-gap", "border-width",
+  "border-top-width", "border-right-width", "border-bottom-width",
+  "border-left-width", "column-width", "column-rule-width", "flex-basis"]
+  ## Properties whose lengths and percentages have no negative values: CSS
+  ## Sizing 3 §3.1-3.3 and CSS Logical 1 §4 (sizes), CSS Fonts 4 §2.5
+  ## (font-size), CSS Inline 3 §4.2 (line-height), CSS Box Alignment 3 §8.1
+  ## (gaps), CSS Backgrounds 3 §4.3 (`<line-width>`), CSS Multi-column 1
+  ## §2.1 and §4.2, and CSS Flexbox 1 §7.3.3 (flex-basis takes `<'width'>`).
+  ## perspective has its own grammar. Padding, radii and outline widths
+  ## keep their own messages below.
 
 func cssDiagnostic(kind: PropertyEditDiagnosticKind; prop: PropertyInfo;
     message: string): PropertyEditDiagnostic =
@@ -1828,6 +1870,11 @@ proc cssValueShapeDiagnostics(prop: PropertyInfo;
   let allowed = allowedValueKinds(category)
   let propName = prop.name.normalizedCssName()
   let raw = normalized.raw.strip()
+  if propName in ownGrammarProperties and normalized.kind != cvkTokenReference:
+    let problem = ownGrammarProblem(propName, raw)
+    if problem.len > 0:
+      result.add cssDiagnostic(pedInvalidCssValue, prop, problem)
+    return
   let isRadius = propName == "border-radius" or
     (propName.startsWith("border-") and propName.endsWith("-radius"))
   # Two properties the category table leaves without lengths take them:
@@ -1847,13 +1894,18 @@ proc cssValueShapeDiagnostics(prop: PropertyInfo;
   if hasUnsupportedNumericUnit(raw):
     result.add cssDiagnostic(pedInvalidCssValue, prop,
       "Unsupported CSS unit in '" & raw & "'.")
-  if normalized.kind == cvkLength and normalized.unit notin editorLengthUnits and
+  if normalized.kind == cvkLength and
+      normalized.unit.toLowerAscii() notin cssLengthUnits and
       normalized.unit notin ["ms", "s"]:
     result.add cssDiagnostic(pedInvalidCssValue, prop,
       "Unsupported CSS length unit '" & normalized.unit & "'.")
   if normalized.kind == cvkLength:
     var parsed = 0.0
-    if not tryParseFloatValue(raw[0 ..< raw.len - normalized.unit.len], parsed):
+    let amount = raw[0 ..< raw.len - normalized.unit.len]
+    # The amount is one CSS number token (CSS Syntax 3 §4.3.12): `1.px` is
+    # a number, a `.` and an identifier, not a dimension.
+    if not tryParseFloatValue(amount, parsed) or
+        splitCssDimension(amount).number != amount:
       result.add cssDiagnostic(pedInvalidCssValue, prop,
         "CSS length values must use a numeric amount.")
     if normalized.unit in ["ms","s"] and propName notin
@@ -1861,7 +1913,8 @@ proc cssValueShapeDiagnostics(prop: PropertyInfo;
       result.add cssDiagnostic(pedInvalidCssValue,prop,"This property requires a spatial CSS length unit.")
   if normalized.kind == cvkPercentage:
     var parsed = 0.0
-    if raw.len <= 1 or not tryParseFloatValue(raw[0 ..< raw.len - 1], parsed):
+    if raw.len <= 1 or not tryParseFloatValue(raw[0 ..< raw.len - 1], parsed) or
+        splitCssDimension(raw[0 ..< raw.len - 1]).number != raw[0 ..< raw.len - 1]:
       result.add cssDiagnostic(pedInvalidCssValue, prop,
         "CSS percentage values must use a numeric amount.")
   if normalized.kind in {cvkLength, cvkPercentage} and
@@ -1870,6 +1923,10 @@ proc cssValueShapeDiagnostics(prop: PropertyInfo;
         (propName.startsWith("border-") and propName.endsWith("radius"))):
     result.add cssDiagnostic(pedInvalidCssValue, prop,
       "Padding and corner radius values cannot be negative.")
+  if propName in nonNegativeLengthProperties and
+      normalized.kind in {cvkLength, cvkPercentage} and normalized.numeric < 0:
+    result.add cssDiagnostic(pedInvalidCssValue, prop,
+      propName & " cannot be negative.")
   if propName == "outline-width" and normalized.kind == cvkLength and
       normalized.numeric < 0:
     result.add cssDiagnostic(pedInvalidCssValue, prop,
@@ -1925,8 +1982,7 @@ proc cssValueShapeDiagnostics(prop: PropertyInfo;
   if propName in ["filter", "backdrop-filter"] and not validFilterList(raw.toLowerAscii()):
     result.add cssDiagnostic(pedInvalidCssValue, prop,
       "Filter values must use supported CSS filter functions.")
-  if propName in ["transform", "transform-origin", "translate", "scale",
-      "rotate"] and not validTransformValue(propName, raw):
+  if propName == "transform" and not validTransformValue(raw):
     result.add cssDiagnostic(pedInvalidCssValue, prop,
       "Transform values must use supported CSS transform functions.")
   if propName in ["transition-property", "transition-duration",
@@ -1956,10 +2012,25 @@ proc cssValueDiagnostics(prop: PropertyInfo;
   ## A value a whole-value grammar shows valid (a CSS-wide keyword, a list,
   ## a multi-component value, checked function arguments) is accepted;
   ## anything else is judged by the single-value rules.
-  if cssValueAcceptedByGrammar(prop.name.normalizedCssName(),
-      normalized.raw.strip(), cssComponentAccepted):
+  let propName = prop.name.normalizedCssName()
+  if cssValueAcceptedByGrammar(propName, normalized.raw.strip(),
+      cssComponentAccepted):
     return @[]
-  cssValueShapeDiagnostics(prop, normalized)
+  result = cssValueShapeDiagnostics(prop, normalized)
+  if result.len > 0 and multiComponentLimit(propName) > 0:
+    # A list of the property's own values: name the first part it refuses.
+    let parts = cssSpaceItems(normalized.raw.strip())
+    if parts.len > 1:
+      for part in parts:
+        if part == "/": continue
+        let partProblems = cssValueShapeDiagnostics(prop,
+          parseCssPropertyValue(prop.name, part, normalized.variant))
+        if partProblems.len > 0 and not cssValueAcceptedByGrammar(propName,
+            part, cssComponentAccepted):
+          # First, so the row shows the part it refuses.
+          result.insert(cssDiagnostic(pedInvalidCssValue, prop,
+            "In '" & part & "': " & partProblems[0].message), 0)
+          break
 
 proc cssComponentAccepted(property, value: string): bool =
   cssValueDiagnostics(PropertyInfo(name: property, directStyleAllowed: true),
@@ -1969,6 +2040,12 @@ proc validateCssPropertyValue*(prop: PropertyInfo; request: PropertyEditRequest;
     normalized: CSSPropertyValue): seq[PropertyEditDiagnostic] =
   if request.newValue.strip.len == 0:
     return @[]
+  # One declaration value, with every var() well formed (CSS Variables 1 §3;
+  # editor spec "Raw CSS toggle"). An open comment is reported by the
+  # comment handling below.
+  let structure = declarationValueProblem(normalized.raw)
+  if structure.len > 0 and structure != "A comment in the value is not closed.":
+    return @[cssDiagnostic(pedInvalidCssValue, prop, structure)]
   if "/*" in normalized.raw:
     # A comment is not part of the value (CSS Syntax 3 §4.3.2): the value
     # around it is what is checked. One left open swallows what follows.
@@ -1984,7 +2061,22 @@ proc validateCssPropertyValue*(prop: PropertyInfo; request: PropertyEditRequest;
       bare.newValue = stripped
       return validateCssPropertyValue(prop, bare,
         parseCssPropertyValue(prop.name, stripped, normalized.variant))
-  result = cssValueDiagnostics(prop, normalized)
+  # Checked once comments are gone: a comment ends the name before it.
+  if hasVarReference(normalized.raw):
+    let reference = varReferenceProblem(normalized.raw)
+    if reference.len > 0:
+      return @[cssDiagnostic(pedInvalidCssValue, prop, reference)]
+  var wideBesideVar = false
+  if cssWideKeywordAmongParts(normalized.raw):
+    if hasVarReference(normalized.raw):
+      # A value holding a well-formed var() is valid at parse time (CSS
+      # Variables 1 §3.1), even beside a CSS-wide keyword, so it is
+      # accepted. This is the one place that relaxation lives.
+      wideBesideVar = true
+    else:
+      return @[cssDiagnostic(pedInvalidCssValue, prop,
+        "A CSS-wide keyword (inherit, initial, unset, revert, revert-layer) must be the whole value.")]
+  result = if wideBesideVar: @[] else: cssValueDiagnostics(prop, normalized)
   let propName = prop.name.normalizedCssName()
   if normalized.kind == cvkTokenReference and normalized.tokenName.len == 0:
     result.add cssDiagnostic(pedInvalidTokenReference, prop,

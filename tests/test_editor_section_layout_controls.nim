@@ -795,10 +795,11 @@ suite "responsive overrides":
       check not unscoped.ok
       check unscoped.message == unmapped
       check vm.selectInspectorElement(layoutCard())
-      # An invalid value is the row's refusal.
+      # An invalid value is the row's refusal; for a list value its first
+      # reason names the part it refuses.
       let invalid = commitResponsiveOverrideValue(vm, "gap", "12 apples", "mobile")
       check not invalid.ok
-      check invalid.message == "CSS length values must use a numeric amount."
+      check invalid.message == "In '12': Unsupported keyword '12' for gap."
       check vm.stacks == (0, 0)
       check vm.inspector.pendingSourceEdits.val.len == 0
       check foundation[] == DemoFoundationInitialSource

@@ -182,9 +182,22 @@ func cssNumberToken(token: string): bool =
   var value = 0.0
   tryParseFloatValue(token, value)
 
-const cssLengthUnits = ["px", "rem", "em", "vw", "vh", "vmin", "vmax", "ch",
-  "ex", "cm", "mm", "in", "pt", "pc", "q", "lh", "rlh", "svw", "svh", "lvw",
-  "lvh", "dvw", "dvh", "cqw", "cqh"]
+const cssLengthUnits* = [
+  # Font-relative lengths (CSS Values 4 §6.1.1).
+  "em", "rem", "ex", "rex", "cap", "rcap", "ch", "rch", "ic", "ric", "lh",
+  "rlh",
+  # Viewport-percentage lengths with their small, large and dynamic forms
+  # (§6.1.2).
+  "vw", "vh", "vi", "vb", "vmin", "vmax", "svw", "svh", "svi", "svb",
+  "svmin", "svmax", "lvw", "lvh", "lvi", "lvb", "lvmin", "lvmax", "dvw",
+  "dvh", "dvi", "dvb", "dvmin", "dvmax",
+  # Absolute lengths (§6.2).
+  "cm", "mm", "q", "in", "pt", "pc", "px",
+  # Container query lengths (CSS Containment 3 §6.1).
+  "cqw", "cqh", "cqi", "cqb", "cqmin", "cqmax"]
+  ## Every CSS length unit, lower case; units are ASCII case-insensitive
+  ## (CSS Values 4 §6). A property row takes any of them as a value; its unit
+  ## chip still offers only the field's own units.
 
 type CssMathType* = enum
   ## The type a math expression resolves to (CSS Values 4 §10.9, reduced to
@@ -201,6 +214,8 @@ const
 func cssMathFunctionCall*(token: string;
     allowed: set[CssMathType] = cssLengthPercentTypes): bool
 
+func splitCssDimension*(text: string): tuple[number, unit: string]
+
 func cssLengthToken(token: string; percent = true): bool =
   ## A length (`4px`, `-1.5rem`, unitless `0`) or, with ``percent``, a
   ## percentage, or a complete `calc()`-family call.
@@ -212,11 +227,8 @@ func cssLengthToken(token: string; percent = true): bool =
       if percent: cssLengthPercentTypes else: cssLengthTypes)
   if percent and text.len > 1 and text.endsWith("%"):
     return cssNumberToken(text[0 ..< text.len - 1])
-  for unit in cssLengthUnits:
-    if text.len > unit.len and text.endsWith(unit) and
-        cssNumberToken(text[0 ..< text.len - unit.len]):
-      return true
-  false
+  let (number, unit) = splitCssDimension(text)
+  number.len > 0 and unit in cssLengthUnits and cssNumberToken(number)
 
 func cssTimeToken(token: string): bool =
   let text = token.toLowerAscii()
@@ -323,26 +335,6 @@ func validTrackList(text: string): bool =
       continue
     return false
   true
-
-func validFontShorthand(text: string): bool =
-  ## `font`: a system font keyword, or a size (with an optional
-  ## `/line-height`) followed by a family (CSS Fonts 4 §2.8).
-  if text in ["caption", "icon", "menu", "message-box", "small-caption",
-      "status-bar"]:
-    return true
-  let tokens = splitCssTokens(text)
-  for i, token in tokens:
-    if (cssLengthToken(token) or token in ["xx-small", "x-small", "small",
-        "medium", "large", "x-large", "xx-large", "xxx-large", "smaller",
-        "larger"]) and i + 1 < tokens.len:
-      return true
-  false
-
-const editorLengthUnits* = ["px", "rem", "em", "vw", "vh", "ch", "vmin",
-  "vmax", "svw", "svh", "lvw", "lvh", "dvw", "dvh"]
-  ## The length units a property row takes as a single value. The viewport
-  ## units include the small, large and dynamic forms (CSS Values 4 §6.1.2).
-  ## Absolute and font-relative units beyond these are not offered.
 
 func cssIdentifier*(text: string): bool =
   ## Whether the whole of ``text`` is one CSS identifier (CSS Syntax 3
@@ -587,18 +579,10 @@ proc cssMathTypesFor*(propName: string; single: CssComponentCheck):
     set[CssMathType] =
   ## The math result types ``propName`` takes, derived from its own
   ## single-value rule so the two cannot drift: a type is allowed when a
-  ## plain value of that type is (`1px`, `10%`, `1`, `1s`, `1deg`). The
-  ## individual transform properties, `transform-origin` and the `font` and
-  ## `transition` shorthands take forms the single-value rule does not
-  ## check, so only `rotate`'s angle is taken among them.
-  case propName
-  of "rotate": return {cmtAngle}
-  of "translate", "scale", "transform", "transform-origin", "font",
-      "transition":
-    # Shorthands and transform forms whose single-value rule does not check
-    # each part; a whole-value math function is not taken for them.
+  ## plain value of that type is (`1px`, `10%`, `1`, `1s`, `1deg`).
+  if propName == "transform":
+    # A transform list holds functions only (CSS Transforms 1 §6).
     return {}
-  else: discard
   if single(propName, "1px"): result.incl cmtLength
   if single(propName, "10%"): result.incl cmtPercent
   if cmtLength in result and cmtPercent in result:
@@ -858,7 +842,9 @@ func validUrlCall*(token: string): bool =
   ## (a backslash escapes the next character).
   if cssFunctionName(token) != "url" or not token.endsWith(")"): return false
   let inner = token[token.find('(') + 1 ..< token.len - 1].strip()
-  if inner.len == 0: return false
+  # An empty `url()` is a well-formed url token that resolves to an invalid
+  # resource (CSS Values 4 §4.5.1), so the value is valid.
+  if inner.len == 0: return true
   if inner[0] in {'"', '\''}:
     var i = 1
     while i < inner.len and inner[i] != inner[0]:
@@ -1018,6 +1004,20 @@ const boxComponentCounts = [("margin", 4), ("padding", 4), ("inset", 4),
   ## Properties that take up to N space-separated values, each one the
   ## property's own single value (CSS Box 4 §3-4, Backgrounds 3 §4.4, Box
   ## Alignment 3 §8.3, Overflow 3 §3.1, Backgrounds 3 §5.1).
+
+func multiComponentLimit*(propName: string): int =
+  ## How many space-separated values ``propName`` takes as a list of its own
+  ## single values (`boxComponentCounts`, border-radius per side of its
+  ## `/`); 0 for a property that takes no such list.
+  if propName == "border-radius": return 4
+  for (name, most) in boxComponentCounts:
+    if name == propName: return most
+  0
+
+func cssSpaceItems*(text: string): seq[string] =
+  ## ``text`` split on top-level whitespace, keeping calls, strings and
+  ## bracketed lists whole.
+  spaceItems(text)
 
 proc validComponents(propName: string; parts: seq[string]; most: int;
     component: CssComponentCheck): bool =
@@ -1260,6 +1260,12 @@ func validFontFamilyList*(raw: string): bool =
         return false
   true
 
+func validRotateProperty*(raw: string): bool
+func validTranslateProperty*(raw: string): bool
+func validScaleProperty*(raw: string): bool
+func validTransformOrigin*(raw: string): bool
+func validFontShorthandValue*(raw: string): bool
+
 const keywordOnlyProperties* = ["display", "position", "visibility",
   "box-sizing", "flex-direction", "flex-wrap", "flex-flow", "align-items",
   "align-content", "align-self", "justify-content", "justify-items",
@@ -1362,6 +1368,21 @@ func validKeywordForProperty*(propName, raw: string): bool =
     elif propName == "outline-color":
       # CSS UI 4 §3.4: `auto | <color>`, and the UA-dependent `invert`.
       text in ["auto", "invert"] or isCssColorValue(text)
+    elif propName in ["caret-color", "accent-color"]:
+      # CSS UI 4 §6.2.1 (caret-color) and §6.3 (accent-color): `auto |
+      # <color>`.
+      text == "auto" or isCssColorValue(text)
+    elif propName in ["fill", "stroke"]:
+      # `<paint>` (CSS Fill and Stroke 3 §2.1, §3.1; SVG 2 §13.2): `none`,
+      # a colour, `context-fill`, `context-stroke`, or a `url()` with an
+      # optional `none` or colour fallback.
+      let parts = spaceItems(text)
+      if parts.len == 1:
+        text in ["none", "context-fill", "context-stroke"] or
+          isCssColorValue(text) or validUrlCall(text)
+      else:
+        parts.len == 2 and validUrlCall(parts[0]) and
+          (parts[1] == "none" or isCssColorValue(parts[1]))
     else:
       isCssColorValue(text)
   of "display":
@@ -1377,8 +1398,12 @@ func validKeywordForProperty*(propName, raw: string): bool =
   of "flex-flow":
     cssAllIn(text, ["row", "row-reverse", "column", "column-reverse",
       "nowrap", "wrap", "wrap-reverse"], 2)
-  of "flex-grow", "flex-shrink", "order":
-    cssNumberToken(text)
+  of "flex-grow", "flex-shrink":
+    # `<number [0,∞]>` (CSS Flexbox 1 §7.3.1-7.3.2).
+    numberToken(text, min = 0)
+  of "order":
+    # `<integer>` (CSS Display 3 §5.1).
+    integerToken(text, int.low)
   of "flex-basis":
     text in ["auto", "content", "min-content", "max-content", "fit-content"] or
       cssLengthToken(text)
@@ -1416,7 +1441,7 @@ func validKeywordForProperty*(propName, raw: string): bool =
   of "box-shadow", "text-shadow":
     text == "none"
   of "font":
-    validFontShorthand(text)
+    validFontShorthandValue(text)
   of "font-weight":
     var weight = 0.0
     text in ["normal", "bold", "bolder", "lighter"] or
@@ -1424,7 +1449,10 @@ func validKeywordForProperty*(propName, raw: string): bool =
   of "font-style":
     text in ["normal", "italic", "oblique"] or text.startsWith("oblique ")
   of "line-height":
-    text == "normal" or cssNumberToken(text) or cssLengthToken(text)
+    # `normal | <number [0,∞]> | <length-percentage [0,∞]>` (CSS Inline 3
+    # §4.2).
+    text == "normal" or numberToken(text, min = 0) or
+      lengthPercentToken(text, negative = false)
   of "text" & "-align":
     text in ["start", "end", "left", "right", "center", "justify",
       "justify-all", "match-parent"]
@@ -1466,12 +1494,16 @@ func validKeywordForProperty*(propName, raw: string): bool =
     text in ["auto", "isolate"]
   of "z-index":
     text == "auto" or cssNumberToken(text)
-  of "transform", "translate", "scale", "rotate":
+  of "transform":
     text == "none"
+  of "rotate":
+    validRotateProperty(text)
+  of "translate":
+    validTranslateProperty(text)
+  of "scale":
+    validScaleProperty(text)
   of "transform-origin":
-    let parts = text.splitWhitespace()
-    parts.len in 1..3 and parts.allIt(it in ["left", "right", "top",
-      "bottom", "center"] or cssLengthToken(it))
+    validTransformOrigin(text)
   else:
     false
 
@@ -1497,3 +1529,358 @@ func validShadowValue*(raw: string): bool =
   if text in cssWideKeywords or text == "none": return true
   if "var(" in text or "token(" in text: return true
   parseCssShadowList(raw).ok
+
+# A property row's value is one declaration's value. A `var()` reference may
+# stand for any value (CSS Variables 1 §3.1: a property holding a well-formed
+# `var()` is valid at parse time), but the text around it is still a single
+# declaration value, and each reference is itself well formed.
+
+func cssNameCodePoint(ch: char): bool =
+  ## A code point an identifier may continue with (CSS Syntax 3 §4.2).
+  ch in {'a'..'z', 'A'..'Z', '0'..'9', '-', '_', '\x80'..'\xff'}
+
+func declarationValueProblem*(text: string): string =
+  ## Why ``text`` is not one declaration value, or "" when it is one. Outside
+  ## a quoted string and an unquoted `url()` (CSS Syntax 3 §4.3.5-4.3.6),
+  ## a `;` ends the declaration, a `!` starts a priority (`!important`,
+  ## CSS Cascade 5 §6.4), a `{` or `}` opens or closes a block (CSS Syntax 3
+  ## §5.4.4, §5.4.6), and parentheses and brackets nest and close in pairs; a
+  ## string, escape or comment may not be left open (CSS Syntax 3 §4.3.2,
+  ## §4.3.5, §4.3.7). Any value holding one of these is refused, whatever
+  ## its property (editor spec, "Raw CSS toggle": `!important`, an
+  ## unterminated string, comment or bracket, a selector or brace).
+  var closers: seq[char]
+  var i = 0
+  while i < text.len:
+    let ch = text[i]
+    case ch
+    of '\\':
+      if i + 1 >= text.len: return "A backslash at the end of a value escapes nothing."
+      i += 2
+      continue
+    of '"', '\'':
+      var j = i + 1
+      while j < text.len and text[j] != ch:
+        if text[j] == '\\': inc j
+        inc j
+      if j >= text.len: return "A string in the value is not closed."
+      i = j + 1
+      continue
+    of '/':
+      if i + 1 < text.len and text[i + 1] == '*':
+        let close = text.find("*/", i + 2)
+        if close < 0: return "A comment in the value is not closed."
+        i = close + 2
+        continue
+    of '(':
+      # The name before the parenthesis: an unquoted `url(` holds its URL
+      # literally up to its `)`.
+      var start = i
+      while start > 0 and cssNameCodePoint(text[start - 1]): dec start
+      if text[start ..< i].toLowerAscii() == "url":
+        var j = i + 1
+        while j < text.len and text[j] in Whitespace: inc j
+        if j < text.len and text[j] notin {'"', '\''}:
+          while j < text.len and text[j] != ')':
+            if text[j] == '\\': inc j
+            inc j
+          if j >= text.len: return "A url() in the value is not closed."
+          i = j + 1
+          continue
+      closers.add ')'
+    of '[':
+      closers.add ']'
+    of ')', ']':
+      if closers.len == 0 or closers[^1] != ch:
+        return "The value's parentheses and brackets do not pair up."
+      discard closers.pop()
+    of ';':
+      return "A value cannot hold `;`: it would end the declaration."
+    of '!':
+      return "A value cannot hold `!` or a priority such as `!important`."
+    of '{', '}':
+      return "A value cannot hold a brace."
+    else: discard
+    inc i
+  if closers.len > 0:
+    return "The value's parentheses and brackets do not pair up."
+  ""
+
+func varReferenceProblem*(text: string): string =
+  ## Why a `var()` in ``text`` is malformed, or "" when every one is well
+  ## formed: `var( <custom-property-name> [, <declaration-value>? ]? )`
+  ## (CSS Variables 1 §3), where the name is a `<dashed-ident>` other than
+  ## `--` itself (§2). The fallback may be empty or hold further `var()`s,
+  ## which are checked in turn; the text around them is checked by
+  ## `declarationValueProblem`.
+  let lower = text.toLowerAscii()
+  let structural = structuralChars(text)
+  var at = lower.find("var(")
+  while at >= 0:
+    if structural[at] and (at == 0 or not cssNameCodePoint(text[at - 1])):
+      var j = at + 4
+      while j < text.len and text[j] in Whitespace: inc j
+      if not (j + 1 < text.len and text[j] == '-' and text[j + 1] == '-'):
+        return "var() must name a custom property, such as var(--name)."
+      j += 2
+      let nameStart = j
+      while j < text.len:
+        if text[j] == '\\' and j + 1 < text.len: j += 2
+        elif cssNameCodePoint(text[j]): inc j
+        else: break
+      if j == nameStart:
+        return "var() must name a custom property, such as var(--name)."
+      while j < text.len and text[j] in Whitespace: inc j
+      if j >= text.len or text[j] notin {')', ','}:
+        return "A var() name may be followed only by `,` and a fallback value."
+    at = lower.find("var(", at + 1)
+  ""
+
+func hasVarReference*(text: string): bool =
+  ## Whether ``text`` holds a `var()` call outside a string.
+  let lower = text.toLowerAscii()
+  let structural = structuralChars(text)
+  var at = lower.find("var(")
+  while at >= 0:
+    if structural[at] and (at == 0 or not cssNameCodePoint(text[at - 1])):
+      return true
+    at = lower.find("var(", at + 1)
+  false
+
+# The individual transform properties, `transform-origin`, and the `font`
+# and `transition` shorthands, each by its own grammar.
+
+func validRotateProperty*(raw: string): bool =
+  ## `rotate: none | <angle> | [ x | y | z | <number>{3} ] && <angle>`
+  ## (CSS Transforms 2 §4, the rotate property). The property takes an
+  ## `<angle>`, never the bare `<zero>` that transform functions allow (CSS
+  ## Values 4 §7.1), so `rotate: 0` is refused and `0deg` is written.
+  func angleToken(token: string): bool =
+    token != "0" and css_value_grammar.angleToken(token)
+  let text = raw.strip().toLowerAscii()
+  if text == "none": return true
+  let parts = spaceItems(text)
+  case parts.len
+  of 1: angleToken(parts[0])
+  of 2:
+    (parts[0] in ["x", "y", "z"] and angleToken(parts[1])) or
+      (angleToken(parts[0]) and parts[1] in ["x", "y", "z"])
+  of 4:
+    (parts[0 .. 2].allIt(numberToken(it)) and angleToken(parts[3])) or
+      (angleToken(parts[0]) and parts[1 .. 3].allIt(numberToken(it)))
+  else: false
+
+func validTranslateProperty*(raw: string): bool =
+  ## `translate: none | <length-percentage> [ <length-percentage>
+  ## <length>? ]?` (CSS Transforms 2 §4, the translate property).
+  let text = raw.strip().toLowerAscii()
+  if text == "none": return true
+  let parts = spaceItems(text)
+  parts.len in 1..3 and lengthPercentToken(parts[0]) and
+    (parts.len < 2 or lengthPercentToken(parts[1])) and
+    (parts.len < 3 or lengthPercentToken(parts[2], percent = false))
+
+func validScaleProperty*(raw: string): bool =
+  ## `scale: none | [ <number> | <percentage> ]{1,3}` (CSS Transforms 2 §4,
+  ## the scale property).
+  let text = raw.strip().toLowerAscii()
+  if text == "none": return true
+  let parts = spaceItems(text)
+  parts.len in 1..3 and parts.allIt(numberPercentToken(it))
+
+func validTransformOrigin*(raw: string): bool =
+  ## `transform-origin` (CSS Transforms 1 §8): one keyword or
+  ## `<length-percentage>`; or a horizontal then a vertical position, each a
+  ## keyword or `<length-percentage>`, then an optional `<length>` for z; or
+  ## the two keywords in either order, then an optional `<length>`.
+  let text = raw.strip().toLowerAscii()
+  let parts = spaceItems(text)
+  func lp(token: string): bool = lengthPercentToken(token)
+  case parts.len
+  of 1:
+    parts[0] in ["left", "center", "right", "top", "bottom"] or lp(parts[0])
+  of 2, 3:
+    if parts.len == 3 and not lengthPercentToken(parts[2], percent = false):
+      return false
+    ((parts[0] in ["left", "center", "right"] or lp(parts[0])) and
+      (parts[1] in ["top", "center", "bottom"] or lp(parts[1]))) or
+      (parts[0] in ["top", "bottom", "center"] and
+        parts[1] in ["left", "right", "center"])
+  else: false
+
+const fontWidthKeywords = ["ultra-condensed", "extra-condensed", "condensed",
+  "semi-condensed", "semi-expanded", "expanded", "extra-expanded",
+  "ultra-expanded"]
+  ## `<font-width-css3>` (CSS Fonts 4 §2.8).
+
+const fontSizeKeywords = ["xx-small", "x-small", "small", "medium", "large",
+  "x-large", "xx-large", "xxx-large", "smaller", "larger", "math"]
+  ## `<absolute-size>`, `<relative-size>` and `math` (CSS Fonts 4 §2.5).
+
+func obliqueAngle(token: string): bool =
+  ## `oblique <angle [-90deg,90deg]>` (CSS Fonts 4 §2.4).
+  if cssFunctionName(token) in cssMathFunctions:
+    return cssMathFunctionCall(token, {cmtAngle})
+  let (number, unit) = splitCssDimension(token)
+  var value = 0.0
+  if number.len == 0 or not tryParseFloatValue(number, value): return false
+  let degrees =
+    case unit
+    of "deg": value
+    of "grad": value * 0.9
+    of "rad": value * 180 / PI
+    of "turn": value * 360
+    else: return false
+  degrees >= -90 and degrees <= 90
+
+func validFontShorthandValue*(raw: string): bool =
+  ## `font` (CSS Fonts 4 §2.8): `[ [ <'font-style'> || <font-variant-css2>
+  ## || <'font-weight'> || <font-width-css3> ]? <'font-size'>
+  ## [ / <'line-height'> ]? <'font-family'># ] | <system-family-name>`.
+  ## A size and a family are both required; each optional part appears at
+  ## most once, and `normal` may stand for any of them.
+  let text = raw.strip().toLowerAscii()
+  if text in ["caption", "icon", "menu", "message-box", "small-caption",
+      "status-bar"]:
+    return true
+  let tokens = splitCssTokens(text)
+  var style, variant, weight, width = false
+  var normals = 0
+  var i = 0
+  while i < tokens.len:
+    let token = tokens[i]
+    if token == "normal": inc normals
+    elif token == "italic" and not style: style = true
+    elif token == "oblique" and not style:
+      style = true
+      if i + 1 < tokens.len and obliqueAngle(tokens[i + 1]): inc i
+    elif token == "small-caps" and not variant: variant = true
+    elif token in ["bold", "bolder", "lighter"] and not weight: weight = true
+    elif not weight and cssFunctionName(token) notin cssMathFunctions and
+        splitCssDimension(token).unit.len == 0 and numberToken(token, 1, 1000):
+      # `<font-weight-absolute>` takes a number in [1, 1000] (§2.2).
+      weight = true
+    elif not weight and cssFunctionName(token) in cssMathFunctions and
+        cssMathFunctionCall(token, {cmtNumber}):
+      weight = true
+    elif token in fontWidthKeywords and not width: width = true
+    else: break
+    inc i
+  if ord(style) + ord(variant) + ord(weight) + ord(width) + normals > 4:
+    return false
+  # <'font-size'>: a non-negative <length-percentage> (§2.5).
+  if i >= tokens.len or not (tokens[i] in fontSizeKeywords or
+      lengthPercentToken(tokens[i], negative = false)):
+    return false
+  inc i
+  if i < tokens.len and tokens[i] == "/":
+    # <'line-height'>: `normal`, or a non-negative number or
+    # <length-percentage> (CSS Inline 3 §4.2).
+    if i + 1 >= tokens.len: return false
+    let lh = tokens[i + 1]
+    if not (lh == "normal" or numberToken(lh, min = 0) or
+        lengthPercentToken(lh, negative = false)):
+      return false
+    i += 2
+  if i >= tokens.len: return false
+  # A CSS-wide keyword is never one part of a value (CSS Cascade 5 §7.3).
+  let family = tokens[i .. ^1].join(" ")
+  family notin cssWideKeywords and validFontFamilyList(family)
+
+func validTransitionShorthand*(raw: string): bool =
+  ## `transition: <single-transition>#` (CSS Transitions 1 §2.5), each
+  ## `[ none | <single-transition-property> ] || <time> || <easing-function>
+  ## || <time>`, with `<transition-behavior-value>` (CSS Transitions 2
+  ## §3.1). The first time is the duration, which is not negative (§2.2);
+  ## `none` is valid only when it is the sole transition; a property name is
+  ## `all` or a `<custom-ident>`, which is never a CSS-wide keyword or
+  ## `default` (CSS Values 4 §4.2).
+  let text = raw.strip().toLowerAscii()
+  let items = commaItems(text)
+  if items.len == 0: return false
+  for item in items:
+    let parts = spaceItems(item)
+    if parts.len == 0: return false
+    var times = 0
+    var easing, property, behavior = false
+    for part in parts:
+      if timeToken(part, negative = times > 0):
+        inc times
+        if times > 2: return false
+      elif timeToken(part, negative = true):
+        return false
+      elif validEasingFunction(part) and not cssVarCall(part):
+        if easing: return false
+        easing = true
+      elif part in ["normal", "allow-discrete"]:
+        if behavior: return false
+        behavior = true
+      elif part in ["none", "all"] or (cssCustomIdent(part) and
+          part notin cssWideKeywords and part != "default"):
+        if property: return false
+        if part == "none" and items.len > 1: return false
+        property = true
+      else:
+        return false
+  true
+
+func cssWideKeywordAmongParts*(raw: string): bool =
+  ## Whether ``raw`` holds a CSS-wide keyword as one top-level part of a
+  ## larger value. Such a keyword is valid only as the entire value (CSS
+  ## Cascade 5 §7.3), and no `<custom-ident>` may spell one (CSS Values 4
+  ## §4.2), so a family name, a transition property or a shadow colour
+  ## cannot be one either. A quoted string or a function argument is not a
+  ## top-level part.
+  let tokens = splitCssTokens(raw.strip().toLowerAscii())
+  tokens.len > 1 and tokens.anyIt(it in cssWideKeywords)
+
+func validPerspectiveProperty*(raw: string): bool =
+  ## `perspective: none | <length [0,∞]>` (CSS Transforms 2 §6.1); a math
+  ## function is range-checked at computed-value time (CSS Values 4 §10.12).
+  let text = raw.strip().toLowerAscii()
+  text == "none" or (spaceItems(text).len == 1 and
+    lengthPercentToken(text, percent = false, negative = false))
+
+func validTextIndent*(raw: string): bool =
+  ## `text-indent: <length-percentage> && hanging? && each-line?` (CSS Text
+  ## 3 §8.1); the length may be negative.
+  let parts = spaceItems(raw.strip().toLowerAscii())
+  var length, hanging, eachLine = false
+  for part in parts:
+    if part == "hanging" and not hanging: hanging = true
+    elif part == "each-line" and not eachLine: eachLine = true
+    elif not length and lengthPercentToken(part): length = true
+    else: return false
+  length
+
+func validFlexShorthand*(raw: string): bool =
+  ## `flex: none | [ <'flex-grow'> <'flex-shrink'>? || <'flex-basis'> ]`
+  ## (CSS Flexbox 1 §7.1). The factors are `<number [0,∞]>` (§7.3.1-7.3.2);
+  ## the basis is `content` or a `<'width'>` (§7.3.3): `auto`, a sizing
+  ## keyword or a non-negative `<length-percentage>`. A unitless zero is a
+  ## factor unless two factors precede it (§7.1).
+  let text = raw.strip().toLowerAscii()
+  if text == "none": return true
+  let parts = spaceItems(text)
+  if parts.len notin 1..3: return false
+  func factor(token: string): bool =
+    cssFunctionName(token) notin cssMathFunctions and
+      splitCssDimension(token).unit.len == 0 and numberToken(token, min = 0) or
+      (cssFunctionName(token) in cssMathFunctions and
+        cssMathFunctionCall(token, {cmtNumber}))
+  func basis(token: string): bool =
+    token in ["auto", "content", "min-content", "max-content",
+      "fit-content"] or lengthPercentToken(token, negative = false)
+  func factors(tokens: seq[string]): bool =
+    tokens.len in 1..2 and tokens.allIt(factor(it))
+  func leadingBasis(token: string): bool =
+    # A leading unitless zero is a flex factor, never the basis.
+    token != "0" and basis(token)
+  case parts.len
+  of 1: factor(parts[0]) or basis(parts[0])
+  of 2:
+    factors(parts) or (factor(parts[0]) and basis(parts[1])) or
+      (leadingBasis(parts[0]) and factor(parts[1]))
+  else:
+    (factors(parts[0 .. 1]) and basis(parts[2])) or
+      (leadingBasis(parts[0]) and factors(parts[1 .. 2]))
