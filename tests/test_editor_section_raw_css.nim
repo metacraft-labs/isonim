@@ -248,6 +248,46 @@ suite "committing raw CSS through the section's rows":
       check vm.value("filter") == "none"
       dispose()
 
+  test "values valid under CSS that hold commas, lists or functions are written; a malformed one is refused":
+    # isonim-pm issue 2026-11-20 "The editor refuses valid CSS values it
+    # mistakes for lengths": the raw CSS editor refuses a value its row
+    # rejects, so a wrongly rejected value had no editor path. These values
+    # are valid (Filter Effects 1 §6 drop-shadow(), CSS Transforms 1 §11,
+    # CSS Transitions 1 §2.2) and are written as typed.
+    createRoot proc(dispose: proc()) =
+      let r = MockRenderer()
+      let foundation = new(string)
+      foundation[] = DemoFoundationInitialSource
+      let vm = demoVm(foundation)
+      let panel = renderInspectorPanel[MockRenderer, MockNode](r, vm)
+      let field = panel.field("Effects")
+      need(field)
+      let message = panel.message("effects")
+      need(message)
+      # A transform whose arguments are malformed is refused, and nothing
+      # changes.
+      r.typeInto(field, "transform: translate(-3 -3)")
+      field.press("Enter")
+      check "Transform values must use supported CSS transform functions" in
+        textContent(message)
+      check vm.value("transform") == "none"
+      check vm.stacks == (0, 0)
+      check foundation[] == DemoFoundationInitialSource
+      r.typeInto(field, "filter: drop-shadow(0 1px 2px #000);\n" &
+        "transform: translate(4px, 2px) scale(1.2);\n" &
+        "transition-duration: 1s, 200ms;\n")
+      field.press("Enter")
+      check vm.value("filter") == "drop-shadow(0 1px 2px #000)"
+      check vm.value("transform") == "translate(4px, 2px) scale(1.2)"
+      check vm.value("transition-duration") == "1s, 200ms"
+      check vm.stacks == (3, 0)
+      vm.write()
+      check foundation[] == DemoFoundationInitialSource.replace(
+        " filter: none;", " filter: drop-shadow(0 1px 2px #000);").replace(
+        " transform: none;", " transform: translate(4px, 2px) scale(1.2);").replace(
+        " transition-duration: 0s;", " transition-duration: 1s, 200ms;")
+      dispose()
+
   test "the section's text commits each changed declaration as one write, undone one by one":
     createRoot proc(dispose: proc()) =
       let r = MockRenderer()

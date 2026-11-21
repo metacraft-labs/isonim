@@ -35,6 +35,7 @@ import std/[math, options, sequtils, strutils, tables, unittest]
 
 import isonim/core/[signals, computation, owner]
 import isonim/editor/types
+import isonim/editor/viewmodels
 import isonim/editor/numeric_precision
 import isonim/editor/views/choice_row
 import isonim/editor/views/widgets/property_row
@@ -1266,3 +1267,331 @@ suite "property_row shared source impact before scope commit":
       check textContent(impact) == ""
       check commits == 1
       dispose()
+
+suite "a typed value is checked against its property's CSS grammar":
+  test "a value valid under CSS is accepted however it is shaped; its invalid neighbours are refused":
+    # isonim-pm issue 2026-11-20 "The editor refuses valid CSS values it
+    # mistakes for lengths, and some CSS-wide keywords". Editor spec
+    # "Planned interaction parity": a value valid for its property is
+    # written; invalid values are rejected without changing source. Each
+    # class pairs the values CSS accepts with neighbours it does not.
+    proc reasons(property, value: string): seq[string] =
+      for d in validateCssPropertyValue(PropertyInfo(name: property,
+          directStyleAllowed: true),
+          PropertyEditRequest(property: property, newValue: value, kind: pekCss),
+          parseCssPropertyValue(property, value)):
+        result.add d.message
+    proc accepts(property, value: string) =
+      checkpoint "accepts " & property & ": " & value
+      check reasons(property, value).len == 0
+    proc refuses(property, value: string) =
+      checkpoint "refuses " & property & ": " & value
+      check reasons(property, value).len > 0
+    # The CSS-wide keywords (CSS Cascade 5 §7.3), also for the properties
+    # that check their values with their own grammars.
+    for p in ["opacity", "aspect-ratio", "filter", "backdrop-filter",
+        "transition-timing-function", "font-family", "transform"]:
+      for wide in ["inherit", "initial", "unset", "revert", "revert-layer"]:
+        accepts(p, wide)
+    # A word ending in a unit's letters is a word, not a length (CSS Syntax 3
+    # §4.3.10): CSS Display 3, Box Alignment 3, Sizing 4, Counter Styles 3.
+    for (p, v) in [("display", "contents"), ("display", "list-item"),
+        ("align-items", "stretch"), ("justify-content", "stretch"),
+        ("width", "stretch"), ("list-style-type", "brand-ticks"),
+        ("list-style-type", "emoji-px"), ("text-overflow", "ellipsis")]:
+      accepts(p, v)
+    for (p, v) in [("display", "4px"), ("display", "contentss"),
+        ("align-items", "4em"), ("list-style-type", "12px"),
+        ("width", "stretchy"), ("height", "list-item")]:
+      refuses(p, v)
+    # The viewport units' small, large and dynamic forms (CSS Values 4
+    # §6.1.2).
+    for (p, v) in [("height", "100dvh"), ("height", "50svh"),
+        ("width", "10vmin"), ("max-height", "80lvh")]:
+      accepts(p, v)
+    for (p, v) in [("height", "100dvhx"), ("height", "100dv"),
+        ("padding", "-4dvh")]:
+      refuses(p, v)
+    # Multi-value box properties: each value is one the longhand row takes
+    # (CSS Box 4 §3-4, Backgrounds 3 §4.4 and §5, Box Alignment 3 §8.3,
+    # Overflow 3 §3.1).
+    for (p, v) in [("padding", "4px 8px"), ("padding", "1px 2px 3px 4px"),
+        ("padding", "var(--space) 4px"), ("margin", "0 auto"),
+        ("margin", "4px auto 0"), ("margin", "-4px 0"), ("gap", "1rem 2rem"),
+        ("gap", "normal 4px"), ("border-radius", "4px 8px"),
+        ("border-radius", "4px / 8px"), ("border-radius", "1px 2px 3px 4px / 5px 6px"),
+        ("border-top-left-radius", "4px 8px"), ("border-width", "1px 2px"),
+        ("border-width", "thin 2px medium"), ("inset", "0 auto"),
+        ("overflow", "hidden auto")]:
+      accepts(p, v)
+    for (p, v) in [("padding", "1px 2px 3px 4px 5px"), ("padding", "4px -2px"),
+        ("padding", "4px auto"), ("padding", "4px 12pt"), ("margin", "0, auto"),
+        ("margin", "4px / 2px"), ("gap", "1px 2px 3px"),
+        ("border-radius", "4px / 8px / 2px"), ("border-radius", "4px -1px"),
+        ("border-top-left-radius", "1px 2px 3px"),
+        ("border-width", "1px 2px 3px 4px 5px"), ("border-width", "1px thick-ish"),
+        ("overflow", "hidden auto scroll"), ("overflow", "hidden banana")]:
+      refuses(p, v)
+    # A malformed amount keeps its own reason.
+    check "CSS length values must use a numeric amount." in reasons("gap", "12 apples")
+    # Positions and sizes of background layers (CSS Backgrounds 3 §3.6,
+    # §3.9; object-position is a CSS Values 4 §8.3 <position>, which has no
+    # three-value form).
+    for (p, v) in [("background-position", "10px 20px"),
+        ("background-position", "0% 0%"), ("background-position", "right 10px top 5px"),
+        ("background-position", "center top"), ("background-position", "left 10px top"),
+        ("background-position", "left top, 10px 20px"),
+        ("object-position", "right 10px top 5px"), ("background-size", "100px 50px"),
+        ("background-size", "auto, 8px 8px"), ("background-size", "cover, auto"),
+        ("background-size", "50% auto")]:
+      accepts(p, v)
+    for (p, v) in [("background-position", "10px 20px 30px"),
+        ("background-position", "left right"), ("background-position", "10px left"),
+        ("background-position", "left top center"),
+        ("background-position", "center 10px top"),
+        ("object-position", "left 10px top"), ("background-size", "-10px 5px"),
+        ("background-size", "cover contain"), ("background-size", "1px 2px 3px"),
+        ("background-size", "cover 10px")]:
+      refuses(p, v)
+    # Transition time lists (CSS Transitions 1 §2.2: durations are not
+    # negative; §2.4: a delay may be) and math on times.
+    for (p, v) in [("transition-duration", "1s, 200ms"),
+        ("transition-duration", "calc(100ms * 2)"), ("transition-delay", "0s, 50ms"),
+        ("transition-delay", "-1s"), ("transition-delay", "-1s, 2s")]:
+      accepts(p, v)
+    for (p, v) in [("transition-duration", "-1s"), ("transition-duration", "1s, -2s"),
+        ("transition-duration", "1s,"), ("transition-duration", "1s 2s"),
+        ("transition-duration", "200"), ("transition-duration", "calc(100ms+2ms)"),
+        ("transition-delay", "1px"), ("transition-delay", "0s, , 1s")]:
+      refuses(p, v)
+    # The text-decoration shorthand (CSS Text Decoration 4 §2.6): line,
+    # style, colour and thickness, each once.
+    for v in ["underline 2px", "underline wavy red 1px", "line-through from-font"]:
+      accepts("text-decoration", v)
+    for v in ["underline 2px 3px", "none underline", "underline underline",
+        "underline red blue"]:
+      refuses("text-decoration", v)
+    # Grid track lists (CSS Grid 2 §7.2).
+    for v in ["minmax(0, 1fr) 200px", "220px minmax(260px, 1fr) 320px",
+        "repeat(2, 1fr) 100px", "[a] 100px [b] 1fr", "fit-content(20em) 1fr"]:
+      accepts("grid-template-columns", v)
+    for v in ["-10px 1fr", "minmax(1fr, 2fr) 10px", "repeat(0, 1fr) 10px",
+        "100px 1fr,", "minmax(0) 10px"]:
+      refuses("grid-template-columns", v)
+    # Transform functions whose arguments hold commas (CSS Transforms 1
+    # §11, Transforms 2 §13), with their counts and types.
+    for v in ["translate(4px, 2px) scale(1.2)", "matrix(1, 0, 0, 1, 0, 0)",
+        "translate(-50%, -50%)", "rotate3d(1, 0, 0, 45deg)",
+        "scale(1.2, 50%) skew(10deg, 0)", "translate(var(--x), 2px)"]:
+      accepts("transform", v)
+    for v in ["translate(-3 -3)", "translate(4px, 2px, 3px)",
+        "matrix(1, 0, 0, 1, 0)", "rotate(45)", "rotate(45) scale(1, 2)", "scale(1, 2, 3) rotate(1deg)",
+        "translate(4px, 2px) glow(1)", "translate(4px, 2px), scale(2)"]:
+      refuses("transform", v)
+    # Math functions (CSS Values 4 §10) and fit-content() (CSS Sizing 4
+    # §3.1) where a length goes.
+    for (p, v) in [("width", "clamp(10px, 50%, 300px)"), ("width", "min(100%, 40rem)"),
+        ("width", "max(10px, 2vw)"), ("font-size", "clamp(1rem, 2vw, 2rem)"),
+        ("outline-offset", "calc(1px + 1px)"),
+        ("left", "max(-4px, calc(50% - 32px))"), ("height", "fit-content(20em)"),
+        ("max-width", "min(92vw, 760px)"), ("padding", "calc(1px + 2px) 4px")]:
+      accepts(p, v)
+    for (p, v) in [("width", "clamp(1px, 2px)"), ("width", "calc(1px+2px)"),
+        ("width", "min()"), ("width", "calc(1px + )"), ("width", "foo(1px)"),
+        ("font-family", "calc(1px)"), ("height", "fit-content(-1px)"),
+        ("height", "fit-content(1px, 2px)"), ("top", "fit-content(20em)"),
+        ("outline-offset", "calc(1px + red)")]:
+      refuses(p, v)
+    # aspect-ratio: `auto || <ratio>` (CSS Sizing 4 §5.1).
+    for v in ["1", "auto 16 / 9", "16 / 9 auto", "1.5"]:
+      accepts("aspect-ratio", v)
+    for v in ["auto auto", "0", "-1", "16 / 0", "1 2", "16 / 9 / 2"]:
+      refuses("aspect-ratio", v)
+    # Filter functions and references (Filter Effects 1 §5-6).
+    for (p, v) in [("filter", "drop-shadow(0 1px 2px #000)"), ("filter", "url(#f)"),
+        ("filter", "var(--f)"), ("filter", "blur(2px) drop-shadow(red 1px 1px)"),
+        ("backdrop-filter", "blur(4px) saturate(150%)")]:
+      accepts(p, v)
+    for (p, v) in [("filter", "drop-shadow(1px)"), ("filter", "drop-shadow(1px red 2px)"),
+        ("filter", "drop-shadow(1px 1px -2px)"), ("filter", "blur(-1px)"),
+        ("filter", "glow(4px)"), ("backdrop-filter", "brightness(-1)")]:
+      refuses(p, v)
+    # Easing functions (CSS Easing 2 §2-4).
+    for v in ["linear(0, 0.5 50%, 1)", "ease, linear", "steps(2, jump-none)",
+        "cubic-bezier(0.1, -2, 0.3, 3)"]:
+      accepts("transition-timing-function", v)
+    for v in ["linear(0)", "linear(0, 50%)", "cubic-bezier(2, 0, 0, 1)", "steps(0)",
+        "steps(1, jump-none)", "sproing", "ease,"]:
+      refuses("transition-timing-function", v)
+    # font-family (CSS Fonts 4 §2.1): names or quoted strings, comma separated.
+    for v in ["Inter, sans-serif", "\"Helvetica Neue\", Arial, sans-serif", "far",
+        "foo bar baz", "-apple-system, BlinkMacSystemFont", "'Font, with comma', serif",
+        "var(--font), serif"]:
+      accepts("font-family", v)
+    for v in ["12px", "Arial,", "a, , b", "\"unclosed", "#fff", "!!!",
+        "inherit, serif", "\"a\" b", "default"]:
+      refuses("font-family", v)
+    # A CSS-wide keyword is a whole value, never one part of a multi-part
+    # value (CSS Cascade 5 §7.3).
+    for (p, v) in [("margin", "inherit 2px"), ("margin", "1px inherit"),
+        ("padding", "initial initial"), ("inset", "unset 1px"),
+        ("border-width", "revert-layer 1px"), ("gap", "1px inherit"),
+        ("overflow", "initial initial"), ("overflow", "unset hidden"),
+        ("border-radius", "revert / 2px"), ("border-radius", "2px / inherit"),
+        ("border-top-left-radius", "inherit 2px"), ("padding", "inherit var(--x)")]:
+      refuses(p, v)
+    # Math is type-checked (CSS Values 4 §10.9): `+`/`-` need one type, `*`
+    # a number side, `/` a number divisor; a zero divisor is not finite and
+    # is refused (editor spec: non-finite values are rejected); a time is not
+    # a length.
+    for (p, v) in [("width", "calc(100% - 2 * 16px)"), ("width", "calc(10px / 2)"),
+        ("width", "calc((100% - 2rem) / 3)"), ("line-height", "calc(2 * 3)"),
+        ("line-height", "calc(1em + 2px)"), ("font-size", "calc(1rem + 2%)"),
+        ("transition-duration", "calc(100ms * 2)"), ("width", "calc(var(--w) * 2)"),
+        ("transform", "rotate(calc(10deg + 5deg)) scale(calc(1.5))")]:
+      accepts(p, v)
+    for (p, v) in [("font-size", "calc(1px * 2px)"), ("font-size", "calc(10px + 5)"),
+        ("font-size", "calc(2 * 3)"), ("font-size", "calc(1px / 0)"),
+        ("outline-offset", "calc(10px + 5)"), ("outline-offset", "calc(1px / 0)"),
+        ("line-height", "calc(1px * 2px)"), ("line-height", "calc(1px / 0)"),
+        ("line-height", "clamp(1px, 2px)"), ("line-height", "min(1px, red)"),
+        ("width", "calc(1s)"), ("width", "calc(2px / 1px)"), ("width", "calc(1px / 0.0)"),
+        ("left", "calc(10px + 5)"), ("padding-top", "calc(2 * 3)"),
+        ("transition-duration", "calc(1px)"), ("transition-duration", "calc(1s + 1)"),
+        # A divisor that folds to zero, and any folded result that is not
+        # finite, is refused (CSS Values 4 §10.10; editor spec: non-finite
+        # values are rejected).
+        ("width", "calc(1px / (1 - 1))"), ("width", "calc(1px / (2 * 0))"),
+        ("width", "calc(1px * 1e999)"), ("width", "calc(1px / min(0, 1))"),
+        ("width", "calc(1px / clamp(0, -1, 0))"), ("width", "calc(1e300px * 1e300)"),
+        ("line-height", "calc(2 / (3 - 3))"), ("font-size", "calc(1rem / max(-1, 0))")]:
+      refuses(p, v)
+    # Divisors that fold to a non-zero number stay valid.
+    for (p, v) in [("width", "calc(1px / (2 - 1))"), ("width", "calc(100% / min(3, 4))"),
+        ("line-height", "calc((1 + 2) / 2)"), ("width", "calc(1px / var(--n))")]:
+      accepts(p, v)
+    # url() takes one quoted string or an unquoted URL with no whitespace,
+    # quotes or parentheses (CSS Values 4 §4.5, CSS Syntax 3 §4.3.6).
+    for v in ["url(#f)", "url(a.svg#f)", "url(\"a b.svg#f\")", "url('x')"]:
+      accepts("filter", v)
+    for v in ["url(a b)", "url(\"a)", "url(a\"b)", "url(a(b))", "url()"]:
+      refuses("filter", v)
+    # Math inside transform arguments is type-checked too, and auto-repeat
+    # grid tracks follow CSS Grid 2 §7.2.3.1.
+    for v in ["rotate(calc())", "rotate(calc(banana))", "rotate(min(1px))",
+        "scale(calc(10px))", "translate(calc(1s), 0)"]:
+      refuses("transform", v)
+    for v in ["repeat(auto-fill, minmax(100px, 1fr))", "100px repeat(auto-fit, 10px) 20px",
+        "repeat(2, 1fr) [a] 10px"]:
+      accepts("grid-template-columns", v)
+    for v in ["repeat(auto-fill, 1fr)", "repeat(auto-fill, 10px) repeat(auto-fit, 10px)",
+        "repeat(auto-fill, 10px) auto", "[a] [b] 1fr", "repeat(auto-fill, 10px) 1fr",
+        "repeat(2, repeat(2, 1px))"]:
+      refuses("grid-template-columns", v)
+    # A priority, a comment or a second declaration is not part of a value.
+    for (p, v) in [("padding", "4px 8px !important"), ("margin", "0 auto /* open"),
+        ("margin", "/* only a comment */"),
+        ("display", "contents !important"), ("transform", "scale(2); color: red")]:
+      refuses(p, v)
+    # A closed comment is not part of the value (CSS Syntax 3 §4.3.2): the
+    # value around it is checked.
+    for (p, v) in [("margin", "0 auto /* c */"), ("width", "calc(1px /* c */ + 2px)"),
+        ("font-family", "Arial /* c */"), ("font-size", "12px /* compact */")]:
+      accepts(p, v)
+    refuses("width", "calc(1px /* c */ + 2s)")
+    # `/*` inside a string or an unquoted url() is literal, not a comment
+    # (CSS Syntax 3 §4.3.5-4.3.6).
+    for (p, v) in [("font-family", "\"a/*b\", serif"), ("font-family", "\"a\\\"/*b\""),
+        ("filter", "url(\"a/*\") blur(1px)"), ("filter", "url(a/*b*/c)"),
+        ("filter", "url(a/*b) blur(1px)")]:
+      accepts(p, v)
+    # A comment is not the whitespace math needs around `+` and `-` (CSS
+    # Values 4 §10.1); real whitespace beside it still counts.
+    for v in ["calc(1px/**/+ 2px)", "calc(1px +/**/2px)", "calc(1px/**/-/**/2px)"]:
+      refuses("width", v)
+    for v in ["calc(1px /**/ + 2px)", "calc(1px + /**/2px)", "calc(1px/**/ + 2px)",
+        "calc(2/**/*3px)", "calc(1px */**/-2)", "calc(/**/-1px + 2px)", "max(1px,/**/-2px)"]:
+      accepts("width", v)
+    # A comment ends a token: `-/**/1px` is a `-` and then `1px`, not a
+    # signed number, which math does not take.
+    for (p, v) in [("width", "calc(-/**/1px)"), ("width", "calc(+/**/1px)"),
+        ("width", "calc(1px + -/**/2px)"), ("width", "calc(1px * -/**/2)"),
+        ("width", "min(1px, -/**/2px)"), ("width", "calc(1px/**/- 2px)"),
+        ("width", "calc(1px/**/-2px)")]:
+      refuses(p, v)
+    # Outside math a comment only separates tokens; no operator whitespace
+    # rule applies there.
+    for (p, v) in [("filter", "drop-shadow(1px/**/-1px 2px red)"),
+        ("color", "rgb(10/**/-5 0)"), ("transform", "translate(1px/**/, -2px)"),
+        # An identifier may end in `-`; a comment after it ends the token,
+        # so `[a-/**/b]` is two line names (CSS Syntax 3 §4.3.11).
+        ("grid-template-columns", "repeat(2, [a-/**/b] 1fr)"),
+        ("grid-template-columns", "repeat(2, [a-/**/b-] 1fr)"),
+        ("grid-template-columns", "repeat(auto-fill, [col-/**/start] 100px)")]:
+      accepts(p, v)
+    # Math types come from each property's own single-value rule (R5, F7):
+    # a property that refuses `10%` refuses percentage math, and one that
+    # takes numbers or angles takes math of that type.
+    for (p, v) in [("border-width", "calc(10%)"), ("border-width", "calc(1px + 10%)"),
+        ("border-width", "min(1px, 10%)"), ("border-top-width", "calc(10%)"),
+        ("border-width", "calc(10%) 1px"), ("border-width", "1px min(10%, 2px)"),
+        ("outline-offset", "calc(10%)"), ("outline-offset", "calc(1px + 10%)"),
+        ("outline-offset", "min(1px, 10%)"), ("opacity", "calc(1px)"),
+        ("font-weight", "calc(400px)"), ("font-weight", "1px"), ("rotate", "calc(10px)"),
+        ("flex-grow", "calc(1px)"), ("border-color", "1px"), ("z-index", "calc(1px)"),
+        ("display", "calc(1px)"), ("font", "calc(12px)")]:
+      refuses(p, v)
+    for (p, v) in [("border-width", "calc(1px + 1em)"), ("outline-offset", "calc(1px * 2)"),
+        ("padding", "calc(10% + 1px)"), ("opacity", "calc(0.5)"), ("opacity", "calc(50%)"),
+        ("font-weight", "calc(400)"), ("rotate", "calc(10deg)"), ("z-index", "calc(2)"),
+        ("aspect-ratio", "calc(16 / 9)"), ("transition-duration", "calc(1s / 2), 1s"),
+        # word-spacing takes a length or percentage like letter-spacing (CSS
+        # Text 4 §8.1); outline-width a length (CSS UI 4 §4.2).
+        ("word-spacing", "2px"), ("word-spacing", "10%"), ("word-spacing", "calc(1px + 0.1em)"),
+        ("word-spacing", "calc(1px + 10%)"), ("outline-width", "2px"),
+        ("outline-width", "calc(1px + 1em)")]:
+      accepts(p, v)
+    for (p, v) in [("outline-width", "10%"), ("outline-width", "calc(10%)"),
+        ("outline-width", "clamp(1px, 10%, 3px)"), ("outline-width", "-1px"),
+        ("word-spacing", "2s")]:
+      refuses(p, v)
+    # The numeric constants pi and e are finite numbers; infinity and NaN are
+    # not (CSS Values 4 §10.7.2).
+    for v in ["calc(pi * 1px)", "calc(e * 1px)", "calc(1px * PI)", "calc(2px / e)"]:
+      accepts("width", v)
+    for v in ["calc(infinity * 1px)", "calc(NaN * 1px)", "calc(1px * -infinity)",
+        "calc(1px * pie)"]:
+      refuses("width", v)
+    # A length plus a percentage is a length-percentage, never a plain
+    # length (R8): length-only arguments refuse it.
+    for (p, v) in [("filter", "blur(calc(1px + 10%))"), ("transform", "translateZ(calc(1px + 10%))"),
+        ("transform", "perspective(calc(10%))"), ("filter", "drop-shadow(calc(1px + 10%) 1px)")]:
+      refuses(p, v)
+    accepts("filter", "blur(calc(1px + 1em))")
+    # Dimension sums in one unit fold, so one that overflows is refused (F6).
+    for v in ["calc(1e308px + 1e308px)", "calc(1e308px * 10)", "min(1e308px + 1e308px, 1px)",
+        "calc((1e308px + 1e308px) / 2)"]:
+      refuses("width", v)
+    accepts("width", "calc(1e307px + 1e307px)")
+    # url(): a backslash must escape a character, and never a newline (R6).
+    for v in ["url(a\\)", "url(\\)", "url(a\\\nb)", "url(a\\\rb)"]:
+      refuses("filter", v)
+    # Quotes and escapes hide parentheses and commas from the splitters (F8).
+    for (p, v) in [("filter", "url('a)b.svg')"), ("filter", "url(a\\(b.svg)"),
+        ("filter", "url(\"a,b.svg\") blur(1px)"), ("background-image", "url('a)b.png')"),
+        ("background-position", "calc(10% - 1px) 0"), ("background-position", "left calc(1px + 2px)"),
+        ("object-position", "calc(50% + 1px) top"), ("background-size", "calc(100% - 2px) auto"),
+        ("background-size", "min(10px, 5%), auto")]:
+      accepts(p, v)
+    for (p, v) in [("background-position", "calc(10% - 1s) 0"), ("background-size", "calc(1px + 1) auto"),
+        ("object-position", "calc(1px) calc(2px) calc(3px)"), ("filter", "url('a)b.svg)")]:
+      refuses(p, v)
+    # An escaped comma or space belongs to a family name (F5).
+    for v in ["a\\, b", "Font\\ Name, serif", "\\31 23", "\\000031x, serif",
+        "\\e9t\\E9 , serif"]:
+      accepts("font-family", v)
+    for v in ["a\\", "a, b\\", "a\\\nb", "a\\\r\nb", "a\\\fb"]:
+      refuses("font-family", v)
+    # A hex escape ends at one whitespace, and CRLF counts as one.
+    for v in ["\\31\r\n23", "\\31\n23", "\\31\t23"]:
+      accepts("font-family", v)

@@ -1668,7 +1668,7 @@ func hasUnsupportedNumericUnit(raw: string): bool =
     return false
 
   let suffix = text[index .. ^1].toLowerAscii()
-  if suffix in ["px", "rem", "em", "vw", "vh", "ch", "%", "ms", "s"]:
+  if suffix in editorLengthUnits or suffix in ["%", "ms", "s"]:
     return false
   suffix.allIt(it.isAlphaAscii)
 
@@ -1762,12 +1762,21 @@ proc parseCssPropertyValue*(property, raw: string;
     result.unit = "%"
     discard tryParseFloatValue(text[0 ..< text.len - 1], result.numeric)
     return
-  for unit in ["px", "rem", "em", "vw", "vh", "ch", "ms", "s"]:
-    if text.endsWith(unit):
+  # A word is never a length, even one ending in a unit's letters
+  # (`contents`, `stretch`, `list-item`, a custom `brand-ticks`).
+  if not cssIdentifier(text):
+    let (number, unit) = splitCssDimension(text)
+    if number.len > 0 and (unit in editorLengthUnits or unit in ["ms", "s"]):
       result.kind = cvkLength
       result.unit = unit
-      discard tryParseFloatValue(text[0 ..< text.len - unit.len], result.numeric)
+      discard tryParseFloatValue(number, result.numeric)
       return
+    for unit in ["px", "rem", "em", "vw", "vh", "ch", "ms", "s"]:
+      if text.endsWith(unit):
+        result.kind = cvkLength
+        result.unit = unit
+        discard tryParseFloatValue(text[0 ..< text.len - unit.len], result.numeric)
+        return
   if text in ["auto", "none", "inherit", "initial", "unset", "block", "flex",
       "grid", "inline", "inline-block", "visible", "hidden", "clip", "scroll",
       "auto", "relative", "absolute", "fixed", "sticky", "solid", "dashed",
@@ -1779,29 +1788,20 @@ proc parseCssPropertyValue*(property, raw: string;
     return
   result.kind = cvkKeyword
 
-func validFilterValue(raw: string): bool =
-  let text = raw.strip().toLowerAscii()
-  if text in ["none", "inherit", "initial", "unset"]:
-    return true
-  if not isCompleteFunction(text):
-    return false
-  for fn in cssFunctionCalls(text):
-    if fn notin ["blur", "brightness", "contrast", "drop-shadow",
-        "grayscale", "hue-rotate", "invert", "opacity", "saturate", "sepia"]:
-      return false
-  true
-
 func validTransformValue(propName, raw: string): bool =
   let text = raw.strip().toLowerAscii()
   if text in cssWideKeywords or text == "none" or "var(" in text:
     return true
   if not isCompleteFunction(text):
     return false
+  if propName == "transform":
+    # `none` or transform functions with their argument counts and types
+    # (CSS Transforms 1 §6, §11).
+    return validTransformList(text)
   if '(' notin text:
-    # `transform` takes only `none` or transform functions (CSS Transforms 1
-    # §6); `transform-origin` and the individual `translate`, `scale` and
+    # `transform-origin` and the individual `translate`, `scale` and
     # `rotate` properties take plain keyword, length and angle forms.
-    return propName != "transform"
+    return true
   for fn in cssFunctionCalls(text):
     if fn notin ["matrix", "matrix3d", "perspective", "rotate", "rotate3d",
         "rotatex", "rotatey", "rotatez", "scale", "scale3d", "scalex",
@@ -1819,29 +1819,36 @@ func cssDiagnostic(kind: PropertyEditDiagnosticKind; prop: PropertyInfo;
     line: prop.sourceLine,
     property: prop.name)
 
-proc validateCssPropertyValue*(prop: PropertyInfo; request: PropertyEditRequest;
-    normalized: CSSPropertyValue): seq[PropertyEditDiagnostic] =
-  if request.newValue.strip.len == 0:
-    return @[]
+proc cssComponentAccepted(property, value: string): bool
 
+proc cssValueShapeDiagnostics(prop: PropertyInfo;
+    normalized: CSSPropertyValue): seq[PropertyEditDiagnostic] =
+  ## The single-value rules: the value's kind, unit, range and keyword.
   let category = cssPropertyCategory(prop.name)
   let allowed = allowedValueKinds(category)
   let propName = prop.name.normalizedCssName()
   let raw = normalized.raw.strip()
   let isRadius = propName == "border-radius" or
     (propName.startsWith("border-") and propName.endsWith("-radius"))
-  if (isRadius and normalized.kind notin {cvkKeyword, cvkLength,
+  # Two properties the category table leaves without lengths take them:
+  # `word-spacing` a length or percentage like `letter-spacing` (CSS Text 4
+  # §8.1), `outline-width` a `<line-width>` length (CSS UI 4 §4.2).
+  let spacingLength = (propName == "word-spacing" and
+      normalized.kind in {cvkLength, cvkPercentage, cvkLengthPercentage}) or
+    (propName == "outline-width" and
+      normalized.kind in {cvkLength, cvkLengthPercentage})
+  if not spacingLength and ((isRadius and normalized.kind notin {cvkKeyword, cvkLength,
       cvkPercentage, cvkLengthPercentage, cvkTokenReference}) or
       (not isRadius and normalized.kind notin allowed and not (
-      propName == "opacity" and normalized.kind == cvkOpacity)):
+      propName == "opacity" and normalized.kind == cvkOpacity))):
     result.add cssDiagnostic(pedInvalidCssValue, prop,
       "This property does not accept " & $normalized.kind & " values.")
 
   if hasUnsupportedNumericUnit(raw):
     result.add cssDiagnostic(pedInvalidCssValue, prop,
       "Unsupported CSS unit in '" & raw & "'.")
-  if normalized.kind == cvkLength and normalized.unit notin ["px", "rem", "em",
-      "vw", "vh", "ch", "ms", "s"]:
+  if normalized.kind == cvkLength and normalized.unit notin editorLengthUnits and
+      normalized.unit notin ["ms", "s"]:
     result.add cssDiagnostic(pedInvalidCssValue, prop,
       "Unsupported CSS length unit '" & normalized.unit & "'.")
   if normalized.kind == cvkLength:
@@ -1863,6 +1870,10 @@ proc validateCssPropertyValue*(prop: PropertyInfo; request: PropertyEditRequest;
         (propName.startsWith("border-") and propName.endsWith("radius"))):
     result.add cssDiagnostic(pedInvalidCssValue, prop,
       "Padding and corner radius values cannot be negative.")
+  if propName == "outline-width" and normalized.kind == cvkLength and
+      normalized.numeric < 0:
+    result.add cssDiagnostic(pedInvalidCssValue, prop,
+      "Outline widths cannot be negative.")
   if propName in ["transition-duration", "transition-delay", "animation-duration",
       "animation-delay"] and normalized.kind == cvkLength and
       normalized.numeric < 0:
@@ -1896,18 +1907,22 @@ proc validateCssPropertyValue*(prop: PropertyInfo; request: PropertyEditRequest;
   if normalized.kind == cvkGradient and not raw.endsWith(")"):
     result.add cssDiagnostic(pedInvalidCssValue, prop,
       "Gradient values must be complete function calls.")
-  if normalized.kind == cvkTimingFunction and raw notin ["ease", "linear",
-      "ease-in", "ease-out", "ease-in-out", "step-start", "step-end"] and
-      not raw.startsWith("cubic-bezier(") and not raw.startsWith("steps("):
+  if normalized.kind == cvkTimingFunction and isCompleteFunction(raw) and
+      not validTimingFunctionList(raw.toLowerAscii()):
     result.add cssDiagnostic(pedInvalidCssValue, prop,
       "Timing functions must use a known keyword or function.")
   if normalized.kind == cvkTimingFunction and not isCompleteFunction(raw):
     result.add cssDiagnostic(pedInvalidCssValue, prop,
       "Timing function calls must be complete.")
+  if normalized.kind == cvkLengthPercentage and
+      raw.toLowerAscii().startsWith("calc(") and
+      not cssMathFunctionCall(raw, cssMathTypesFor(propName, cssComponentAccepted)):
+    result.add cssDiagnostic(pedInvalidCssValue, prop,
+      "calc() must hold a complete, finite expression whose operands have the types this property takes.")
   if normalized.kind == cvkOverflow and not validKeywordForProperty(propName, raw):
     result.add cssDiagnostic(pedInvalidCssValue, prop,
       "Unsupported keyword '" & raw & "' for " & propName & ".")
-  if propName in ["filter", "backdrop-filter"] and not validFilterValue(raw):
+  if propName in ["filter", "backdrop-filter"] and not validFilterList(raw.toLowerAscii()):
     result.add cssDiagnostic(pedInvalidCssValue, prop,
       "Filter values must use supported CSS filter functions.")
   if propName in ["transform", "transform-origin", "translate", "scale",
@@ -1927,9 +1942,50 @@ proc validateCssPropertyValue*(prop: PropertyInfo; request: PropertyEditRequest;
   if propName == "aspect-ratio" and not validAspectRatio(raw):
     result.add cssDiagnostic(pedInvalidCssValue, prop,
       "Aspect ratio must be auto or a positive width / height pair.")
-  if normalized.kind == cvkKeyword and not validKeywordForProperty(propName, raw):
+  if (normalized.kind == cvkKeyword or (propName in keywordOnlyProperties and
+      normalized.kind in {cvkLength, cvkPercentage})) and
+      not validKeywordForProperty(propName, raw):
     result.add cssDiagnostic(pedInvalidCssValue, prop,
       "Unsupported keyword '" & raw & "' for " & propName & ".")
+  if propName == "font-family" and not validFontFamilyList(raw):
+    result.add cssDiagnostic(pedInvalidCssValue, prop,
+      "Font families must be a comma-separated list of names or quoted strings.")
+
+proc cssValueDiagnostics(prop: PropertyInfo;
+    normalized: CSSPropertyValue): seq[PropertyEditDiagnostic] =
+  ## A value a whole-value grammar shows valid (a CSS-wide keyword, a list,
+  ## a multi-component value, checked function arguments) is accepted;
+  ## anything else is judged by the single-value rules.
+  if cssValueAcceptedByGrammar(prop.name.normalizedCssName(),
+      normalized.raw.strip(), cssComponentAccepted):
+    return @[]
+  cssValueShapeDiagnostics(prop, normalized)
+
+proc cssComponentAccepted(property, value: string): bool =
+  cssValueDiagnostics(PropertyInfo(name: property, directStyleAllowed: true),
+    parseCssPropertyValue(property, value)).len == 0
+
+proc validateCssPropertyValue*(prop: PropertyInfo; request: PropertyEditRequest;
+    normalized: CSSPropertyValue): seq[PropertyEditDiagnostic] =
+  if request.newValue.strip.len == 0:
+    return @[]
+  if "/*" in normalized.raw:
+    # A comment is not part of the value (CSS Syntax 3 §4.3.2): the value
+    # around it is what is checked. One left open swallows what follows.
+    let (closed, stripped) = stripCssComments(normalized.raw)
+    if not closed:
+      return @[cssDiagnostic(pedInvalidCssValue, prop,
+        "A comment in the value is not closed.")]
+    if stripped.strip.len == 0:
+      return @[cssDiagnostic(pedInvalidCssValue, prop,
+        "A value cannot be only a comment.")]
+    if stripped != normalized.raw:
+      var bare = request
+      bare.newValue = stripped
+      return validateCssPropertyValue(prop, bare,
+        parseCssPropertyValue(prop.name, stripped, normalized.variant))
+  result = cssValueDiagnostics(prop, normalized)
+  let propName = prop.name.normalizedCssName()
   if normalized.kind == cvkTokenReference and normalized.tokenName.len == 0:
     result.add cssDiagnostic(pedInvalidTokenReference, prop,
       "Token references must name a token.")

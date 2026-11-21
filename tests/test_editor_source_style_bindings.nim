@@ -188,14 +188,12 @@ suite "Compiler owned stylesheet capabilities":
         PropertyEditRequest(property: property, newValue: value, kind: pekCss),
         parseCssPropertyValue(property, value)).len
     for property in inspectorEditableCssProperties:
-      # These five check their values with their own grammars (ratio,
-      # number, filter and timing-function), which do not take every
-      # CSS-wide keyword yet; that refusal predates fail-closed keywords.
-      if property notin ["aspect-ratio", "opacity", "filter", "backdrop-filter",
-          "transition-timing-function"]:
-        for wide in ["inherit", "initial", "unset", "revert", "revert-layer"]:
-          checkpoint property & ": " & wide
-          check refusals(property, wide) == 0
+      # Every property takes the five CSS-wide keywords (CSS Cascade 5 §7.3),
+      # including those that check their values with their own grammars
+      # (ratio, number, filter and timing function).
+      for wide in ["inherit", "initial", "unset", "revert", "revert-layer"]:
+        checkpoint property & ": " & wide
+        check refusals(property, wide) == 0
       # A font family is any author-chosen name, so a word is a family.
       if property == "font-family": continue
       # A list style may name a counter style the project defines, so one
