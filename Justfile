@@ -238,6 +238,7 @@ test-c:
     nim c -r tests/test_viewmodel.nim
     nim c -r tests/test_demo_vm.nim
     nim c -r tests/test_terminal.nim
+    nim c -r tests/test_frame_renderer.nim
     nim c -r tests/test_native_renderer.nim
     nim c -r tests/test_renderer_element_nav.nim
     # NH-M1: the shared reactive-root scaffold (`renderNative`).
@@ -366,6 +367,7 @@ test-js: build-tailwind
     python3 tools/run_nim_js_test.py build/test_branded_task_app.js
     nim js -r --out:build/test_keyed_effect_lifetime.js tests/test_keyed_effect_lifetime.nim
     nim js -r tests/test_signals.nim
+    nim js -r --out:build/test_frame_renderer.js tests/test_frame_renderer.nim
     nim js -r tests/test_effects.nim
     nim js -r tests/test_clock.nim
     nim js tests/test_nondet_seams.nim
@@ -522,6 +524,12 @@ test-escape-writers:
     nim c -r tests/test_escape_writers.nim
     nim js -r tests/test_escape_writers.nim
     nim c -r -d:useFaststreams tests/test_escape_writers.nim
+
+# The command-frame renderer a WebAssembly core draws through, on both
+# backends: elision, its invalidation, the op manifest and event dispatch.
+test-frame-renderer:
+    nim c -r tests/test_frame_renderer.nim
+    nim js -r --out:build/test_frame_renderer.js tests/test_frame_renderer.nim
 
 # Run only web renderer tests (JS-only)
 test-web:
