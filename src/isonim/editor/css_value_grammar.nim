@@ -1539,6 +1539,29 @@ func cssNameCodePoint(ch: char): bool =
   ## A code point an identifier may continue with (CSS Syntax 3 §4.2).
   ch in {'a'..'z', 'A'..'Z', '0'..'9', '-', '_', '\x80'..'\xff'}
 
+func cssNameEnd*(text: string; start: int): int =
+  ## The index just past the identifier code points and escapes that start
+  ## at ``start`` (CSS Syntax 3 §4.3.11). A hex escape is up to six hex
+  ## digits and one whitespace after them, CRLF counting as one (§4.3.7);
+  ## any other escaped code point is itself part of the name.
+  result = start
+  while result < text.len:
+    if text[result] == '\\' and result + 1 < text.len and
+        text[result + 1] in HexDigits:
+      inc result
+      var digits = 0
+      while result < text.len and digits < 6 and text[result] in HexDigits:
+        inc result
+        inc digits
+      if result + 1 < text.len and text[result] == '\r' and
+          text[result + 1] == '\n':
+        result += 2
+      elif result < text.len and text[result] in Whitespace:
+        inc result
+    elif text[result] == '\\' and result + 1 < text.len: result += 2
+    elif cssNameCodePoint(text[result]): inc result
+    else: break
+
 func declarationValueProblem*(text: string): string =
   ## Why ``text`` is not one declaration value, or "" when it is one. Outside
   ## a quoted string and an unquoted `url()` (CSS Syntax 3 §4.3.5-4.3.6),
@@ -1624,10 +1647,7 @@ func varReferenceProblem*(text: string): string =
         return "var() must name a custom property, such as var(--name)."
       j += 2
       let nameStart = j
-      while j < text.len:
-        if text[j] == '\\' and j + 1 < text.len: j += 2
-        elif cssNameCodePoint(text[j]): inc j
-        else: break
+      j = cssNameEnd(text, j)
       if j == nameStart:
         return "var() must name a custom property, such as var(--name)."
       while j < text.len and text[j] in Whitespace: inc j

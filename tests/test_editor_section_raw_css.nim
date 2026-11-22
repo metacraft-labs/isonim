@@ -505,3 +505,198 @@ suite "committing raw CSS through the section's rows":
       check panel.message("effects").styles.getOrDefault("display") == "none"
       check r.inputValue(field) == ""
       dispose()
+
+suite "var() references written as typed":
+  ## isonim-pm issue 2026-11-21 "var() references written in upper case,
+  ## with spaces or after a comment are refused". Each spelling is valid
+  ## CSS (CSS Syntax 3 function names and whitespace; CSS Variables 1 §3.1)
+  ## and is typed through the inspector's own commit -- a row, and the
+  ## section's raw CSS field -- then written by the example's production
+  ## writer; the file must hold exactly what was typed. `var(--name)` keeps
+  ## the token form the editor already writes for it.
+  const typed = ["VAR(--a)", "var( --a )", "var(/**/--a)", "var(--a) 1px",
+    "Var(--a) 1px", "var( --a ) auto", "var(/* c */ --a, 2px)"]
+
+  test "a row commit writes each spelling exactly, and undo restores the file":
+    for property in ["letter-spacing", "outline-offset", "filter", "transform"]:
+      for value in typed:
+        checkpoint property & ": " & value
+        createRoot proc(dispose: proc()) =
+          let foundation = new(string)
+          foundation[] = DemoFoundationInitialSource
+          let vm = demoVm(foundation)
+          let before = " " & property & ": " & vm.value(property) & ";"
+          let committed = vm.commitInspectorValue(property, value, sskSharedClass)
+          check committed.ok
+          check committed.message == ""
+          check vm.value(property) == value
+          vm.write()
+          check foundation[] == DemoFoundationInitialSource.replace(before,
+            " " & property & ": " & value & ";")
+          check vm.runEditorCommand(eckUndo).status == ecsSucceeded
+          vm.write()
+          check foundation[] == DemoFoundationInitialSource
+          dispose()
+
+  test "the raw CSS field writes each spelling exactly":
+    createRoot proc(dispose: proc()) =
+      let r = MockRenderer()
+      let foundation = new(string)
+      foundation[] = DemoFoundationInitialSource
+      let vm = demoVm(foundation)
+      let panel = renderInspectorPanel[MockRenderer, MockNode](r, vm)
+      let field = panel.field("Effects")
+      need(field)
+      r.typeInto(field, "filter: VAR(--f);\ntransform: var( --t ) scale(2);\n" &
+        "transition-duration: var(/**/--d);\n")
+      field.press("Enter")
+      check panel.message("effects").styles.getOrDefault("display") == "none"
+      check vm.value("filter") == "VAR(--f)"
+      check vm.value("transform") == "var( --t ) scale(2)"
+      # The raw text's comments are ignored (editor spec "Raw CSS toggle"):
+      # one ends the token before it, so it is read as a space.
+      check vm.value("transition-duration") == "var( --d)"
+      vm.write()
+      check foundation[] == DemoFoundationInitialSource.replace(
+        " filter: none;", " filter: VAR(--f);").replace(
+        " transform: none;", " transform: var( --t ) scale(2);").replace(
+        " transition-duration: 0s;", " transition-duration: var( --d);")
+      dispose()
+
+  test "var(--name) keeps the token form it was written in":
+    for property in ["letter-spacing", "filter"]:
+      createRoot proc(dispose: proc()) =
+        let foundation = new(string)
+        foundation[] = DemoFoundationInitialSource
+        let vm = demoVm(foundation)
+        let before = " " & property & ": " & vm.value(property) & ";"
+        check vm.commitInspectorValue(property, "var(--a)", sskSharedClass).ok
+        vm.write()
+        check foundation[] == DemoFoundationInitialSource.replace(before,
+          " " & property & ": token(a);")
+        dispose()
+
+  test "a malformed reference is refused and nothing is written":
+    for value in ["var(-a)", "var(--)", "var(--a b)", "VAR(--a;)", "vars(--a)"]:
+      checkpoint value
+      createRoot proc(dispose: proc()) =
+        let foundation = new(string)
+        foundation[] = DemoFoundationInitialSource
+        let vm = demoVm(foundation)
+        let committed = vm.commitInspectorValue("letter-spacing", value, sskSharedClass)
+        check not committed.ok
+        check vm.value("letter-spacing") == "0px"
+        check vm.inspector.pendingSourceEdits.val.len == 0
+        check foundation[] == DemoFoundationInitialSource
+        dispose()
+
+suite "colour and list values holding var() keep their case when written":
+  ## Varspell review R1/R2: a colour holding var() was written in lower case,
+  ## so `rgb(var(--Ink) 0 0)` named `--ink`, a different custom property
+  ## (CSS Variables 1 §2; editor spec "Token names are case-sensitive").
+  ## The example's `.long-tail-card` rule is given the colour, transition
+  ## and family declarations these rows write (its shadow is its own), each mapped by a
+  ## schema entry as the example maps its own; the production writer then
+  ## writes them, and the file must hold exactly what was typed.
+  const extra = [("color", "black"), ("outline-color", "black"),
+    ("background-color", "white"), ("border-color", "black"),
+    ("transition", "none"), ("font-family", "serif")]
+  proc extendedSource(): string =
+    var add = ""
+    for (p, v) in extra: add.add " " & p & ": " & v & ";"
+    const marker = " background-repeat: repeat; }\n"
+    check marker in DemoFoundationInitialSource
+    DemoFoundationInitialSource.replace(marker,
+      " background-repeat: repeat;" & add & " }\n")
+  proc extendedVm(foundation: ref string): EditorVM =
+    let vector = new(string)
+    vector[] = "<svg/>"
+    var adapter = demoVectorEditAdapter(vector, foundation)
+    let story = StoryRef(group: "DestinationCard", name: "Default",
+      kind: skComponent, index: 0)
+    for (p, _) in extra:
+      adapter.schema.add WorkspaceEditableSchemaEntry(
+        key: "classes.destination-card." & p, kind: wskSourceMap,
+        file: DemoFoundationSource, path: "classes.long-tail-card." & p,
+        story: story, property: p, removable: true, breakpointOverrides: true)
+    result = createEditorVM(newEditorWorkspace(
+      title = "Wanderlust colour fixture",
+      storyGroups = @[StoryGroup(name: "DestinationCard", kind: skComponent,
+        expanded: true, items: @[StoryItem(name: "Default", kind: skComponent,
+          group: "DestinationCard")])],
+      initialStory = some(story),
+      foundationTokens = demoFoundationTokens(),
+      designSystemSchema = demoDesignSystemSchema(),
+      permissions = EditorWorkspacePermissions(readSource: true, writeSource: true),
+      editAdapter = adapter))
+    var element = demoInspectorElement()
+    # The example's own shadow declaration and schema entry, which the
+    # preview capture reports once the card is selected.
+    for (p, v) in DemoEffectValues:
+      if p == "box-shadow":
+        element.properties.add PropertyInfo(name: p, value: v,
+          origin: poTailwindClass, originDetail: "class:long-tail-card",
+          sourceFile: DemoFoundationSource, sourceLine: 10,
+          schemaKey: "classes.destination-card." & p,
+          sharedCount: 4, directStyleAllowed: true)
+    for (p, v) in extra:
+      element.properties.add PropertyInfo(name: p, value: v,
+        origin: poTailwindClass, originDetail: "class:long-tail-card",
+        sourceFile: DemoFoundationSource, sourceLine: 10,
+        schemaKey: "classes.destination-card." & p,
+        sharedCount: 4, directStyleAllowed: true)
+    check result.selectInspectorElement(element)
+
+  test "each value is written exactly as typed, and undo restores the file":
+    for (property, value) in [("color", "rgb(var(--Ink) 0 0)"),
+        ("color", "RGB(var(--Ink) 0 0)"), ("color", "VAR(--ink)"),
+        ("outline-color", "rgb(var(--A) var(--B) var(--C))"),
+        ("color", "hsl(var(--H) 50% 50%)"), ("background-color", "#ABCDEF var(--X)"),
+        ("border-color", "rgb(VAR(--Ink) 0 0)"),
+        ("box-shadow", "0 1px 2px VAR(--c)"), ("transition", "opacity VAR(--d)"),
+        ("font-family", "VAR(--f), serif"), ("font-family", "VAR(--F),serif")]:
+      checkpoint property & ": " & value
+      createRoot proc(dispose: proc()) =
+        let source = extendedSource()
+        let foundation = new(string)
+        foundation[] = source
+        let vm = extendedVm(foundation)
+        let before = " " & property & ": " & vm.value(property) & ";"
+        check before in source
+        let committed = vm.commitInspectorValue(property, value, sskSharedClass)
+        check committed.ok
+        check committed.message == ""
+        vm.write()
+        check foundation[] == source.replace(before, " " & property & ": " & value & ";")
+        check vm.runEditorCommand(eckUndo).status == ecsSucceeded
+        vm.write()
+        check foundation[] == source
+        dispose()
+
+  test "a family list with var() only in a comment keeps its written form":
+    createRoot proc(dispose: proc()) =
+      let source = extendedSource()
+      let foundation = new(string)
+      foundation[] = source
+      let vm = extendedVm(foundation)
+      check vm.commitInspectorValue("font-family", "Inter,serif /* VAR(--x) */",
+        sskSharedClass).ok
+      vm.write()
+      check foundation[] == source.replace(" font-family: serif;",
+        " font-family: Inter, serif /* VAR(--x) */;")
+      dispose()
+
+  test "a colour without var() is still written in lower case":
+    for (value, written) in [("#ABC", "#abc"), ("RGB(1, 2, 3)", "rgb(1, 2, 3)"),
+        # A var() inside a comment is no reference (CSS Syntax 3 §4.3.2).
+        ("#FFF /* var(--x) */", "#fff /* var(--x) */"),
+        ("RGB(1, 2, 3) /* var(--A) */", "rgb(1, 2, 3) /* var(--a) */")]:
+      createRoot proc(dispose: proc()) =
+        let source = extendedSource()
+        let foundation = new(string)
+        foundation[] = source
+        let vm = extendedVm(foundation)
+        check vm.commitInspectorValue("color", value, sskSharedClass).ok
+        vm.write()
+        check foundation[] == source.replace(" color: black;", " color: " & written & ";")
+        dispose()

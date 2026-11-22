@@ -1682,6 +1682,12 @@ func tokenNameFromRaw(raw: string): string =
     return text[6 ..< text.len - 1].strip()
   ""
 
+func holdsVarReference(text: string): bool =
+  ## Whether ``text`` holds a real `var()` reference: one outside a string
+  ## and outside a comment (CSS Syntax 3 §4.3.2: a comment is not part of
+  ## the value, so `#FFF /* var(--x) */` holds none).
+  hasVarReference(stripCssComments(text).text)
+
 proc parseCssPropertyValue*(property, raw: string;
     variant = crvBase): CSSPropertyValue =
   let text = raw.strip()
@@ -1706,7 +1712,13 @@ proc parseCssPropertyValue*(property, raw: string;
     return
   if prop == "font-family":
     result.kind = cvkFontStack
-    result.canonical = text.split(',').mapIt(it.strip()).join(", ")
+    # A family list the editor already took (any holding a lower-case
+    # `var(`, which `validFontFamilyList` admits) keeps its written form; a
+    # `var()` spelled otherwise (`VAR(--f),serif`) is accepted only as valid
+    # at parse time and is written exactly as typed (editor spec "Planned
+    # interaction parity": a value is written as it is or refused).
+    if not holdsVarReference(text) or "var(" in text:
+      result.canonical = text.split(',').mapIt(it.strip()).join(", ")
     return
   if prop == "z-index":
     result.kind = cvkZIndex
@@ -1755,7 +1767,12 @@ proc parseCssPropertyValue*(property, raw: string;
       text.toLowerAscii().startsWith("rgba(") or text.toLowerAscii().startsWith("hsl(") or
       text.toLowerAscii().startsWith("hsla("):
     result.kind = cvkColor
-    result.canonical = text.toLowerAscii()
+    # A colour is written in lower case, which CSS reads the same (function
+    # names, hex digits, units and keywords are ASCII case-insensitive). A
+    # custom property name is not (CSS Variables 1 §2; editor spec "Token
+    # names are case-sensitive"): `rgb(var(--Ink) 0 0)` folded would name
+    # `--ink`. A colour holding `var()` is therefore written as typed.
+    result.canonical = if holdsVarReference(text): text else: text.toLowerAscii()
     return
   if text.endsWith("%"):
     result.kind = cvkPercentage
@@ -2036,8 +2053,29 @@ proc cssComponentAccepted(property, value: string): bool =
   cssValueDiagnostics(PropertyInfo(name: property, directStyleAllowed: true),
     parseCssPropertyValue(property, value)).len == 0
 
+func tokenFormNamesReference(raw: string): bool =
+  ## Whether the value the editor writes for ``raw`` (`parseCssPropertyValue`'s
+  ## canonical) is ``raw`` itself or the token form of the one reference
+  ## typed. `var(--name)` is written as `token(name)`; a value the token
+  ## parser reads more loosely -- `var(--a) var(--b)`, a fallback, a comment
+  ## -- would be written as a token form naming something that is not a
+  ## custom property, so the parse-time relaxation below does not admit it
+  ## (editor spec "Planned interaction parity": a value is written as it is
+  ## or refused, never changed).
+  let token = tokenNameFromRaw(raw)
+  if token.len == 0: return true
+  raw.strip().startsWith("var(--") and cssNameEnd(token, 0) == token.len
+
+proc validateCssValue(prop: PropertyInfo; request: PropertyEditRequest;
+    normalized: CSSPropertyValue; varRelaxed: bool): seq[PropertyEditDiagnostic]
+
 proc validateCssPropertyValue*(prop: PropertyInfo; request: PropertyEditRequest;
     normalized: CSSPropertyValue): seq[PropertyEditDiagnostic] =
+  validateCssValue(prop, request, normalized,
+    tokenFormNamesReference(normalized.raw))
+
+proc validateCssValue(prop: PropertyInfo; request: PropertyEditRequest;
+    normalized: CSSPropertyValue; varRelaxed: bool): seq[PropertyEditDiagnostic] =
   if request.newValue.strip.len == 0:
     return @[]
   # One declaration value, with every var() well formed (CSS Variables 1 §3;
@@ -2059,24 +2097,31 @@ proc validateCssPropertyValue*(prop: PropertyInfo; request: PropertyEditRequest;
     if stripped != normalized.raw:
       var bare = request
       bare.newValue = stripped
-      return validateCssPropertyValue(prop, bare,
-        parseCssPropertyValue(prop.name, stripped, normalized.variant))
+      return validateCssValue(prop, bare,
+        parseCssPropertyValue(prop.name, stripped, normalized.variant),
+        varRelaxed)
   # Checked once comments are gone: a comment ends the name before it.
   if hasVarReference(normalized.raw):
     let reference = varReferenceProblem(normalized.raw)
     if reference.len > 0:
       return @[cssDiagnostic(pedInvalidCssValue, prop, reference)]
-  var wideBesideVar = false
-  if cssWideKeywordAmongParts(normalized.raw):
-    if hasVarReference(normalized.raw):
-      # A value holding a well-formed var() is valid at parse time (CSS
-      # Variables 1 §3.1), even beside a CSS-wide keyword, so it is
-      # accepted. This is the one place that relaxation lives.
-      wideBesideVar = true
-    else:
-      return @[cssDiagnostic(pedInvalidCssValue, prop,
-        "A CSS-wide keyword (inherit, initial, unset, revert, revert-layer) must be the whole value.")]
-  result = if wideBesideVar: @[] else: cssValueDiagnostics(prop, normalized)
+  # A value holding a well-formed var() is valid at parse time (CSS
+  # Variables 1 §3.1): whatever the text beside the reference, it is not
+  # judged by the property's grammar, even beside a CSS-wide keyword. The
+  # reference is matched as CSS reads it (CSS Syntax 3): the function name
+  # in any case, with whitespace or comments inside the parentheses, which
+  # `hasVarReference` and `varReferenceProblem` above already allow. A value
+  # whose token form would not name the reference typed
+  # (`tokenFormNamesReference`) is judged as before, by the property's
+  # grammar, except beside a CSS-wide keyword. This is the one place that
+  # relaxation lives.
+  let hasVar = hasVarReference(normalized.raw)
+  let wideAmongParts = cssWideKeywordAmongParts(normalized.raw)
+  if wideAmongParts and not hasVar:
+    return @[cssDiagnostic(pedInvalidCssValue, prop,
+      "A CSS-wide keyword (inherit, initial, unset, revert, revert-layer) must be the whole value.")]
+  let parseTimeValid = hasVar and (varRelaxed or wideAmongParts)
+  result = if parseTimeValid: @[] else: cssValueDiagnostics(prop, normalized)
   let propName = prop.name.normalizedCssName()
   if normalized.kind == cvkTokenReference and normalized.tokenName.len == 0:
     result.add cssDiagnostic(pedInvalidTokenReference, prop,

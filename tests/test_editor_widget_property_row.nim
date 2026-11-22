@@ -1783,3 +1783,115 @@ suite "a typed value is checked against its property's CSS grammar":
         # Flexbox 1 §7.1), so the trailing 1 would be a basis.
         ("flex", "0 1 1"), ("flex", "0 0 1")]:
       refuses(p, v)
+
+  test "a var() reference is read as CSS reads it, and written as typed or as its token":
+    # isonim-pm issue 2026-11-21 "var() references written in upper case,
+    # with spaces or after a comment are refused". CSS Syntax 3 matches a
+    # function name ASCII case-insensitively and allows whitespace and
+    # comments inside its parentheses; a declaration holding a well-formed
+    # var() is valid at parse time whatever stands beside it (CSS Variables
+    # 1 §3.1). Editor spec "Planned interaction parity": a valid value is
+    # written, an invalid one is rejected without changing source.
+    proc reasons(property, value: string): seq[string] =
+      for d in validateCssPropertyValue(PropertyInfo(name: property,
+          directStyleAllowed: true),
+          PropertyEditRequest(property: property, newValue: value, kind: pekCss),
+          parseCssPropertyValue(property, value)):
+        result.add d.message
+    proc accepts(property, value: string) =
+      checkpoint "accepts " & property & ": " & value
+      check reasons(property, value).len == 0
+    proc refuses(property, value: string) =
+      checkpoint "refuses " & property & ": " & value
+      check reasons(property, value).len > 0
+    # The value a source plan carries, which the writer puts in the file.
+    proc written(property, value: string): string =
+      parseCssPropertyValue(property, value).canonical
+    # The four spellings the issue names, each written exactly as typed.
+    for v in ["VAR(--a)", "var( --a )", "var(/**/--a)", "var(--a) 1px"]:
+      accepts("width", v)
+      check written("width", v) == v
+    # The function name in any case.
+    for v in ["Var(--a)", "vAr(--a)", "VAR(--a, 1px)", "calc(VAR(--a) + 1px)"]:
+      accepts("width", v)
+      check written("width", v) == v
+    for (p, v) in [("color", "VAR(--ink)"), ("padding", "VAR(--space)"),
+        ("transform", "translate(VAR(--x), 2px)"), ("font-family", "VAR(--f), serif"),
+        ("font-family", "VAR(--F),serif"), ("font-family", "Inter, Var(--Fallback)"),
+        ("box-shadow", "0 1px 2px VAR(--c)"), ("box-shadow", "var( --Shadow ), 0 1px red"),
+        ("transition", "opacity VAR(--d)"), ("transition", "VAR(--T)")]:
+      accepts(p, v)
+      check written(p, v) == v
+    # A colour holding var() keeps the custom property's case: names are
+    # case-sensitive (CSS Variables 1 §2; editor spec "Token names are
+    # case-sensitive"), so the whole value is written as typed. A colour
+    # without one is still written in lower case, which CSS reads the same.
+    for (p, v) in [("color", "rgb(var(--Ink) 0 0)"), ("color", "RGB(var(--Ink) 0 0)"),
+        ("outline-color", "rgb(var(--A) var(--B) var(--C))"),
+        ("color", "hsl(var(--H) 50% 50%)"), ("color", "HSLA(var(--H) 1% 1% / 1)"),
+        ("color", "rgba(var(--R), 0, 0, 0.5)"), ("border-color", "rgb(VAR(--Ink) 0 0)"),
+        ("background-color", "#ABCDEF var(--X)")]:
+      accepts(p, v)
+      check written(p, v) == v
+    for (p, v, w) in [("color", "#ABC", "#abc"), ("color", "RGB(1, 2, 3)", "rgb(1, 2, 3)")]:
+      accepts(p, v)
+      check written(p, v) == w
+    # A var() inside a comment is no reference (CSS Syntax 3 §4.3.2): these
+    # values keep the written form the editor already gave them.
+    for p in ["color", "background-color", "border-color", "outline-color"]:
+      accepts(p, "RGB(1, 2, 3) /* var(--A) */")
+      check written(p, "RGB(1, 2, 3) /* var(--A) */") == "rgb(1, 2, 3) /* var(--a) */"
+    for (p, v, w) in [("color", "#FFF /* var(--x) */", "#fff /* var(--x) */"),
+        ("color", "#ABC /* VAR(--x) */", "#abc /* var(--x) */"),
+        ("font-family", "Inter,serif /* VAR(--x) */", "Inter, serif /* VAR(--x) */"),
+        ("font-family", "/* VAR(--x) */ Inter,serif", "/* VAR(--x) */ Inter, serif")]:
+      accepts(p, v)
+      check written(p, v) == w
+    # Whitespace and comments in each place inside the parentheses.
+    for v in ["var( --a)", "var(  --a  )", "var(\t--a)", "var( --a , 1px)",
+        "var( --a ,)", "var( --a, var( --b ) )", "var(/* c */--a)",
+        "var(/**/ --a /**/)", "var(/**/--a, var(/**/--b))",
+        "/**/var(--a)", "var(--a)/**/"]:
+      accepts("width", v)
+      check written("width", v) == v
+    # A var() beside a literal, on a property taking one value and on one
+    # taking several.
+    for p in ["width", "height", "opacity", "z-index", "letter-spacing",
+        "outline-offset", "border-radius", "color", "font-size", "line-height"]:
+      accepts(p, "var(--a) 1px")
+      check written(p, "var(--a) 1px") == "var(--a) 1px"
+    for (p, v) in [("width", "1px var(--a)"), ("width", "var(--a) auto"),
+        ("width", "VAR(--a) 1px"), ("width", "var( --a ) 1px"),
+        ("width", "var(/**/--a) 1px"), ("width", "var(--a)1px"),
+        ("padding", "1px VAR(--a)"), ("margin", "var( --a ) auto"),
+        ("gap", "var(/**/--a) 1px"), ("grid-template-columns", "var(--a) 1fr"),
+        ("background-position", "var(--x) 0"), ("aspect-ratio", "var(--x) /* c */")]:
+      accepts(p, v)
+      check written(p, v) == v
+    # A name with a hex escape (CSS Syntax 3 §4.3.7): the whitespace ending
+    # the escape belongs to the name.
+    accepts("width", "var(--\\31 a)")
+    # The token form the editor already wrote stays the same:
+    # `var(--name)` is written as `token(name)`, now on every property.
+    for (p, v, t) in [("width", "var(--a)", "token(a)"), ("width", "var(--a )", "token(a)"),
+        ("aspect-ratio", "var(--x)", "token(x)"), ("overflow", "var(--x)", "token(x)"),
+        ("width", "var(--\\31 a)", "token(\\31 a)")]:
+      accepts(p, v)
+      check written(p, v) == t
+    # A value the token parser would write as a token form naming no custom
+    # property is judged by the property's grammar, as before: it is never
+    # written changed.
+    for (p, v) in [("filter", "var(--x), var(--y)"), ("overflow", "var(--x), var(--y)"),
+        ("aspect-ratio", "var(--x), var(--y)")]:
+      refuses(p, v)
+    # Malformed references and near-misses stay refused.
+    for v in ["var(-a)", "var(--)", "var(--a b)", "var(--a;)", "vars(--a)", "var(a)",
+        "var()", "var( )", "var(--a 1px)", "var(--a/**/b)", "VAR(-a)", "VAR(--)",
+        "VAR(--a b)", "var( -- a)", "var(--a", "var(--a))", "var(--a) !important",
+        "VAR(--a) !important", "var(--a)}", "var(/* open --a)", "var(,--a)",
+        "var(1px)", "var( /**/ )", "var(--a !important)", "var(\"--a\")", "var (--a)"]:
+      refuses("width", v)
+    for (p, v) in [("padding", "vars(--a)"), ("padding", "var(--a;) 1px"),
+        ("color", "var(--)"), ("font-family", "var(--a b), serif"),
+        ("margin", "var(-a) 1px")]:
+      refuses(p, v)
