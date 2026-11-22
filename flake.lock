@@ -515,11 +515,11 @@
         "pre-commit-hooks": "pre-commit-hooks"
       },
       "locked": {
-        "lastModified": 1793851157,
-        "narHash": "sha256-O4L41qSdC+Q06fjFy6jAJSgCxc6Lukp7RoCV2HXDIUo=",
+        "lastModified": 1794923569,
+        "narHash": "sha256-IC1gabgU0k2pduuJdWrNPp814VtjImTIdB5Zx9QuEQI=",
         "owner": "metacraft-labs",
         "repo": "codetracer-js-recorder",
-        "rev": "0ab8f0c6c69836d5d06cb6f93e07a1a1f9a7526f",
+        "rev": "6f699e3112484c6c73f7cf8d654e1f3106e76162",
         "type": "github"
       },
       "original": {
@@ -547,11 +547,11 @@
     "codetracer-trace-format": {
       "flake": false,
       "locked": {
-        "lastModified": 1793763652,
-        "narHash": "sha256-1VaoOIFWkmQRd1+cxarA2OebP8t02QAMxEsmMqrWxzs=",
+        "lastModified": 1794623567,
+        "narHash": "sha256-YfW/Z9UyN0P3PskEpsvHapQS/i/DeNMe5ubaDY+fFY8=",
         "owner": "metacraft-labs",
         "repo": "codetracer-trace-format",
-        "rev": "dc4991ad078599fc6187bdf466b10d4da5b43f27",
+        "rev": "0218896c99412f1f23e6f0c5ea4fd062f9258118",
         "type": "github"
       },
       "original": {
@@ -564,11 +564,11 @@
     "codetracer-trace-format-nim": {
       "flake": false,
       "locked": {
-        "lastModified": 1793794306,
-        "narHash": "sha256-LsZWgRN1NmzDuh+n+ALtSDOw4uHGANHb/lzLAxlLA68=",
+        "lastModified": 1794623449,
+        "narHash": "sha256-B7UgHzCZFF3P+gFeQ5WynDIOnsXWnKFTUCp3YUU9rhk=",
         "owner": "metacraft-labs",
         "repo": "codetracer-trace-format-nim",
-        "rev": "5802203c356fa865070daf7599dcb0fc164ed47e",
+        "rev": "945cac0859de78478654c4569a6a3b2388efd11f",
         "type": "github"
       },
       "original": {
@@ -2898,11 +2898,11 @@
     "nim-everywhere": {
       "flake": false,
       "locked": {
-        "lastModified": 1793767528,
-        "narHash": "sha256-TuKN1UHOtsioH0EVeXELfIWomqc39ayGGlxJ7iwG/KA=",
+        "lastModified": 1795037351,
+        "narHash": "sha256-mi2rgXiedi0rPuhsnue3kINjmebIzyW+0mPSJ08ORsM=",
         "owner": "metacraft-labs",
         "repo": "nim-everywhere",
-        "rev": "1ef439320e7c11cad9a11a13960e94d37afe8482",
+        "rev": "cc7ca84863fe404694dc557f6ed646b012cb9318",
         "type": "github"
       },
       "original": {
