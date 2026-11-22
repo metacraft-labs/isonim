@@ -22,7 +22,8 @@
 ##
 ## A template's static styles — literal style attributes and the Tailwind utilities its literal
 ## classes expand to — are its nodes' precomputed inline style: a renderer can resolve them once per
-## template rather than once per element.
+## template rather than once per element. A renderer that declares `classesStyledByStylesheet` (its
+## document carries the app's stylesheet) is handed the template without the Tailwind expansion.
 
 type
   TemplateNode* = object

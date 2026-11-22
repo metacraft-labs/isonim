@@ -112,6 +112,16 @@ const NoFrameNode* = FrameNode(0)
 
 proc isNil*(n: FrameNode): bool {.inline.} = int32(n) == 0
 
+template classesStyledByStylesheet*(r: FrameRenderer): bool =
+  ## The frame is applied to a browser document that carries the app's
+  ## stylesheet, so the `ui` macro sets a static `class` alone and does not
+  ## expand its Tailwind utilities into `setStyle` calls, as it does not
+  ## under JS. Without this a core compiled to WebAssembly drew
+  ## `class="… hidden"` with an inline `display: none` the `nim js` build of
+  ## the same core does not, and that inline style outranked every later
+  ## class change the stylesheet should have shown.
+  true
+
 # ---------------------------------------------------------------------------
 # The frame
 # ---------------------------------------------------------------------------

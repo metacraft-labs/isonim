@@ -1,0 +1,11 @@
+{
+  "hidden": {
+    "display": "none"
+  },
+  "p-2": {
+    "padding": "8",
+    "units": {
+      "padding": "px"
+    }
+  }
+}

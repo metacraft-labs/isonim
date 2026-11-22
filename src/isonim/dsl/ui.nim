@@ -515,6 +515,30 @@ const paintOnlyProperties = ["background-color", "opacity", "border-color", "out
 proc tplEffect(body: NimNode): NimNode {.compileTime.} =
   newCall(ident"createRenderEffect", newProc(params = [newEmptyNode()], body = newStmtList(body)))
 
+proc byStyleSource(rendererSym, sheetBranch, expandBranch: NimNode): NimNode {.compileTime.} =
+  ## `sheetBranch` for a renderer that declares `classesStyledByStylesheet`
+  ## true, `expandBranch` for every other renderer.
+  ##
+  ## Tailwind utilities in a static `class` are expanded to `setStyle` calls
+  ## for a renderer with no stylesheet of its own (a native toolkit). A
+  ## renderer that draws into a document carrying the app's compiled
+  ## stylesheet must not get them: the stylesheet already styles the class,
+  ## and an inline style would outrank every later class change. Under JS
+  ## that is every renderer, so the expansion is compiled out there; a
+  ## renderer compiled to C or WebAssembly that still targets such a
+  ## document (`web/frame_renderer`'s, applied to a browser DOM) says so with
+  ##
+  ##   template classesStyledByStylesheet*(r: MyRenderer): bool = true
+  ##
+  ## Decided where the view is instantiated, like `createFromTemplate`.
+  let probe = newDotExpr(rendererSym.copyNimTree, ident"classesStyledByStylesheet")
+  nnkWhenStmt.newTree(
+    nnkElifBranch.newTree(newCall(ident"compiles", probe),
+      newStmtList(nnkWhenStmt.newTree(
+        nnkElifBranch.newTree(probe.copyNimTree, sheetBranch),
+        nnkElse.newTree(expandBranch.copyNimTree)))),
+    nnkElse.newTree(expandBranch))
+
 proc typedOr(rendererSym: NimNode; typed, plain: string; args: varargs[NimNode]): NimNode {.compileTime.} =
   ## `renderer.<typed>(args)` when the renderer has it, `renderer.<plain>(args)` otherwise.
   let typedCall = newCall(newDotExpr(rendererSym, ident(typed)))
@@ -877,12 +901,18 @@ proc processElement(rendererSym: NimNode; node: NimNode;
             emitEditableAssign(stmts, rendererSym, elSym, node, "setAttribute",
                                sceneId, "class", attrVal)
             when not defined(js):
+              # A renderer whose document carries the app's stylesheet (see
+              # `classesStyledByStylesheet`) gets the class alone, as under JS.
               let classStr = attrVal.strVal
               let styles = expandTailwindClassesCompileTime(classStr)
-              for (prop, val) in styles:
-                stmts.add(newCall(
-                  newDotExpr(rendererSym, ident"setStyle"),
-                  elSym, newStrLitNode(prop), newStrLitNode(val)))
+              if styles.len > 0:
+                let expanded = newStmtList()
+                for (prop, val) in styles:
+                  expanded.add(newCall(
+                    newDotExpr(rendererSym, ident"setStyle"),
+                    elSym, newStrLitNode(prop), newStrLitNode(val)))
+                stmts.add byStyleSource(rendererSym,
+                  newStmtList(nnkDiscardStmt.newTree(newEmptyNode())), expanded)
           elif isStyleProperty(attrName):
             # CSS style property: emit setStyle instead of setAttribute
             let cssName = toStyleName(attrName)
@@ -962,6 +992,9 @@ var templateCounter {.compileTime.} = 0
 type
   TplBuild = object
     nodes: seq[NimNode]     ## a `TemplateNode` constructor per node
+    sheetNodes: seq[NimNode]
+      ## the same nodes without the styles Tailwind classes expand to, for a
+      ## renderer that declares `classesStyledByStylesheet`
     holes: int              ## how many holes so far
     holeSyms: seq[NimNode]  ## the symbol each hole is bound to
     actions: seq[NimNode]   ## what runs on the holes once the subtree exists
@@ -1005,9 +1038,11 @@ proc tplChildren(rendererSym, body: NimNode; parent: int;
         if not isDynamic(arg):
           if arg.kind notin {nnkStrLit, nnkRStrLit, nnkTripleStrLit}: return false
           b.nodes.add tplNode(parent, "", arg.strVal, "", @[], @[], -1)
+          b.sheetNodes.add tplNode(parent, "", arg.strVal, "", @[], @[], -1)
         else:
           let (hole, sym) = tplHole(b)
           b.nodes.add tplNode(parent, "", "", "", @[], @[], hole)
+          b.sheetNodes.add tplNode(parent, "", "", "", @[], @[], hole)
           b.actions.add tplEffect(typedOr(rendererSym, "setNodeText", "setTextContent", sym, arg))
       elif name.len > 0 and name != "raw" and isElementCall(name, child):
         if not tplElement(rendererSym, child, parent, b): return false
@@ -1017,6 +1052,7 @@ proc tplChildren(rendererSym, body: NimNode; parent: int;
       let tag = resolveTagName(child.strVal)
       if not isVoidElement(tag): return false
       b.nodes.add tplNode(parent, tag, "", "", @[], @[], -1)
+      b.sheetNodes.add tplNode(parent, tag, "", "", @[], @[], -1)
     of nnkStmtList:
       if not tplChildren(rendererSym, child, parent, b): return false
     else:
@@ -1032,7 +1068,8 @@ proc tplElement(rendererSym, node: NimNode; parent: int;
   if explicitPublicPrivacy(node, htmlTag) == ipPublic: return false
   let index = b.nodes.len
   var classes = ""
-  var attrs, styles: seq[(string, string)]
+  var attrs, styles, sheetStyles: seq[(string, string)]
+    # `sheetStyles`: `styles` less the Tailwind expansion (`byStyleSource`)
   var hole = -1
   var holeSym: NimNode
   template ensureHole() =
@@ -1075,6 +1112,7 @@ proc tplElement(rendererSym, node: NimNode; parent: int;
         if not isDynamic(value):
           if value.kind notin {nnkStrLit, nnkRStrLit, nnkTripleStrLit}: return false
           styles.add (cssName, value.strVal)
+          sheetStyles.add (cssName, value.strVal)
         else:
           ensureHole()
           if cssName in paintOnlyProperties:
@@ -1098,6 +1136,7 @@ proc tplElement(rendererSym, node: NimNode; parent: int;
     else:
       discard
   b.nodes.add tplNode(parent, htmlTag, "", classes, attrs, styles, hole)
+  b.sheetNodes.add tplNode(parent, htmlTag, "", classes, attrs, sheetStyles, hole)
   b.actions.add pending
   for body in childBodies:
     if not tplChildren(rendererSym, body, index, b): return false
@@ -1117,17 +1156,25 @@ proc processElementMaybeTemplated(rendererSym: NimNode; node: NimNode;
     let elSym = processElement(rendererSym, node, perNode)
     inc templateCounter
     let tplSym = genName("tpl")
+    let sheetTplSym = genName("sheetTpl")
     let outSym = genName("made")
-    let nodesLit = newNimNode(nnkBracket)
-    for n in build.nodes: nodesLit.add n
     let templated = newStmtList()
-    templated.add nnkConstSection.newTree(nnkConstDef.newTree(tplSym, newEmptyNode(),
-      nnkObjConstr.newTree(bindSym"StaticTemplate",
-        nnkExprColonExpr.newTree(ident"id", newLit(templateCounter)),
-        nnkExprColonExpr.newTree(ident"nodes", prefix(nodesLit, "@")),
-        nnkExprColonExpr.newTree(ident"holes", newLit(build.holes)))))
-    templated.add newLetStmt(outSym,
-      newCall(newDotExpr(rendererSym, ident"createFromTemplate"), tplSym))
+    # Two descriptions of one call site, differing only in the Tailwind
+    # expansion (`byStyleSource`); a renderer is only ever handed one, so
+    # they share the id.
+    for (sym, nodes) in [(tplSym, build.nodes), (sheetTplSym, build.sheetNodes)]:
+      let nodesLit = newNimNode(nnkBracket)
+      for n in nodes: nodesLit.add n
+      templated.add nnkConstSection.newTree(nnkConstDef.newTree(sym, newEmptyNode(),
+        nnkObjConstr.newTree(bindSym"StaticTemplate",
+          nnkExprColonExpr.newTree(ident"id", newLit(templateCounter)),
+          nnkExprColonExpr.newTree(ident"nodes", prefix(nodesLit, "@")),
+          nnkExprColonExpr.newTree(ident"holes", newLit(build.holes)))))
+    templated.add byStyleSource(rendererSym,
+      newStmtList(newLetStmt(outSym,
+        newCall(newDotExpr(rendererSym, ident"createFromTemplate"), sheetTplSym))),
+      newStmtList(newLetStmt(outSym,
+        newCall(newDotExpr(rendererSym, ident"createFromTemplate"), tplSym))))
     templated.add newLetStmt(elSym, nnkBracketExpr.newTree(outSym, newLit(0)))
     for i, sym in build.holeSyms:
       templated.add newLetStmt(sym, nnkBracketExpr.newTree(outSym, newLit(i + 1)))

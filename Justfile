@@ -478,6 +478,10 @@ test-dsl: build-tailwind
     # map. C only: class expansion to setStyle calls is native-only.
     nim c -r -d:tailwindStylesPathOverride={{justfile_directory()}}/tests/dsl/tailwind/variant-styles.json tests/test_dsl_tailwind_variants.nim
     nim c -r -d:tailwindStylesPathOverride={{justfile_directory()}}/tests/dsl/tailwind/variant-styles.json -d:isonimTailwindVariants tests/test_dsl_tailwind_variants.nim
+    # A renderer drawn through the app's stylesheet (`classesStyledByStylesheet`,
+    # the WebAssembly frame renderer) gets a static class without its Tailwind
+    # expansion, as under JS. C only, against a fixture map with `hidden`.
+    nim c -r -d:tailwindStylesPathOverride={{justfile_directory()}}/tests/dsl/tailwind/stylesheet-styles.json tests/test_dsl_stylesheet_classes.nim
 
 # Real compiler regression gate, isolated from any generated checkout map.
 test-tailwind-loader:
@@ -529,6 +533,7 @@ test-escape-writers:
 # backends: elision, its invalidation, the op manifest and event dispatch.
 test-frame-renderer:
     nim c -r tests/test_frame_renderer.nim
+    nim c -r -d:tailwindStylesPathOverride={{justfile_directory()}}/tests/dsl/tailwind/stylesheet-styles.json tests/test_dsl_stylesheet_classes.nim
     nim js -r --out:build/test_frame_renderer.js tests/test_frame_renderer.nim
 
 # Run only web renderer tests (JS-only)
