@@ -829,7 +829,17 @@ package isonim:
   # the downstream isonim renderer repos (isonim-tui / isonim-freya /
   # isonim-gpui / isonim-android / isonim-cocoa / ngx-isonim /
   # isonim-examples) consume.
-  library isonim
+  #
+  # ``sourceGitlinks`` names the submodule the exported source cannot be
+  # compiled without: ``layout/yoga_bindings.nim`` compiles the vendored
+  # Yoga C++ sources from ``src/isonim/layout/yoga`` (facebook/yoga). A
+  # consumer gets an owned copy of ``src/`` with Yoga at that place, taken
+  # at the commit this repository's gitlink records (or from an initialized
+  # submodule checkout, as found). The consumer's checkout of this repo is
+  # never initialized or changed.
+  library isonim:
+    sourceGitlinks:
+      "src/isonim/layout/yoga"
 
   build:
     # Two-edge test template (Package-Model.md §"The test template"): one
