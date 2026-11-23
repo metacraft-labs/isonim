@@ -961,10 +961,19 @@ suite "Editor ViewModels (M26 source-backed CSS property editors)":
       check invalidPadding.status == pesRejected
       check invalidPadding.diagnostics.anyIt(it.kind == pedInvalidCssValue)
 
-      let invalidToken = vm.editCssProperty("background", "token(missing)",
-        pesShared)
+      # A design-token spelling names a token the project defines; one it
+      # does not define is refused. (This used the name `missing`, which the
+      # validator refused whatever the project defined -- even as a custom
+      # property, `var(--missing)`.)
+      vm.foundations.tokens.val = @[FoundationTokenEntry(key: "surface.card",
+        kind: ftkSemanticColor, value: "#ffffff")]
+      let invalidToken = vm.editCssProperty("background",
+        "token(surface.undefined)", pesShared)
       check invalidToken.status == pesRejected
-      check invalidToken.diagnostics.anyIt(it.kind == pedInvalidTokenReference)
+      check invalidToken.diagnostics.anyIt(it.kind == pedInvalidTokenReference and
+        it.message == "Unknown design token 'surface.undefined'.")
+      check vm.editCssProperty("background", "var(--missing)",
+        pesShared).status == pesAccepted
 
       # `pt` is a CSS length unit (CSS Values 4 §6.2), so `12pt` is a valid
       # padding and is written; a unit CSS does not define is refused.
@@ -1542,6 +1551,22 @@ suite "Editor ViewModels (M26 source-backed CSS property editors)":
       check gapPlan.sourceEdit.file == tokenFile
       check gapPlan.sourceEdit.originDetail.startsWith("layout-token:")
 
+      # The layout-control write point refuses a design-token spelling whose
+      # key the project does not define, and accepts a defined one.
+      vm.foundations.tokens.val = @[FoundationTokenEntry(key: "space.card",
+        kind: ftkSpacingScale, value: "16px")]
+      let undefinedGap = vm.planLayoutControlEdit(layoutCommand(
+        lcfFlexAutoLayout, "gap", "token(no.such)"))
+      check not undefinedGap.ok
+      check undefinedGap.diagnostics.anyIt(
+        it.kind == pedInvalidTokenReference and
+          it.message == "Unknown design token 'no.such'.")
+      check vm.planLayoutControlEdit(layoutCommand(
+        lcfFlexAutoLayout, "gap", "token(space.card)")).ok
+      check vm.planLayoutControlEdit(layoutCommand(
+        lcfFlexAutoLayout, "gap", "var(--no-such)")).ok
+      vm.foundations.tokens.val = @[]
+
       let gridPlan = vm.planLayoutControlEdit(layoutCommand(
         lcfGrid, "grid-template-columns",
         "repeat(2, minmax(0, 1fr))"))
@@ -1677,6 +1702,19 @@ suite "Editor ViewModels (M26 source-backed CSS property editors)":
       check vm.inspector.pendingSourceEdits.val.anyIt(
         it.variantKey == "modes.compact-dashboard.gap" and
           it.newValue == "14px")
+
+      # A responsive override is a write point too: an undefined design
+      # token is refused with the reason, a defined one is accepted.
+      vm.foundations.tokens.val = @[FoundationTokenEntry(key: "space.card",
+        kind: ftkSpacingScale, value: "16px")]
+      let undefinedMode = vm.planResponsiveLayoutOverride("tablet", "gap",
+        "token(no.such)")
+      check not undefinedMode.ok
+      check undefinedMode.diagnostics.anyIt(
+        it.kind == pedInvalidTokenReference and
+          it.message == "Unknown design token 'no.such'.")
+      check vm.planResponsiveLayoutOverride("tablet", "gap",
+        "$space.card").ok
       dispose()
 
   test "component_dom_selection_bridge_populates_source_backed_inspector":

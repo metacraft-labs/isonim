@@ -1673,14 +1673,10 @@ func hasUnsupportedNumericUnit(raw: string): bool =
   suffix.allIt(it.isAlphaAscii)
 
 func tokenNameFromRaw(raw: string): string =
-  let text = raw.strip()
-  if text.startsWith("token(") and text.endsWith(")"):
-    return text[6 ..< text.len - 1].strip()
-  if text.startsWith("$") and text.len > 1:
-    return text[1 .. ^1].strip()
-  if text.startsWith("var(--") and text.endsWith(")"):
-    return text[6 ..< text.len - 1].strip()
-  ""
+  ## The token a value references, or "": `dsl/style_provenance`'s reading,
+  ## so the inspector and the DSL's provenance agree on every spelling
+  ## (`var(--name[, fallback])` names the custom property only).
+  tokenReferenceIn(raw)
 
 func holdsVarReference(text: string): bool =
   ## Whether ``text`` holds a real `var()` reference: one outside a string
@@ -1698,7 +1694,16 @@ proc parseCssPropertyValue*(property, raw: string;
   if token.len > 0:
     result.kind = cvkTokenReference
     result.tokenName = token
-    result.canonical = "token(" & token & ")"
+    # A `var()` reference is CSS and is written as typed: its fallback and
+    # any other part stay, so every writer (CSS, the native source worker,
+    # the example's stylesheet) receives a valid declaration (editor spec:
+    # "Editing the token keeps the use-site `var()` binding intact";
+    # "Planned interaction parity": a value is written as it is or refused).
+    # The token identity is `tokenName`, not the written text. Only the
+    # design-schema spellings (`token(key)`, `$key`) keep the `token(key)`
+    # form their token workflows read.
+    if not text.startsWith("var(--"):
+      result.canonical = "token(" & token & ")"
     return
 
   if text.startsWith("calc(") and text.endsWith(")"):
@@ -2053,18 +2058,15 @@ proc cssComponentAccepted(property, value: string): bool =
   cssValueDiagnostics(PropertyInfo(name: property, directStyleAllowed: true),
     parseCssPropertyValue(property, value)).len == 0
 
-func tokenFormNamesReference(raw: string): bool =
-  ## Whether the value the editor writes for ``raw`` (`parseCssPropertyValue`'s
-  ## canonical) is ``raw`` itself or the token form of the one reference
-  ## typed. `var(--name)` is written as `token(name)`; a value the token
-  ## parser reads more loosely -- `var(--a) var(--b)`, a fallback, a comment
-  ## -- would be written as a token form naming something that is not a
-  ## custom property, so the parse-time relaxation below does not admit it
-  ## (editor spec "Planned interaction parity": a value is written as it is
-  ## or refused, never changed).
-  let token = tokenNameFromRaw(raw)
-  if token.len == 0: return true
-  raw.strip().startsWith("var(--") and cssNameEnd(token, 0) == token.len
+func designTokenSpelling(raw: string): bool =
+  ## Whether ``raw`` is in one of the design-schema token spellings
+  ## (`token(key)`, `$key`), which are not CSS and are written in the
+  ## `token(key)` form (`parseCssPropertyValue`). Such a value holding a
+  ## `var()` -- `$a var(--b)` -- would be written changed, so the parse-time
+  ## relaxation below does not admit it (editor spec "Planned interaction
+  ## parity": a value is written as it is or refused, never changed). A
+  ## value starting with `var(--` is written as typed and is not one.
+  tokenNameFromRaw(raw).len > 0 and not raw.strip().startsWith("var(--")
 
 proc validateCssValue(prop: PropertyInfo; request: PropertyEditRequest;
     normalized: CSSPropertyValue; varRelaxed: bool): seq[PropertyEditDiagnostic]
@@ -2072,7 +2074,7 @@ proc validateCssValue(prop: PropertyInfo; request: PropertyEditRequest;
 proc validateCssPropertyValue*(prop: PropertyInfo; request: PropertyEditRequest;
     normalized: CSSPropertyValue): seq[PropertyEditDiagnostic] =
   validateCssValue(prop, request, normalized,
-    tokenFormNamesReference(normalized.raw))
+    not designTokenSpelling(normalized.raw))
 
 proc validateCssValue(prop: PropertyInfo; request: PropertyEditRequest;
     normalized: CSSPropertyValue; varRelaxed: bool): seq[PropertyEditDiagnostic] =
@@ -2111,9 +2113,9 @@ proc validateCssValue(prop: PropertyInfo; request: PropertyEditRequest;
   # reference is matched as CSS reads it (CSS Syntax 3): the function name
   # in any case, with whitespace or comments inside the parentheses, which
   # `hasVarReference` and `varReferenceProblem` above already allow. A value
-  # whose token form would not name the reference typed
-  # (`tokenFormNamesReference`) is judged as before, by the property's
-  # grammar, except beside a CSS-wide keyword. This is the one place that
+  # in a design-schema token spelling (`designTokenSpelling`), which would
+  # be written changed, is judged as before, by the property's grammar,
+  # except beside a CSS-wide keyword. This is the one place that
   # relaxation lives.
   let hasVar = hasVarReference(normalized.raw)
   let wideAmongParts = cssWideKeywordAmongParts(normalized.raw)
@@ -2126,9 +2128,6 @@ proc validateCssValue(prop: PropertyInfo; request: PropertyEditRequest;
   if normalized.kind == cvkTokenReference and normalized.tokenName.len == 0:
     result.add cssDiagnostic(pedInvalidTokenReference, prop,
       "Token references must name a token.")
-  if normalized.kind == cvkTokenReference and normalized.tokenName == "missing":
-    result.add cssDiagnostic(pedInvalidTokenReference, prop,
-      "Unknown design token '" & normalized.tokenName & "'.")
   if propName == "display" and
       normalized.canonical == "contents" and prop.sharedCount > 0:
     result.add cssDiagnostic(pedInvalidPropertyCombination, prop,
@@ -5412,6 +5411,38 @@ type PreparedPropertyEdit* = object
   outcome*: PropertyEditResult
   transaction*: CSSPropertyEditTransaction
 
+func designTokenUndefined(schema: DesignSystemSchema;
+    foundationTokens: seq[FoundationTokenEntry]; key: string): bool =
+  ## Whether the project defines design tokens -- token nodes of its design
+  ## schema or foundation tokens -- and none of them is ``key`` (compared as
+  ## `sameTokenKey` does, ignoring case). A project that defines no tokens
+  ## says nothing about which keys exist, so no key is undefined in it.
+  let wanted = key.toLowerAscii()
+  var definesTokens = foundationTokens.len > 0
+  for token in foundationTokens:
+    if token.key.toLowerAscii() == wanted: return false
+  for node in schema.nodes:
+    if node.kind in {dsnFoundation, dsnSemanticToken, dsnComponentToken}:
+      definesTokens = true
+      if node.key.toLowerAscii() == wanted: return false
+  definesTokens
+
+func unknownDesignTokenDiagnostics(schema: DesignSystemSchema;
+    foundationTokens: seq[FoundationTokenEntry]; prop: PropertyInfo;
+    normalized: CSSPropertyValue): seq[PropertyEditDiagnostic] =
+  ## A design-schema token spelling (`token(key)`, `$key`) names a token the
+  ## project defines (`designTokenUndefined`); one it does not define is
+  ## refused with the reason. A `var(--name)` is never refused for its name:
+  ## a custom property needs no declaration (CSS Variables 1 §3; an
+  ## undefined one is invalid at computed-value time, where its fallback
+  ## applies).
+  if normalized.kind != cvkTokenReference or
+      not designTokenSpelling(normalized.raw):
+    return
+  if designTokenUndefined(schema, foundationTokens, normalized.tokenName):
+    result.add cssDiagnostic(pedInvalidTokenReference, prop,
+      "Unknown design token '" & normalized.tokenName & "'.")
+
 proc preparePropertyEdit*(inspector: InspectorVM;
     request: PropertyEditRequest): PreparedPropertyEdit =
   ## Validate and plan without changing selection, journal or history. Native
@@ -5479,6 +5510,8 @@ proc preparePropertyEdit*(inspector: InspectorVM;
 
   let normalized = parseCssPropertyValue(prop.name, normalizedRequest.newValue)
   diagnostics.add prop.validateCssPropertyValue(normalizedRequest, normalized)
+  diagnostics.add unknownDesignTokenDiagnostics(inspector.designSystemSchema.val,
+    inspector.availableVariables.val, prop, normalized)
 
   if diagnostics.len > 0:
     outcome = withStatus(pesRejected, diagnostics)
@@ -7069,7 +7102,8 @@ func propertyDiagnosticFromDesign(kind: PropertyEditDiagnosticKind;
     property: design.property)
 
 proc planLayoutControlEdit*(schema: DesignSystemSchema; element: ElementRef;
-    command: LayoutControlCommand): LayoutControlPlan =
+    command: LayoutControlCommand;
+    foundationTokens: seq[FoundationTokenEntry] = @[]): LayoutControlPlan =
   result.command = command
   result.capabilities = layoutControlCapabilities(command.family)
   if command.family == lcfResponsiveOverride:
@@ -7180,7 +7214,8 @@ proc planLayoutControlEdit*(schema: DesignSystemSchema; element: ElementRef;
     newValue: command.value, kind: pekLayout, scope: command.scope,
     origin: peoInspector)
   let normalized = parseCssPropertyValue(command.property, command.value)
-  let diagnostics = routedProp.validateCssPropertyValue(request, normalized)
+  let diagnostics = routedProp.validateCssPropertyValue(request, normalized) &
+    unknownDesignTokenDiagnostics(schema, foundationTokens, routedProp, normalized)
   if diagnostics.len > 0:
     result.diagnostics = diagnostics
     return
@@ -7212,7 +7247,8 @@ proc planLayoutControlEdit*(schema: DesignSystemSchema; element: ElementRef;
 proc planLayoutControlEdit*(editor: EditorVM;
     command: LayoutControlCommand): LayoutControlPlan =
   planLayoutControlEdit(editor.designSystemSchema.val,
-    editor.inspector.selectedElement.val, command)
+    editor.inspector.selectedElement.val, command,
+    editor.foundations.tokens.val)
 
 proc planResponsiveLayoutOverride*(editor: EditorVM; modeKey, property,
     value: string; family = lcfResponsiveOverride): LayoutControlPlan =
@@ -8309,7 +8345,9 @@ proc sharedDesignEditorFor(editor: EditorVM; prop: PropertyInfo;
     origin: peoInspector)
   let normalized = parseCssPropertyValue(prop.name,
     normalizePrimitiveInputValue(prop.name, valueText))
-  var diagnostics = prop.validateCssPropertyValue(request, normalized)
+  var diagnostics = prop.validateCssPropertyValue(request, normalized) &
+    unknownDesignTokenDiagnostics(editor.designSystemSchema.val,
+      editor.foundations.tokens.val, prop, normalized)
   let category = prop.sharedDesignCategory(choice.kind)
   var status = sdesEditable
   var readOnlyReason = ""
@@ -9840,12 +9878,24 @@ proc validateFoundationTokenEdit(editor: EditorVM; token: FoundationTokenEntry;
     if not parsed.ok and not aliasLike:
       result.add foundationDiagnostic(fedInvalidTokenValue, token,
         "Color tokens must use a hex color or token alias.")
-  if token.kind == ftkSemanticColor and
-      value.isTokenAliasValue:
-    let target = tokenNameFromRaw(value)
-    if editor.foundations.tokens.val.hasAliasCycle(token.key, target):
+  # A token alias names one token the project defines, as a use site's
+  # design-token spelling must (`unknownDesignTokenDiagnostics`), and does
+  # not close a cycle -- whatever the edited token's kind: the chain is
+  # read through every token's `aliasOf` (`hasAliasCycle`). An alias with
+  # no key (`token()`, `$a b`), to an undefined key, or closing a cycle
+  # would be written and break this token and every use of it.
+  if value.isTokenAliasValue:
+    let aliasKey = tokenNameFromRaw(value)
+    if aliasKey.len == 0:
+      result.add foundationDiagnostic(fedInvalidTokenValue, token,
+        "Token references must name a token.")
+    elif designTokenUndefined(editor.designSystemSchema.val,
+        editor.foundations.tokens.val, aliasKey):
+      result.add foundationDiagnostic(fedInvalidTokenValue, token,
+        "Unknown design token '" & aliasKey & "'.")
+    elif editor.foundations.tokens.val.hasAliasCycle(token.key, aliasKey):
       result.add foundationDiagnostic(fedAliasCycle, token,
-        "Semantic token aliases cannot form a cycle.")
+        "Token aliases cannot form a cycle.")
   if token.kind in {ftkSpacingScale, ftkRadiusScale, ftkBreakpoint} and
       not value.validCssLength and not value.isTokenAliasValue:
     result.add foundationDiagnostic(fedInvalidTokenValue, token,

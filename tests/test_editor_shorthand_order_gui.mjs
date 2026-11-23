@@ -234,8 +234,8 @@ try {
   await commit('Padding, all sides','1.5rem');
   await assertPoll(()=>field('Padding top').inputValue(),'1.5rem','side after a length');
   await commit('Padding, all sides','var(--wl-space-card)');
-  for(const side of ['top','right','bottom','left'])await assertPoll(()=>field('Padding '+side).inputValue(),'token(wl-space-card)','side '+side+' after a variable');
-  assert.equal(await field('Padding, all sides').inputValue(),'token(wl-space-card)');
+  for(const side of ['top','right','bottom','left'])await assertPoll(()=>field('Padding '+side).inputValue(),'var(--wl-space-card)','side '+side+' after a variable');
+  assert.equal(await field('Padding, all sides').inputValue(),'var(--wl-space-card)');
   await assertPoll(()=>rendered('padding-'),['16px','16px','16px','16px'],'preview renders the variable');
   cases.push('a shorthand set to a variable shows it on every side and the all-sides field');
 
@@ -264,9 +264,9 @@ try {
   // other longhands, turning 24/16/16/16 into 24/0/0/0 on the next selection).
   await open('padding: 18px;');
   await commit('Padding, all sides','var(--wl-space-card)');
-  await settle('.destination-card { padding: token(wl-space-card); }');
+  await settle('.destination-card { padding: var(--wl-space-card); }');
   await commit('Padding top','24');
-  await settle('.destination-card { padding: token(wl-space-card); padding-top: 24px; }');
+  await settle('.destination-card { padding: var(--wl-space-card); padding-top: 24px; }');
   await assertPoll(()=>rendered('padding-'),['24px','16px','16px','16px'],'preview after the side edit');
   await selectExactly();
   await assertPoll(()=>rendered('padding-'),['24px','16px','16px','16px'],'preview after selecting again');

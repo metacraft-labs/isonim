@@ -133,20 +133,44 @@ func htmlAttrEscape*(s: string): string =
     of '>': result.add "&gt;"
     else: result.add c
 
+func varReferenceName(inner: string): string =
+  ## The custom-property name a `var(--` reference starts with, ``inner``
+  ## being the text after `var(--`: up to its fallback's `,`, its closing
+  ## `)` or a comment, so `var(--a, 1px)` names `a`, not `a, 1px` (CSS
+  ## Variables 1 §3). A backslash escapes the next character (CSS Syntax 3
+  ## §4.3.7), and whitespace inside the name -- the space ending a hex
+  ## escape -- stays.
+  var i = 0
+  while i < inner.len:
+    case inner[i]
+    of '\\': i += 2
+    of ',', ')': break
+    of '/':
+      if i + 1 < inner.len and inner[i + 1] == '*': break
+      inc i
+    else: inc i
+  inner[0 ..< min(i, inner.len)].strip()
+
 func tokenReferenceIn*(rawValue: string): string =
   ## The token key inside an authored value, or "" if the value is a literal.
   ##
-  ## The three accepted spellings are exactly the ones the editor's
-  ## `tokenNameFromRaw` (viewmodels.nim) already understands, so a value the
+  ## The one reading of a token reference, shared with the editor
+  ## (`tokenNameFromRaw` in viewmodels.nim is this function), so a value the
   ## DSL calls a binding is a value the inspector can chase to a token.
-  ## Keeping the two in step matters more than the syntax itself; a third
-  ## spelling added here without adding it there produces a binding the
-  ## editor sees and cannot resolve.
+  ## Three spellings:
+  ##
+  ## * `var(--name)`, with or without a fallback: the custom-property name,
+  ##   never the fallback (`var(--a, 1px)` names `a`);
+  ## * `token(key)`: the design-schema spelling, everything inside;
+  ## * `$key`: one key, so a value holding whitespace of any kind
+  ##   (`$a var(--b)`, `$ a`, `$a<TAB>b`) is not a token reference.
   let text = rawValue.strip()
   if text.startsWith("var(--") and text.endsWith(")"):
-    return text[6 ..< text.len - 1].strip()
+    return varReferenceName(text[6 ..< text.len - 1])
   if text.startsWith("token(") and text.endsWith(")"):
     return text[6 ..< text.len - 1].strip()
-  if text.startsWith("$") and text.len > 1 and not text.contains(' '):
-    return text[1 .. ^1].strip()
+  if text.startsWith("$") and text.len > 1:
+    for ch in text:
+      if ch in Whitespace: return ""
+    return text[1 .. ^1]
   ""

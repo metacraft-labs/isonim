@@ -1871,19 +1871,59 @@ suite "a typed value is checked against its property's CSS grammar":
     # A name with a hex escape (CSS Syntax 3 §4.3.7): the whitespace ending
     # the escape belongs to the name.
     accepts("width", "var(--\\31 a)")
-    # The token form the editor already wrote stays the same:
-    # `var(--name)` is written as `token(name)`, now on every property.
-    for (p, v, t) in [("width", "var(--a)", "token(a)"), ("width", "var(--a )", "token(a)"),
-        ("aspect-ratio", "var(--x)", "token(x)"), ("overflow", "var(--x)", "token(x)"),
-        ("width", "var(--\\31 a)", "token(\\31 a)")]:
+    # A `var()` reference is written as typed, never in the `token(name)`
+    # form no CSS reader understands (isonim-pm issue 2026-11-22-var-values-
+    # are-written-in-a-token-form-...): the fallback and every other
+    # reference stay. Its token identity is still the custom property.
+    for (p, v) in [("width", "var(--a)"), ("width", "var(--a )"),
+        ("aspect-ratio", "var(--x)"), ("overflow", "var(--x)"),
+        ("width", "var(--\\31 a)"), ("width", "var(--a) var(--b)"),
+        ("width", "var(--a, 1px)"), ("width", "var(--a, var(--b, 2px))"),
+        ("font-family", "var(--a, \"x,y\")"), ("background-image", "var(--a), url(x.png)"),
+        ("margin", "var(--a) auto var(--b)")]:
       accepts(p, v)
-      check written(p, v) == t
-    # A value the token parser would write as a token form naming no custom
-    # property is judged by the property's grammar, as before: it is never
-    # written changed.
+      check written(p, v) == v
+    check parseCssPropertyValue("width", "var(--a)").tokenName == "a"
+    check parseCssPropertyValue("width", "var(--a)").kind == cvkTokenReference
+    # Valid at parse time (CSS Variables 1 §3.1) and written as typed, so
+    # accepted on every property, whatever its own grammar.
     for (p, v) in [("filter", "var(--x), var(--y)"), ("overflow", "var(--x), var(--y)"),
-        ("aspect-ratio", "var(--x), var(--y)")]:
+        ("aspect-ratio", "var(--x), var(--y)"), ("filter", "var(--x, blur(2px))"),
+        ("overflow", "var(--x, hidden)"), ("aspect-ratio", "var(--x, 16 / 9)"),
+        ("aspect-ratio", "var(--x) / var(--y)")]:
+      accepts(p, v)
+      check written(p, v) == v
+    # The design-schema spellings keep the `token(key)` form their token
+    # workflows read; one holding a var() would be written changed, so it is
+    # judged by the property's grammar as before.
+    check written("width", "token(a)") == "token(a)"
+    check written("width", "$a") == "token(a)"
+    for (p, v) in [("overflow", "token(a) var(--b)"), ("aspect-ratio", "token(a, var(--b))")]:
       refuses(p, v)
+    # `$key` is one key (as `tokenReferenceIn` reads it): `$a var(--b)` is
+    # not a token reference, holds a var(), and is written as typed rather
+    # than as `token(a var(--b))`.
+    for p in ["width", "filter"]:
+      accepts(p, "$a var(--b)")
+      check written(p, "$a var(--b)") == "$a var(--b)"
+    # Nor is `$` with whitespace of any kind in it: no longer written as
+    # `token(a)` / `token(a b)`, it is judged by the property's grammar.
+    for v in ["$ a", "$a b", "$a\tb"]:
+      refuses("width", v)
+      refuses("color", v)
+    # A custom property is never refused for its name, `missing` included.
+    for v in ["var(--missing)", "var(--missing, 1px)"]:
+      accepts("width", v)
+      check written("width", v) == v
+    # The token identity of a var() is the custom property's name alone; its
+    # fallback stays in the written text.
+    for (v, name) in [("var(--wl-space-card, 4px)", "wl-space-card"),
+        ("var(--a,1px)", "a"), ("var(--a , var(--b, 2px))", "a"),
+        ("var(--a)", "a"), ("var(--a )", "a"), ("var(--\\31 a)", "\\31 a"),
+        ("var(--a) var(--b)", "a")]:
+      checkpoint v
+      check parseCssPropertyValue("padding", v).tokenName == name
+      check written("padding", v) == v
     # Malformed references and near-misses stay refused.
     for v in ["var(-a)", "var(--)", "var(--a b)", "var(--a;)", "vars(--a)", "var(a)",
         "var()", "var( )", "var(--a 1px)", "var(--a/**/b)", "VAR(-a)", "VAR(--)",

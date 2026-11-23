@@ -28,7 +28,7 @@
 ## real write bridge by metacraft-web-editor's
 ## `metacraft_long_tail_properties_validate_real_components`.
 
-import std/[options, strutils, tables, unittest]
+import std/[options, sequtils, strutils, tables, unittest]
 
 import isonim/core/[computation, owner, signals]
 import isonim/testing/mock_dom
@@ -44,7 +44,9 @@ const LongTailRule = ".long-tail-card { letter-spacing: 0px; text-transform: non
   "transition-duration: 0s; flex-wrap: nowrap; overflow: visible; " &
   "aspect-ratio: auto; }\n"
 
-proc demoVm(foundation: ref string; writable = true): EditorVM =
+proc demoVm(foundation: ref string; writable = true;
+    tokens = demoFoundationTokens();
+    schema = demoDesignSystemSchema()): EditorVM =
   let vector = new(string)
   vector[] = "<svg/>"
   result = createEditorVM(newEditorWorkspace(
@@ -54,8 +56,8 @@ proc demoVm(foundation: ref string; writable = true): EditorVM =
         group: "DestinationCard")])],
     initialStory = some(StoryRef(group: "DestinationCard", name: "Default",
       kind: skComponent, index: 0)),
-    foundationTokens = demoFoundationTokens(),
-    designSystemSchema = demoDesignSystemSchema(),
+    foundationTokens = tokens,
+    designSystemSchema = schema,
     permissions = EditorWorkspacePermissions(readSource: true,
       writeSource: writable),
     editAdapter = demoVectorEditAdapter(vector, foundation)))
@@ -563,7 +565,7 @@ suite "var() references written as typed":
         " transition-duration: 0s;", " transition-duration: var( --d);")
       dispose()
 
-  test "var(--name) keeps the token form it was written in":
+  test "var(--name) is written as typed, not in a token form":
     for property in ["letter-spacing", "filter"]:
       createRoot proc(dispose: proc()) =
         let foundation = new(string)
@@ -573,8 +575,186 @@ suite "var() references written as typed":
         check vm.commitInspectorValue(property, "var(--a)", sskSharedClass).ok
         vm.write()
         check foundation[] == DemoFoundationInitialSource.replace(before,
-          " " & property & ": token(a);")
+          " " & property & ": var(--a);")
         dispose()
+
+  test "a var() with a fallback is a use of the custom property, not of its fallback":
+    # Written as typed, and the token identity is the custom property's name
+    # alone, so the use counts towards that token (editor spec: the editor
+    # shows the token identity and its known direct usage).
+    createRoot proc(dispose: proc()) =
+      let foundation = new(string)
+      foundation[] = DemoFoundationInitialSource
+      let vm = demoVm(foundation)
+      let before = " letter-spacing: " & vm.value("letter-spacing") & ";"
+      check vm.commitInspectorValue("letter-spacing", "var(--wl-space-card, 4px)",
+        sskSharedClass).ok
+      vm.write()
+      check foundation[] == DemoFoundationInitialSource.replace(before,
+        " letter-spacing: var(--wl-space-card, 4px);")
+      check vm.value("letter-spacing") == "var(--wl-space-card, 4px)"
+      var tokenName = ""
+      for prop in vm.inspector.selectedElement.val.properties:
+        if prop.name == "letter-spacing": tokenName = prop.tokenName
+      check tokenName == "wl-space-card"
+      check vm.tokenChain(vm.value("letter-spacing")) == @["wl-space-card"]
+      var used: seq[string]
+      for prop in vm.foundationImpact("wl-space-card").affectedProperties:
+        used.add prop.name
+      check "letter-spacing" in used
+      check vm.foundationImpact("wl-space-card, 4px").affectedProperties.len == 0
+      dispose()
+
+  test "a custom property is never refused for its name; a design token must be defined":
+    # isonim-pm issue 2026-11-23-var-missing-is-refused-as-an-unknown-design-
+    # token: `var(--missing)` is valid CSS whatever the name (CSS Variables 1
+    # §3). A design-schema spelling names a token the project defines.
+    for value in ["var(--missing)", "var(--missing, 1px)"]:
+      createRoot proc(dispose: proc()) =
+        let foundation = new(string)
+        foundation[] = DemoFoundationInitialSource
+        let vm = demoVm(foundation)
+        let before = " letter-spacing: " & vm.value("letter-spacing") & ";"
+        check vm.commitInspectorValue("letter-spacing", value, sskSharedClass).ok
+        vm.write()
+        check foundation[] == DemoFoundationInitialSource.replace(before,
+          " letter-spacing: " & value & ";")
+        dispose()
+    for value in ["token(no.such.token)", "$no.such.token"]:
+      createRoot proc(dispose: proc()) =
+        let foundation = new(string)
+        foundation[] = DemoFoundationInitialSource
+        let vm = demoVm(foundation)
+        let outcome = vm.commitInspectorValue("letter-spacing", value, sskSharedClass)
+        check not outcome.ok
+        check outcome.message == "Unknown design token 'no.such.token'."
+        vm.write()
+        check foundation[] == DemoFoundationInitialSource
+        dispose()
+    # A token the example defines (its foundations) is accepted.
+    createRoot proc(dispose: proc()) =
+      let foundation = new(string)
+      foundation[] = DemoFoundationInitialSource
+      let vm = demoVm(foundation)
+      check vm.commitInspectorValue("letter-spacing", "token(space.card)",
+        sskSharedClass).ok
+      dispose()
+
+  test "a design-schema token key is defined without any foundation token":
+    # The example's schema defines `wanderlust.foundation.space.card`; with
+    # no foundation tokens that key alone is accepted, and a key neither
+    # defines is refused (review R3).
+    createRoot proc(dispose: proc()) =
+      let foundation = new(string)
+      foundation[] = DemoFoundationInitialSource
+      let vm = demoVm(foundation, tokens = @[])
+      let before = " letter-spacing: " & vm.value("letter-spacing") & ";"
+      let refused = vm.commitInspectorValue("letter-spacing", "token(no.such)",
+        sskSharedClass)
+      check not refused.ok
+      check refused.message == "Unknown design token 'no.such'."
+      check vm.commitInspectorValue("letter-spacing",
+        "token(wanderlust.foundation.space.card)", sskSharedClass).ok
+      vm.write()
+      check foundation[] == DemoFoundationInitialSource.replace(before,
+        " letter-spacing: token(wanderlust.foundation.space.card);")
+      dispose()
+
+  test "a project that defines no tokens refuses no design-token key":
+    # Nothing says which keys exist, so none is refused for its name.
+    var bare = demoDesignSystemSchema()
+    var kept: seq[DesignSchemaNode]
+    for node in bare.nodes:
+      if node.kind notin {dsnFoundation, dsnSemanticToken, dsnComponentToken}:
+        kept.add node
+    bare.nodes = kept
+    for value in ["token(no.such)", "$no.such"]:
+      createRoot proc(dispose: proc()) =
+        let foundation = new(string)
+        foundation[] = DemoFoundationInitialSource
+        let vm = demoVm(foundation, tokens = @[], schema = bare)
+        let before = " letter-spacing: " & vm.value("letter-spacing") & ";"
+        check vm.commitInspectorValue("letter-spacing", value, sskSharedClass).ok
+        vm.write()
+        check foundation[] == DemoFoundationInitialSource.replace(before,
+          " letter-spacing: token(no.such);")
+        dispose()
+
+  test "a Foundations alias names a defined design token":
+    # An alias to a key the project does not define would be written and
+    # break the token and every use of it: refused at the edit with the
+    # same reason a use site gets, and nothing is written.
+    for (value, reason) in [("token(nope)", "Unknown design token 'nope'."),
+        ("$nope", "Unknown design token 'nope'."),
+        ("token()", "Token references must name a token."),
+        ("$a b", "Token references must name a token.")]:
+      createRoot proc(dispose: proc()) =
+        let foundation = new(string)
+        foundation[] = DemoFoundationInitialSource
+        let vm = demoVm(foundation)
+        checkpoint value
+        let edit = vm.editFoundationToken("semantic.action.primary", value)
+        check edit.status == pesRejected
+        check edit.diagnostics.anyIt(it.message == reason)
+        discard vm.applyWorkspaceFileEdits()
+        check foundation[] == DemoFoundationInitialSource
+        dispose()
+    # A design-schema token key is a defined alias target too, with no
+    # foundation token of that name.
+    createRoot proc(dispose: proc()) =
+      let foundation = new(string)
+      foundation[] = DemoFoundationInitialSource
+      let vm = demoVm(foundation)
+      check vm.editFoundationToken("semantic.action.primary",
+        "token(wanderlust.foundation.radius.card)").status == pesAccepted
+      vm.write()
+      check "--wl-action-primary: token(wanderlust.foundation.radius.card);" in
+        foundation[]
+      dispose()
+    # An alias that closes a cycle is refused whatever the edited token's
+    # kind: `semantic.action.primary` already aliases `color.blue.600`, a
+    # palette colour.
+    createRoot proc(dispose: proc()) =
+      let foundation = new(string)
+      foundation[] = DemoFoundationInitialSource
+      let vm = demoVm(foundation)
+      let edit = vm.editFoundationToken("color.blue.600",
+        "token(semantic.action.primary)")
+      check edit.status == pesRejected
+      check edit.diagnostics.anyIt(it.kind == fedAliasCycle and
+        it.message == "Token aliases cannot form a cycle.")
+      discard vm.applyWorkspaceFileEdits()
+      check foundation[] == DemoFoundationInitialSource
+      dispose()
+    # A longer cycle is seen through the whole chain, not only one hop:
+    # space.card -> radius.card -> shadow.card, then shadow.card -> space.card.
+    createRoot proc(dispose: proc()) =
+      let foundation = new(string)
+      foundation[] = DemoFoundationInitialSource
+      let vm = demoVm(foundation)
+      check vm.editFoundationToken("space.card", "token(radius.card)").status ==
+        pesAccepted
+      check vm.editFoundationToken("radius.card", "token(shadow.card)").status ==
+        pesAccepted
+      let closing = vm.editFoundationToken("shadow.card", "token(space.card)")
+      check closing.status == pesRejected
+      check closing.diagnostics.anyIt(it.kind == fedAliasCycle and
+        it.message == "Token aliases cannot form a cycle.")
+      var shadow = ""
+      for token in vm.foundations.tokens.val:
+        if token.key == "shadow.card": shadow = token.value
+      check shadow == "0 12px 28px #0F172A"
+      dispose()
+    # An alias to a defined token is accepted and written.
+    createRoot proc(dispose: proc()) =
+      let foundation = new(string)
+      foundation[] = DemoFoundationInitialSource
+      let vm = demoVm(foundation)
+      check vm.editFoundationToken("semantic.action.primary",
+        "token(type.body.size)").status == pesAccepted
+      vm.write()
+      check "--wl-action-primary: token(type.body.size);" in foundation[]
+      dispose()
 
   test "a malformed reference is refused and nothing is written":
     for value in ["var(-a)", "var(--)", "var(--a b)", "VAR(--a;)", "vars(--a)"]:
