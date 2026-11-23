@@ -2048,3 +2048,86 @@ suite "a typed value is checked against its property's CSS grammar":
       check seen == @["150px"]
       check committed("width", seen[^1]) == "150px"
       dispose()
+
+  test "typed arithmetic gives the numeric row's result on the text path":
+    # isonim-pm issues 2026-11-24 "the text path's arithmetic evaluator
+    # differs from the numeric field's" and "a signed number typed without
+    # arithmetic is rewritten on commit". Editor spec "Numeric Inputs" (the
+    # arithmetic precision rules; "A number typed without arithmetic is kept
+    # exactly as authored") and "Planned interaction parity" ("Typed
+    # arithmetic, units and arrow adjustments obey the same property
+    # constraints"): one evaluator, whichever path commits the text.
+    let units = @[pxUnit, PropertyUnitOption(label: "rem", code: "rem"),
+      PropertyUnitOption(label: "turn", code: "turn")]
+    proc rowCommit(typed: string): string =
+      ## What a mounted numeric row commits for ``typed`` ("" when nothing).
+      var got = ""
+      createRoot proc(dispose: proc()) =
+        let value = createSignal(10.0)
+        let unit = createSignal(pxUnit)
+        var seen: seq[string]
+        var cfg = propertyRowNumeric(name = "Width", value = value,
+          unit = unit, units = units)
+        cfg.onCommitValue = proc(v: string) = seen.add v
+        let (r, root) = mkRoot()
+        discard r.mountPropertyRow(root, cfg)
+        let input = findByAttr(root, "data-property-row-input", "true")
+        r.setInputValue(input, typed)
+        fireEvent(input, "change")
+        if seen.len > 0: got = seen[^1]
+        dispose()
+      got
+    # Every typed example of the spec, through both paths. The row adds its
+    # active unit (px) to a unitless expression; the text path keeps the
+    # text unitless, for the property's validation.
+    for (typed, expected) in [("100+50", "150"), ("200/2", "100"),
+        ("50*3", "150"), ("0.1+0.2px", "0.3px"), ("2.5-0.7", "1.8"),
+        ("1.1*3", "3.3"), ("120+1/8", "120.125"),
+        ("1/1024turn", "0.0009765625turn"), ("10/3", "3.3333"),
+        ("(1/3)*3", "1"), ("1/3+1/3+1/3", "1"), ("100/3*2", "66.6667"),
+        ("1/30000", "0.00003333"), ("-(2+3)", "-5"), ("-2^2", "-4"),
+        ("2^-(1)", "0.5"), ("10/3rem", "3.3333rem"),
+        ("1.23456+1px", "2.23456px"), ("1/30000px", "0.00003333px"),
+        ("2^2", "4"), ("1e2+5", "105"), ("-(-(1/3))*3px", "1px"),
+        # Parentheses alone are arithmetic: the group is evaluated.
+        ("(2)px", "2px"), ("((2))", "2")]:
+      checkpoint typed
+      check normalizePrimitiveInputValue("width", typed) == expected
+      let row = rowCommit(typed)
+      if expected[^1].isDigit: check row == expected & "px"
+      else: check row == expected
+    # A number typed without arithmetic, sign and spelling included, is
+    # written exactly as typed; an invalid one is then refused, not reduced.
+    for (p, v) in [("width", "+2"), ("width", "+2px"), ("width", "-0px"),
+        ("width", "+0"), ("margin", "-.5px"), ("margin", "+1.5px"),
+        ("z-index", "+2"), ("z-index", "-0"), ("order", "+3"),
+        ("opacity", "+.5"), ("line-height", "+1.5"), ("width", "1e2px"),
+        ("width", "1e-2px"), ("width", "+1e2px"), ("width", "1E2px"),
+        ("width", "+1.px"), ("width", "1.23456px"), ("flex-grow", "-0"),
+        ("transition-duration", "+0.3s")]:
+      checkpoint p & ": " & v
+      check normalizePrimitiveInputValue(p, v) == v
+    for (p, v) in [("width", "+2px"), ("width", "-0px"), ("margin", "-.5px"),
+        ("z-index", "+2"), ("opacity", "+.5"), ("line-height", "+1.5")]:
+      checkpoint p & ": " & v
+      check validateCssPropertyValue(PropertyInfo(name: p, directStyleAllowed: true),
+        PropertyEditRequest(property: p, newValue: v, kind: pekCss),
+        parseCssPropertyValue(p, v)).len == 0
+    # A sign standing apart from its number, or before a group, is arithmetic.
+    for (p, v, w) in [("margin", "- 5px", "-5px"), ("z-index", "+(2)", "2"),
+        ("margin", "5 - -3px", "8px"), ("letter-spacing", "(-2)^2px", "4px"),
+        ("width", "0*-1px", "0px")]:
+      checkpoint p & ": " & v
+      check normalizePrimitiveInputValue(p, v) == w
+    # Not a single expression of one unit: written as typed, for the
+    # property's validation (which refuses each of these for width).
+    for v in ["10px+5em", "10px+5px", "1rem+1px", "10px*2", "100/0",
+        "1/0px", "0/0px", "1**2px", "--5px", "-+5px", "(1+2", "1+2)", "()px",
+        "2(3)px", "(0-8)^0.5px", "1e400px", "1e308*10px"]:
+      checkpoint "width: " & v
+      check normalizePrimitiveInputValue("width", v) == v
+      check rowCommit(v) == ""
+      check validateCssPropertyValue(PropertyInfo(name: "width",
+        directStyleAllowed: true),
+        PropertyEditRequest(property: "width", newValue: v, kind: pekCss),
+        parseCssPropertyValue("width", v)).len > 0

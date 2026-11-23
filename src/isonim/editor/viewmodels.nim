@@ -16,6 +16,7 @@ import isonim/editor/html_classes
 import isonim/editor/css_patch
 import isonim/editor/css_color_literal
 import isonim/editor/css_value_grammar
+import isonim/editor/numeric_expression
 import isonim/editor/numeric_precision
 import isonim/editor/design_review/context_policy
 import isonim/editor/element_semantics
@@ -2335,83 +2336,9 @@ func primitiveUnitFromText(raw: string): string =
   else:
     ""
 
-proc evalNumericExpression(raw: string; value: var float): bool =
-  let text = raw.strip()
-  if text.len == 0:
-    return false
-  var i = 0
-
-  proc skipSpaces() =
-    while i < text.len and text[i].isSpaceAscii:
-      inc i
-
-  proc parseFactor(v: var float): bool =
-    skipSpaces()
-    if i >= text.len:
-      return false
-    var sign = 1.0
-    if text[i] == '+':
-      inc i
-    elif text[i] == '-':
-      sign = -1.0
-      inc i
-    skipSpaces()
-    let start = i
-    var sawDigit = false
-    while i < text.len and (text[i].isDigit or text[i] == '.'):
-      if text[i].isDigit:
-        sawDigit = true
-      inc i
-    if not sawDigit:
-      return false
-    try:
-      v = sign * text[start ..< i].parseFloat()
-      true
-    except ValueError:
-      false
-
-  proc parseTerm(v: var float): bool =
-    if not parseFactor(v):
-      return false
-    while true:
-      skipSpaces()
-      if i >= text.len or text[i] notin {'*', '/'}:
-        return true
-      let op = text[i]
-      inc i
-      var rhs = 0.0
-      if not parseFactor(rhs):
-        return false
-      if op == '*':
-        v *= rhs
-      else:
-        if abs(rhs) < 0.000001:
-          return false
-        v /= rhs
-
-  proc parseExpr(v: var float): bool =
-    if not parseTerm(v):
-      return false
-    while true:
-      skipSpaces()
-      if i >= text.len or text[i] notin {'+', '-'}:
-        return true
-      let op = text[i]
-      inc i
-      var rhs = 0.0
-      if not parseTerm(rhs):
-        return false
-      if op == '+':
-        v += rhs
-      else:
-        v -= rhs
-
-  if not parseExpr(value):
-    return false
-  skipSpaces()
-  i == text.len
-
 func renderPrimitiveNumber(value: float): string =
+  ## A unit-cycled number (``cyclePrimitiveUnit``). Typed arithmetic is
+  ## written with ``arithmeticResultText``, not this.
   if abs(value - round(value)) < 0.000001:
     $int(round(value))
   else:
@@ -2421,6 +2348,12 @@ func renderPrimitiveNumber(value: float): string =
     if rendered.endsWith("."):
       rendered = rendered[0 ..< rendered.len - 1]
     rendered
+
+func arithmeticResultText(value: float): string =
+  ## The text of a typed expression's result, spelled as the numeric row
+  ## spells its committed value (``formatExactNumber``, CSS number token
+  ## text), so either path writes the same digits; never `-0`.
+  numberTokenText(if value == 0.0: 0.0 else: value)
 
 const slashSeparatedProperties = ["aspect-ratio", "border-radius",
   "border-image", "font", "grid", "grid-area", "grid-column", "grid-row",
@@ -2457,7 +2390,10 @@ proc normalizePrimitiveInputValue*(property, raw: string): string =
   ##
   ## Typed arithmetic applies to a single numeric value (editor spec
   ## "Numeric Inputs"; "Planned interaction parity": a value is written or
-  ## refused, never changed). A value of several components (`flex: 1 -1`,
+  ## refused, never changed) and is evaluated by the numeric field's own
+  ## evaluator (``numeric_expression``), so an expression gives the same
+  ## result whichever path commits it. A number typed without arithmetic,
+  ## sign included, is returned as typed. A value of several components (`flex: 1 -1`,
   ## `margin: 0 -16px`) or one whose `/` is a separator
   ## (`grid-row: 1 / -1`) is returned as typed, for the property's own
   ## validation to admit or refuse.
@@ -2480,11 +2416,13 @@ proc normalizePrimitiveInputValue*(property, raw: string): string =
   let expr =
     if unit.len > 0: text[0 ..< text.len - unit.len].strip()
     else: text
-  if not expr.anyIt(it in {'+', '-', '*', '/'}):
+  # A number typed without arithmetic, sign included (`+2`, `-0px`, `1e-2`),
+  # is written exactly as typed ("Numeric Inputs").
+  if not expr.hasArithmetic():
     return text
-  var computed = 0.0
-  if evalNumericExpression(expr, computed):
-    return renderPrimitiveNumber(computed) & unit
+  let computed = evaluateNumericExpression(expr)
+  if computed.isSome:
+    return arithmeticResultText(computed.get) & unit
   text
 
 proc arithmeticReading(property, raw: string): tuple[count: int, value: string] =
@@ -2501,10 +2439,10 @@ proc arithmeticReading(property, raw: string): tuple[count: int, value: string] 
     return
   let unit = primitiveUnitFromText(text)
   let expr = text[0 ..< text.len - unit.len].strip()
-  var computed = 0.0
-  if expr.anyIt(it in {'+', '-', '*', '/'}) and
-      evalNumericExpression(expr, computed):
-    result = (count, renderPrimitiveNumber(computed) & unit)
+  if expr.hasArithmetic():
+    let computed = evaluateNumericExpression(expr)
+    if computed.isSome:
+      result = (count, arithmeticResultText(computed.get) & unit)
 
 proc cyclePrimitiveUnit*(property, raw: string): string =
   let text = normalizePrimitiveInputValue(property, raw)

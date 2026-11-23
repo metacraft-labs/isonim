@@ -1001,3 +1001,52 @@ suite "quoted family names and multi-part values are written as typed":
       vm.write()
       check foundation[] == source.replace(" width: 0px;", " width: 50px;")
       dispose()
+
+  test "typed arithmetic is the numeric row's, and a signed number is written as typed":
+    # isonim-pm issues 2026-11-24 "the text path's arithmetic evaluator
+    # differs from the numeric field's" and "a signed number typed without
+    # arithmetic is rewritten on commit". Editor spec "Numeric Inputs": the
+    # arithmetic precision rules, and "A number typed without arithmetic is
+    # kept exactly as authored".
+    for (property, value, written) in [
+        ("width", "1/30000px", "0.00003333px"), ("width", "1.23456+1px", "2.23456px"),
+        ("width", "1/1024px", "0.0009765625px"), ("width", "10/3rem", "3.3333rem"),
+        ("width", "100/3*2px", "66.6667px"), ("width", "(1/3)*3px", "1px"),
+        ("margin", "-(2+3)px", "-5px"), ("margin", "-2^2px", "-4px"),
+        ("width", "2^-(1)px", "0.5px"), ("width", "2^2px", "4px"),
+        ("width", "1e2+5px", "105px"), ("z-index", "-(2+3)", "-5"),
+        ("width", "+2px", "+2px"), ("width", "-0px", "-0px"),
+        ("margin", "-.5px", "-.5px"), ("margin", "+1.5px", "+1.5px"),
+        ("z-index", "+2", "+2"), ("width", "1e2px", "1e2px"),
+        # Parentheses alone are arithmetic: the group is evaluated.
+        ("width", "(2)px", "2px"), ("z-index", "((2))", "2")]:
+      checkpoint property & ": " & value
+      createRoot proc(dispose: proc()) =
+        let source = extendedSource()
+        let foundation = new(string)
+        foundation[] = source
+        let vm = extendedVm(foundation)
+        let before = " " & property & ": " & vm.value(property) & ";"
+        check before in source
+        let committed = vm.commit(property, value)
+        check committed.ok
+        vm.write()
+        check foundation[] == source.replace(before, " " & property & ": " & written & ";")
+        check vm.runEditorCommand(eckUndo).status == ecsSucceeded
+        vm.write()
+        check foundation[] == source
+        dispose()
+    # Invalid as typed: refused, never reduced to a valid value.
+    for (property, value) in [("width", "+1.px"), ("width", "10px+5em"),
+        ("width", "1/0px"), ("width", "1/30000")]:
+      checkpoint property & ": " & value
+      createRoot proc(dispose: proc()) =
+        let source = extendedSource()
+        let foundation = new(string)
+        foundation[] = source
+        let vm = extendedVm(foundation)
+        let committed = vm.commit(property, value)
+        check not committed.ok
+        check committed.message.len > 0
+        check foundation[] == source
+        dispose()
