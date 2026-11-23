@@ -1678,6 +1678,34 @@ func tokenNameFromRaw(raw: string): string =
   ## (`var(--name[, fallback])` names the custom property only).
   tokenReferenceIn(raw)
 
+func familyListParts(text: string): seq[string] =
+  ## ``text`` cut at the commas that separate its families. A comma inside a
+  ## quoted name, after a backslash or inside a comment belongs to that name
+  ## or comment (CSS Fonts 4 §2.1: a quoted family name is a string, and its
+  ## contents are the name; CSS Syntax 3 §4.3.7 escapes, §4.3.2 comments).
+  var start = 0
+  var i = 0
+  var quote = '\0'
+  while i < text.len:
+    let c = text[i]
+    if c == '\\':
+      i += 2
+      continue
+    if quote != '\0':
+      if c == quote: quote = '\0'
+    elif c in {'"', '\''}:
+      quote = c
+    elif c == '/' and i + 1 < text.len and text[i + 1] == '*':
+      let close = text.find("*/", i + 2)
+      if close < 0: break
+      i = close + 2
+      continue
+    elif c == ',':
+      result.add text[start ..< i]
+      start = i + 1
+    inc i
+  result.add text[start ..< text.len]
+
 func holdsVarReference(text: string): bool =
   ## Whether ``text`` holds a real `var()` reference: one outside a string
   ## and outside a comment (CSS Syntax 3 §4.3.2: a comment is not part of
@@ -1722,8 +1750,11 @@ proc parseCssPropertyValue*(property, raw: string;
     # `var()` spelled otherwise (`VAR(--f),serif`) is accepted only as valid
     # at parse time and is written exactly as typed (editor spec "Planned
     # interaction parity": a value is written as it is or refused).
+    # Only the separating commas are spaced; a quoted name, an escaped
+    # comma and a comment are written as typed (spec "Planned interaction
+    # parity": a value is written or refused, never changed).
     if not holdsVarReference(text) or "var(" in text:
-      result.canonical = text.split(',').mapIt(it.strip()).join(", ")
+      result.canonical = familyListParts(text).mapIt(it.strip()).join(", ")
     return
   if prop == "z-index":
     result.kind = cvkZIndex
@@ -2071,10 +2102,28 @@ func designTokenSpelling(raw: string): bool =
 proc validateCssValue(prop: PropertyInfo; request: PropertyEditRequest;
     normalized: CSSPropertyValue; varRelaxed: bool): seq[PropertyEditDiagnostic]
 
+proc arithmeticReading(property, raw: string): tuple[count: int, value: string]
+
 proc validateCssPropertyValue*(prop: PropertyInfo; request: PropertyEditRequest;
     normalized: CSSPropertyValue): seq[PropertyEditDiagnostic] =
-  validateCssValue(prop, request, normalized,
+  result = validateCssValue(prop, request, normalized,
     not designTokenSpelling(normalized.raw))
+  # Text typed as arithmetic that CSS reads as several values (`100 -50px`),
+  # refused although its arithmetic result would be accepted, is refused
+  # with that reading named, not only the property's grammar.
+  if result.len > 0:
+    let reading = arithmeticReading(prop.name, normalized.raw)
+    if reading.value.len > 0:
+      var evaluated = request
+      evaluated.newValue = reading.value
+      if validateCssValue(prop, evaluated,
+          parseCssPropertyValue(prop.name, reading.value, normalized.variant),
+          true).len == 0:
+        result[0].message = "`" & normalized.raw.strip() & "` was read as " &
+          $reading.count & " values, not as one expression: a sign " &
+          "attached to a number after a space starts a new value. For " &
+          "arithmetic, put spaces on both sides of the operator " &
+          "(`100 - 50px`). " & result[0].message
 
 proc validateCssValue(prop: PropertyInfo; request: PropertyEditRequest;
     normalized: CSSPropertyValue; varRelaxed: bool): seq[PropertyEditDiagnostic] =
@@ -2373,12 +2422,56 @@ func renderPrimitiveNumber(value: float): string =
       rendered = rendered[0 ..< rendered.len - 1]
     rendered
 
+const slashSeparatedProperties = ["aspect-ratio", "border-radius",
+  "border-image", "font", "grid", "grid-area", "grid-column", "grid-row",
+  "grid-template", "background", "mask", "mask-border"]
+  ## Properties whose grammar uses `/` between components (CSS Sizing 4
+  ## §5.1, Backgrounds 3 §4.4 and §5.1, Fonts 4 §2.8, Grid 2 §7.4, §8.4,
+  ## Masking 1 §7.6 and §8.7, Backgrounds 3 §3.10): there a `/` is a
+  ## separator, never a division (`grid-row: 1 / -1`).
+
+func componentCount(text: string): int =
+  ## How many whitespace-separated values ``text`` reads as. A new value
+  ## starts where an operand follows another operand with no operator
+  ## between them (`1 -1`, `+1 +1 +1px`, `0 -16px`). A sign attached to a
+  ## number starts a new component (CSS Syntax 3 §4.3.12), so `100 -50px` is
+  ## two values, while `100 - 50px`, `100-50px` and `100 /4px` are one
+  ## expression: an operator standing alone, or ending a word, or a word
+  ## starting with `*` or `/`, continues it.
+  var previousIsOperand = false
+  var previousEndsInOperator = false
+  for word in text.splitWhitespace():
+    let operatorOnly = word.allIt(it in {'+', '-', '*', '/'})
+    let continues = word[0] in {'*', '/'}
+    if result == 0 or (not operatorOnly and not continues and
+        previousIsOperand and not previousEndsInOperator):
+      inc result
+    previousIsOperand = not operatorOnly
+    previousEndsInOperator = word[^1] in {'+', '-', '*', '/'}
+
+func severalComponents(text: string): bool =
+  componentCount(text) > 1
+
 proc normalizePrimitiveInputValue*(property, raw: string): string =
   ## Normalize direct primitive input before it becomes a source plan.
+  ##
+  ## Typed arithmetic applies to a single numeric value (editor spec
+  ## "Numeric Inputs"; "Planned interaction parity": a value is written or
+  ## refused, never changed). A value of several components (`flex: 1 -1`,
+  ## `margin: 0 -16px`) or one whose `/` is a separator
+  ## (`grid-row: 1 / -1`) is returned as typed, for the property's own
+  ## validation to admit or refuse.
   let text = raw.strip()
   if text.len == 0:
     return ""
-  if property.normalizedCssName() == "aspect-ratio" and text.contains("/"):
+  let prop = property.normalizedCssName()
+  # A custom property's value is arbitrary tokens (CSS Variables 1 §2): it is
+  # written as typed, whatever it holds.
+  if prop.startsWith("--"):
+    return text
+  if prop in slashSeparatedProperties and text.contains("/"):
+    return text
+  if severalComponents(text):
     return text
   if text.startsWith("token(") or text.startsWith("var(") or
       text.startsWith("rgb") or text.startsWith("hsl") or text.contains("gradient("):
@@ -2393,6 +2486,25 @@ proc normalizePrimitiveInputValue*(property, raw: string): string =
   if evalNumericExpression(expr, computed):
     return renderPrimitiveNumber(computed) & unit
   text
+
+proc arithmeticReading(property, raw: string): tuple[count: int, value: string] =
+  ## When ``raw`` is read as several values (`100 -50px`) but would be one
+  ## arithmetic expression if its spaces were ignored, how many values it
+  ## reads as and what the expression evaluates to; else (0, "").
+  let text = raw.strip()
+  let prop = property.normalizedCssName()
+  if prop.startsWith("--") or
+      (prop in slashSeparatedProperties and text.contains("/")):
+    return
+  let count = componentCount(text)
+  if count < 2:
+    return
+  let unit = primitiveUnitFromText(text)
+  let expr = text[0 ..< text.len - unit.len].strip()
+  var computed = 0.0
+  if expr.anyIt(it in {'+', '-', '*', '/'}) and
+      evalNumericExpression(expr, computed):
+    result = (count, renderPrimitiveNumber(computed) & unit)
 
 proc cyclePrimitiveUnit*(property, raw: string): string =
   let text = normalizePrimitiveInputValue(property, raw)

@@ -880,3 +880,124 @@ suite "colour and list values holding var() keep their case when written":
         vm.write()
         check foundation[] == source.replace(" color: black;", " color: " & written & ";")
         dispose()
+
+suite "quoted family names and multi-part values are written as typed":
+  ## isonim-pm issues 2026-11-22 "font-family write-back adds a space after
+  ## commas inside quoted names" and 2026-11-23 "a flex value is written as
+  ## the result of arithmetic on its parts". Editor spec "Planned
+  ## interaction parity": a value is written, or refused with a reason
+  ## without changing source; typed arithmetic applies to a single numeric
+  ## value. The example's `.long-tail-card` rule is given these declarations,
+  ## each mapped by a schema entry as the example maps its own, and the
+  ## example's production writer writes them.
+  const extra = [("font-family", "serif"), ("flex", "none"),
+    ("margin", "0px"), ("inset", "auto"), ("translate", "none"),
+    ("z-index", "0"), ("width", "0px"), ("grid-row", "auto")]
+  proc extendedSource(): string =
+    var add = ""
+    for (p, v) in extra: add.add " " & p & ": " & v & ";"
+    const marker = " background-repeat: repeat; }\n"
+    check marker in DemoFoundationInitialSource
+    DemoFoundationInitialSource.replace(marker,
+      " background-repeat: repeat;" & add & " }\n")
+  proc extendedVm(foundation: ref string): EditorVM =
+    let vector = new(string)
+    vector[] = "<svg/>"
+    var adapter = demoVectorEditAdapter(vector, foundation)
+    let story = StoryRef(group: "DestinationCard", name: "Default",
+      kind: skComponent, index: 0)
+    for (p, _) in extra:
+      adapter.schema.add WorkspaceEditableSchemaEntry(
+        key: "classes.destination-card." & p, kind: wskSourceMap,
+        file: DemoFoundationSource, path: "classes.long-tail-card." & p,
+        story: story, property: p, removable: true, breakpointOverrides: true)
+    result = createEditorVM(newEditorWorkspace(
+      title = "Wanderlust written-form fixture",
+      storyGroups = @[StoryGroup(name: "DestinationCard", kind: skComponent,
+        expanded: true, items: @[StoryItem(name: "Default", kind: skComponent,
+          group: "DestinationCard")])],
+      initialStory = some(story),
+      foundationTokens = demoFoundationTokens(),
+      designSystemSchema = demoDesignSystemSchema(),
+      permissions = EditorWorkspacePermissions(readSource: true, writeSource: true),
+      editAdapter = adapter))
+    var element = demoInspectorElement()
+    for (p, v) in extra:
+      element.properties.add PropertyInfo(name: p, value: v,
+        origin: poTailwindClass, originDetail: "class:long-tail-card",
+        sourceFile: DemoFoundationSource, sourceLine: 10,
+        schemaKey: "classes.destination-card." & p,
+        sharedCount: 4, directStyleAllowed: true)
+    check result.selectInspectorElement(element)
+  proc commit(vm: EditorVM; property, value: string): PropertyCommitOutcome =
+    # A family the shared class cannot write yet (flex, inset, translate,
+    # z-index, width) is committed at the local instance, which the same
+    # writer writes.
+    result = vm.commitInspectorValue(property, value, sskSharedClass)
+    if not result.ok and "read-only until source-write tests exist" in result.message:
+      result = vm.commitInspectorValue(property, value, sskLocalInstance)
+
+  test "each value is written exactly as typed, and undo restores the file":
+    for (property, value, written) in [
+        ("font-family", "\"A,B\" var(--a)", "\"A,B\" var(--a)"),
+        ("font-family", "'A,B',serif", "'A,B', serif"),
+        ("font-family", "\"Helvetica Neue,Bold\", Arial", "\"Helvetica Neue,Bold\", Arial"),
+        ("font-family", "A\\,B,serif", "A\\,B, serif"),
+        ("font-family", "Inter,serif", "Inter, serif"),
+        ("flex", "+1 +1 +1px", "+1 +1 +1px"), ("flex", "1 +1", "1 +1"),
+        ("margin", "0 -16px", "0 -16px"), ("inset", "0 -1px", "0 -1px"),
+        ("translate", "0 -5px", "0 -5px"),
+        # A `/` that separates grid lines is no division.
+        ("grid-row", "1 / -1", "1 / -1"), ("grid-row", "1/3", "1/3"),
+        # A single value's typed arithmetic is still evaluated.
+        ("width", "100+50px", "150px"), ("margin", "10+6px", "16px"),
+        ("z-index", "2*5", "10"), ("flex", "1+1", "2")]:
+      checkpoint property & ": " & value
+      createRoot proc(dispose: proc()) =
+        let source = extendedSource()
+        let foundation = new(string)
+        foundation[] = source
+        let vm = extendedVm(foundation)
+        let before = " " & property & ": " & vm.value(property) & ";"
+        check before in source
+        let committed = vm.commit(property, value)
+        check committed.ok
+        check committed.message == ""
+        vm.write()
+        check foundation[] == source.replace(before, " " & property & ": " & written & ";")
+        check vm.runEditorCommand(eckUndo).status == ecsSucceeded
+        vm.write()
+        check foundation[] == source
+        dispose()
+
+  test "an invalid multi-part value is refused and the file is unchanged":
+    for (property, value) in [("flex", "1 -1"), ("flex", "+.5 -.5"),
+        ("z-index", "1 -1"), ("width", "100 -50px")]:
+      checkpoint property & ": " & value
+      createRoot proc(dispose: proc()) =
+        let source = extendedSource()
+        let foundation = new(string)
+        foundation[] = source
+        let vm = extendedVm(foundation)
+        let committed = vm.commit(property, value)
+        check not committed.ok
+        check committed.message.len > 0
+        check vm.inspector.pendingSourceEdits.val.len == 0
+        check foundation[] == source
+        dispose()
+
+  test "typed arithmetic read as two values is refused with that reading named":
+    createRoot proc(dispose: proc()) =
+      let source = extendedSource()
+      let foundation = new(string)
+      foundation[] = source
+      let vm = extendedVm(foundation)
+      let committed = vm.commit("width", "100 -50px")
+      check not committed.ok
+      check committed.message.startsWith("`100 -50px` was read as 2 values")
+      check foundation[] == source
+      # Spaced on both sides it is one expression, and is evaluated.
+      check vm.commit("width", "100 - 50px").ok
+      vm.write()
+      check foundation[] == source.replace(" width: 0px;", " width: 50px;")
+      dispose()

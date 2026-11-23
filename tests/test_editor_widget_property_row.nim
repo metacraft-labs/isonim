@@ -1935,3 +1935,116 @@ suite "a typed value is checked against its property's CSS grammar":
         ("color", "var(--)"), ("font-family", "var(--a b), serif"),
         ("margin", "var(-a) 1px")]:
       refuses(p, v)
+
+  test "a quoted family name and a multi-part value are written as typed":
+    # isonim-pm issues 2026-11-22 "font-family write-back adds a space after
+    # commas inside quoted names" and 2026-11-23 "a flex value is written as
+    # the result of arithmetic on its parts". Editor spec "Planned
+    # interaction parity": a value is written, or refused with a reason; it
+    # is never changed. Typed arithmetic applies to a single numeric value.
+    proc reasons(property, value: string): seq[string] =
+      for d in validateCssPropertyValue(PropertyInfo(name: property,
+          directStyleAllowed: true),
+          PropertyEditRequest(property: property, newValue: value, kind: pekCss),
+          parseCssPropertyValue(property, value)):
+        result.add d.message
+    # What an inspector commit writes: the typed text normalised (typed
+    # arithmetic), then read as the property's value.
+    proc committed(property, value: string): string =
+      parseCssPropertyValue(property,
+        normalizePrimitiveInputValue(property, value)).canonical
+    proc refusedAtCommit(property, value: string): bool =
+      let text = normalizePrimitiveInputValue(property, value)
+      reasons(property, text).len > 0
+    # A quoted family name is a string (CSS Fonts 4 §2.1); its contents,
+    # commas and spaces included, are the name. An escaped comma belongs to
+    # the name too (CSS Syntax 3 §4.3.7), and a comment is no separator.
+    for (v, w) in [("\"A,B\" var(--a)", "\"A,B\" var(--a)"),
+        ("\"A,B\"", "\"A,B\""), ("'A,B',serif", "'A,B', serif"),
+        ("\"A ,B\" , serif", "\"A ,B\", serif"),
+        ("\"a\\\",b\", serif", "\"a\\\",b\", serif"),
+        ("'a\\'b,c', serif", "'a\\'b,c', serif"),
+        ("\"x,y,z\",Arial,sans-serif", "\"x,y,z\", Arial, sans-serif"),
+        ("serif,\"A,B\"", "serif, \"A,B\""), ("\"A,,B\"", "\"A,,B\""),
+        ("A\\,B,serif", "A\\,B, serif"), ("\"A;B,C\"", "\"A;B,C\""),
+        ("Inter,serif /* a,b */", "Inter, serif /* a,b */"),
+        ("var(--f,\"a,b\"), serif", "var(--f, \"a,b\"), serif"),
+        # The separating commas of an unquoted list keep their normalisation.
+        ("Inter,serif", "Inter, serif"), ("Inter ,  serif", "Inter, serif"),
+        ("a,b,c", "a, b, c")]:
+      checkpoint "font-family: " & v
+      check reasons("font-family", v).len == 0
+      check committed("font-family", v) == w
+    # A value of several components is never one arithmetic expression: a
+    # sign stuck to a number starts a component (CSS Syntax 3 §4.3.12).
+    for (p, v) in [("flex", "+1 +1 +1px"), ("flex", "1 +1"), ("flex", "+1 +1"),
+        ("flex", "+1 +1 +1PX"), ("margin", "0 -16px"), ("inset", "0 -1px"),
+        ("translate", "0 -5px"), ("background-position", "0 -10px"),
+        ("scale", "1 -1"), ("transform-origin", "0 -1px"), ("gap", "0 -0"),
+        ("box-shadow", "0 -1px"), ("text-shadow", "0 -1px"),
+        # A `/` that separates components is no division.
+        ("grid-row", "1 / -1"), ("grid-row", "1/3"), ("grid-column", "2/4"),
+        ("grid-area", "1 / 2 / 3 / 4"), ("border-radius", "0 / 5px"),
+        ("aspect-ratio", "16 / 9")]:
+      checkpoint p & ": " & v
+      check normalizePrimitiveInputValue(p, v) == v
+      check not refusedAtCommit(p, v)
+      check committed(p, v) == v
+    # Invalid multi-part values are refused, never reduced to a valid one.
+    for (p, v) in [("flex", "1 -1"), ("flex", "0 -1"), ("flex", "+.5 -.5"),
+        ("z-index", "1 -1"), ("opacity", "1 -1"), ("line-height", "1 +1"),
+        ("order", "1 -1"), ("width", "100 -50px"), ("width", "100 +50"),
+        ("border-radius", "1/1px")]:
+      checkpoint p & ": " & v
+      check normalizePrimitiveInputValue(p, v) == v
+      check refusedAtCommit(p, v)
+    # The text path names that reading when it refuses typed arithmetic
+    # that CSS reads as two values and whose result the property would take.
+    for (p, v) in [("width", "100 -50px"), ("z-index", "1 -1"), ("opacity", "1 -1")]:
+      checkpoint p & ": " & v
+      let why = reasons(p, normalizePrimitiveInputValue(p, v))
+      check why.len > 0
+      if why.len > 0:
+        check why[0].startsWith("`" & v & "` was read as 2 values")
+    # A refusal with no arithmetic reading keeps its own reason only.
+    for (p, v) in [("width", "100px 50px"), ("flex", "1 1 -1px"),
+        ("width", "100 +50"), ("accent-color", "0 -1px")]:
+      let why = reasons(p, v)
+      check why.len > 0
+      if why.len > 0:
+        check "was read as" notin why[0]
+    # A custom property's value is arbitrary tokens (CSS Variables 1 §2): it
+    # is never evaluated, whatever it holds.
+    for v in ["10/2", "2*3", "1+1", "100 - 50px", "-0px", "+2", "1 -1",
+        "+1 +1 +1px", "1 / -1", "6*4px"]:
+      for p in ["--x", "--space-card"]:
+        checkpoint p & ": " & v
+        check normalizePrimitiveInputValue(p, v) == v
+    # A single value's typed arithmetic still applies, spaced or not.
+    for (p, v, w) in [("width", "100+50px", "150px"), ("width", "100 + 50px", "150px"),
+        ("width", "100 - 50px", "50px"), ("width", "6*4px", "24px"),
+        ("width", "100/4px", "25px"), ("width", "100 /4px", "25px"),
+        ("height", "2.5-0.7px", "1.8px"), ("font-size", "6*4px", "24px"),
+        ("padding", "10+6px", "16px"), ("margin", "-2*4px", "-8px"),
+        ("line-height", "1+0.5", "1.5"), ("opacity", "1-0.25", "0.75"),
+        ("z-index", "2*5", "10"), ("flex", "1+1", "2"), ("gap", "4*2px", "8px"),
+        ("letter-spacing", "-1+0.5px", "-0.5px"), ("text-indent", "- 1em", "-1em")]:
+      checkpoint p & ": " & v
+      check not refusedAtCommit(p, v)
+      check committed(p, v) == w
+    # A numeric field evaluates what is typed into it and adds its unit.
+    createRoot proc(dispose: proc()) =
+      let value = createSignal(10.0)
+      let unit = createSignal(pxUnit)
+      var seen: seq[string]
+      var cfg = propertyRowNumeric(
+        name = "Width", value = value, unit = unit, units = @[pxUnit])
+      cfg.onCommitValue = proc(v: string) = seen.add v
+      let (r, root) = mkRoot()
+      discard r.mountPropertyRow(root, cfg)
+      let input = findByAttr(root, "data-property-row-input", "true")
+      r.setInputValue(input, "100+50")
+      fireEvent(input, "change")
+      check seen == @["150px"]
+      check committed("width", seen[^1]) == "150px"
+      dispose()
