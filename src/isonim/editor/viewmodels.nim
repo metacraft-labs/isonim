@@ -5687,17 +5687,53 @@ proc settleRuleSides(adapter: WorkspaceEditAdapter;
     schema: WorkspaceEditableSchemaEntry;
     transaction: var CSSPropertyEditTransaction): string
 
+func onDiskExpectation(pending: seq[SourceEditPlan];
+    plan: SourceEditPlan): SourceEditPlan =
+  ## ``plan`` expecting what the source holds before the pending edits of its
+  ## entry are written. Each pending plan of an entry is written in journal
+  ## order and expects the value the one before it writes; a new plan that
+  ## expects the last one's value therefore expects, of the source as it is
+  ## now, what the first one expects. Anything else is left as it is.
+  ##
+  ## A pending undo or redo of a written edit (`restoreWrite`) is part of the
+  ## chain: it puts back the value it restores (its ``newValue``) over the
+  ## value that write left, which is what the source holds now (its
+  ## ``oldValue``; it verifies its lines, not a value, so it expects none).
+  result = plan
+  if plan.expectedOldValue.len == 0 or plan.schemaKey.len == 0: return
+  var first = -1
+  var last = -1
+  for i, existing in pending:
+    if existing.schemaKey == plan.schemaKey and
+        existing.breakpointCondition == plan.breakpointCondition:
+      if first < 0: first = i
+      last = i
+  if last >= 0 and pending[last].newValue.strip() == plan.expectedOldValue.strip():
+    let head = pending[first]
+    result.expectedOldValue =
+      if head.restoreWrite.recorded and head.expectedOldValue.len == 0:
+        head.oldValue
+      else:
+        head.expectedOldValue
+
 proc writerEditRefusal(editor: EditorVM; plan: SourceEditPlan): string =
   ## The project writer's statement against changing ``plan``'s declaration
   ## for its entry alone (`WorkspaceEditAdapter.editRefusal`), or "". Part
   ## of the commit-time check only: callers that track signals use
   ## `sourcePlanAdmissionRefusal`.
+  ##
+  ## The writer answers from the source as it is now, so the plan it is asked
+  ## about expects what the source holds now (`onDiskExpectation`), not the
+  ## value an earlier, still unwritten edit of the same entry left in the
+  ## model.
   let adapter = editor.workspaceEditAdapter
   if adapter.isNil or adapter.editRefusal.isNil or editor.hasAsyncSourceProject:
     return
   let resolved = adapter.resolveWorkspaceSchema(plan)
   if not resolved.ok: return
-  adapter.editRefusal(plan, resolved.entry)
+  adapter.editRefusal(
+    editor.inspector.pendingSourceEdits.val.onDiskExpectation(plan),
+    resolved.entry)
 
 proc decidedElsewhereRefusal(editor: EditorVM; plan: SourceEditPlan): string =
   ## Why a value edit would change nothing the selected element renders, or
@@ -5738,17 +5774,33 @@ proc decidedElsewhereRefusal(editor: EditorVM; plan: SourceEditPlan): string =
   if rule.len == 0: return
   let element = editor.inspector.selectedElement.val
   if element.matchedRules.count(rule) != 1: return
+  # A token-scope edit of a row writes the token, not ``rule``: ``rule`` is
+  # the element's rule whose `var()` carries the token (`editRule`), and it
+  # keeps its declaration as it is. So it decides after the edit exactly
+  # when it decides now: there is no home to insert into, and a deciding
+  # rule under another condition decides at the preview's conditions, which
+  # is what the user sees the edit against.
+  let tokenScope = plan.sourceScope in {sskComponentToken, sskSemanticToken,
+    sskGlobalPrimitiveToken}
   for prop in element.properties:
     if prop.name != plan.property: continue
     let decider = prop.cascadeDecider
-    if decider.len == 0 or decider == rule or rule in prop.cascadeHomes:
+    if decider.len == 0 or decider == rule:
       return
-    if prop.cascadeConditions.len > 0 and
-        not rule.startsWith(prop.cascadeConditions & " "):
-      return
+    if not tokenScope:
+      if rule in prop.cascadeHomes:
+        return
+      if prop.cascadeConditions.len > 0 and
+          not rule.startsWith(prop.cascadeConditions & " "):
+        return
     let deciding =
       if decider == "style": "The element's inline style"
       else: "`" & decider & "`"
+    if tokenScope:
+      return deciding & " decides " & plan.property & " for this element " &
+        "ahead of `" & rule & "`, whose var() carries the token, so " &
+        "changing the token would not change what this element renders; " &
+        "it would change only the token's other uses."
     return deciding & " decides " & plan.property & " for this element " &
       "ahead of `" & rule & "`, so changing it in `" & rule & "` would not " &
       "change what this element renders; it would change only the other " &
@@ -8562,7 +8614,23 @@ proc propertyResetRefusal*(editor: EditorVM; property: string;
     return "No source edit adapter is ready to remove this declaration."
   let planned = editor.plannedInspectorCommit(property, "", scope,
     "This " & property & " declaration cannot be removed.")
-  if planned.refusal.len > 0: return planned.refusal
+  if planned.refusal.len > 0:
+    # A shared scope the writer refuses a value edit for is shown disabled
+    # with that reason (`sourceScopeChoices`). Reset is a removal, and a
+    # removal the scope's entry cannot make at all says so first: that is
+    # why Reset is refused, whatever a value edit there would meet.
+    if scope != sskLocalInstance:
+      let choices = editor.sourceScopeChoices(prop)
+      let choice = choices.firstChoiceOfKind(scope)
+      if choice.kind == scope and choice.schemaKey.len > 0:
+        let removal = prop.sharedScopePlan(PropertyEditRequest(
+          property: property, newValue: "", kind: pekCss, scope: pesShared,
+          origin: peoInspector), choices, choice)
+        if removal.planKind == cspPropertyRemoval:
+          let stated = editor.sourcePlanAdmissionRefusal(removal)
+          if stated.len > 0 and stated != UnrepresentableSourceEditMessage:
+            return stated
+    return planned.refusal
   let plan = planned.plan
   if checkWrite:
     return editor.sourcePlanCommitRefusal(plan)
@@ -8842,6 +8910,52 @@ proc commitResponsiveOverride*(editor: EditorVM; property, value,
     result.add record
   ResponsiveOverrideOutcome(ok: true, plan: plan)
 
+proc withTokenValueExpectation(editor: EditorVM;
+    plan: SourceEditPlan): SourceEditPlan =
+  ## ``plan`` expecting its token's value instead of a direct `var()`
+  ## reference to that token, for a token-scope plan of a row whose value is
+  ## that reference. The token is the foundation token the plan's schema key
+  ## names; its value is the editor's (with an unwritten edit of it, the
+  ## act-time question maps it back to the source, `onDiskExpectation`).
+  result = plan
+  if plan.sourceScope notin {sskComponentToken, sskSemanticToken,
+      sskGlobalPrimitiveToken} or plan.planKind == cspPropertyRemoval:
+    return
+  # The row's priority (`!important`) and the comments around it are not
+  # part of the reference.
+  let reference = plan.expectedOldValue.cssValueWithoutPriority().strip()
+  if not (reference.startsWith("var(") and reference.endsWith(")")):
+    return
+  # A comment inside the var() is whitespace, as CSS reads it.
+  let inner = reference[4 .. ^2].withoutCssComments().strip()
+  for token in editor.foundations.tokens.val:
+    if token.schemaKey.len > 0 and token.schemaKey == plan.schemaKey and
+        token.property.startsWith("--") and inner == token.property:
+      result.expectedOldValue = token.value
+      return
+
+proc withCapturedTokenExpectation(editor: EditorVM;
+    plan: SourceEditPlan): SourceEditPlan =
+  ## ``plan`` expecting its token's value, for a token-scope plan that
+  ## expects nothing: a row read from the preview without provenance
+  ## (`computed:`, `iframe-dom:`, `capturedWithoutProvenance`). Applied only
+  ## after the act-time check admitted the plan as it was -- the project's
+  ## writer admits a row that expects nothing only where the element's own
+  ## declaration is a direct `var()` of the token -- so the write can still
+  ## tell the token changed underneath (editor spec "Saving": such a change
+  ## is refused by the write itself). The token's value is the editor's;
+  ## with an unwritten edit of it, that edit is written first.
+  result = plan
+  if plan.sourceScope notin {sskComponentToken, sskSemanticToken,
+      sskGlobalPrimitiveToken} or plan.planKind == cspPropertyRemoval or
+      plan.expectedOldValue.len > 0:
+    return
+  for token in editor.foundations.tokens.val:
+    if token.schemaKey.len > 0 and token.schemaKey == plan.schemaKey and
+        token.property.startsWith("--") and token.value.len > 0:
+      result.expectedOldValue = token.value
+      return
+
 proc editSharedDesignProperty*(editor: EditorVM; property, newValue: string;
     sourceScope: SourceScopeChoiceKind): SharedDesignEditResult {.discardable.} =
   result = editor.planSharedDesignEdit(property, newValue, sourceScope)
@@ -8849,6 +8963,12 @@ proc editSharedDesignProperty*(editor: EditorVM; property, newValue: string;
     editor.inspector.editDiagnostics.val = result.diagnostics
     return
 
+  # A row whose value is a direct `var(--token)` reference, edited at that
+  # token's scope, expects the token's value -- the reference is its value
+  # by definition and verifies nothing -- so the write can still tell the
+  # token changed underneath (editor spec "Saving": such a change is refused
+  # by the write itself).
+  result.sourceEdit = editor.withTokenValueExpectation(result.sourceEdit)
   # The scope was admitted on the field's current value, but a plan's
   # identity can depend on the value committed (a token reference sets its
   # token, an empty value removes the declaration). Check the plan that will
@@ -8862,6 +8982,20 @@ proc editSharedDesignProperty*(editor: EditorVM; property, newValue: string;
     editor.inspector.editDiagnostics.val = @[refused]
     return SharedDesignEditResult(status: pesRejected, editor: result.editor,
       diagnostics: @[refused])
+  # Admitted expecting nothing: a token-scope edit of a captured row now
+  # expects the token's value, asked again so a model the source no longer
+  # matches is refused here rather than by the write.
+  let captured = editor.withCapturedTokenExpectation(result.sourceEdit)
+  if captured.expectedOldValue != result.sourceEdit.expectedOldValue:
+    let stale = editor.sourcePlanCommitRefusal(captured)
+    if stale.len > 0:
+      let refused = PropertyEditDiagnostic(kind: pedSchemaViolation,
+        message: stale & " Nothing was changed.",
+        file: captured.file, line: captured.line, property: property)
+      editor.inspector.editDiagnostics.val = @[refused]
+      return SharedDesignEditResult(status: pesRejected, editor: result.editor,
+        diagnostics: @[refused])
+    result.sourceEdit = captured
   var plan = result.sourceEdit
   editor.inspector.stampHistoryEntry(plan)
   editor.inspector.inheritUnwrittenExpectation(plan)
@@ -9955,10 +10089,28 @@ proc selectFoundationToken*(editor: EditorVM; key: string): bool {.discardable.}
   false
 
 proc undoFoundationTokenEdit*(editor: EditorVM): bool {.discardable.} =
+  ## Undo the latest foundation token edit. The editor's own Undo runs it
+  ## through the one history timeline (`runEditorCommand(eckUndo)`), which
+  ## reaches it only when it is the newest edit. Called directly, a later
+  ## pending edit of the same token -- an inspector row's edit at the token's
+  ## scope, which expects the value this edit gives the token -- would be
+  ## left expecting a value nothing writes, so the undo is refused, with
+  ## nothing changed, until that later edit is undone or written.
   let stack = editor.foundations.undoStack.val
   if stack.len == 0:
     return false
   let entry = stack[^1]
+  let mine = entry.sourceEdit
+  if mine.historyId > 0 and mine.schemaKey.len > 0:
+    for pending in editor.inspector.pendingSourceEdits.val:
+      if pending.schemaKey == mine.schemaKey and
+          pending.historyId > mine.historyId:
+        editor.foundations.diagnostics.val = @[FoundationEditDiagnostic(
+          kind: fedMissingTokenSchema,
+          message: "Undo refused: a later, unwritten edit of the " &
+            entry.key & " token depends on this one. Undo that edit first. " &
+            "Nothing was changed.", key: entry.key)]
+        return false
   var updated = editor.foundations.tokens.val
   for i, token in updated:
     if token.key.sameTokenKey(entry.key):
@@ -10032,6 +10184,19 @@ proc editFoundationToken*(editor: EditorVM; key, newValue: string): FoundationEd
       diagnostics: @[diagnostic])
 
   var plan = token.sourcePlan(newValue)
+  # And what the project's writer states against writing this token now
+  # (`WorkspaceEditAdapter.editRefusal`: no declaration of it, or several),
+  # which the write would otherwise refuse after the edit was previewed and
+  # journaled, leaving it pending (editor spec "Saving": a refusal the editor
+  # can know at the act is made at the act).
+  let writerRefusal = editor.writerEditRefusal(plan)
+  if writerRefusal.len > 0:
+    let diagnostic = FoundationEditDiagnostic(kind: fedMissingTokenSchema,
+      message: writerRefusal & " Nothing was changed.", key: key,
+      file: token.sourceFile, line: token.sourceLine)
+    editor.foundations.diagnostics.val = @[diagnostic]
+    return FoundationEditResult(status: pesRejected,
+      diagnostics: @[diagnostic])
   editor.inspector.stampHistoryEntry(plan)
   editor.inspector.inheritUnwrittenExpectation(plan)
   var updatedTokens = editor.foundations.tokens.val

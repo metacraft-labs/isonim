@@ -237,14 +237,21 @@ proc demoFoundationTokens*(): seq[FoundationTokenEntry] =
       property: "--wl-breakpoint-compact", affectedStories: @[foundationStory])
   ]
 
-func demoDeclarations(content, property: string): seq[tuple[start, stop: int;
-    value: string]] =
+func demoDeclarations(content, property: string;
+    multiLine = false): seq[tuple[start, stop: int; value: string]] =
   ## Every `property: value;` declaration of ``property`` in ``content``:
   ## where it starts, one past its `;`, and its value. A name is matched
   ## whole (`padding` is not inside `--wl-padding` or `padding-top`), and
   ## text inside a comment, string or unquoted `url(...)` is never a name or
   ## a `;` (`css_patch.skipCssOpaque`, CSS Syntax's reading).
+  ##
+  ## ``multiLine`` reads a declaration as CSS does, across line breaks: the
+  ## name, its `:` and its value may be on different lines, and the value
+  ## ends at its `;` (a `{` or `}` before it means it is not a declaration).
+  ## Without it a declaration is read on one line, as Reset reads it.
   const nameChars = {'A'..'Z', 'a'..'z', '0'..'9', '-', '_'}
+  let gap = if multiLine: Whitespace else: {' ', '\t'}
+  let stops = if multiLine: {';', '{', '}'} else: {';', '\n', '}'}
   if property.len == 0: return
   var at = 0
   while at < content.len:
@@ -256,10 +263,10 @@ func demoDeclarations(content, property: string): seq[tuple[start, stop: int;
         content.continuesWith(property, at) and
         (at == 0 or content[at - 1] notin nameChars):
       var colon = at + property.len
-      while colon < content.len and content[colon] in {' ', '\t'}: inc colon
+      while colon < content.len and content[colon] in gap: inc colon
       if colon < content.len and content[colon] == ':':
         var semicolon = colon + 1
-        while semicolon < content.len and content[semicolon] notin {';', '\n', '}'}:
+        while semicolon < content.len and content[semicolon] notin stops:
           let skipped = content.skipCssOpaque(semicolon)
           semicolon = if skipped > semicolon: skipped else: semicolon + 1
         if semicolon < content.len and content[semicolon] == ';':
@@ -503,6 +510,222 @@ func removeDemoDeclaration(plan: SourceEditPlan; content: string;
     affectedStory: schema.story,
     fullReload: true))
 
+func demoDirectReference(text, name: string): bool =
+  ## Whether ``text`` is a direct `var(--name)` reference to the custom
+  ## property ``name`` -- no fallback, no other token (editor spec "Native
+  ## project source capabilities": a direct `var(--name)` reference may
+  ## expose its token owner). A declaration's priority (`!important`) and
+  ## the comments around the value are set aside
+  ## (`css_patch.cssValueWithoutPriority`): the priority says how the
+  ## declaration competes in the cascade, not what it references.
+  ## A comment inside the `var()` is whitespace, as CSS reads it
+  ## (`var(/* c */--name)`).
+  let reference = text.cssValueWithoutPriority().strip()
+  reference.startsWith("var(") and reference.endsWith(")") and
+    reference[4 .. ^2].withoutCssComments().strip() == name
+
+func demoTokenHolds(declared, expected, name: string): bool =
+  ## Whether the token declaration whose value is ``declared`` holds the
+  ## value an edit expects: the same value (`css_patch.cssValueMatches`), or
+  ## -- for an inspector row whose declaration is a direct `var(--name)` of
+  ## this very token -- the reference itself, which is the token's value by
+  ## definition and says nothing more about it.
+  declared.cssValueMatches(expected) or expected.demoDirectReference(name)
+
+type DemoRowOwner = object
+  ## The declaration that sets a row's property for the selected element,
+  ## as this writer reads it: the class rule a shared-class or local scope
+  ## of the row names, and that rule's one declaration of the property.
+  named: bool
+    ## A scope of the row names a class-rule entry of this writer for the
+    ## property: the element's owner is that rule's declaration.
+  found: bool
+    ## ...and the source holds exactly one such rule (top level) with
+    ## exactly one declaration of the property.
+  selector: string
+    ## The class the entry names (`.destination-card`).
+  rule: string
+    ## The rule as the editor names rules (`WorkspaceRuleDeclarations.rule`).
+  value: string
+    ## The declaration's value.
+  why: string
+    ## Named but not found: what the source holds instead.
+
+func demoRowOwner(content: string; plan: SourceEditPlan;
+    entries: seq[WorkspaceEditableSchemaEntry]): DemoRowOwner =
+  ## The selected element's own declaration of ``plan.property``: the plan
+  ## carries the row's scope choices, whose class-rule scope names the
+  ## schema entry -- and so the rule -- that sets the property for this
+  ## element (`demoRuleSelector`). ``named`` but not ``found`` when the
+  ## source has no such top-level rule (removed, renamed, moved into an
+  ## at-rule) or several, or the rule declares the property other than once:
+  ## the owner cannot be identified, and nothing is guessed.
+  for choice in plan.sourceScopeChoices:
+    if choice.kind notin {sskSharedClass, sskLocalInstance} or
+        choice.schemaKey.len == 0:
+      continue
+    for entry in entries:
+      if entry.key != choice.schemaKey or entry.property != plan.property:
+        continue
+      let selector = demoRuleSelector(entry)
+      if selector.len == 0: continue
+      result.named = true
+      result.selector = selector
+      let rules = content.demoRules(selector)
+      if rules.len == 0:
+        result.why = "the source has no top-level " & selector & " rule"
+        continue
+      if rules.len > 1:
+        result.why = "the source has " & $rules.len & " " & selector & " rules"
+        continue
+      let body = content[rules[0].bodyStart ..< rules[0].bodyEnd]
+      let declared = body.demoDeclarations(plan.property, multiLine = true)
+      if declared.len != 1:
+        result.why = "the " & selector & " rule declares " & plan.property &
+          (if declared.len == 0: " nowhere" else: " " & $declared.len & " times")
+        continue
+      return DemoRowOwner(named: true, found: true, selector: selector,
+        rule: rules[0].selector.splitWhitespace().join(" "),
+        value: declared[0].value)
+
+func demoRowRefusal(plan: SourceEditPlan; name, declared: string;
+    owner: DemoRowOwner): string =
+  ## Why an inspector row's edit at the ``name`` token's scope does not
+  ## change what the token sets for this element, or "". The token's
+  ## declaration holds ``declared``.
+  ##
+  ## Where the element's own declaration of the property is known
+  ## (`demoRowOwner`), it must be a direct `var(<name>)`: otherwise the
+  ## token does not set this element's value, and writing it would change
+  ## every other user of the token while this element stays as it is
+  ## (editor spec "Saving": an edit changes the one declaration that owns the
+  ## property for the selected element). Where it is not known, the row's
+  ## value must be the token's -- and a row read without provenance (a
+  ## preview capture, whose plan expects nothing) cannot show that.
+  if owner.named and not owner.found:
+    return "This element's own " & plan.property & " declaration cannot " &
+      "be identified (" & owner.why & "), so whether the " & name &
+      " token sets it cannot be told."
+  if owner.found:
+    if not owner.value.demoDirectReference(name):
+      # Said as the values that differ where they do; where the element's
+      # declaration happens to hold the token's value, as the reference it
+      # lacks.
+      if not owner.value.cssValueMatches(declared):
+        return "The " & name & " token holds " & declared & ", not " &
+          owner.value & ", so it does not set this element's " &
+          plan.property & "."
+      return "This element's " & plan.property & " is declared " &
+        owner.value & " in the " & owner.selector & " rule, not as var(" &
+        name & "), so the " & name & " token does not set it."
+  elif plan.expectedOldValue.len == 0:
+    return "This element's own " & plan.property & " declaration cannot " &
+      "be identified, so whether the " & name & " token sets it cannot be " &
+      "told."
+  if plan.expectedOldValue.len > 0 and
+      not declared.demoTokenHolds(plan.expectedOldValue, name):
+    # The element's own declaration is the token's var(): the token does set
+    # it, so a value other than the one expected means the source changed
+    # under the editor (the editor still shows the token's earlier value).
+    if owner.found:
+      return "The " & name & " declaration now holds " & declared &
+        " in the source, not the " & plan.expectedOldValue & " the editor " &
+        "shows: the source changed under the editor. Reload it, then retry."
+    return "The " & name & " token holds " & declared & ", not " &
+      plan.expectedOldValue & ", so it does not set this element's " &
+      plan.property & "."
+
+func demoTokenRefusal(content: string; plan: SourceEditPlan;
+    schema: WorkspaceEditableSchemaEntry; owner: DemoRowOwner): string =
+  ## Why the token writer (`setDemoToken`) would refuse ``plan`` against
+  ## ``content`` for a reason already true when the edit is made, or "".
+  ## Asked at the act (`editRefusal`), so such an edit is refused before it
+  ## is previewed, journaled or written (editor spec "Saving").
+  ##
+  ## - The file has no declaration of the token, or several: the writer
+  ##   cannot identify the one the edit owns.
+  ## - An inspector row's edit at the token's scope (its property is the
+  ##   row's, not the token's) that the token does not set for this element
+  ##   (`demoRowRefusal`). A Foundations-page edit names the token itself;
+  ##   its expectation is checked by the write.
+  let name = schema.property
+  if not name.startsWith("--"): return
+  let found = content.demoDeclarations(name, multiLine = true)
+  if found.len == 0:
+    return schema.file & " has no " & name & " declaration to hold the value."
+  if found.len > 1:
+    return schema.file & " has " & $found.len & " " & name &
+      " declarations, so the one this edit owns cannot be identified."
+  if plan.property != name:
+    return demoRowRefusal(plan, name, found[0].value, owner)
+
+func setDemoToken(plan: SourceEditPlan; content: string;
+    schema: WorkspaceEditableSchemaEntry; owner: DemoRowOwner): WorkspacePatchResult =
+  ## A foundation token's value, written in the token's own declaration: the
+  ## one `--name: value;` of the custom property the entry owns
+  ## (`schema.property`). Only that declaration's value changes; every other
+  ## declaration -- another token holding the same value, a `var()` use site
+  ## -- is left as it is (editor spec "Native project source capabilities":
+  ## editing the token changes its owner declaration and keeps the use-site
+  ## `var()` binding; "Saving": an edit changes exactly the one owning
+  ## declaration).
+  ## The value is written where the old one stood, so a declaration spread
+  ## over several lines keeps its layout.
+  ##
+  ## Refused with nothing changed when the file has no such declaration or
+  ## several (a duplicate owner is ambiguous), when the declaration no
+  ## longer holds the value the editor showed (a change made underneath),
+  ## or -- for an inspector row's edit -- when the element's own declaration
+  ## of the property (``owner``, `demoRowOwner`) is known and no longer
+  ## references the token (its use site changed underneath).
+  let file = if schema.file.len > 0: schema.file else: plan.file
+  let name = schema.property
+  proc refuse(kind: WorkspaceEditDiagnosticKind; why: string): WorkspacePatchResult =
+    WorkspacePatchResult(ok: false, diagnostics: @[WorkspaceEditDiagnostic(
+      kind: kind, message: "Refused to set the " & name & " token: " & why &
+        " No source was changed.", file: file, schemaKey: plan.schemaKey,
+      property: plan.property)])
+  if not name.startsWith("--"):
+    return refuse(wedPatchFailed, "the " & schema.key & " entry names no " &
+      "custom property to hold the value.")
+  let found = content.demoDeclarations(name, multiLine = true)
+  if found.len == 0:
+    return refuse(
+      if plan.expectedOldValue.len > 0: wedSourceConflict else: wedPatchFailed,
+      file & " has no " & name & " declaration to hold the value.")
+  if found.len > 1:
+    return refuse(wedPatchFailed, file & " has " & $found.len & " " & name &
+      " declarations, so the one this edit owns cannot be identified.")
+  let declaration = found[0]
+  if plan.property != name and owner.named and not owner.found:
+    return refuse(wedSourceConflict, "this element's own " & plan.property &
+      " declaration can no longer be identified (" & owner.why & ").")
+  if plan.property != name and owner.found and
+      not owner.value.demoDirectReference(name):
+    return refuse(wedSourceConflict, "this element's " & plan.property &
+      " is declared " & owner.value & " in the " & owner.selector &
+      " rule, not as var(" & name & ").")
+  if plan.expectedOldValue.len > 0 and
+      not declaration.value.demoTokenHolds(plan.expectedOldValue, name):
+    return refuse(wedSourceConflict, file & " declares " & name & ": " &
+      declaration.value & ", not " & plan.expectedOldValue & ".")
+  # The value changes; the declaration keeps its `!important`, as a class
+  # rule's does (`css_patch.cssValueEdit`).
+  let edit = declaration.value.cssValueEdit(plan.newValue.strip())
+  if edit.refusal.len > 0: return refuse(wedPatchFailed, edit.refusal)
+  # The value's own text: from the first character after the `:` and the
+  # whitespace following it, to the last before the `;`.
+  var first = content.find(':', declaration.start) + 1
+  while first < declaration.stop - 1 and content[first] in Whitespace: inc first
+  var last = declaration.stop - 1
+  while last > first and content[last - 1] in Whitespace: dec last
+  WorkspacePatchResult(ok: true, patch: WorkspaceFilePatch(
+    file: file,
+    beforeContent: content,
+    afterContent: content[0 ..< first] & edit.text & content[last .. ^1],
+    affectedStory: schema.story,
+    fullReload: true))
+
 func demoRuleDeclarations*(content: string;
     schema: WorkspaceEditableSchemaEntry): WorkspaceRuleDeclarations =
   ## The declarations of the class rule ``schema`` owns in ``content``, in
@@ -566,6 +789,9 @@ proc demoVectorEditAdapter*(vectorSource, foundationSource: ref string): Workspa
     removable: true,
     breakpointOverrides: true)
   result = WorkspaceEditAdapter(schema: schema)
+  # The adapter itself, for the writer's reads of its schema as it stands
+  # when asked (a host may add entries after this returns).
+  let adapter = result
   for (property, value) in DemoClassValues:
     result.schema.add WorkspaceEditableSchemaEntry(
       key: "classes.destination-card." & property, kind: wskSourceMap,
@@ -599,25 +825,63 @@ proc demoVectorEditAdapter*(vectorSource, foundationSource: ref string): Workspa
     let selector = demoRuleSelector(schema)
     if selector.len > 0:
       return setDemoDeclaration(plan, content, schema, selector)
+    # A token's value is written in the token's own declaration, whichever
+    # property the edit came from (the Foundations page edits the token; an
+    # inspector row bound to it edits it at a token scope).
+    if schema.kind == wskToken:
+      return setDemoToken(plan, content, schema,
+        content.demoRowOwner(plan, adapter.schema))
+    # The vector symbol is the whole file: its expected markup is replaced
+    # where it stands, once. Nothing else is written by a text replacement,
+    # which would change every other place the same text appears.
+    if plan.property != "svgContent":
+      return WorkspacePatchResult(ok: false, diagnostics: @[
+        WorkspaceEditDiagnostic(kind: wedPatchFailed,
+          message: "Refused to set " & plan.property & ": the " & schema.key &
+            " entry is neither a class rule's declaration nor a token's, so " &
+            "the declaration it owns cannot be identified. No source was " &
+            "changed.", file: schema.file, schemaKey: plan.schemaKey,
+          property: plan.property)])
+    let hits = if plan.expectedOldValue.len > 0:
+      content.count(plan.expectedOldValue) else: 0
+    if hits > 1:
+      return WorkspacePatchResult(ok: false, diagnostics: @[
+        WorkspaceEditDiagnostic(kind: wedPatchFailed,
+          message: "Refused to set " & plan.property & ": " & schema.file &
+            " holds the symbol's markup " & $hits & " times, so the one " &
+            "this edit owns cannot be identified. No source was changed.",
+          file: schema.file, schemaKey: plan.schemaKey,
+          property: plan.property)])
     let next =
-      if plan.expectedOldValue.len > 0 and plan.expectedOldValue in content:
-        content.replace(plan.expectedOldValue, plan.newValue)
-      elif plan.property == "svgContent":
-        plan.newValue
+      if hits == 1:
+        let at = content.find(plan.expectedOldValue)
+        content[0 ..< at] & plan.newValue &
+          content[at + plan.expectedOldValue.len .. ^1]
       else:
-        content.strip(leading = false, trailing = true) & "\n" &
-          plan.property & ": " & plan.newValue & ";\n"
+        plan.newValue
     WorkspacePatchResult(ok: true, patch: WorkspaceFilePatch(
       file: schema.file,
       beforeContent: content,
       afterContent: next,
       affectedStory: schema.story,
       fullReload: true))
-  # The writer's statement at the act: a class rule shared by a selector list
-  # is refused when the edit is committed, from the source this adapter holds
-  # (no file read), before anything is previewed, journaled or written.
+  # The writer's statement at the act, from the source this adapter holds
+  # (no file read), before anything is previewed, journaled or written: a
+  # class rule shared by a selector list is refused when the edit is
+  # committed.
+  # A token's value edit is refused for what the token writer would refuse
+  # it for that is already known (`demoTokenRefusal`). A removal keeps the
+  # removal's own reasons: whether the entry states it can be removed is
+  # asked before the writer (`sourcePlanAdmissionRefusal`), and the removal's
+  # write is asked by the commit (`removalWriteRefusal`).
   result.editRefusal = proc(plan: SourceEditPlan;
       schema: WorkspaceEditableSchemaEntry): string =
+    if schema.kind == wskToken:
+      if schema.file != DemoFoundationSource or
+          plan.planKind == cspPropertyRemoval:
+        return
+      return foundationSource[].demoTokenRefusal(plan, schema,
+        foundationSource[].demoRowOwner(plan, adapter.schema))
     let selector = demoRuleSelector(schema)
     if selector.len == 0 or schema.file != DemoFoundationSource: return
     let rules = foundationSource[].demoRules(selector)
@@ -628,10 +892,22 @@ proc demoVectorEditAdapter*(vectorSource, foundationSource: ref string): Workspa
   # holds, so the editor can tell a rule another declaration overrides for
   # the selected element (`editRule`). A responsive override is written into
   # another rule and is not named.
+  #
+  # For an inspector row's edit at a token's scope, the rule named is the
+  # element's own rule whose `var()` carries the token to it (`demoRowOwner`):
+  # the token edit changes what the element renders exactly when that rule
+  # decides the property for it, which the editor reads from the preview's
+  # cascade (`decidedElsewhereRefusal`).
   result.editRule = proc(plan: SourceEditPlan;
       schema: WorkspaceEditableSchemaEntry): string =
     if plan.breakpointCondition.len > 0 or schema.file != DemoFoundationSource:
       return
+    if schema.kind == wskToken:
+      if plan.property == schema.property or
+          plan.planKind == cspPropertyRemoval:
+        return
+      let owner = foundationSource[].demoRowOwner(plan, adapter.schema)
+      return if owner.found: owner.rule else: ""
     demoRuleDeclarations(foundationSource[], schema).rule
   # The rule's declarations in source order, so the editor can tell which
   # declaration decides each side of a shorthand (`ruleDeclarations`).
