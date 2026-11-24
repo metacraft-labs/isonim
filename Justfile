@@ -1310,6 +1310,30 @@ bench-size:
     @echo "Minified: $(wc -c < benchmarks/keyed/isonim/dist/main.js) bytes"
     @echo "Gzipped:  $(gzip -c benchmarks/keyed/isonim/dist/main.js | wc -c) bytes"
 
+# Install the root package.json dependencies (terser among them) from
+# yarn.lock, once, with the same command `build-tailwind` uses.
+node-deps:
+    @test -x node_modules/.bin/terser || yarn install --frozen-lockfile
+
+# In-process micro-benchmark of the reactive core (no DOM): selection,
+# rebuild and memory, one line per case. CORE_BENCH_ITERATIONS and
+# CORE_BENCH_WARMUP override the sample counts (defaults 7 and 2).
+core-bench:
+    mkdir -p build/bench
+    nim js -d:danger -d:nodejs --hints:off -o:build/bench/core_bench.js benchmarks/core/core_bench.nim
+    node --expose-gc build/bench/core_bench.js
+
+# Bundle-size check of the js-framework-benchmark app: prints raw, minified
+# and gzip bytes and fails when gzip grows past benchmarks/baseline.json by
+# more than its budget.
+size-check: node-deps
+    python3 benchmarks/size_check.py
+
+# The benchmark half of the core regression gate: the micro-benchmark and
+# the size check. Run it together with `just test-c` and `just test-js`
+# whenever the reactive core changes.
+core-gate-bench: core-bench size-check
+
 # Run benchmark tests
 bench-test:
     nim c -r tests/test_benchmark.nim
