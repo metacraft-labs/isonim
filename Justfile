@@ -222,6 +222,9 @@ test-c:
     nim c -r tests/test_effects.nim
     nim c -r tests/test_glitch_free.nim
     nim c -r tests/test_error_routing.nim
+    nim c -r tests/test_owned_roots.nim
+    nim c -r tests/test_viewmodel_dispose.nim
+    nim c -r --mm:refc --out:build/tests/test_viewmodel_dispose_refc tests/test_viewmodel_dispose.nim
     # The private flush observation leaf, enabled: real graphs, nested
     # flushes and flushes that end in an error (`just test-internal-flush-observation` adds the
     # omission proof and the semantic inverses).
@@ -377,6 +380,9 @@ test-js: build-tailwind
     nim js -r tests/test_effects.nim
     nim js -r tests/test_glitch_free.nim
     nim js -r tests/test_error_routing.nim
+    nim js -r tests/test_owned_roots.nim
+    nim js -d:nodejs --out:build/test_viewmodel_dispose.js tests/test_viewmodel_dispose.nim
+    python3 tools/run_nim_js_test.py build/test_viewmodel_dispose.js
     nim js -r -d:isonimInternalFlushObservation --out:build/tests/test_internal_flush_observation.js tests/test_internal_flush_observation.nim
     nim js -r tests/test_clock.nim
     nim js tests/test_nondet_seams.nim
@@ -463,6 +469,8 @@ test-effects:
     nim js -r tests/test_effects.nim
     nim c -r tests/test_error_routing.nim
     nim js -r tests/test_error_routing.nim
+    nim c -r tests/test_owned_roots.nim
+    nim js -r tests/test_owned_roots.nim
 
 # Run only rxcore/renderer/mock-dom tests
 test-rxcore:

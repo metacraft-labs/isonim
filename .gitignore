@@ -309,4 +309,6 @@ tests/test_readiness_marks
 tests/test_service_streams
 tests/test_glitch_free
 tests/test_error_routing
+tests/test_owned_roots
+tests/test_viewmodel_dispose
 tests/test_dsl_stylesheet_classes

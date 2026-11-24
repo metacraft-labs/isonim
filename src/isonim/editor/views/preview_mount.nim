@@ -144,7 +144,9 @@ proc mountNow[E](frame: E; story: StoryRef; hook: PreviewMountHook;
     # are in the document.
     var host: PreviewMountHost = nil
     {.emit: [host, " = ", frame, ".contentDocument.createDocumentFragment();"].}
-    createRoot proc(dispose: proc()) =
+    # Detached: the mount lives until the next mount or the owner's disposal
+    # (`state.dispose`), not until the computation that asked for it re-runs.
+    createDetachedRoot proc(dispose: proc()) =
       state.dispose = dispose
       hook(story, host)
 

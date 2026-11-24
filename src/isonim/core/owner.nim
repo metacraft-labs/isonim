@@ -1,27 +1,49 @@
 ## isonim/core/owner.nim
 ##
 ## Owner — the reactive scope tree that manages cleanup and disposal.
-## Implements createRoot, onCleanup, getOwner, and runWithOwner.
+## Implements createRoot, createDetachedRoot, onCleanup, getOwner, and
+## runWithOwner.
 ##
 ## Port of SolidJS signal.ts owner/root management.
 
 import graph
 
 proc createRoot*(fn: proc(dispose: proc())) =
-  ## Creates a new reactive root with explicit disposal. Void variant.
+  ## Creates a new reactive root and runs `fn` in it, untracked. `fn`
+  ## receives the root's `dispose`.
+  ##
+  ## Created under an owner (another root, or a computation that is
+  ## running), the root is one of that owner's children: disposing the
+  ## owner, or re-running it when it is a computation, disposes the root
+  ## too, before the owner's own cleanups run. `dispose` releases it early,
+  ## and calling it again, or after the owner has disposed it, does nothing.
+  ## A root that must outlive its creator is made with `createDetachedRoot`.
+  ## (Owned nested roots are not yet a stable API.)
   let prevOwner = Owner
   let prevListener = Listener
-  let root = OwnerBase(owned: @[], cleanups: @[], owner: prevOwner, contextTable: nil)
+  let root = OwnerBase(owner: prevOwner)
+  if prevOwner != nil:
+    root.ownerSlot = prevOwner.owned.len
+    prevOwner.owned.add(root)
 
   Owner = root
   Listener = nil
   try:
-    let disposeFn = proc() =
-      cleanNode(root)
-    fn(disposeFn)
+    fn(proc() =
+      unlinkRoot(root)
+      cleanNode(root))
   finally:
     Owner = prevOwner
     Listener = prevListener
+
+proc createDetachedRoot*(fn: proc(dispose: proc())) =
+  ## `createRoot` for a root whose lifetime its creator manages by hand: it
+  ## is not disposed with the owner it was created under, only by its own
+  ## `dispose`. It still sees that owner's context values and error
+  ## handlers. Not yet a stable API.
+  createRoot(proc(dispose: proc()) =
+    unlinkRoot(Owner)
+    fn(dispose))
 
 proc onCleanup*(fn: proc()) =
   ## Registers a cleanup callback on the current owner.

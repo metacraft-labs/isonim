@@ -306,7 +306,9 @@ when defined(isonimHmr):
       currentSlotLoc: "")
     var capturedDispose: proc()
     var capturedOwner: OwnerBase
-    createRoot proc(dispose: proc()) =
+    # Detached: the persistent owner must outlive whatever owner is current
+    # when the registry is created.
+    createDetachedRoot proc(dispose: proc()) =
       capturedDispose = dispose
       capturedOwner = getOwner()
     result.persistentOwner = capturedOwner

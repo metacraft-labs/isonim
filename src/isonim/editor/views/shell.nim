@@ -3713,8 +3713,6 @@ proc renderInspectorPanel*[R, E](r: R; vm: EditorVM): E =
       if editsCss:
         mountSectionRawCss[R, E](r, frame.body, rowsHost, vm, cssRows,
           section, slug, displayName)
-      if panelOwner != nil:
-        runWithOwner(panelOwner, proc() = onCleanup(dispose))
     let row = frame.row
     var lastQuery = ""
     var lastRowsMatched = false
@@ -5236,7 +5234,9 @@ proc renderPreviewChromeBar*[R, E](r: R; vm: EditorVM;
         newPinnedLabels, initialIndex = max(0, pinnedIdx))
       if pinnedIdx < 0:
         viewportStripVm.clearActive()
-      createRoot(proc(dispose: proc()) =
+      # Detached: the rebuild effect re-runs without a rebuild too, and the
+      # strip must survive that; it is disposed by hand on the next rebuild.
+      createDetachedRoot(proc(dispose: proc()) =
         disposeViewportStrip = dispose
         r.mountSegmentedChoice(viewportStripHost, viewportStripVm,
           proc(i: int) {.closure.} =
@@ -5546,16 +5546,13 @@ proc renderAiAssistantPanel*[R, E](r: R; vm: EditorVM): E =
 
   # Each active conversation owns a disposable view scope. Switching tabs
   # rebinds every composer/activity effect to that conversation, while its VM
-  # retains the draft, transcript, backend identity and scroll position.
-  var disposeChatView: proc()
-  onCleanup proc() =
-    if disposeChatView != nil: disposeChatView()
+  # retains the draft, transcript, backend identity and scroll position. The
+  # scope is a root owned by this effect, so a re-run (and the panel's
+  # disposal) disposes the previous one.
   createRenderEffect proc() =
     discard vm.activeChatId.val
-    if disposeChatView != nil: disposeChatView()
     r.clearChildren(chatContentHost)
     createRoot proc(dispose: proc()) =
-      disposeChatView = dispose
       let chatPanel = renderChatPanel[R, E](r, vm)
       r.appendChild(chatContentHost, chatPanel)
 

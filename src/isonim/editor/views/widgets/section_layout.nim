@@ -179,12 +179,11 @@ proc mountSectionLayout*[R, E](r: R; parent: E; vm: EditorVM) =
   var scopeElement = ""
   var scopesMounted = false
   let mountOwner = getOwner()
-  # The mode wirings are re-created per selection under a root of their own;
+  # The mode wirings are re-created per selection under a root of their own
+  # (a child of the section's owner, so it is disposed with the section);
   # the section's raw CSS registry is looked up here, where the section
   # provides it.
   let sectionCss = useInspectorSectionCss()
-  onCleanup(proc() =
-    if disposeScopes != nil: disposeScopes())
   proc mountScopeDetails(property: string; wiring: InspectorRowWiring) =
     proc details(): string =
       let selected = wiring.selectedSourceScope()

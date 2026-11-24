@@ -29,11 +29,9 @@ proc forEachKeyed*[T, R, N](
     let listStableScope = captureStableScope()
 
   # Row lifetimes follow reconciliation, not the tracking effect's reruns.
-  # Each row has its own root; retained rows keep subscriptions and removed
-  # rows release them. The list's owner releases all remaining rows on unmount.
-  onCleanup proc() =
-    for dispose in itemDisposers: dispose()
-    itemDisposers.setLen(0)
+  # Each row has its own root under the list's owner; retained rows keep
+  # subscriptions and removed rows release them. The rows still shown are
+  # disposed with the list's owner.
 
   createRenderEffect proc() =
     let newItems = each()
@@ -174,11 +172,7 @@ proc show*[R, N](
   # The condition can rerun without changing branches. Its computation must
   # not own the retained branch's effects: rerunning a computation disposes
   # its children before the unchanged-state guard runs. Give the branch its
-  # own root and release it only on replacement or when Show is unmounted.
-  onCleanup proc() =
-    if not disposeBranch.isNil:
-      disposeBranch()
-      disposeBranch = nil
+  # own root under Show's owner, released on replacement or with that owner.
 
   createRenderEffect proc() =
     let newState = condition()
@@ -255,6 +249,10 @@ proc errorBoundary*[R, N](
     hasShown = true
 
   proc releaseFallback() =
+    # Call, then clear. Not `let d = disposeFallback; disposeFallback = nil;
+    # d()`: under ARC/ORC, Nim 2.2 infers that copy to be a cursor (no
+    # reference of its own), so clearing the captured variable frees the
+    # closure before the call, and disposal then runs on freed memory.
     if not disposeFallback.isNil:
       disposeFallback()
       disposeFallback = nil
@@ -277,16 +275,8 @@ proc errorBoundary*[R, N](
     showingContent = false
     display(node)
 
-  # Call, then clear (as `show` does). Not `let d = disposeBody;
-  # disposeBody = nil; d()`: under ARC/ORC, Nim 2.2 infers that copy to be a
-  # cursor (no reference of its own), so clearing the captured variable
-  # frees the closure before the call, and disposal then runs on freed
-  # memory.
-  onCleanup proc() =
-    releaseFallback()
-    if not disposeBody.isNil:
-      disposeBody()
-      disposeBody = nil
+  # Both roots (the body's and the fallback's) are children of the
+  # boundary's owner, so they are disposed with it.
 
   var bodyFailure: ref CatchableError
   try:

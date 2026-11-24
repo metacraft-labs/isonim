@@ -49,7 +49,10 @@ proc renderOutlet*(state: OutletState) =
 
   state.lastComponent = entry.component
 
-  createRoot proc(dispose: proc()) =
+  # Detached: the content lives as long as the matched component, not until
+  # the outlet's effect next re-runs (a re-run for the same component keeps
+  # it). It is disposed here on a change and by the cleanup below.
+  createDetachedRoot proc(dispose: proc()) =
     state.currentDispose = dispose
     state.currentRoot = getOwner()
     let prevDepth = outletDepth

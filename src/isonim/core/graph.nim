@@ -30,7 +30,9 @@ type
     when defined(isonimRecordable):
       checkpointSignals*: seq[SignalRegistration]
         ## Metadata only: the owner tree must never keep a signal alive.
-    owned*: seq[ComputationBase]     ## Child computations
+    owned*: seq[OwnerBase]
+      ## Children disposed with this node: the computations created under
+      ## it, and the roots `owner.createRoot` made under it.
     cleanups*: seq[proc()]            ## Cleanup callbacks
     owner*: OwnerBase                 ## Parent owner
     contextTable*: ContextTable       ## Context values keyed by ContextId
@@ -41,6 +43,14 @@ type
       ## that create none. Cleared with the node, so a computation that
       ## re-runs drops what its previous run created. Enumerated through
       ## `resource.ownedResourceStates`.
+    ownerSlot*: int
+      ## For a root registered in its owner's `owned`: its index there, so
+      ## that disposing it by hand takes it out of that list in constant
+      ## time (`unlinkRoot`). Stale once the root is out of the list
+      ## (detached, released, or disposed with its owner), which
+      ## `unlinkRoot` detects by identity. Only roots read it: on a
+      ## computation it is written when the computation moves into a
+      ## released root's place, and never read.
 
   ComputationBase* = ref object of OwnerBase
     ## Type-erased base for computations.
@@ -163,12 +173,22 @@ proc cleanNode*(node: OwnerBase; dispose: bool = false) =
 
   # An exceptional cleanup must not strand later child scopes or callbacks.
   # Drain every established resource once, then propagate the first failure.
+  # Children first, from the end of the list (the last created first,
+  # until a root released by hand moves the last child into its place),
+  # then this node's own cleanups: disposal unwinds. By index from the
+  # end, because a child's cleanup may release a sibling root by hand
+  # (`unlinkRoot`), which moves the last child into the released one's
+  # place: every child is still visited, at worst twice, and cleaning a
+  # cleaned node does nothing.
   var firstCleanupError: ref Exception
-  for child in node.owned:
-    try:
-      cleanNode(child, dispose = true)
-    except Exception:
-      if firstCleanupError == nil: firstCleanupError = getCurrentException()
+  var i = node.owned.len
+  while i > 0:
+    dec i
+    if i < node.owned.len:
+      try:
+        cleanNode(node.owned[i], dispose = true)
+      except Exception:
+        if firstCleanupError == nil: firstCleanupError = getCurrentException()
   node.owned.setLen(0)
   node.resourceStates.setLen(0)
   when defined(isonimRecordable):
@@ -183,3 +203,25 @@ proc cleanNode*(node: OwnerBase; dispose: bool = false) =
   node.cleanups.setLen(0)
   if firstCleanupError != nil:
     raise firstCleanupError
+
+proc unlinkRoot*(root: OwnerBase) =
+  ## Takes `root` out of its owner's children, by moving the last child
+  ## into its place, so that its owner no longer disposes it. Does nothing
+  ## for a root that is not one of them (detached, made with no current
+  ## owner, already taken out, or already disposed with its owner): a root
+  ## is never added to a list again once out of it, so the identity test
+  ## below is the whole check, and the slot is never reset.
+  let p = root.owner
+  if p != nil:
+    let i = root.ownerSlot
+    let last = p.owned.len - 1
+    if i <= last and p.owned[i] == root:
+      let moved = p.owned[last]
+      moved.ownerSlot = i
+      p.owned[i] = moved
+      when defined(js):
+        # Shrinking only: the generic `setLen` would also carry the code
+        # that grows a seq.
+        {.emit: [p, ".owned.length = ", last, ";"].}
+      else:
+        p.owned.setLen(last)

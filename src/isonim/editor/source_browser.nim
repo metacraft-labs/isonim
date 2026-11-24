@@ -196,7 +196,9 @@ proc attachSourceProject*(vm: EditorVM; base: EditorWorkspace; inspectorEditing 
     if reply{"editableStyles"} != nil: editableStyles.val = reply["editableStyles"]
     vm.sourceAdapterReady.val = true
   if inspectorEditing:
-    createRoot proc(dispose: proc()) =
+    # Detached: the mapping lives as long as the installed source project
+    # (`sourceProjectMappingDispose`), not as long as the caller's owner.
+    createDetachedRoot proc(dispose: proc()) =
       vm.sourceProjectMappingDispose = dispose
       # Bumped shortly after the preview changes width, so the conditions a
       # declaration depends on are asked again once the frame has its size.
