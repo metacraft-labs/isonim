@@ -182,6 +182,29 @@ func cssNumberToken(token: string): bool =
   var value = 0.0
   tryParseFloatValue(token, value)
 
+func cssIntegerText*(token: string): bool =
+  ## Whether ``token`` is written as an `<integer>`: an optional sign, then
+  ## decimal digits only (CSS Values 4 §5.2: "one or more decimal digits 0
+  ## through 9 ... The first digit of an integer may be immediately preceded
+  ## by - or +"). A fraction or an exponent makes a `<number>`, not an
+  ## integer, whatever its value (`1.0`, `1e2`, `1e0`; CSS Syntax 3 §4.3.12
+  ## gives such a number token the type flag "number").
+  var i = 0
+  if i < token.len and token[i] in {'+', '-'}: inc i
+  i < token.len and token[i .. ^1].allIt(it in {'0'..'9'})
+
+func nonIntegerNumeric(token: string): bool =
+  ## Whether ``token`` is numeric but not an `<integer>`: it starts as a
+  ## number does (a digit, or a sign or `.` before a digit, CSS Syntax 3
+  ## §4.3.10), so it is a number, a percentage or a dimension and never a
+  ## name (`1.5`, `1.0`, `1e2`, `.5`, `0.5px`, `2%`), and it is not a sign
+  ## and digits only.
+  if cssIntegerText(token): return false
+  var i = 0
+  if i < token.len and token[i] in {'+', '-'}: inc i
+  if i < token.len and token[i] == '.': inc i
+  i < token.len and token[i] in {'0'..'9'}
+
 const cssLengthUnits* = [
   # Font-relative lengths (CSS Values 4 §6.1.1).
   "em", "rem", "ex", "rex", "cap", "rcap", "ch", "rch", "ic", "ric", "lh",
@@ -1281,10 +1304,55 @@ const keywordOnlyProperties* = ["display", "position", "visibility",
   "order", "font-weight", "color", "background-color", "border-color",
   "border-top-color", "border-right-color", "border-bottom-color",
   "border-left-color", "outline-color", "fill", "stroke", "caret-color",
-  "accent-color", "text" & "-decoration-color", "column-rule-color"]
+  "accent-color", "text" & "-decoration-color", "column-rule-color",
+  # Grid lines and counters: names and `<integer>`s (CSS Grid 2 §8.3, CSS
+  # Lists 3 §4), so `0.5px` or `2%` is refused.
+  "grid-row", "grid-column", "grid-row-start", "grid-row-end",
+  "grid-column-start", "grid-column-end", "grid-area", "counter-reset",
+  "counter-increment"]
   ## Properties whose grammar takes no length or percentage (keywords,
   ## numbers or colours): a value that parses as one is judged by the
   ## keyword grammar, which refuses it.
+
+func topLevelWords(text: string): seq[string] =
+  ## ``text`` cut at the whitespace and `/` outside parentheses: a function
+  ## and its arguments are one word (`span calc(1 + 1)` is `span`,
+  ## `calc(1 + 1)`).
+  var depth = 0
+  var word = ""
+  for c in text:
+    if c == '(':
+      inc depth
+      word.add c
+    elif c == ')':
+      if depth > 0: dec depth
+      word.add c
+    elif depth == 0 and (c in Whitespace or c == '/'):
+      if word.len > 0: result.add word
+      word = ""
+    else:
+      word.add c
+  if word.len > 0: result.add word
+
+func integerSlotsAreIntegers(text: string): bool =
+  ## Whether every number in ``text`` is an `<integer>`. In `<grid-line>`
+  ## (CSS Grid 2 §8.3: `<integer>`, `span && <integer>`, with
+  ## `<custom-ident>`s) and in the counter properties (CSS Lists 3 §4.1-4.3:
+  ## `<counter-name> <integer>?`) the only number a value may hold is an
+  ## integer, so `1.5`, `span 1.5`, `1e2`, `0.5px` and `c 1.0` are refused.
+  ## A math function stands for an integer when it resolves to a number
+  ## (CSS Values 4 §10.9: the result is rounded to the nearest integer), so
+  ## `span calc(1 + 1)` and `c min(1, 2)` are accepted and `calc(1px)` is
+  ## not. Other functions (`var()`, `reversed()`) and names are not judged
+  ## here.
+  for word in topLevelWords(text):
+    if '(' in word:
+      if cssFunctionName(word) in cssMathFunctions and
+          not cssMathFunctionCall(word, {cmtNumber}):
+        return false
+    elif nonIntegerNumeric(word):
+      return false
+  true
 
 func validKeywordForProperty*(propName, raw: string): bool =
   ## Whether a keyword-shaped value is one ``propName`` accepts. Fails closed:
@@ -1426,9 +1494,14 @@ func validKeywordForProperty*(propName, raw: string): bool =
     cssAllIn(text, ["row", "column", "dense"], 2) and
       not (text.contains("row") and text.contains("column"))
   of "grid-column", "grid-row", "grid-column-start", "grid-column-end",
-      "grid-row-start", "grid-row-end", "grid-area", "grid-template-areas",
+      "grid-row-start", "grid-row-end", "grid-area", "counter-reset",
+      "counter-increment":
+    # Grid lines and counters take author-chosen names; the numbers among
+    # them are `<integer>`s (``integerSlotsAreIntegers``).
+    text.len > 0 and integerSlotsAreIntegers(text)
+  of "grid-template-areas",
       "grid-template", "grid", "animation", "animation-name", "will-change",
-      "content", "quotes", "counter-reset", "counter-increment",
+      "content", "quotes",
       "font-feature-settings", "font-variation-settings":
     # These grammars take author-chosen names (grid lines and areas,
     # animation and counter names, strings): any non-empty value.

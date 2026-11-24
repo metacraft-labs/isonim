@@ -1050,3 +1050,83 @@ suite "quoted family names and multi-part values are written as typed":
         check committed.message.len > 0
         check foundation[] == source
         dispose()
+
+  test "a spaced power or a parenthesised group is one expression, written as the numeric row writes it":
+    # isonim-pm issue 2026-11-24 "the text path splits spaced powers and
+    # parentheses into several values". Editor spec "Planned interaction
+    # parity": typed arithmetic obeys the same constraints on every path, so
+    # `2 ^ 2px` and `( 1+2 )px` are written as the numeric row writes them.
+    for (property, value, written) in [
+        ("width", "2 ^ 2px", "4px"), ("width", "2^ 2px", "4px"),
+        ("width", "2 ^2px", "4px"), ("width", "( 1+2 )px", "3px"),
+        ("width", "( 1 + 2 ) * 2px", "6px"), ("margin", "-( 2 + 3 )px", "-5px"),
+        ("width", "2 ^ ( 1 + 1 )px", "4px"), ("z-index", "( 1 + 2 )", "3")]:
+      checkpoint property & ": " & value
+      createRoot proc(dispose: proc()) =
+        let source = extendedSource()
+        let foundation = new(string)
+        foundation[] = source
+        let vm = extendedVm(foundation)
+        let before = " " & property & ": " & vm.value(property) & ";"
+        check before in source
+        let committed = vm.commit(property, value)
+        check committed.ok
+        vm.write()
+        check foundation[] == source.replace(before, " " & property & ": " & written & ";")
+        check vm.runEditorCommand(eckUndo).status == ecsSucceeded
+        vm.write()
+        check foundation[] == source
+        dispose()
+    # A multi-part neighbour stays several values: written as typed, and an
+    # invalid one is refused rather than evaluated.
+    for (property, value) in [("margin", "0 2 ^ 2px"), ("margin", "( 1+2 )px 0"),
+        ("width", "( 1 ) ( 2 )px"), ("width", "(1+2) px")]:
+      checkpoint property & ": " & value
+      createRoot proc(dispose: proc()) =
+        let source = extendedSource()
+        let foundation = new(string)
+        foundation[] = source
+        let vm = extendedVm(foundation)
+        let committed = vm.commit(property, value)
+        check not committed.ok
+        check foundation[] == source
+        dispose()
+
+  test "an <integer> property refuses a fraction or an exponent":
+    # CSS Values 4 §5.2: an `<integer>` is a sign and digits only.
+    for (property, value) in [("z-index", "1e-2"), ("z-index", "+1e2"),
+        ("z-index", "1e0"), ("z-index", "1.0"), ("grid-row", "1.5"),
+        ("grid-row", "span 1e1")]:
+      checkpoint property & ": " & value
+      createRoot proc(dispose: proc()) =
+        let source = extendedSource()
+        let foundation = new(string)
+        foundation[] = source
+        let vm = extendedVm(foundation)
+        let committed = vm.commit(property, value)
+        check not committed.ok
+        check committed.message.len > 0
+        check foundation[] == source
+        dispose()
+    createRoot proc(dispose: proc()) =
+      let source = extendedSource()
+      let foundation = new(string)
+      foundation[] = source
+      let vm = extendedVm(foundation)
+      let before = " z-index: " & vm.value("z-index") & ";"
+      check before in source
+      check vm.commit("z-index", "+3").ok
+      vm.write()
+      check foundation[] == source.replace(before, " z-index: +3;")
+      dispose()
+    createRoot proc(dispose: proc()) =
+      let source = extendedSource()
+      let foundation = new(string)
+      foundation[] = source
+      let vm = extendedVm(foundation)
+      let before = " grid-row: " & vm.value("grid-row") & ";"
+      check before in source
+      check vm.commit("grid-row", "span 2").ok
+      vm.write()
+      check foundation[] == source.replace(before, " grid-row: span 2;")
+      dispose()

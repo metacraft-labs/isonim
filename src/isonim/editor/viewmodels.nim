@@ -2001,9 +2001,15 @@ proc cssValueShapeDiagnostics(prop: PropertyInfo;
       result.add cssDiagnostic(pedInvalidCssValue, prop,
         "Opacity must be numeric.")
   if normalized.kind == cvkZIndex:
+    # `auto | <integer>` (CSS 2.1 §9.9.1): a sign and digits only, so a
+    # fraction or an exponent (`1.0`, `1e2`, `1e-2`) is refused, as `order`
+    # refuses it (``cssIntegerText``, CSS Values 4 §5.2).
+    # `auto` is z-index's keyword (CSS 2.1 §9.9.1, CSS Positioned Layout 3
+    # §4.1), in any case.
     var parsed = 0.0
-    if normalized.canonical.contains(".") or
-        not tryParseFloatValue(normalized.canonical, parsed):
+    if normalized.canonical.strip().toLowerAscii() != "auto" and
+        (not cssIntegerText(normalized.canonical) or
+        not tryParseFloatValue(normalized.canonical, parsed)):
       result.add cssDiagnostic(pedInvalidCssValue, prop,
         "z-index must be an integer.")
   if normalized.kind == cvkColor and not validCssColorLiteral(raw):
@@ -2368,19 +2374,42 @@ func componentCount(text: string): int =
   ## starts where an operand follows another operand with no operator
   ## between them (`1 -1`, `+1 +1 +1px`, `0 -16px`). A sign attached to a
   ## number starts a new component (CSS Syntax 3 §4.3.12), so `100 -50px` is
-  ## two values, while `100 - 50px`, `100-50px` and `100 /4px` are one
-  ## expression: an operator standing alone, or ending a word, or a word
-  ## starting with `*` or `/`, continues it.
+  ## two values, while `100 - 50px`, `100-50px`, `100 /4px` and `2 ^ 2px`
+  ## are one expression: an operator standing alone, or ending a word, or a
+  ## word starting with `*`, `/` or `^`, continues it. `^` is the numeric
+  ## field's power operator (``numeric_expression``) and no CSS value uses
+  ## it, so a spaced `^` continues the expression on every path (editor
+  ## spec "Planned interaction parity").
+  ##
+  ## A parenthesised group is one operand however it is spaced
+  ## (`( 1+2 )px`, `-( 2 + 3 )`): inside it, up to the word that closes it,
+  ## nothing starts a new value. A group is a `(` that opens a word or
+  ## follows an operator or another `(`, as the numeric field reads one. A
+  ## function's parenthesis follows its name (`rgb(0 0 0)`,
+  ## `repeat(2, 1fr)`) and keeps its arguments separate.
+  const operators = {'+', '-', '*', '/', '^'}
   var previousIsOperand = false
   var previousEndsInOperator = false
+  var depth = 0
+    ## Open arithmetic groups.
+  var functions: seq[bool]
+    ## Every open parenthesis, outermost first: whether it is a group.
   for word in text.splitWhitespace():
-    let operatorOnly = word.allIt(it in {'+', '-', '*', '/'})
-    let continues = word[0] in {'*', '/'}
-    if result == 0 or (not operatorOnly and not continues and
+    let inGroup = depth > 0
+    let operatorOnly = word.allIt(it in operators)
+    let continues = word[0] in {'*', '/', '^'}
+    if result == 0 or (not inGroup and not operatorOnly and not continues and
         previousIsOperand and not previousEndsInOperator):
       inc result
+    for i, c in word:
+      if c == '(':
+        let group = i == 0 or word[i - 1] in operators + {'('}
+        functions.add group
+        if group: inc depth
+      elif c == ')' and functions.len > 0:
+        if functions.pop(): dec depth
     previousIsOperand = not operatorOnly
-    previousEndsInOperator = word[^1] in {'+', '-', '*', '/'}
+    previousEndsInOperator = word[^1] in operators
 
 func severalComponents(text: string): bool =
   componentCount(text) > 1

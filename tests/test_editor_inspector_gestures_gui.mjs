@@ -53,6 +53,22 @@ try {
  await row.waitFor();assert.equal(await row.count(),1,'Actual visible width row exists');
  const input=row.locator('[data-property-row-input]');
  const snapshot=()=>page.evaluate(()=>JSON.parse(window.__popupAcceptance.snapshot()));
+ // A step that must make no edit is checked only once any edit it started
+ // would have been recorded: the page has handled the key, the history is
+ // settled (wesClean), and no source request or history entry has arrived
+ // within a window longer than an applied edit's own request takes to start.
+ // Reading the counts straight after the key press passed by racing.
+ const settledNoEdit=async(history,calls)=>{
+  await page.evaluate(()=>new Promise(resolve=>requestAnimationFrame(()=>setTimeout(resolve,0))));
+  const until=Date.now()+5000;
+  while(Date.now()<until){
+   const state=await snapshot();
+   assert.equal(state.undoCount,history,'a no-op step added a history entry');
+   assert.equal(proof.sourceRequests.length,calls,'a no-op step sent a source request');
+   await page.waitForTimeout(250);
+  }
+  await page.waitForFunction(()=>JSON.parse(window.__popupAcceptance.snapshot()).stage==='wesClean',null,{timeout:70000});
+ };
  const waitApplied=async(count)=>{
   const started=performance.now();
   await page.waitForFunction(count=>{const state=JSON.parse(window.__popupAcceptance.snapshot());return state.stage==='wesClean'&&state.undoCount===count;},count,{timeout:70000});
@@ -133,7 +149,7 @@ try {
  // Literal exponent forms enter the real shim: a tiny value becomes one, while
  // a large value whose binary64 successor is unchanged makes no fictitious edit.
  await input.fill('1e-20px');await input.press('Enter');await waitApplied(++count);assert.equal(await input.inputValue(),'1e-20');await input.press('ArrowUp');await waitApplied(++count);assert.equal(await input.inputValue(),'1');assert(source().includes('#action { width:1px;'));
- await input.fill('1e20px');await input.press('Enter');await waitApplied(++count);const hugeSource=source(),hugeHistory=count,hugeCalls=proof.sourceRequests.length;await input.fill('1e20px');await input.press('ArrowUp');assert.equal(source(),hugeSource);assert.equal((await snapshot()).undoCount,hugeHistory);assert.equal(proof.sourceRequests.length,hugeCalls);assert.equal(Number(await input.inputValue()),1e20);
+ await input.fill('1e20px');await input.press('Enter');await waitApplied(++count);const hugeSource=source(),hugeHistory=count,hugeCalls=proof.sourceRequests.length;await input.fill('1e20px');await input.press('ArrowUp');await settledNoEdit(hugeHistory,hugeCalls);assert.equal(source(),hugeSource);assert.equal((await snapshot()).undoCount,hugeHistory);assert.equal(proof.sourceRequests.length,hugeCalls);assert.equal(Number(await input.inputValue()),1e20);
  // The same DOM shim must recognize actual angle units rather than px-only text.
  await angle.fill('0.125turn');await angle.press('Enter');await waitApplied(++count);await angle.fill('0.125turn');await angle.press('Alt+ArrowUp');await waitApplied(++count);assert.equal(await angle.inputValue(),'0.225');assert(source().includes('rotate(0.225turn)'));
  record('Actual numeric DOM arrow shim handles tiny/large exponents and fractional turn literals without rounding or fake no-op history');

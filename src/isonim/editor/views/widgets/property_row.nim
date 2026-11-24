@@ -630,6 +630,81 @@ proc nextUnit(config: PropertyRowConfig): PropertyUnitOption =
     else: (idx + 1) mod config.availableUnits.len
   config.availableUnits[nextIdx]
 
+type
+  WrittenNumber = object
+    ## How a numeric row spells its value when that is not the formatted
+    ## number and the unit chip's code (editor spec "Numeric Inputs": "A
+    ## number typed without arithmetic is kept exactly as authored"; "A
+    ## typed unit is kept"). The text path writes `+2px`, `1.50px`,
+    ## `1e-2px`, `-0px` and `10PX` as typed, and the row writes them the
+    ## same way.
+    number: string  ## The number as typed or authored, when it is one CSS
+                    ## number token typed without arithmetic; else "".
+    value: float    ## The value ``number`` spells.
+    unit: string    ## The unit as typed or authored (`PX`); else "".
+    code: string    ## The unit code ``unit`` spells (`px`).
+
+func sameNumber(a, b: float): bool =
+  ## The same value. `-0` and `0` are one value (the row's value signal does
+  ## not tell them apart either); their spellings differ, and the spelling
+  ## is compared as text where it matters (``writtenNumberText``).
+  a == b
+
+proc writtenNumberText(cfg: PropertyRowConfig; written: WrittenNumber;
+    value: float): string =
+  ## The number a row holding ``value`` writes and shows: as authored while
+  ## the value is the one authored, else formatted.
+  if written.number.len > 0 and sameNumber(written.value, value): written.number
+  else: formatNumeric(cfg, value)
+
+proc writtenUnitText(cfg: PropertyRowConfig; written: WrittenNumber): string =
+  ## The unit a row writes: as typed while the chip still holds that unit
+  ## (CSS units are ASCII case-insensitive, CSS Values 4 §6), else the
+  ## chip's code.
+  let code = currentUnitCode(cfg)
+  if written.unit.len > 0 and written.code == code: written.unit else: code
+
+proc numericUnitAccepted*(cssProperty, unit: string): bool =
+  ## Whether ``cssProperty`` accepts a number in ``unit`` (`1dvh`), by the
+  ## validator a text-row or Raw CSS commit uses. For a section that seeds a
+  ## numeric row from authored text (Component properties).
+  if cssProperty.len == 0: return false
+  let raw = "1" & unit
+  let prop = PropertyInfo(name: cssProperty, directStyleAllowed: true)
+  validateCssPropertyValue(prop, PropertyEditRequest(property: cssProperty,
+    newValue: raw, kind: pekCss), parseCssPropertyValue(cssProperty, raw)).len == 0
+
+proc unitAcceptedByProperty(cfg: PropertyRowConfig; unit: string): bool =
+  ## Whether the row's property accepts a length of ``unit`` (`1dvh`), by
+  ## the same validator as a text-row or Raw CSS commit (editor spec
+  ## "Planned interaction parity": every exposed property uses the same
+  ## validation for keyboard and pointer input).
+  if cfg.cssProperty.len == 0: return false
+  let displayed = "1" & unit
+  let raw =
+    if cfg.numericCssValue != nil: cfg.numericCssValue(displayed) else: displayed
+  if raw.len == 0: return false
+  let prop = PropertyInfo(name: cfg.cssProperty, directStyleAllowed: true)
+  let parsed = parseCssPropertyValue(cfg.cssProperty, raw)
+  validateCssPropertyValue(prop, PropertyEditRequest(property: cfg.cssProperty,
+    newValue: raw, kind: pekCss), parsed).len == 0
+
+proc typedUnitOption(cfg: PropertyRowConfig; unit: string):
+    tuple[ok: bool, option: PropertyUnitOption] =
+  ## The chip entry a typed ``unit`` selects. No unit keeps the chip's. A
+  ## chip unit is matched in any case (`PX` is `px`). Another unit is
+  ## admitted when the property accepts it (`dvh`, `cm`, `pt`): it is shown
+  ## on the chip, lower case, without joining the chip's cycle, which keeps
+  ## offering only its own units.
+  if unit.len == 0: return (true, cfg.numericUnit.val)
+  let code = unit.toLowerAscii()
+  for option in cfg.availableUnits:
+    if option.code.len > 0 and option.code.toLowerAscii() == code:
+      return (true, option)
+  if unitAcceptedByProperty(cfg, unit):
+    return (true, PropertyUnitOption(label: code, code: code))
+  (false, PropertyUnitOption())
+
 proc measureAnchorRect*[E](node: E): tuple[x, y, w, h: float] =
   ## VBIND-M2: return ``node``'s bounding rectangle in DOCUMENT
   ## coordinates (viewport rect + ``window.scrollX/Y``) so a caller can
@@ -661,6 +736,43 @@ proc measureAnchorRect*[E](node: E): tuple[x, y, w, h: float] =
   else:
     discard node
 
+proc numericStepText*(raw: string; delta: float): string =
+  ## The field text after an arrow step of ``delta`` on ``raw``: a number
+  ## with an optional unit (`1.1px` + 0.1 is `1.2px`), stepped exactly
+  ## (``steppedNumber``) and spelled as the browser spells a number
+  ## (``numberTokenText``). "" when ``raw`` is not a number with a unit, or
+  ## when the step leaves the value as it was (`1e20px` + 1: binary64 has
+  ## no number between): a step that changes nothing writes nothing, adds
+  ## no history entry and does not respell what was typed.
+  let text = raw.strip()
+  var i = 0
+  if i < text.len and text[i] in {'+', '-'}: inc i
+  var digits = 0
+  while i < text.len and text[i] in {'0'..'9'}:
+    inc i
+    inc digits
+  if i < text.len and text[i] == '.':
+    inc i
+    while i < text.len and text[i] in {'0'..'9'}:
+      inc i
+      inc digits
+  if digits == 0: return ""
+  if i < text.len and text[i] in {'e', 'E'} and i + 1 < text.len and
+      (text[i + 1] in {'0'..'9'} or (text[i + 1] in {'+', '-'} and
+      i + 2 < text.len and text[i + 2] in {'0'..'9'})):
+    i += 2
+    while i < text.len and text[i] in {'0'..'9'}: inc i
+  let unit = text[i ..< text.len]
+  if unit.len > 0 and unit != "%" and
+      not unit.allCharsInSet({'a'..'z', 'A'..'Z'}):
+    return ""
+  var value = 0.0
+  try: value = parseFloat(text[0 ..< i])
+  except ValueError: return ""
+  let next = steppedNumber(value, delta)
+  if next == value: return ""
+  numberTokenText(next) & unit
+
 proc attachNumericKeySteps*[R, E](r: R; inputNode: E; step: float) =
   ## Arrow-key stepping on a numeric input.
   ##
@@ -688,8 +800,8 @@ proc attachNumericKeySteps*[R, E](r: R; inputNode: E; step: float) =
   ## event to decode and the headless tests drive the value signal and
   ## the commit path directly.
   when defined(js):
-    let stepCallback = proc(value, delta: float): float =
-      steppedNumber(value, delta)
+    let stepCallback = proc(raw: cstring; delta: float): cstring =
+      cstring(numericStepText($raw, delta))
     {.emit: ["""
       (function () {
         const input = """, inputNode, """;
@@ -698,24 +810,27 @@ proc attachNumericKeySteps*[R, E](r: R; inputNode: E; step: float) =
         input.addEventListener('focus', function () { if (typeof input.select === 'function') input.select(); });
         const baseStep = Number(""", step, """) || 1;
         const stepped = """, stepCallback, """;
-        function split(raw) {
-          const text = String(raw || '').trim();
-          const match = text.match(/^([+-]?(?:\d+\.?\d*|\.\d+)(?:[eE][+-]?\d+)?)(px|em|rem|%|vw|vh|vmin|vmax|deg|rad|grad|turn|s|ms|fr|ch|ex)?$/);
-          if (!match) return null;
-          return { number: Number(match[1]), unit: match[2] || '' };
-        }
-        function format(number, unit) {
-          return String(number) + unit;
-        }
         input.addEventListener('keydown', (event) => {
           if (event.key !== 'ArrowUp' && event.key !== 'ArrowDown') return;
-          const parsed = split(input.value);
-          if (!parsed) return;
           let magnitude = baseStep;
           if (event.shiftKey) magnitude = baseStep * 10;
           else if (event.altKey) magnitude = baseStep / 10;
           const delta = event.key === 'ArrowUp' ? magnitude : -magnitude;
-          input.value = format(stepped(parsed.number, delta), parsed.unit);
+          // The step and its text are Nim's (``numericStepText``): "" for a
+          // field that holds no number, or a step that changes nothing.
+          const next = stepped(String(input.value || ''), delta);
+          if (!next) {
+            if (/^\s*[+-]?(?:\d|\.\d)/.test(String(input.value || ''))) {
+              // A step that changes nothing leaves the field's own text to
+              // the row, as Enter would: what is already written writes
+              // nothing and the field shows it again; no respelled text is
+              // ever made up for it.
+              input.dispatchEvent(new Event('change', { bubbles: true }));
+              event.preventDefault();
+            }
+            return;
+          }
+          input.value = next;
           input.dispatchEvent(new Event('input', { bubbles: true }));
           input.dispatchEvent(new Event('change', { bubbles: true }));
           event.preventDefault();
@@ -897,14 +1012,49 @@ proc mountPropertyRow*[R, E](r: R; parent: E;
   #  would have changed its meaning under every one of them.
   # ------------------------------------------------------------------------- #
 
+  # How a numeric row spells its value (``WrittenNumber``): set by a typed
+  # or pasted value and by the authored source, read by the field and the
+  # commit.
+  let written = createSignal(WrittenNumber())
+
+  proc readTypedNumber(raw: string): Option[tuple[value: float,
+      option: PropertyUnitOption, spelled: WrittenNumber]] =
+    ## A typed or pasted numeric value: its value clamped to the row's
+    ## bounds, the chip entry its unit selects and how it is written. None
+    ## when it is not one expression with a unit the row admits.
+    let parsed = parseNumericDimension(raw)
+    if parsed.value.isNone: return
+    let unit = typedUnitOption(cfg, parsed.unit)
+    if not unit.ok: return
+    var v = parsed.value.get
+    if cfg.numericMin.isSome and v < cfg.numericMin.get: v = cfg.numericMin.get
+    if cfg.numericMax.isSome and v > cfg.numericMax.get: v = cfg.numericMax.get
+    # A number typed without arithmetic is kept as typed, sign, trailing
+    # zeros and exponent included; arithmetic, and a value the bounds
+    # changed, is written by its value. A typed unit keeps its spelling; no
+    # typed unit keeps the spelling the row already writes for its unit.
+    let prior = untrack(proc(): WrittenNumber = written.val)
+    let priorCode = untrack(proc(): string = currentUnitCode(cfg))
+    var spelled = WrittenNumber(value: v, code: unit.option.code)
+    if parsed.number.isCssNumberText() and sameNumber(v, parsed.value.get):
+      spelled.number = parsed.number
+    if parsed.unit.len > 0: spelled.unit = parsed.unit
+    elif prior.code == priorCode and unit.option.code == priorCode:
+      spelled.unit = prior.unit
+    some((v, unit.option, spelled))
+
   proc currentCssValue(): string =
     ## The row's value as CSS text. For a numeric row that is the
     ## number plus the active unit chip's code — the unit lives in a
     ## separate signal from the magnitude, so ``24`` and ``px`` have
     ## to be rejoined here or the pipeline receives a unitless length.
+    ## A number or unit typed as authored is written as authored
+    ## (``WrittenNumber``).
     case cfg.kind
     of prkNumeric:
-      let displayed = formatNumeric(cfg, cfg.numericValue.val) & currentUnitCode(cfg)
+      let spelled = written.val
+      let displayed = writtenNumberText(cfg, spelled, cfg.numericValue.val) &
+        writtenUnitText(cfg, spelled)
       if cfg.numericCssValue != nil: cfg.numericCssValue(displayed) else: displayed
     of prkColor:
       cfg.colorValue.val
@@ -1093,23 +1243,41 @@ proc mountPropertyRow*[R, E](r: R; parent: E;
           createRenderEffect proc() =
             let source = cfg.authoredValue()
             if source.len == 0: return
-            let parsed = parseNumericInput(source)
+            let parsed = parseNumericDimension(source)
             if parsed.value.isSome:
               # Unitless zero is a valid CSS length; retain the field's current
               # length unit for its next real gesture instead of treating it as
-              # an unsupported expression.
+              # an unsupported expression. A unit the property accepts but the
+              # chip does not offer (`100dvh`) is shown on the chip, as a typed
+              # one is (``typedUnitOption``).
               var supported = parsed.unit.len == 0 and parsed.value.get == 0
-              for unit in cfg.availableUnits:
-                if unit.code == parsed.unit:
-                  cfg.numericUnit.val = unit
+              var code = untrack(proc(): string = currentUnitCode(cfg))
+              if parsed.unit.len == 0:
+                for unit in cfg.availableUnits:
+                  if unit.code.len == 0:
+                    cfg.numericUnit.val = unit
+                    code = ""
+                    supported = true
+                    break
+              else:
+                let unit = typedUnitOption(cfg, parsed.unit)
+                if unit.ok:
+                  cfg.numericUnit.val = unit.option
+                  code = unit.option.code
                   supported = true
-                  break
               if supported:
+                let value = parsed.value.get
                 unparsedSource.val = ""
-                cfg.numericValue.val = parsed.value.get
+                written.val = WrittenNumber(value: value, code: code,
+                  number: (if parsed.number.isCssNumberText(): parsed.number
+                           else: ""),
+                  unit: parsed.unit)
+                cfg.numericValue.val = value
               else: unparsedSource.val = source
             else: unparsedSource.val = source
-        r.setInputValue(inputNode, formatNumeric(cfg, cfg.numericValue.val))
+        proc shown(value: float): string =
+          writtenNumberText(cfg, untrack(proc(): WrittenNumber = written.val), value)
+        r.setInputValue(inputNode, shown(cfg.numericValue.val))
 
         # Reactive bind — when ``numericValue`` mutates externally the
         # input mirrors it (e.g. variable updates, undo). When the user
@@ -1117,9 +1285,23 @@ proc mountPropertyRow*[R, E](r: R; parent: E;
         # math expression back through ``numericValue.val``.
         createRenderEffect proc() =
           let v = cfg.numericValue.val
-          let displayed = if unparsedSource.val.len > 0: unparsedSource.val else: formatNumeric(cfg, v)
+          let spelled = written.val
+          let displayed = if unparsedSource.val.len > 0: unparsedSource.val
+                          else: writtenNumberText(cfg, spelled, v)
           r.setInputValue(inputNode, displayed)
           r.setAttribute(inputNode, "data-committed-value", displayed)
+
+        # A kept spelling belongs to the value it spells: once the value
+        # moves (a scrub, a step, an undo, a caller's write), it is dropped,
+        # so a value that later returns is written by its value, not by a
+        # spelling it no longer came from.
+        createRenderEffect proc() =
+          let v = cfg.numericValue.val
+          let spelled = untrack(proc(): WrittenNumber = written.val)
+          if spelled.number.len > 0 and not sameNumber(spelled.value, v):
+            var dropped = spelled
+            dropped.number = ""
+            written.val = dropped
 
         createRenderEffect proc() =
           r.setTextContent(unitNode, currentUnitLabel(cfg))
@@ -1129,38 +1311,39 @@ proc mountPropertyRow*[R, E](r: R; parent: E;
         let commit = proc() =
           if not valueSlotActive: return
           let raw = r.inputValue(inputNode)
-          let parsed = parseNumericInput(raw)
-          var nextUnit = cfg.numericUnit.val
-          var supported = parsed.unit.len == 0
-          for unit in cfg.availableUnits:
-            if parsed.unit.len > 0 and unit.code == parsed.unit:
-              nextUnit = unit
-              supported = true
-          if parsed.value.isSome and supported:
-            var v = parsed.value.get
-            if cfg.numericMin.isSome and v < cfg.numericMin.get:
-              v = cfg.numericMin.get
-            if cfg.numericMax.isSome and v > cfg.numericMax.get:
-              v = cfg.numericMax.get
+          let typed = readTypedNumber(raw)
+          if typed.isSome:
+            let (v, nextUnit, spelled) = typed.get
             let priorValue = cfg.numericValue.val
             let priorUnit = cfg.numericUnit.val
             let priorRaw = unparsedSource.val
-            if v == priorValue and nextUnit.code == priorUnit.code:
-              r.setInputValue(inputNode, formatNumeric(cfg, v))
+            let priorWritten = written.val
+            # Nothing to write when the row would write what it already
+            # writes: the same value, unit and spelling.
+            if sameNumber(v, priorValue) and nextUnit.code == priorUnit.code and
+                writtenNumberText(cfg, spelled, v) ==
+                  writtenNumberText(cfg, priorWritten, priorValue) and
+                (if spelled.unit.len > 0: spelled.unit else: nextUnit.code) ==
+                  writtenUnitText(cfg, priorWritten):
+              r.setInputValue(inputNode, shown(v))
               return
-            unparsedSource.val = ""
-            cfg.numericUnit.val = nextUnit
-            cfg.numericValue.val = v
-            r.setInputValue(inputNode, formatNumeric(cfg, v))
+            batch(proc() =
+              unparsedSource.val = ""
+              written.val = spelled
+              cfg.numericUnit.val = nextUnit
+              cfg.numericValue.val = v)
+            r.setInputValue(inputNode, shown(v))
             commitValue(proc() =
-              cfg.numericValue.val = priorValue
-              cfg.numericUnit.val = priorUnit
-              unparsedSource.val = priorRaw
-              r.setInputValue(inputNode, formatNumeric(cfg, priorValue)))
+              batch(proc() =
+                written.val = priorWritten
+                cfg.numericValue.val = priorValue
+                cfg.numericUnit.val = priorUnit
+                unparsedSource.val = priorRaw)
+              r.setInputValue(inputNode, shown(priorValue)))
           else:
             # Reject garbage — restore the previous value so the input
             # never displays an unparseable string after losing focus.
-            r.setInputValue(inputNode, formatNumeric(cfg, cfg.numericValue.val))
+            r.setInputValue(inputNode, shown(cfg.numericValue.val))
         r.addEventListener(inputNode, "change", commit)
         r.addEventListener(inputNode, "blur", commit)
         attachNumericKeySteps(r, inputNode, cfg.numericStep)
@@ -1170,8 +1353,19 @@ proc mountPropertyRow*[R, E](r: R; parent: E;
           let nxt = nextUnit(cfg)
           let priorUnit = cfg.numericUnit.val
           if nxt.code == priorUnit.code: return
-          cfg.numericUnit.val = nxt
-          commitValue(proc() = cfg.numericUnit.val = priorUnit)
+          # The typed spelling of a unit belongs to that unit: cycling away
+          # drops it, so cycling back writes the chip's code (`px`, not `PX`).
+          let priorWritten = written.val
+          batch(proc() =
+            if priorWritten.unit.len > 0:
+              var dropped = priorWritten
+              dropped.unit = ""
+              written.val = dropped
+            cfg.numericUnit.val = nxt)
+          commitValue(proc() =
+            batch(proc() =
+              written.val = priorWritten
+              cfg.numericUnit.val = priorUnit))
         r.addEventListener(unitNode, "click", cycleUnit)
         installPopoverTrigger(unitNode)
 
@@ -1191,6 +1385,7 @@ proc mountPropertyRow*[R, E](r: R; parent: E;
         var dragStartX = 0.0
         var dragStartY = 0.0
         var dragStartValue = 0.0
+        var dragStartWritten: WrittenNumber
         var dragMoved = false
 
         let applyScrub = proc(x, y: float; shift, alt: bool) =
@@ -1201,7 +1396,7 @@ proc mountPropertyRow*[R, E](r: R; parent: E;
             cfg.numericMin, cfg.numericMax)
           dragMoved = v != dragStartValue
           cfg.numericValue.val = v
-          r.setInputValue(inputNode, formatNumeric(cfg, v))
+          r.setInputValue(inputNode, shown(v))
 
         let scrubStart = proc(x, y: float; shift, alt: bool) =
           if not active or unparsedSource.val.len > 0:
@@ -1212,6 +1407,7 @@ proc mountPropertyRow*[R, E](r: R; parent: E;
           dragStartX = x
           dragStartY = y
           dragStartValue = cfg.numericValue.val
+          dragStartWritten = written.val
         let scrubEnd = proc(x, y: float; shift, alt: bool) =
           if not dragArmed: return
           dragArmed = false
@@ -1224,16 +1420,25 @@ proc mountPropertyRow*[R, E](r: R; parent: E;
           # pointer; the source is written once, when the hand stops.
           if dragMoved:
             commitValue(proc() =
-              cfg.numericValue.val = dragStartValue
-              r.setInputValue(inputNode, formatNumeric(cfg, dragStartValue)))
+              batch(proc() =
+                written.val = dragStartWritten
+                cfg.numericValue.val = dragStartValue)
+              r.setInputValue(inputNode, shown(dragStartValue)))
+          else:
+            # Back where it started: nothing is written, and the value keeps
+            # the spelling it had.
+            written.val = dragStartWritten
+            r.setInputValue(inputNode, shown(dragStartValue))
         # On the in-field label, and on the legacy gutter node too: the
         # gutter is display:none now, but the headless scrub tests resolve
         # `label-scrubber` and firing at it must still drive the drag.
         let cancelScrub = proc() =
           if not dragArmed: return
           dragArmed = false
-          cfg.numericValue.val = dragStartValue
-          r.setInputValue(inputNode, formatNumeric(cfg, dragStartValue))
+          batch(proc() =
+            written.val = dragStartWritten
+            cfg.numericValue.val = dragStartValue)
+          r.setInputValue(inputNode, shown(dragStartValue))
         onCleanup(proc() =
           cancelScrub()
           active = false)
@@ -1733,27 +1938,23 @@ proc mountPropertyRow*[R, E](r: R; parent: E;
     let refusal = "Cannot paste " & value & " into " & cfg.name & "."
     case cfg.kind
     of prkNumeric:
-      let parsed = parseNumericInput(value)
-      var nextUnit = cfg.numericUnit.val
-      var supported = parsed.unit.len == 0
-      for unit in cfg.availableUnits:
-        if parsed.unit.len > 0 and unit.code == parsed.unit:
-          nextUnit = unit
-          supported = true
-      if parsed.value.isNone or not supported:
+      let typed = readTypedNumber(value)
+      if typed.isNone:
         refusePaste(refusal)
         return
-      var v = parsed.value.get
-      if cfg.numericMin.isSome and v < cfg.numericMin.get: v = cfg.numericMin.get
-      if cfg.numericMax.isSome and v > cfg.numericMax.get: v = cfg.numericMax.get
+      let (v, nextUnit, spelled) = typed.get
       let priorValue = cfg.numericValue.val
       let priorUnit = cfg.numericUnit.val
+      let priorWritten = written.val
       batch(proc() =
+        written.val = spelled
         cfg.numericUnit.val = nextUnit
         cfg.numericValue.val = v)
       commitValue(proc() =
-        cfg.numericValue.val = priorValue
-        cfg.numericUnit.val = priorUnit)
+        batch(proc() =
+          written.val = priorWritten
+          cfg.numericValue.val = priorValue
+          cfg.numericUnit.val = priorUnit))
     of prkColor:
       let color = normalizedSourceColor(value)
       if color.len == 0:

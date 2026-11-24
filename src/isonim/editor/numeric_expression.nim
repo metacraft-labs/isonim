@@ -247,6 +247,63 @@ proc parseNumericInput*(raw: string): tuple[value: Option[float], unit: string] 
   if parsed.value.isNone or parsed.rest notin numericInputUnits: return
   result = (parsed.value, parsed.rest)
 
+func isCssUnitText(text: string): bool =
+  ## Whether ``text`` is spelled as a CSS dimension's unit or a percentage
+  ## sign: ``%``, or ASCII letters (CSS Syntax 3 §4.3.3, a dimension's unit
+  ## is an ident; every unit CSS defines is spelled in ASCII letters).
+  if text == "%": return true
+  if text.len == 0: return false
+  for c in text:
+    if c notin {'a'..'z', 'A'..'Z'}: return false
+  true
+
+proc parseNumericDimension*(raw: string):
+    tuple[value: Option[float], number, unit: string] =
+  ## ``raw`` read whole as one expression and a unit spelled as CSS spells
+  ## one (``%`` or letters), whichever unit it is and in the case it was
+  ## typed (`10dvh`, `2cm`, `10PX`): the numeric row admits the units the
+  ## property's validator accepts, not only the ones its chip offers
+  ## (editor spec "Planned interaction parity": typed units obey the same
+  ## property constraints on every path). ``number`` is the text before the
+  ## unit, as typed. None for unmatched syntax, a non-finite result or a
+  ## suffix that is not a unit.
+  let parsed = parseLeading(raw)
+  if parsed.value.isNone: return
+  if parsed.rest.len > 0 and not isCssUnitText(parsed.rest): return
+  let text = raw.strip()
+  result = (parsed.value, text[0 ..< text.len - parsed.rest.len].strip(),
+    parsed.rest)
+
+func isCssNumberText*(text: string): bool =
+  ## Whether ``text`` is exactly one CSS number token (CSS Syntax 3 §4.3.12):
+  ## an optional sign, digits with an optional fraction or a fraction alone,
+  ## and an optional exponent. `+2`, `1.50`, `.5`, `-0` and `1e-2` are;
+  ## `1.`, `- 2` and `2^2` are not.
+  var i = 0
+  if i < text.len and text[i] in {'+', '-'}: inc i
+  var digits = 0
+  while i < text.len and text[i] in {'0'..'9'}:
+    inc i
+    inc digits
+  if i < text.len and text[i] == '.':
+    inc i
+    var fraction = 0
+    while i < text.len and text[i] in {'0'..'9'}:
+      inc i
+      inc fraction
+    if fraction == 0: return false
+    digits += fraction
+  if digits == 0: return false
+  if i < text.len and text[i] in {'e', 'E'}:
+    inc i
+    if i < text.len and text[i] in {'+', '-'}: inc i
+    var exponent = 0
+    while i < text.len and text[i] in {'0'..'9'}:
+      inc i
+      inc exponent
+    if exponent == 0: return false
+  i == text.len
+
 proc evaluateNumericExpression*(raw: string): Option[float] =
   ## The value of ``raw`` read whole as one expression with no unit, or none
   ## when it is not one (unmatched syntax, a unit or other text left over, a
