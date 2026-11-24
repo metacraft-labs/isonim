@@ -299,3 +299,12 @@ tests/test_editor_loop_handlers
 /tests/test_editor_edit_regime
 /tests/test_scene_graph_hooks
 /tests/test_style_provenance
+
+# Native binaries that `just test-c` builds next to their sources and that the
+# list above did not cover yet (the last one is new to the native list).
+tests/test_frame_renderer
+tests/test_navigator
+tests/test_network_profile
+tests/test_readiness_marks
+tests/test_service_streams
+tests/test_glitch_free

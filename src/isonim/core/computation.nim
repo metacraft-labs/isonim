@@ -191,7 +191,8 @@ proc createMemo*[T](fn: proc(): T; equals: EqualityFn[T] = nil): Memo[T] =
 
 proc val*[T](m: Memo[T]): T =
   ## Reads the memo's cached value (tracked).
-  ## If the memo is stale, re-evaluates it first.
+  ## If the memo is stale or pending, brings it up to date first (see
+  ## `refresh`), so a read right after a write is current even inside a batch.
   if m.computation.state != csClean:
     refresh(m.computation)
   trackRead(m.signal)
@@ -206,6 +207,6 @@ proc onMount*(fn: proc()) =
   ## inside fn create subscriptions, so the effect never re-executes.
   createEffect(proc() = untrack(fn))
 
-# Register updateComputation as the callback for batch.nim
-updateComputationCb = updateComputation
+# Register runTop as the callback through which batch.nim's flush processes
+# each queued computation.
 runTopCb = runTop

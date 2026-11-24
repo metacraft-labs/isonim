@@ -848,11 +848,14 @@ try{
       const visit=(value,path,depth=0)=>{
         if(!value || typeof value!=='object' || seen.has(value) || depth>8)return;
         seen.add(value);
-        if(value.computation && (value.signal || value.observers)){
-          memoPaths.set(value.computation,[...(memoPaths.get(value.computation)||[]),path]);return;
+        // A memo handle carries `signal` and `computation`; a memo's own signal
+        // carries `observers` and `memoComputation` (null on a plain signal).
+        const memoComputation=value.signal ? value.computation : value.observers ? value.memoComputation : null;
+        if(memoComputation){
+          memoPaths.set(memoComputation,[...(memoPaths.get(memoComputation)||[]),path]);return;
         }
         for(const [key,child] of Object.entries(value)){
-          if(['m_type','observers','observerSlots','sources','sourceSlots','owned','owner','fn','cleanups','contextTable','computation'].includes(key))continue;
+          if(['m_type','observers','observerSlots','sources','sourceSlots','owned','owner','fn','cleanups','contextTable','computation','memoComputation'].includes(key))continue;
           if(key==='value' && value.observers)continue;
           if(Array.isArray(child) && child.every(item=>!item || typeof item!=='object'))continue;
           visit(child,path+'.'+key,depth+1);

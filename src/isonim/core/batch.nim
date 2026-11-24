@@ -70,9 +70,8 @@ when defined(isonimInternalFlushObservation):
     ## Narrow private proof counter; reading it never queries/creates a token.
     flushEpochConstructions
 
-# Forward declarations — implemented in computation.nim, registered here via
-# callbacks so this module does not import it.
-var updateComputationCb*: proc(comp: ComputationBase)
+# Forward declaration — implemented in computation.nim, registered here via
+# a callback so this module does not import it.
 var runTopCb*: proc(comp: ComputationBase)
   ## Brings a queued computation up to date: a stale one re-runs; a pending
   ## one first refreshes the memos it read and re-runs only if one of them
@@ -85,8 +84,12 @@ var runTopCb*: proc(comp: ComputationBase)
 # A write marks the computations that read the written signal *stale* (they
 # must re-run) and everything downstream of the memos among them *pending*
 # (they may have to re-run, if a memo they read ends up with a new value).
-# Every marked computation is queued once: memos (`pure`) in `Updates`,
-# effects in `Effects`. The flush then brings each queued node up to date by
+# Marked computations are queued: memos (`pure`) in `Updates`, effects in
+# `Effects`. A downstream node is queued once, when it is first marked; a
+# direct reader of the written signal is queued on every write (see
+# `markSignalWrite`). A queued node that is already clean when the flush
+# reaches it is skipped, so a duplicate entry costs one state check.
+# The flush then brings each queued node up to date by
 # pulling its sources first, so no computation ever runs against a mix of
 # old and new inputs, and a node whose memo inputs all turn out unchanged
 # does not run at all.
@@ -130,15 +133,22 @@ proc markSignalWrite*(signal: SignalStateBase) =
 proc markMemoChanged*(signal: SignalStateBase) =
   ## A memo produced a new value: its readers are stale. They were already
   ## marked pending and queued when the memo itself was marked; a reader that
-  ## is clean (it subscribed after that) is queued now.
+  ## is clean (it subscribed after that) is queued now. A reader that is a
+  ## stale memo is queued again too: a flush abandoned by an exception leaves
+  ## the memos it did not reach stale and in no queue (see `flushUpdates`),
+  ## and marking skips a node that is not clean, so without this its readers
+  ## would never hear of the change. When it is queued already, the second
+  ## entry finds it clean and costs one state check.
   var i = 0
   while i < signal.observers.len:
     let obs = signal.observers[i]
-    let wasClean = obs.state == csClean
+    let previous = obs.state
     obs.state = csStale
-    if wasClean:
+    if previous == csClean:
       enqueue(obs)
       if obs.memoSignal != nil: markDownstream(obs.memoSignal)
+    elif previous == csStale and obs.pure:
+      enqueue(obs)
     inc i
 
 proc flushUpdates*() =
@@ -185,17 +195,21 @@ proc flushUpdates*() =
     if not completed:
       # An exception abandons the rest of this flush and propagates
       # unchanged. The abandoned nodes must stay reachable by later writes:
-      # a pending node, or a stale effect, goes back to clean so the next
-      # change it depends on queues it again; a stale memo stays stale so
-      # the next read recomputes it.
+      # marking skips a node that is not clean, so a pending node, or a
+      # stale effect, goes back to clean and the next change it depends on
+      # queues it again; a stale memo stays stale so the next read
+      # recomputes it, and a change of a memo it reads queues it again
+      # (`markMemoChanged`). The release starts at the node being processed
+      # (index `i`): the exception may have come from a memo it was pulling,
+      # in which case that node is still pending and in no other queue.
       proc release(comp: ComputationBase) =
         if comp.state == csPending or (comp.state == csStale and not comp.pure):
           comp.state = csClean
       if phase == 0:
-        for k in i + 1 ..< pendingUpdates.len: release(pendingUpdates[k])
+        for k in i ..< pendingUpdates.len: release(pendingUpdates[k])
         for k in 0 ..< pendingEffects.len: release(pendingEffects[k])
       else:
-        for k in i + 1 ..< pendingEffects.len: release(pendingEffects[k])
+        for k in i ..< pendingEffects.len: release(pendingEffects[k])
   when defined(isonimInternalFlushObservation):
     internalFlushReturned = true
 

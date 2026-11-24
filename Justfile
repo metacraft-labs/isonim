@@ -220,6 +220,11 @@ test-c:
     nim c -r tests/test_nimcache_is_worktree_local.nim
     nim c -r tests/test_signals.nim
     nim c -r tests/test_effects.nim
+    nim c -r tests/test_glitch_free.nim
+    # The private flush observation leaf, enabled: real graphs, nested and
+    # abandoned flushes (`just test-internal-flush-observation` adds the
+    # omission proof and the semantic inverses).
+    nim c -r -d:isonimInternalFlushObservation --out:build/tests/test_internal_flush_observation tests/test_internal_flush_observation.nim
     nim c -r tests/test_branded_task_app.nim
     nim c -r tests/test_clock.nim
     nim c -r tests/test_nondet_seams.nim
@@ -369,6 +374,8 @@ test-js: build-tailwind
     nim js -r tests/test_signals.nim
     nim js -r --out:build/test_frame_renderer.js tests/test_frame_renderer.nim
     nim js -r tests/test_effects.nim
+    nim js -r tests/test_glitch_free.nim
+    nim js -r -d:isonimInternalFlushObservation --out:build/tests/test_internal_flush_observation.js tests/test_internal_flush_observation.nim
     nim js -r tests/test_clock.nim
     nim js tests/test_nondet_seams.nim
     python3 tools/run_nim_js_test.py tests/test_nondet_seams.js

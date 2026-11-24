@@ -90,28 +90,34 @@ proc removeSourceObserver(source: SignalStateBase; obsSlot: int) =
   source.observers.setLen(lastIdx)
   source.observerSlots.setLen(lastIdx)
 
+proc isComputationNode*(node: OwnerBase): bool {.inline.} =
+  ## True when `node` is a computation (not a bare root owner).
+  ##
+  ## A browser hot reload retains these owners but re-evaluates Nim's
+  ## generated RTTI declarations, so on JS `of` no longer identifies a
+  ## retained computation. The stable computation fields identify our own
+  ## graph nodes instead; native targets use Nim's normal runtime type check.
+  when defined(js):
+    {.emit: [result, " = ", node, " != null && Object.prototype.hasOwnProperty.call(", node,
+      ", 'sources') && Object.prototype.hasOwnProperty.call(", node,
+      ", 'sourceSlots');"].}
+  else:
+    result = node != nil and node of ComputationBase
+
+proc asComputation*(node: OwnerBase): ComputationBase {.inline.} =
+  ## Converts a node `isComputationNode` accepted. Unchecked on JS, for the
+  ## same hot-reload reason.
+  when defined(js):
+    {.emit: [result, " = ", node, ";"].}
+  else:
+    result = ComputationBase(node)
+
 proc cleanNode*(node: OwnerBase; dispose: bool = false) =
   ## Removes a node from the reactive graph.
   ## For computations: unlinks from sources' observer lists.
   ## For all owners: runs cleanup callbacks and recursively cleans owned nodes.
-
-  # A browser hot reload retains these owners but re-evaluates Nim's generated
-  # RTTI declarations. Their object identities no longer identify the old
-  # computation. The stable computation fields identify our own graph nodes;
-  # native targets continue using Nim's normal runtime type check.
-  var isComputation: bool
-  when defined(js):
-    {.emit: [isComputation, " = Object.prototype.hasOwnProperty.call(", node,
-      ", 'sources') && Object.prototype.hasOwnProperty.call(", node,
-      ", 'sourceSlots');"].}
-  else:
-    isComputation = node of ComputationBase
-  if isComputation:
-    var comp: ComputationBase
-    when defined(js):
-      {.emit: [comp, " = ", node, ";"].}
-    else:
-      comp = ComputationBase(node)
+  if isComputationNode(node):
+    let comp = asComputation(node)
     for i in 0 ..< comp.sources.len:
       let source = comp.sources[i]
       let obsSlot = comp.sourceSlots[i]
@@ -148,20 +154,3 @@ proc cleanNode*(node: OwnerBase; dispose: bool = false) =
   node.cleanups.setLen(0)
   if firstCleanupError != nil:
     raise firstCleanupError
-
-proc isComputationNode*(node: OwnerBase): bool =
-  ## True when `node` is a computation (not a bare root owner). Uses the same
-  ## field test as `cleanNode` on JS, where a browser hot reload re-evaluates
-  ## Nim's RTTI and `of` no longer identifies retained nodes.
-  when defined(js):
-    {.emit: [result, " = ", node, " != null && Object.prototype.hasOwnProperty.call(", node,
-      ", 'sources') && Object.prototype.hasOwnProperty.call(", node,
-      ", 'sourceSlots');"].}
-  else:
-    result = node != nil and node of ComputationBase
-
-proc asComputation*(node: OwnerBase): ComputationBase {.inline.} =
-  when defined(js):
-    {.emit: [result, " = ", node, ";"].}
-  else:
-    result = ComputationBase(node)

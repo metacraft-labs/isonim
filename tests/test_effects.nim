@@ -268,3 +268,67 @@ suite "Batch":
       check observed == 3
       a.val = 5  # SHOULD trigger re-run
       check observed == 15  # 5 + 10
+
+  test "a flush abandoned by an exception leaves its readers reachable":
+    # The exception comes from a memo that a pending memo is pulling, so the
+    # node being processed when the flush is abandoned is still pending. It
+    # must be released with the rest, or the reader behind it never runs
+    # again.
+    let x = createSignal(0)
+    let a = createSignal(1)
+    var seen: seq[int]
+    var dispose: proc()
+    createRoot proc(stop: proc()) =
+      dispose = stop
+      let big = createMemo(proc(): bool = x.val > 100)
+      let scaled = createMemo(proc(): int =
+        if a.val == 2: raise newException(ValueError, "boom")
+        a.val * 10)
+      let total = createMemo(proc(): int =
+        (if big.val: 1000 else: 0) + scaled.val)
+      createEffect proc() =
+        seen.add total.val
+    seen = @[]
+    # `x` first, so `total` is queued (pending, through `big`) ahead of
+    # `scaled`; `big` stays false, so `total` goes on to pull `scaled`.
+    expect ValueError:
+      batch proc() =
+        x.val = 1
+        a.val = 2
+    check seen.len == 0
+    a.val = 3
+    check seen == @[30]
+    a.val = 4
+    check seen == @[30, 40]
+    dispose()
+
+  test "a memo an abandoned flush left stale still hears of a memo it reads":
+    # The flush is abandoned while `m` is still queued, so `m` is left stale
+    # and in no queue. A later change of `m0`, a memo it reads, must queue it
+    # again; otherwise neither `m` nor the effect behind it ever runs again.
+    let t = createSignal(0)
+    let s = createSignal(1)
+    var seen: seq[int]
+    var dispose: proc()
+    createRoot proc(stop: proc()) =
+      dispose = stop
+      # `thrower` reads `t` before `m` does, so it runs first and throws
+      # while `m` is still waiting in the same flush.
+      let thrower = createMemo(proc(): int =
+        if t.val == 1: raise newException(ValueError, "boom")
+        t.val)
+      let m0 = createMemo(proc(): int = s.val * 10)
+      let m = createMemo(proc(): int = t.val + m0.val)
+      createEffect proc() =
+        seen.add m.val
+      createEffect proc() =
+        discard thrower.val
+    seen = @[]
+    expect ValueError:
+      t.val = 1
+    check seen.len == 0
+    s.val = 2
+    check seen == @[21]
+    s.val = 3
+    check seen == @[21, 31]
+    dispose()
