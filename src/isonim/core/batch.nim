@@ -99,7 +99,8 @@ var ownerMarked* {.threadvar.}: bool
   ## outermost flush. Only then can a queued node have an out-of-date owner,
   ## so `runTop` walks owner chains only then (the common case, many leaf
   ## effects and no re-running parent, skips the walk entirely).
-var flushDepth {.threadvar.}: int
+var flushDepth* {.threadvar.}: int
+  ## How many flushes are running (nested ones included).
 
 proc enqueue(comp: ComputationBase) {.inline.} =
   if comp.owned.len > 0: ownerMarked = true
@@ -134,7 +135,7 @@ proc markMemoChanged*(signal: SignalStateBase) =
   ## A memo produced a new value: its readers are stale. They were already
   ## marked pending and queued when the memo itself was marked; a reader that
   ## is clean (it subscribed after that) is queued now. A reader that is a
-  ## stale memo is queued again too: a flush abandoned by an exception leaves
+  ## stale memo is queued again too: a flush abandoned by a `Defect` leaves
   ## the memos it did not reach stale and in no queue (see `flushUpdates`),
   ## and marking skips a node that is not clean, so without this its readers
   ## would never hear of the change. When it is queued already, the second
@@ -151,10 +152,19 @@ proc markMemoChanged*(signal: SignalStateBase) =
       enqueue(obs)
     inc i
 
+var flushError* {.threadvar.}: ref CatchableError
+  ## The first error of the current outermost flush that no handler took
+  ## (`computation.handleError` keeps it; the outermost flush rethrows it).
+
 proc flushUpdates*() =
   ## Process all queued updates: memos (pure) first, then effects. Each
   ## queued node is brought up to date through `runTopCb`, which pulls the
   ## memos it reads before deciding whether it must re-run.
+  ##
+  ## A computation that raises a `CatchableError` does not stop the flush:
+  ## the error goes to the nearest handler above it (see
+  ## `computation.handleError`), and one no handler takes is rethrown by the
+  ## outermost flush after the queue is empty.
   if batchDepth > 0:
     return
   when defined(isonimInternalFlushObservation):
@@ -178,6 +188,7 @@ proc flushUpdates*() =
   var phase = 0
   var i = 0
   var completed = false
+  var failure: ref CatchableError
   try:
     if runTopCb != nil:
       while i < pendingUpdates.len:
@@ -191,9 +202,10 @@ proc flushUpdates*() =
     completed = true
   finally:
     dec flushDepth
-    if flushDepth == 0: ownerMarked = false
     if not completed:
-      # An exception abandons the rest of this flush and propagates
+      # Only a `Defect`, or on JS an exception that is not a Nim exception
+      # (a `TypeError` from a host API), gets here: those are not routed to
+      # handlers and still abandon the rest of the flush, propagating
       # unchanged. The abandoned nodes must stay reachable by later writes:
       # marking skips a node that is not clean, so a pending node, or a
       # stale effect, goes back to clean and the next change it depends on
@@ -210,6 +222,13 @@ proc flushUpdates*() =
         for k in 0 ..< pendingEffects.len: release(pendingEffects[k])
       else:
         for k in i ..< pendingEffects.len: release(pendingEffects[k])
+    if flushDepth == 0:
+      ownerMarked = false
+      # Taken even when unwinding, so a kept error never leaks into the next
+      # flush; the exception that is unwinding wins.
+      failure = flushError
+      flushError = nil
+  if failure != nil: raise failure
   when defined(isonimInternalFlushObservation):
     internalFlushReturned = true
 

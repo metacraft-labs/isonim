@@ -182,7 +182,7 @@ def main():
         else:
             execute('ordinary-debug-c', artifact)
     expected_scenarios = ['local', 'activity', 'nested', 'throw', 'reset', 'reuse',
-                          'caught-inner', 'ambient-exception', 'open-batch-and-pure',
+                          'caught-inner', 'nested-error', 'ambient-exception', 'open-batch-and-pure',
                           'direct-and-invalid', 'nested-first-query']
 
     def verify_scenarios(raw):

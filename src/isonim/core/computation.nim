@@ -21,19 +21,71 @@ type
     ## the computation is up-to-date, then returns the cached value.
     value*: T
     comparator*: EqualityFn[T]
+    error*: ref CatchableError
+      ## Set while the memo's last run raised: reading the memo raises it
+      ## again (the value is the last good one, or `default(T)`).
 
   Memo*[T] = object
     ## User-facing memo handle. Reads are tracked like signals.
     signal*: MemoSignalState[T]
     computation*: ComputationBase
 
+proc handleError*(source: ComputationBase; err: ref CatchableError) =
+  ## Deliver `err`, raised by `source` (its run or a cleanup of its previous
+  ## run), to the nearest handler registered on `source` or one of its
+  ## owners (`owner.onError`, an effect's error arm, an error boundary). The
+  ## handler runs untracked, with its own owner as the current owner. An
+  ## error the handler raises goes on to the next handler above it. With no
+  ## handler the error is unhandled.
+  ##
+  ## With `err` nil, `source` is a computation whose last run had failed and
+  ## that has now run successfully: every handler above it is told (an
+  ## error boundary shows its content again).
+  var err = err
+  var o: OwnerBase = source
+  while o != nil:
+    if not o.contextTable.isNil and errorHandlerKey in o.contextTable:
+      let e = err
+      let prevListener = Listener
+      let prevOwner = Owner
+      Listener = nil
+      Owner = o
+      err = nil
+      try:
+        ErrorBox(o.contextTable[errorHandlerKey]).handler(e, source)
+      except CatchableError as x:
+        err = x
+      finally:
+        Listener = prevListener
+        Owner = prevOwner
+      # Handled, unless the handler raised; a recovery goes on upwards.
+      if e != nil and err == nil: return
+    o = o.owner
+  if err != nil:
+    # Unhandled: inside a flush the first one is kept, and the outermost
+    # flush rethrows it, unchanged, once every queued node has run
+    # (`batch.flushUpdates`); outside a flush it is raised at once.
+    if flushDepth == 0: raise err
+    if flushError == nil: flushError = err
+
 proc updateComputation*(comp: ComputationBase) =
   ## Re-executes a computation: cleans old dependencies, sets Listener,
   ## calls fn, collects new dependencies.
+  ##
+  ## A `CatchableError` from the run, or from a cleanup of the previous run,
+  ## does not escape: it goes to `handleError`, so the rest of the flush
+  ## still runs. A failing cleanup does not stop the run (every cleanup has
+  ## run by then; `cleanNode` raises the first failure afterwards). A memo's
+  ## own errors are its value, not a failure: see `createMemo`.
   if comp.fn == nil:
     return
-  # Clean old dependencies and run cleanup callbacks
-  cleanNode(comp)
+  var err: ref CatchableError
+  # Clean old dependencies and run cleanup callbacks. A Defect from a
+  # cleanup propagates, as before (see `batch.flushUpdates`).
+  try:
+    cleanNode(comp)
+  except CatchableError as e:
+    err = e
   comp.state = csClean
 
   let prevListener = Listener
@@ -42,11 +94,17 @@ proc updateComputation*(comp: ComputationBase) =
   Owner = comp
   try:
     comp.fn()
+  except CatchableError as e:
+    if err == nil: err = e
   finally:
     Listener = prevListener
     Owner = prevOwner
 
-  comp.updatedAt = ExecCount
+  # A failure, or the first success after one (`errored` is set only
+  # while the last run failed, so the common case costs one test).
+  if err != nil or comp.errored:
+    comp.errored = err != nil
+    handleError(comp, err)
 
 proc refresh(comp: ComputationBase) =
   ## Bring `comp` up to date. A stale computation re-runs. A pending one first
@@ -100,7 +158,6 @@ proc createComputation(fn: proc(); pure: bool; initial: bool = true) =
     state: csStale,
     pure: pure,
     fn: fn,
-    updatedAt: 0,
     memoSignal: nil,
     contextTable: nil,
   )
@@ -113,6 +170,29 @@ proc createEffect*(fn: proc()) =
   ## Creates an effect that tracks dependencies and re-runs on change.
   ## Effects are non-pure computations.
   createComputation(fn, pure = false, initial = true)
+
+proc createEffectWithErrorArm*(fn: proc(); onError: ErrorHandler) =
+  ## An effect with an error arm (provisional API): a `CatchableError` raised
+  ## by a run of `fn`, by one of its cleanups, or by a computation it owns
+  ## goes to `onError` instead of the handlers above the effect. The effect
+  ## stays subscribed to what it read before it failed, so a later change
+  ## runs it again.
+  ##
+  ## A separate name, not an overload of `createEffect`: with an overload,
+  ## `createEffect do: ...` blocks that capture locals stop compiling (the
+  ## compiler reports "environment misses"), and a default parameter would
+  ## make every page carry the arm's code.
+  ##
+  ## The arm is registered on the effect at the start of its first run (the
+  ## effect is the current owner then), so `createComputation` stays as small
+  ## as before for every page that does not use it.
+  if onError == nil:
+    createEffect(fn)
+    return
+  let box = errorBox(onError)
+  createEffect proc() =
+    if Owner.contextTable.isNil: setErrorBox(Owner, box)
+    fn()
 
 proc createRenderEffect*(fn: proc()) =
   ## Like createEffect but runs synchronously during render.
@@ -127,6 +207,8 @@ proc createMemo*[T](fn: proc(): T; equals: EqualityFn[T] = nil): Memo[T] =
   ## Creates a memoized computation that caches its result.
   ## Acts as both a signal (has observers, can be read with tracking)
   ## and a computation (has sources, re-runs when dependencies change).
+  ## When `fn` raises a `CatchableError` (on the first run too), the memo
+  ## keeps the error and reading it raises it (see `val`).
   let memoSig = MemoSignalState[T](
     observers: @[],
     observerSlots: @[],
@@ -136,8 +218,21 @@ proc createMemo*[T](fn: proc(): T; equals: EqualityFn[T] = nil): Memo[T] =
   var comp: ComputationBase
 
   let wrappedFn = proc() =
-    let newVal = fn()
-    if memoSig.comparator != nil:
+    # An error is the memo's state, like a value: it is kept, and readers
+    # are told that the memo changed, so each re-runs and raises it again
+    # when it reads the memo (and the nearest handler of each sees it). A
+    # later run that succeeds replaces it, and readers are told again.
+    let newVal =
+      try: fn()
+      except CatchableError as e:
+        memoSig.error = e
+        if memoSig.observers.len > 0:
+          runUpdates proc() =
+            markMemoChanged(memoSig)
+        return
+    if memoSig.error != nil:
+      memoSig.error = nil
+    elif memoSig.comparator != nil:
       if memoSig.comparator(memoSig.value, newVal):
         return
     elif memoSig.value == newVal:
@@ -160,7 +255,6 @@ proc createMemo*[T](fn: proc(): T; equals: EqualityFn[T] = nil): Memo[T] =
     state: csStale,
     pure: true,
     fn: wrappedFn,
-    updatedAt: 0,
     memoSignal: memoSig,
     contextTable: nil,
   )
@@ -172,7 +266,10 @@ proc createMemo*[T](fn: proc(): T; equals: EqualityFn[T] = nil): Memo[T] =
   # Initial execution — capture the first value
   # We need to set fn to the wrapper that stores the initial value
   let initialFn = proc() =
-    storeReactiveValue(memoSig.value, fn())
+    try:
+      storeReactiveValue(memoSig.value, fn())
+    except CatchableError as e:
+      memoSig.error = e
 
   let prevListener = Listener
   let prevOwner = Owner
@@ -185,7 +282,6 @@ proc createMemo*[T](fn: proc(): T; equals: EqualityFn[T] = nil): Memo[T] =
   finally:
     Listener = prevListener
     Owner = prevOwner
-  comp.updatedAt = ExecCount
 
   result = Memo[T](signal: memoSig, computation: comp)
 
@@ -193,9 +289,12 @@ proc val*[T](m: Memo[T]): T =
   ## Reads the memo's cached value (tracked).
   ## If the memo is stale or pending, brings it up to date first (see
   ## `refresh`), so a read right after a write is current even inside a batch.
+  ## A memo whose last run raised raises that error again, the same object,
+  ## after the read is tracked, so the reader re-runs when the memo does.
   if m.computation.state != csClean:
     refresh(m.computation)
   trackRead(m.signal)
+  if m.signal.error != nil: raise m.signal.error
   m.signal.value
 
 proc onMount*(fn: proc()) =

@@ -50,8 +50,37 @@ type
     state*: ComputationState
     pure*: bool
     fn*: proc()                       ## The computation function (type-erased)
-    updatedAt*: int                   ## Execution counter for cycle detection
     memoSignal*: SignalStateBase      ## When non-nil, this computation acts as a memo
+    errored*: bool
+      ## Its last run ended in an error that went to a handler (or was
+      ## reported as unhandled). The next run that succeeds tells the
+      ## handlers above it that it recovered (see `computation.handleError`).
+
+  ErrorHandler* = proc(err: ref CatchableError)
+    ## Receives an error raised by a computation (or one of its cleanups)
+    ## under the owner the handler is registered on.
+
+  ErrorBox* = ref object of RootObj
+    ## The error handling registered on an owner, kept in its context table
+    ## under `errorHandlerKey`, so owners without a handler pay nothing.
+    handler*: proc(err: ref CatchableError; source: ComputationBase)
+      ## Never nil. Called with the error and the computation it came from;
+      ## with `err` nil, `source`, whose last run had failed, has just run
+      ## successfully (an error boundary shows its content again).
+
+const errorHandlerKey* = 0
+  ## Context ids start at 1 (`context.createContext`), so 0 is free.
+
+proc setErrorBox*(node: OwnerBase; box: ErrorBox) =
+  ## Registers `box` on `node`, replacing an earlier one.
+  if node.contextTable.isNil:
+    node.contextTable = newHashMapRef[int, RootRef]()
+  node.contextTable[errorHandlerKey] = box
+
+proc errorBox*(handler: ErrorHandler): ErrorBox =
+  ## A box that passes errors to `handler` and ignores recoveries.
+  ErrorBox(handler: proc(err: ref CatchableError; source: ComputationBase) =
+    if err != nil: handler(err))
 
 # Thread-local tracking context
 var Listener* {.threadvar.}: ComputationBase

@@ -28,6 +28,17 @@ proc onCleanup*(fn: proc()) =
   if Owner != nil:
     Owner.cleanups.add(fn)
 
+proc onError*(handler: ErrorHandler) =
+  ## Handles the errors of the computations under the current owner
+  ## (provisional API). A `CatchableError` raised by a computation's run or
+  ## cleanup goes to the nearest owner with a handler, and the rest of the
+  ## flush still runs; a handler that raises passes its error to the next
+  ## one above. Without any handler, the outermost flush rethrows the first
+  ## error once it has finished. Registering again replaces the handler.
+  ## A nil handler is ignored.
+  if Owner != nil and handler != nil:
+    setErrorBox(Owner, errorBox(handler))
+
 proc getOwner*(): OwnerBase =
   ## Returns the current owner.
   Owner

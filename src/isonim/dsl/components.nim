@@ -6,7 +6,7 @@
 ## Port of SolidJS rendering control flow components.
 
 import std/tables
-import ../core/[signals, computation, owner, platform]
+import ../core/[signals, computation, owner, platform, graph]
 import ../core/reconcile
 import ./stable_ids
 
@@ -218,13 +218,116 @@ proc errorBoundary*[R, N](
     parent: N;
     body: proc(): N;
     fallback: proc(err: ref CatchableError): N) =
-  ## Error boundary. Renders `body`; if it throws, renders `fallback` with
-  ## the caught error instead.
+  ## Error boundary. Renders `body`; if it throws, or a computation created
+  ## under it fails -- in its first run or in any later re-run -- shows
+  ## `fallback` with the error instead. The body's content stays alive while
+  ## the fallback is shown, and comes back once every computation under it
+  ## that failed has run again successfully (for example when the memo they
+  ## read produces a new value) or has been disposed. A later failure shows
+  ## a new fallback; the same error reported by several computations (the
+  ## readers of one failing memo) shows it once. An error raised by
+  ## `fallback` goes to the boundary's own owner (an outer boundary).
+  ##
+  ## When `body` itself raises there is no content to come back to: the
+  ## fallback stays until the boundary is disposed.
+  when stableIdsEnabled:
+    let renderStableScope = captureStableScope()
+  let boundaryOwner = getOwner()
+  var shown: N
+  var hasShown = false
+  var content: N
+  var hasContent = false
+  var showingContent = false
+  var rendering = true
+  var firstFailure, shownFailure: ref CatchableError
+  var failing: seq[ComputationBase]
+    # The computations under the body whose last run failed.
+  var disposeBody, disposeFallback: proc()
 
-  var node: N
+  proc display(node: N) =
+    # Keep the boundary's place among its siblings.
+    if hasShown:
+      renderer.insertBefore(parent, node, shown)
+      renderer.removeChild(parent, shown)
+    else:
+      renderer.appendChild(parent, node)
+    shown = node
+    hasShown = true
+
+  proc releaseFallback() =
+    if not disposeFallback.isNil:
+      disposeFallback()
+      disposeFallback = nil
+
+  proc showFallback(err: ref CatchableError) =
+    if not showingContent and err == shownFailure: return
+    shownFailure = err
+    releaseFallback()
+    var node: N
+    # Outside the body's root, so that a failure of the fallback itself goes
+    # to the handlers above this boundary, not to this one.
+    runWithOwner(boundaryOwner, proc() =
+      createRoot proc(dispose: proc()) =
+        disposeFallback = dispose
+        when stableIdsEnabled:
+          withStableScope(renderStableScope): node = fallback(err)
+        else:
+          node = fallback(err)
+    )
+    showingContent = false
+    display(node)
+
+  # Call, then clear (as `show` does). Not `let d = disposeBody;
+  # disposeBody = nil; d()`: under ARC/ORC, Nim 2.2 infers that copy to be a
+  # cursor (no reference of its own), so clearing the captured variable
+  # frees the closure before the call, and disposal then runs on freed
+  # memory.
+  onCleanup proc() =
+    releaseFallback()
+    if not disposeBody.isNil:
+      disposeBody()
+      disposeBody = nil
+
+  var bodyFailure: ref CatchableError
   try:
-    node = body()
+    createRoot proc(dispose: proc()) =
+      disposeBody = dispose
+      setErrorBox(getOwner(), ErrorBox(
+        handler: proc(err: ref CatchableError; source: ComputationBase) =
+          # A computation disposed while it was failing never recovers, so
+          # it no longer counts; nor does `source` once it has recovered.
+          var i = 0
+          while i < failing.len:
+            if failing[i].fn == nil or (err == nil and failing[i] == source):
+              failing.del(i)
+            else:
+              inc i
+          if err != nil:
+            if source notin failing: failing.add source
+            if rendering:
+              # During the first render, the content is not shown yet.
+              if firstFailure == nil: firstFailure = err
+            else:
+              showFallback(err)
+          elif failing.len == 0 and not rendering and hasContent and
+              not showingContent:
+            releaseFallback()
+            shownFailure = nil
+            showingContent = true
+            display(content)))
+      content = body()
+      hasContent = true
   except CatchableError as e:
-    node = fallback(e)
-
-  renderer.appendChild(parent, node)
+    bodyFailure = e
+  rendering = false
+  if bodyFailure != nil:
+    disposeBody()
+    disposeBody = nil
+    showFallback(bodyFailure)
+  elif firstFailure != nil:
+    let err = firstFailure
+    firstFailure = nil
+    showFallback(err)
+  else:
+    showingContent = true
+    display(content)
