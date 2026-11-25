@@ -13,6 +13,15 @@ so growth is held to an explicit, small allowance measured against a fixed
 starting point rather than against the previous commit, where many small
 increases could each pass.
 
+A second check holds for every build: the app must not link the modules a
+page that does not use them must not pay for (`UNLINKED_MODULES`: the
+injected-service layer, including the async value primitive, and the clock
+of nim-everywhere). The compiler lists every module the build read
+(`--genScript`, which for the JS backend only adds a `.deps` file beside
+its intermediate files), and the check fails (exit 1) when one of them is linked. The
+byte budget alone cannot show this: an import that costs a hundred bytes
+passes it while budget is left, and this check fails on the import itself.
+
 The gzip count is computed in-process (level 9, no file name, mtime 0), so it
 depends only on the minified bytes and is reproducible between hosts.
 
@@ -46,6 +55,19 @@ MIN_JS = DIST / "main.js"
 BASELINE = REPO / "benchmarks/baseline.json"
 TERSER = REPO / "node_modules/.bin/terser"
 DEFAULT_BUDGET = 1024
+# The compiler's dependency list for the build, written with `--genScript`.
+NIMCACHE = REPO / "build/size-check-nimcache"
+DEPS = NIMCACHE / "main.deps"
+# Modules the app must not link, as path suffixes (a trailing "/" names a
+# directory). The app uses only the reactive core and the web renderer, so
+# none of these may reach it through an import from the core, `rxcore` or
+# the renderer: they are opt-in, and a page that does not use them must
+# carry none of their code or module-level state.
+UNLINKED_MODULES = (
+    "src/isonim/services/",               # injected services: futures, streams,
+                                          # readiness marks, async values
+    "src/nim_everywhere/time.nim",        # the clock the services schedule on
+)
 
 
 class SizeCheckError(Exception):
@@ -65,13 +87,38 @@ def build() -> dict[str, int]:
             f"{TERSER.relative_to(REPO)} is missing; run `just node-deps` "
             "(terser is a devDependency pinned by yarn.lock)")
     DIST.mkdir(parents=True, exist_ok=True)
+    NIMCACHE.mkdir(parents=True, exist_ok=True)
+    if DEPS.exists():
+        DEPS.unlink()
+    # `--genScript` and `--nimcache` change where the compiler writes its
+    # intermediate files and its dependency list, not the JavaScript.
     run(["nim", "js", "-d:danger", "--hints:off",
          f"--path:{REPO.parent / 'nim-everywhere/src'}",
+         "--genScript:on", f"--nimcache:{NIMCACHE}",
          f"-o:{RAW_JS}", str(APP_SRC)])
     run([str(TERSER), str(RAW_JS), "--compress", "--mangle", "-o", str(MIN_JS)])
     minified = MIN_JS.read_bytes()
     gz = gzip.compress(minified, compresslevel=9, mtime=0)
     return {"raw": RAW_JS.stat().st_size, "minified": len(minified), "gzip": len(gz)}
+
+
+def linked_unwanted_modules() -> list[str]:
+    """The modules of `UNLINKED_MODULES` the build linked, as paths."""
+    if not DEPS.exists():
+        raise SizeCheckError(
+            f"the compiler wrote no dependency list at {DEPS.relative_to(REPO)}")
+    linked = []
+    for line in DEPS.read_text().splitlines():
+        path = line.strip().replace("\\", "/")
+        if not path:
+            continue
+        for unwanted in UNLINKED_MODULES:
+            if unwanted.endswith("/"):
+                if unwanted in path:
+                    linked.append(path)
+            elif path.endswith(unwanted):
+                linked.append(path)
+    return sorted(set(linked))
 
 
 def git_head() -> str:
@@ -121,6 +168,15 @@ def main(argv: list[str]) -> int:
         sizes = build()
         print(f"size-check raw={sizes['raw']} minified={sizes['minified']} "
               f"gzip={sizes['gzip']}")
+        unwanted = linked_unwanted_modules()
+        if unwanted:
+            print("size-check unlinked-modules FAIL", file=sys.stderr)
+            for path in unwanted:
+                print(f"size-check: the app links {path}, which a page that "
+                      "does not use it must not carry", file=sys.stderr)
+            return 1
+        print(f"size-check unlinked-modules ok ({len(UNLINKED_MODULES)} "
+              "module groups not linked)")
         baseline = read_baseline()
 
         if args.record:

@@ -225,6 +225,24 @@ test-c:
     nim c -r tests/test_owned_roots.nim
     nim c -r tests/test_viewmodel_dispose.nim
     nim c -r --mm:refc --out:build/tests/test_viewmodel_dispose_refc tests/test_viewmodel_dispose.nim
+    # The async value primitive (futures, streams, placeholders, readiness
+    # marks, the five statements about what the View shows, and edge
+    # cases), under every memory manager.
+    nim c -r tests/test_async_value.nim
+    nim c -r --mm:arc --out:build/tests/test_async_value_arc tests/test_async_value.nim
+    nim c -r --mm:refc --out:build/tests/test_async_value_refc tests/test_async_value.nim
+    nim c -r tests/test_async_stream.nim
+    nim c -r --mm:arc --out:build/tests/test_async_stream_arc tests/test_async_stream.nim
+    nim c -r --mm:refc --out:build/tests/test_async_stream_refc tests/test_async_stream.nim
+    nim c -r tests/test_async_provisional.nim
+    nim c -r --mm:arc --out:build/tests/test_async_provisional_arc tests/test_async_provisional.nim
+    nim c -r --mm:refc --out:build/tests/test_async_provisional_refc tests/test_async_provisional.nim
+    nim c -r tests/test_async_fundamentals.nim
+    nim c -r --mm:arc --out:build/tests/test_async_fundamentals_arc tests/test_async_fundamentals.nim
+    nim c -r --mm:refc --out:build/tests/test_async_fundamentals_refc tests/test_async_fundamentals.nim
+    nim c -r tests/test_async_edges.nim
+    nim c -r --mm:arc --out:build/tests/test_async_edges_arc tests/test_async_edges.nim
+    nim c -r --mm:refc --out:build/tests/test_async_edges_refc tests/test_async_edges.nim
     # The private flush observation leaf, enabled: real graphs, nested
     # flushes and flushes that end in an error (`just test-internal-flush-observation` adds the
     # omission proof and the semantic inverses).
@@ -383,6 +401,20 @@ test-js: build-tailwind
     nim js -r tests/test_owned_roots.nim
     nim js -d:nodejs --out:build/test_viewmodel_dispose.js tests/test_viewmodel_dispose.nim
     python3 tools/run_nim_js_test.py build/test_viewmodel_dispose.js
+    nim js -d:nodejs --out:build/test_async_value.js tests/test_async_value.nim
+    python3 tools/run_nim_js_test.py build/test_async_value.js
+    nim js -d:nodejs --out:build/test_async_stream.js tests/test_async_stream.nim
+    python3 tools/run_nim_js_test.py build/test_async_stream.js
+    nim js -d:nodejs --out:build/test_async_provisional.js tests/test_async_provisional.nim
+    python3 tools/run_nim_js_test.py build/test_async_provisional.js
+    nim js -d:nodejs --out:build/test_async_fundamentals.js tests/test_async_fundamentals.nim
+    python3 tools/run_nim_js_test.py build/test_async_fundamentals.js
+    nim js -d:nodejs --out:build/test_async_edges.js tests/test_async_edges.nim
+    python3 tools/run_nim_js_test.py build/test_async_edges.js
+    # The timing checks with futures that answer after their latency
+    # (asynchronous: promise callbacks run between fake-clock steps).
+    nim js -d:nodejs --out:build/test_async_timing_js.js tests/test_async_timing_js.nim
+    python3 tools/run_nim_js_test.py build/test_async_timing_js.js
     nim js -r -d:isonimInternalFlushObservation --out:build/tests/test_internal_flush_observation.js tests/test_internal_flush_observation.nim
     nim js -r tests/test_clock.nim
     nim js tests/test_nondet_seams.nim
