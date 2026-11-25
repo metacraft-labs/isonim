@@ -152,6 +152,26 @@ func splitDimension*(text: string; number: var float; unit: var string): bool =
     if ch notin {'a'..'z', '%'}: return false
   true
 
+const cssLengthUnits* = [
+  # Font-relative lengths (CSS Values 4 §6.1.1).
+  "em", "rem", "ex", "rex", "cap", "rcap", "ch", "rch", "ic", "ric", "lh",
+  "rlh",
+  # Viewport-percentage lengths with their small, large and dynamic forms
+  # (§6.1.2).
+  "vw", "vh", "vi", "vb", "vmin", "vmax", "svw", "svh", "svi", "svb",
+  "svmin", "svmax", "lvw", "lvh", "lvi", "lvb", "lvmin", "lvmax", "dvw",
+  "dvh", "dvi", "dvb", "dvmin", "dvmax",
+  # Absolute lengths (§6.2).
+  "cm", "mm", "q", "in", "pt", "pc", "px",
+  # Container query lengths (CSS Containment 3 §6.1).
+  "cqw", "cqh", "cqi", "cqb", "cqmin", "cqmax"]
+  ## Every CSS length unit, lower case; units are ASCII case-insensitive
+  ## (CSS Values 4 §6). A property row takes any of them as a value; its unit
+  ## chip still offers only the field's own units.
+  ## A shadow's lengths are read by this list too, so the shadow editor takes
+  ## every length its property's validation takes (editor spec "Planned
+  ## interaction parity").
+
 func isCssLength(text: string): bool =
   ## A `<length>` as a shadow's offsets, blur and spread take it: a number
   ## with a length unit, or a bare `0`.
@@ -159,8 +179,7 @@ func isCssLength(text: string): bool =
   var unit = ""
   if not splitDimension(text, number, unit): return false
   if unit.len == 0: return number == 0.0
-  unit in ["px", "em", "rem", "ex", "ch", "vw", "vh", "vmin", "vmax", "cm",
-    "mm", "in", "pt", "pc", "q"]
+  unit in cssLengthUnits
 
 func isCssLengthPercentage(text: string): bool =
   var number = 0.0
@@ -547,6 +566,25 @@ func gradientWithAngle*(gradient: CssGradient; degrees: float): CssGradient =
   result.angle = normalizedDegrees(degrees)
   result.angleText = ""
 
+func gradientWithTypedAngle*(gradient: CssGradient; degrees: float;
+    typed: string): CssGradient =
+  ## The gradient pointed at ``degrees``, a typed angle the angle field read
+  ## as ``typed`` (`+45deg`, `0.25turn`, `-45deg`, or `3.3333turn` evaluated
+  ## from `10/3turn`), which is written as typed, as a property row writes a
+  ## typed value (editor spec "Numeric Inputs": "A number typed without
+  ## arithmetic is kept exactly as authored", "A typed unit is kept").
+  ## Typing what the gradient already writes is no edit. A radial gradient
+  ## has no angle and is returned unchanged.
+  result = gradient
+  if gradient.kind == cgkRadial: return
+  let text = typed.strip()
+  let written = if gradient.angleText.len > 0: gradient.angleText
+    else: numberText(gradient.angle, angleResolution) & "deg"
+  result.angleWritten = true
+  if text == written: return
+  result.angle = normalizedDegrees(degrees)
+  result.angleText = text
+
 func stopPositionText*(percent: float): string =
   ## A stop position as written: an authored or stepped percentage exactly,
   ## residue at ``stopResolution`` places.
@@ -595,11 +633,14 @@ func gradientWithStopAdded*(gradient: CssGradient; percent: float;
   index = place
 
 func gradientWithStopMoved*(gradient: CssGradient; index: int;
-    percent: float; moved: var int): CssGradient =
+    percent: float; moved: var int; typed = ""): CssGradient =
   ## Stop ``index`` moved to ``percent`` (clamped to 0..100). Unpositioned
   ## stops are given the place they were drawn at, and the stops are put in
   ## the order the bar shows them; ``moved`` receives the moved stop's new
-  ## place.
+  ## place. A position typed as ``typed`` (`+50%`, `12.50%`) is written as
+  ## typed while the bounds leave it where it was typed, as a property row
+  ## writes a typed value (editor spec "Numeric Inputs"); one the bounds
+  ## move (`150%`) is written formatted.
   result = gradient
   moved = index
   if index < 0 or index >= gradient.stops.len: return
@@ -608,7 +649,8 @@ func gradientWithStopMoved*(gradient: CssGradient; index: int;
       result.stops[i].position = stopPositionText(gradient.stopPercent(i))
   let at = clamp(percent, 0.0, 100.0)
   var stop = result.stops[index]
-  stop.position = stopPositionText(at)
+  stop.position = if typed.strip().len > 0 and at == percent: typed.strip()
+                  else: stopPositionText(at)
   result.stops.delete(index)
   var place = result.stops.len
   for i in 0 ..< result.stops.len:

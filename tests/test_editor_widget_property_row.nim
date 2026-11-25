@@ -129,6 +129,30 @@ suite "Phase D property_row evalMathExpr":
 #  prkNumeric
 # --------------------------------------------------------------------------- #
 
+suite "the typed-number reading the box model and compound fields share":
+  test "a number typed without arithmetic keeps its spelling; arithmetic is formatted":
+    # Editor spec "Numeric Inputs": "A number typed without arithmetic is
+    # kept exactly as authored." The row, the box model and the compound
+    # number fields spell a typed number by `keptNumberText`.
+    check keptNumberText("+2", 2.0, 2.0) == "+2"
+    check keptNumberText("1.50", 1.5, 1.5) == "1.50"
+    check keptNumberText("1e-2", 0.01, 0.01) == "1e-2"
+    check keptNumberText("-0", -0.0, 0.0) == "-0"
+    check keptNumberText("1+1", 2.0, 2.0) == ""
+    check keptNumberText("-5", -5.0, 0.0) == ""   # a bound moved it
+    for (raw, number, unit) in [("+2px", "+2", "px"), ("1.50PX", "1.50", "PX"),
+        ("2dvh", "2", "dvh"), ("10/3rem", "3.3333", "rem"), ("1.0+1", "2", "")]:
+      let typed = readTypedFieldNumber(raw)
+      check typed.isSome
+      if typed.isSome:
+        check typed.get.number == number
+        check typed.get.unit == unit
+    for raw in ["2 px", "1px 2px", "auto", "", "px", "1/0"]:
+      check readTypedFieldNumber(raw).isNone
+    check stepTypedFieldNumber("1.50px", 1.0).get.number == "2.5"
+    check stepTypedFieldNumber("0", -1.0, some(0.0)).isNone
+    check stepTypedFieldNumber("1e20px", 1.0).isNone
+
 suite "Phase D property_row prkNumeric":
 
   test "prkNumeric mount exposes row metadata + value + unit chip":

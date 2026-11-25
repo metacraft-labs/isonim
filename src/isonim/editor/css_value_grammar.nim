@@ -194,22 +194,9 @@ func cssIntegerText*(token: string): bool =
   if i < token.len and token[i] in {'+', '-'}: inc i
   i < token.len and token[i .. ^1].allIt(it in {'0'..'9'})
 
-const cssLengthUnits* = [
-  # Font-relative lengths (CSS Values 4 §6.1.1).
-  "em", "rem", "ex", "rex", "cap", "rcap", "ch", "rch", "ic", "ric", "lh",
-  "rlh",
-  # Viewport-percentage lengths with their small, large and dynamic forms
-  # (§6.1.2).
-  "vw", "vh", "vi", "vb", "vmin", "vmax", "svw", "svh", "svi", "svb",
-  "svmin", "svmax", "lvw", "lvh", "lvi", "lvb", "lvmin", "lvmax", "dvw",
-  "dvh", "dvi", "dvb", "dvmin", "dvmax",
-  # Absolute lengths (§6.2).
-  "cm", "mm", "q", "in", "pt", "pc", "px",
-  # Container query lengths (CSS Containment 3 §6.1).
-  "cqw", "cqh", "cqi", "cqb", "cqmin", "cqmax"]
-  ## Every CSS length unit, lower case; units are ASCII case-insensitive
-  ## (CSS Values 4 §6). A property row takes any of them as a value; its unit
-  ## chip still offers only the field's own units.
+# `cssLengthUnits` (every CSS length unit) lives in `css_compound_values`,
+# which reads a shadow's lengths by it, and is exported from here as well.
+export css_compound_values.cssLengthUnits
 
 type CssMathType* = enum
   ## The type a math expression resolves to (CSS Values 4 §10.9, reduced to

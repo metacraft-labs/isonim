@@ -335,9 +335,24 @@ proc mountGradientContents*[R, E](r: R; panel: E; vm: EditorVM;
     label: "Angle", ariaLabel: "Edit " & gradientProperty & " gradient angle",
     unit: "deg", step: 1.0,
     shown: proc(): string =
+      # An angle authored or typed in degrees is shown as written (`+45deg`),
+      # as a row shows its number; one in another unit (`0.25turn`), in the
+      # degrees the field edits.
       let g = shown()
-      if g.kind == cgkRadial: "" else: compoundNumber(g.angle) & "deg",
+      var degrees = 0.0
+      if g.kind == cgkRadial: ""
+      elif g.angleText.len > 0 and g.angleText.toLowerAscii().endsWith("deg") and
+          cssAngleDegrees(g.angleText, degrees): g.angleText
+      else: compoundNumber(g.angle) & "deg",
     commit: proc(text: string): bool =
+      var degrees = 0.0
+      if not cssAngleDegrees(text, degrees):
+        reject("Angle: type an angle in degrees (" & text & ").")
+        return false
+      commitGradient(untrack(base).gradientWithTypedAngle(degrees, text), "Angle"),
+    commitMoved: proc(text: string): bool =
+      # A step or a scrub turns the gradient: the angle it reaches is
+      # written formatted, in [0, 360) degrees.
       var degrees = 0.0
       if not cssAngleDegrees(text, degrees):
         reject("Angle: type an angle in degrees (" & text & ").")
@@ -505,9 +520,16 @@ proc mountGradientContents*[R, E](r: R; panel: E; vm: EditorVM;
     label: "Stop", ariaLabel: "Gradient stop position",
     unit: "%", step: 1.0, minimum: some(0.0), maximum: some(100.0),
     shown: proc(): string =
+      # A position authored or typed as a percentage is shown as written
+      # (`12.50%`), as a row shows its number.
       let g = shown()
       let i = selectedStop.val
-      if i < g.stops.len: stopPositionText(g.stopPercent(i)) else: "",
+      var number = 0.0
+      var unit = ""
+      if i >= g.stops.len: ""
+      elif splitDimension(g.stops[i].position, number, unit) and unit == "%":
+        g.stops[i].position
+      else: stopPositionText(g.stopPercent(i)),
     commit: proc(text: string): bool =
       var number = 0.0
       var unit = ""
@@ -516,7 +538,7 @@ proc mountGradientContents*[R, E](r: R; panel: E; vm: EditorVM;
         return false
       let i = untrack(proc(): int = selectedStop.val)
       var moved = i
-      let next = untrack(base).gradientWithStopMoved(i, number, moved)
+      let next = untrack(base).gradientWithStopMoved(i, number, moved, text)
       result = commitGradient(next, "Stop position")
       if result: selectedStop.val = moved,
     reason: placeRefusal,

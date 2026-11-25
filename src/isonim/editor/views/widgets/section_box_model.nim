@@ -55,6 +55,7 @@ from isonim/core/batch import untrack
 import isonim/dsl/ui
 import isonim/editor/types
 import isonim/editor/numeric_precision
+import isonim/editor/numeric_expression
 import isonim/editor/viewmodels
 import isonim/editor/views/choice_row
 import isonim/editor/views/view_lifecycle
@@ -116,35 +117,80 @@ func boxModelFieldLabel*(property: string): string =
 
 proc boxModelDisplayValue*(value: string): string =
   ## A CSS length as a box field shows it: pixels as a bare number (`18px`
-  ## -> `18`), any other unit with its unit (`1.5rem`), anything that is not
-  ## a single number (`auto`, `var(--space)`) as written.
+  ## and `18PX` -> `18`), any other unit with its unit as written (`1.5rem`,
+  ## `2DVH`), anything that is not a single number (`auto`, `var(--space)`)
+  ## as written (editor spec "Specialized Editors": "A field shows pixels as
+  ## a bare number and any other unit, keyword or function as written"). The
+  ## number is shown as authored (`+2px` -> `+2`, `1.50rem` -> `1.50rem`), as
+  ## a property row shows it ("Numeric Inputs": "A number typed without
+  ## arithmetic is kept exactly as authored").
   let text = value.strip()
-  let parsed = parseNumericInput(text)
-  if parsed.value.isNone or parsed.unit notin ["", "px", "em", "rem", "%",
-      "vw", "vh", "vmin", "vmax", "ch", "ex"]:
-    return text
-  let number = boxNumber(parsed.value.get)
-  if parsed.unit in ["", "px"]: number else: number & parsed.unit
+  let parsed = readTypedFieldNumber(text)
+  if parsed.isNone: return text
+  # The unit's case only decides whether it is pixels; it is shown as written.
+  if parsed.get.unit.toLowerAscii() in ["", "px"]: parsed.get.number
+  else: parsed.get.number & parsed.get.unit
 
-proc boxModelCssValue*(text: string): string =
-  ## The CSS value a typed field commits: a number or arithmetic expression
-  ## with an optional unit is evaluated, and a bare number is pixels (`24` ->
-  ## `24px`, `10+4` -> `14px`, `2rem` -> `2rem`). Anything else -- a keyword,
-  ## `var()`, `calc()` -- is committed as typed, for the property's own
-  ## validation to admit or refuse. Empty text is "" (no edit).
+proc pixelSpelling(current: string): string =
+  ## The spelling of the pixel unit ``current`` (a side's value) is written
+  ## in (`px`, `PX`), or `px` when it is not in pixels.
+  let parsed = parseNumericDimension(current.strip())
+  if parsed.value.isSome and parsed.unit.toLowerAscii() == "px": parsed.unit
+  else: "px"
+
+proc boxModelCssValue*(text: string; current = ""; property = ""): string =
+  ## The CSS value a field commits for its ``text``, read as a property row
+  ## reads a typed value (``readTypedFieldNumber``): a number typed without
+  ## arithmetic is kept as typed (`+2` -> `+2px`, `1.50rem`, `1e-2px`), an
+  ## arithmetic expression is evaluated (`10+4` -> `14px`), and a typed unit
+  ## is kept in the case it was typed (`10PX`, `2dvh`). A bare number is
+  ## pixels, in the spelling the side's ``current`` value gives them (`PX`
+  ## stays `PX`, as a row keeps the spelling it writes for its unit). With
+  ## ``property``, a unit it does not take (`2deg` in a margin) leaves the
+  ## text as typed, for the validation to refuse what was typed. Anything
+  ## else -- a keyword, `var()`, `calc()`, `2 px` -- is committed as typed,
+  ## for the property's own validation to admit or refuse. Empty text is ""
+  ## (no edit). A step or a scrub of the shown text keeps its unit as it is
+  ## written, since the field shows it as written.
   let raw = text.strip()
   if raw.len == 0: return ""
-  let parsed = parseNumericInput(raw)
-  if parsed.value.isNone: return raw
-  boxNumber(parsed.value.get) & (if parsed.unit.len == 0: "px" else: parsed.unit)
+  let parsed = readTypedFieldNumber(raw)
+  if parsed.isNone: return raw
+  let typed = parsed.get
+  if typed.unit.len == 0: return typed.number & pixelSpelling(current)
+  if typed.unit.toLowerAscii() != "px" and property.len > 0 and
+      not numericUnitAccepted(property, typed.unit):
+    return raw
+  typed.number & typed.unit
+
+proc boxModelSteppedText*(text: string; delta: float;
+    minimum = none(float)): string =
+  ## A field's ``text`` moved by ``delta`` in its own unit, as the field then
+  ## shows it before committing it (`18` -> `19`, `1.5rem` -> `1.6rem`), or
+  ## "" when it is not a number (a keyword cannot be stepped) or the step
+  ## changes nothing (``stepTypedFieldNumber``).
+  let stepped = stepTypedFieldNumber(text, delta, minimum)
+  if stepped.isNone: return ""
+  stepped.get.number & stepped.get.unit
 
 proc boxModelSteppedValue*(text: string; delta: float): string =
   ## ``text`` moved by ``delta`` in its own unit, as a CSS value, or "" when
-  ## it is not a number (a keyword cannot be stepped).
-  let parsed = parseNumericInput(text.strip())
-  if parsed.value.isNone: return ""
-  boxNumber(steppedNumber(parsed.value.get, delta)) &
-    (if parsed.unit.len == 0: "px" else: parsed.unit)
+  ## it is not a number (a keyword cannot be stepped) or the step changes
+  ## nothing.
+  let stepped = boxModelSteppedText(text, delta)
+  if stepped.len == 0: "" else: boxModelCssValue(stepped)
+
+proc sameBoxNumber(a, b: string): bool =
+  ## Whether two values are the same number in the same unit (`18.0px` and
+  ## `18PX`): a gesture that ends where it started makes no edit.
+  let x = parseNumericDimension(a.strip())
+  let y = parseNumericDimension(b.strip())
+  if x.value.isNone or y.value.isNone: return false
+  var xu = x.unit.toLowerAscii()
+  var yu = y.unit.toLowerAscii()
+  if xu.len == 0 and x.value.get == 0.0: xu = yu
+  if yu.len == 0 and y.value.get == 0.0: yu = xu
+  x.value.get == y.value.get and xu == yu
 
 func boxModelStep*(shift, alt: bool): float =
   ## The arrow-key step ("Numeric Inputs": Arrow +/-1, Shift 10, Alt 0.1).
@@ -177,14 +223,25 @@ proc boxModelSideValue*(vm: EditorVM; property: string): string =
 
 proc boxModelUniformValue*(vm: EditorVM; shorthand: string): string =
   ## What an all-sides field shows: the shared value when the four sides
-  ## agree, "" (shown as `Mixed`) when they do not. Reactive.
+  ## agree, "" (shown as `Mixed`) when they do not. Sides that are the same
+  ## number spelled apart (`18px` and `18.0px`) agree; the shared value is
+  ## then shown formatted. Reactive.
   var first = ""
+  var firstValue = ""
+  var spelledAlike = true
   for i, side in boxSides:
-    let value = boxModelDisplayValue(vm.boxModelSideValue(shorthand & "-" & side))
+    let authored = vm.boxModelSideValue(shorthand & "-" & side)
+    let value = boxModelDisplayValue(authored)
     if value.len == 0: return ""
-    if i == 0: first = value
-    elif value != first: return ""
-  first
+    if i == 0:
+      first = value
+      firstValue = authored
+    elif value != first:
+      if not sameBoxNumber(authored, firstValue): return ""
+      spelledAlike = false
+  if spelledAlike: return first
+  let parsed = parseNumericDimension(firstValue.strip())
+  boxModelDisplayValue(formatExactNumber(parsed.value.get) & parsed.unit)
 
 proc boxModelFieldRefusal*(vm: EditorVM; property: string;
     wiring: InspectorRowWiring): string =
@@ -212,11 +269,17 @@ type
 
 proc commitBoxModelField*(vm: EditorVM; property: string;
     wiring: InspectorRowWiring; text: string;
-    done: proc(outcome: BoxModelCommitOutcome) {.closure.} = nil):
-    BoxModelCommitOutcome {.discardable.} =
+    done: proc(outcome: BoxModelCommitOutcome) {.closure.} = nil;
+    gesture = false): BoxModelCommitOutcome {.discardable.} =
   ## Commit the text of the box field that edits ``property``, through
   ## ``wiring`` -- the scope it commits at, validation, writer refusals,
   ## preview, one undo entry and the automatic write are the row's.
+  ##
+  ## The text is read as a row reads a typed value (``boxModelCssValue``).
+  ## Nothing is written when the field would write what is already there:
+  ## the same text, or the field's own shown text left as it was (Enter on
+  ## an unchanged field). A ``gesture`` (a step, a scrub, a canvas drag)
+  ## writes nothing when it ends on the value it started from.
   ##
   ## The returned outcome is final for a refusal, a no-op and a synchronous
   ## project; ``done`` receives the final outcome in every case, after a
@@ -224,17 +287,18 @@ proc commitBoxModelField*(vm: EditorVM; property: string;
   proc finish(outcome: BoxModelCommitOutcome): BoxModelCommitOutcome =
     if done != nil: done(outcome)
     outcome
-  let value = boxModelCssValue(text)
+  let current = untrack(proc(): string =
+    let found = vm.boxPropertyValue(property)
+    if found.isSome: found.get.strip() else: "")
+  let value = boxModelCssValue(text, current, property)
   if value.len == 0:
     # Removing a declaration is Reset, in a row's menu, not an empty field.
     return finish(BoxModelCommitOutcome(ok: true))
   let refusal = untrack(proc(): string = vm.boxModelFieldRefusal(property, wiring))
   if refusal.len > 0:
     return finish(BoxModelCommitOutcome(ok: false, message: refusal))
-  let current = untrack(proc(): string =
-    let found = vm.boxPropertyValue(property)
-    if found.isSome: found.get.strip() else: "")
-  if value == current or boxModelDisplayValue(value) == boxModelDisplayValue(current):
+  if value == current or text.strip() == boxModelDisplayValue(current) or
+      (gesture and sameBoxNumber(value, current)):
     return finish(BoxModelCommitOutcome(ok: true))
   if wiring.commitAsync == nil:
     return finish(BoxModelCommitOutcome(ok: false,
@@ -315,8 +379,11 @@ proc boxCanvasDragValue*(handle: string; startPx, dx, dy: float;
     of "left": dx
     else: -dx
   if shorthand == "margin": delta = -delta
-  let parsed = parseNumericInput(authored.strip())
-  if parsed.value.isSome and parsed.unit notin ["", "px"] and
+  # The side's value read as its field reads it, in any unit the property
+  # takes (`2dvh`, `1.5REM`); its unit is written as authored.
+  let parsed = parseNumericDimension(authored.strip())
+  let authoredUnit = parsed.unit.toLowerAscii()
+  if parsed.value.isSome and authoredUnit notin ["", "px"] and
       parsed.value.get != 0.0 and startPx != 0.0:
     let number = parsed.value.get
     var next = roundToDecimals(number + round(delta) * number / startPx,
@@ -327,7 +394,8 @@ proc boxCanvasDragValue*(handle: string; startPx, dx, dy: float;
   var value = round(startPx + delta)
   if shorthand == "padding" and value < 0.0: value = 0.0
   if value == 0.0: value = 0.0 # no "-0px"
-  boxNumber(value) & "px"
+  boxNumber(value) & (if parsed.value.isSome and authoredUnit == "px": parsed.unit
+                      else: "px")
 
 proc boxCanvasDragRefusal*(vm: EditorVM; handle: string): string =
   ## Why a press on ``handle`` starts no drag, or "": the side's value is
@@ -336,7 +404,7 @@ proc boxCanvasDragRefusal*(vm: EditorVM; handle: string): string =
   ## refuses it, with the field's message.
   if handle notin boxCanvasHandles: return ""
   let text = untrack(proc(): string = vm.boxModelSideValue(handle)).strip()
-  if text.len == 0 or parseNumericInput(text).value.isSome: return ""
+  if text.len == 0 or readTypedFieldNumber(text).isSome: return ""
   boxModelFieldLabel(handle) & ": Type a numeric value to replace " & text & "."
 
 proc beginBoxCanvasDrag*(vm: EditorVM; handle: string; allSides: bool): string =
@@ -733,7 +801,7 @@ proc mountSectionBoxModel*[R, E](r: R; parent: E; vm: EditorVM;
             if outcome.changed: refusal.val = ""
           else:
             refusal.val = boxModelFieldLabel(property) & ": " & outcome.message
-        done(outcome.ok, outcome.changed, outcome.message))
+        done(outcome.ok, outcome.changed, outcome.message), gesture = true)
   vm.inspector.boxCanvasCommit = canvasCommit
   onCleanup(proc() =
     if vm.inspector.boxCanvasCommit == canvasCommit:
@@ -773,8 +841,8 @@ proc mountSectionBoxModel*[R, E](r: R; parent: E; vm: EditorVM;
     var pending = false
     var scrubbing = false
     var pressed = false
-    var startX, startY, startValue: float
-    var startText = ""
+    var startX, startY, startValue, scrubValue: float
+    var startText, startUnit = ""
 
     proc committedText(): string =
       if isUniform: vm.boxModelUniformValue(property)
@@ -811,14 +879,14 @@ proc mountSectionBoxModel*[R, E](r: R; parent: E; vm: EditorVM;
         r.setStyle(field, "color", textPrimary)
         r.setStyle(field, "cursor", "ew-resize")
 
-    proc commitText(text: string) =
+    proc commitText(text: string; gesture = false) =
       dirty = false
       if pending: return
       let story = vm.selectedStory.val
       let selected = vm.inspector.selectedElement.val.id
       pending = true
       discard commitBoxModelField(vm, property, wiring, text,
-        proc(outcome: BoxModelCommitOutcome) =
+        gesture = gesture, done = proc(outcome: BoxModelCommitOutcome) =
           pending = false
           if not alive: return
           # A native project answers later; the answer belongs to the
@@ -836,15 +904,12 @@ proc mountSectionBoxModel*[R, E](r: R; parent: E; vm: EditorVM;
       commitText(r.inputValue(field))
 
     proc step(delta: float) =
-      let next = boxModelSteppedValue(r.inputValue(field), delta)
+      # A step of the field's text, as a row steps its field: its unit kept,
+      # held at the field's bound, and nothing when the value does not move.
+      let next = boxModelSteppedText(r.inputValue(field), delta, minimum)
       if next.len == 0: return
-      var value = next
-      if minimum.isSome:
-        let parsed = parseNumericInput(next)
-        if parsed.value.isSome and parsed.value.get < minimum.get:
-          value = boxNumber(minimum.get) & parsed.unit
-      r.setInputValue(field, boxModelDisplayValue(value))
-      commitText(value)
+      r.setInputValue(field, boxModelDisplayValue(next))
+      commitText(next, gesture = true)
 
     # Scrub. `pressed` arms on a press of a field that is not being typed
     # in; travel past the threshold makes it a scrub, which previews in the
@@ -856,8 +921,9 @@ proc mountSectionBoxModel*[R, E](r: R; parent: E; vm: EditorVM;
       startX = x
       startY = y
       startText = r.inputValue(field)
-      let parsed = parseNumericInput(startText)
-      startValue = if parsed.value.isSome: parsed.value.get else: NaN
+      let parsed = readTypedFieldNumber(startText)
+      startValue = if parsed.isSome: parsed.get.value else: NaN
+      startUnit = if parsed.isSome: parsed.get.unit else: ""
     proc scrubMove(x, y: float; shift, alt: bool) =
       if not pressed: return
       if not scrubbing:
@@ -873,6 +939,7 @@ proc mountSectionBoxModel*[R, E](r: R; parent: E; vm: EditorVM;
              else: "Type a numeric value to replace " & startText & ".")
           return
         scrubbing = true
+        scrubValue = startValue
         active.val = property
         # Focus, without selecting, so that Escape reaches the field during
         # the drag; the drag ends by giving focus back up.
@@ -880,9 +947,12 @@ proc mountSectionBoxModel*[R, E](r: R; parent: E; vm: EditorVM;
           r.focus(field)
       let value = scrubbedValue(startValue, x - startX, y - startY, 1.0,
         shift, alt, minimum, none(float))
-      let unit = parseNumericInput(startText).unit
-      r.setInputValue(field, boxModelDisplayValue(boxNumber(value) &
-        (if unit.len == 0: "px" else: unit)))
+      scrubValue = value
+      # The value a scrub moves is written formatted, in the start's unit;
+      # until it moves, the field keeps the start's own spelling.
+      r.setInputValue(field,
+        if value == startValue: startText
+        else: boxModelDisplayValue(boxNumber(value) & startUnit))
     proc scrubEnd(x, y: float; shift, alt: bool): bool =
       ## Whether the press was a scrub (and so committed); a press that did
       ## not travel is a click.
@@ -890,12 +960,13 @@ proc mountSectionBoxModel*[R, E](r: R; parent: E; vm: EditorVM;
       pressed = false
       if not scrubbing: return false
       scrubbing = false
-      let text = r.inputValue(field)
-      if boxModelCssValue(text) == boxModelCssValue(startText):
+      # A scrub that ends where it started makes no edit, whatever the
+      # start's spelling (`1.50`).
+      if scrubValue == startValue:
         resync()
       else:
         dirty = true
-        commitText(text)
+        commitText(r.inputValue(field), gesture = true)
       true
     proc scrubCancel() =
       if not pressed: return

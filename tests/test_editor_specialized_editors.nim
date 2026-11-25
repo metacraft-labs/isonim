@@ -368,8 +368,10 @@ suite "the gradient editor":
       r.typeInto(field, "200+25")
       check vm.value(gradientProperty) == "linear-gradient(225deg, #3B82F6 0%, #22C55E 100%)"
       vm.write()
+      # A typed angle is written as typed, unit included, as a row writes a
+      # typed value (editor spec "Numeric Inputs": "A typed unit is kept").
       r.typeInto(field, "0.5turn")
-      check vm.value(gradientProperty) == "linear-gradient(180deg, #3B82F6 0%, #22C55E 100%)"
+      check vm.value(gradientProperty) == "linear-gradient(0.5turn, #3B82F6 0%, #22C55E 100%)"
       vm.write()
       r.typeInto(field, "12px")
       check "type an angle" in panel.message("data-gradient-message")
@@ -1159,6 +1161,171 @@ suite "the timing curve editor":
       check foundation[] == DemoFoundationInitialSource
       dispose()
 
+suite "compound number fields follow the property row's numeric rules":
+  ## Editor spec "Numeric Inputs" and "Planned interaction parity": a
+  ## compound value's number field reads a typed number as a property row
+  ## does -- kept as typed without arithmetic, every unit the value takes, a
+  ## spaced unit refused -- and a step or a scrub writes the value it moves
+  ## to formatted.
+  test "a shadow length is written as typed, in every length unit":
+    createRoot proc(dispose: proc()) =
+      let r = MockRenderer()
+      let foundation = new(string)
+      foundation[] = DemoFoundationInitialSource
+      let vm = editorVm(foundation)
+      let panel = renderInspectorPanel[MockRenderer, MockNode](r, vm)
+      let editor = panel.open(shadowProperty)
+      need(editor)
+      let blur = editor.labelled("Shadow blur")
+      need(blur)
+      for (typed, written, shown) in [("+2", "+2px", "+2px"),
+          ("1.50", "1.50px", "1.50px"), ("1e-2PX", "1e-2PX", "1e-2px"),
+          ("2cm", "2cm", "2cm"), ("2dvh", "2dvh", "2dvh"), ("1+1", "2px", "2px")]:
+        r.typeInto(blur, typed)
+        check vm.value(shadowProperty) == "0 8px " & written & " rgba(15, 23, 42, 0.12)"
+        check r.inputValue(blur) == shown
+        check panel.message("data-shadow-message") == ""
+      check vm.stacks == (6, 0)
+      # Enter on the unchanged field writes nothing.
+      blur.key("Enter")
+      check vm.stacks == (6, 0)
+      # A space before the unit is two values, refused.
+      r.typeInto(blur, "2 px")
+      check panel.message("data-shadow-message") == "Blur: type a length (2 px)."
+      check vm.stacks == (6, 0)
+      # A step moves the value and writes it formatted, in its unit.
+      r.typeInto(blur, "1.50")
+      blur.key("ArrowUp")
+      check vm.value(shadowProperty) == "0 8px 2.5px rgba(15, 23, 42, 0.12)"
+      # At the bound a step changes nothing and writes nothing.
+      r.typeInto(blur, "0")
+      let edits = vm.stacks
+      blur.key("ArrowDown")
+      check vm.stacks == edits
+      # A scrub that returns to its start is no edit; one that moves is
+      # written formatted.
+      r.typeInto(blur, "1.50")
+      let before = vm.stacks
+      let scrub = findByAttr(editor, "data-compound-scrub", "Shadow blur")
+      need(scrub)
+      scrub.press(0)
+      scrub.move(10)
+      check r.inputValue(blur) == "21.5px"
+      scrub.move(0)
+      check r.inputValue(blur) == "1.50px"
+      scrub.release(0)
+      check vm.stacks == before
+      scrub.press(0)
+      scrub.move(4)
+      scrub.release(4)
+      check vm.value(shadowProperty) == "0 8px 9.5px rgba(15, 23, 42, 0.12)"
+      dispose()
+
+  test "Enter on a field whose text is left as shown writes nothing":
+    # As on a property row, retyping the shown text is no edit: without the
+    # check, Enter on X showing `0` would write `0px`, and on an authored
+    # upper-case shadow it would rewrite every part in lower case.
+    createRoot proc(dispose: proc()) =
+      let r = MockRenderer()
+      let foundation = new(string)
+      foundation[] = DemoFoundationInitialSource
+      let vm = editorVm(foundation)
+      let panel = renderInspectorPanel[MockRenderer, MockNode](r, vm)
+      let editor = panel.open(shadowProperty)
+      need(editor)
+      let x = editor.labelled("Shadow X offset")
+      need(x)
+      check r.inputValue(x) == "0"
+      x.fireEvent("focus")
+      x.key("Enter")
+      check vm.stacks == (0, 0)
+      check vm.inspector.pendingSourceEdits.val.len == 0
+      check vm.value(shadowProperty) == "0 8px 24px rgba(15, 23, 42, 0.12)"
+      # Leaving it unchanged after typing the same text is no edit either.
+      r.typeInto(x, "0")
+      check vm.stacks == (0, 0)
+      check foundation[] == DemoFoundationInitialSource
+      dispose()
+    createRoot proc(dispose: proc()) =
+      let r = MockRenderer()
+      let authored = "1.50REM 2DVH 0.5em 1PX red"
+      let foundation = new(string)
+      foundation[] = DemoFoundationInitialSource.replace(
+        longTail(shadowProperty, "0 8px 24px rgba(15, 23, 42, 0.12)"),
+        longTail(shadowProperty, authored))
+      check longTail(shadowProperty, authored) in foundation[]
+      let source = foundation[]
+      let vm = editorVm(foundation)
+      var card = effectCard()
+      for prop in card.properties.mitems:
+        if prop.name == shadowProperty: prop.value = authored
+      check vm.selectInspectorElement(card)
+      let panel = renderInspectorPanel[MockRenderer, MockNode](r, vm)
+      let editor = panel.open(shadowProperty)
+      need(editor)
+      let x = editor.labelled("Shadow X offset")
+      need(x)
+      check r.inputValue(x) == "1.50rem"
+      x.fireEvent("focus")
+      x.key("Enter")
+      check vm.stacks == (0, 0)
+      check vm.inspector.pendingSourceEdits.val.len == 0
+      check vm.value(shadowProperty) == authored
+      discard vm.applyWorkspaceFileEdits()
+      check foundation[] == source
+      dispose()
+
+  test "a gradient angle and stop position are written as typed":
+    createRoot proc(dispose: proc()) =
+      let r = MockRenderer()
+      let foundation = new(string)
+      foundation[] = DemoFoundationInitialSource
+      let vm = editorVm(foundation)
+      let panel = renderInspectorPanel[MockRenderer, MockNode](r, vm)
+      let editor = panel.open(gradientProperty)
+      need(editor)
+      editor.labelled(gradientTypeLabel(cgkLinear)).fireEvent("click")
+      let angle = editor.labelled("Edit background-image gradient angle")
+      need(angle)
+      for (typed, written, shown) in [("+45", "+45deg", "+45deg"),
+          ("-45deg", "-45deg", "-45deg"), ("0.25TURN", "0.25TURN", "90deg"),
+          ("10/3turn", "3.3333turn", "1199.988deg"), ("200+25", "225deg", "225deg")]:
+        r.typeInto(angle, typed)
+        check vm.value(gradientProperty) ==
+          "linear-gradient(" & written & ", #3B82F6 0%, #22C55E 100%)"
+        check r.inputValue(angle) == shown
+        check panel.message("data-gradient-message") == ""
+      # Typing what is already written is no edit.
+      let edits = vm.stacks
+      r.typeInto(angle, "225")
+      check vm.stacks == edits
+      # A step writes the angle it moves to formatted.
+      r.typeInto(angle, "+45")
+      angle.key("ArrowUp")
+      check vm.value(gradientProperty) ==
+        "linear-gradient(46deg, #3B82F6 0%, #22C55E 100%)"
+      # A step turns the gradient: it wraps within [0, 360) as before, where
+      # a typed `-1deg` is written as typed.
+      r.typeInto(angle, "0")
+      angle.key("ArrowDown")
+      check vm.value(gradientProperty) ==
+        "linear-gradient(359deg, #3B82F6 0%, #22C55E 100%)"
+      r.typeInto(angle, "46")
+      let position = editor.labelled("Gradient stop position")
+      need(position)
+      r.typeInto(position, "12.50")
+      check vm.value(gradientProperty) ==
+        "linear-gradient(46deg, #3B82F6 12.50%, #22C55E 100%)"
+      check r.inputValue(position) == "12.50%"
+      # A position the bounds move is written formatted.
+      r.typeInto(position, "-5")
+      check vm.value(gradientProperty) ==
+        "linear-gradient(46deg, #3B82F6 0%, #22C55E 100%)"
+      position.key("ArrowUp")
+      check vm.value(gradientProperty) ==
+        "linear-gradient(46deg, #3B82F6 1%, #22C55E 100%)"
+      dispose()
+
 suite "compound number field precision":
   ## Editor spec "Numeric Inputs": a typed value, an expression and a step
   ## are exact to their operands' precision, and authored digits are kept.
@@ -1166,7 +1333,9 @@ suite "compound number field precision":
     check numberFieldValue("0.1+0.2", "px") == "0.3px"
     check numberFieldValue("1.23456", "px") == "1.23456px"
     check numberFieldValue("10/3deg", "px") == "3.3333deg"
-    check numberFieldValue("-0", "px") == "0px"
+    # A number typed without arithmetic is kept exactly as typed, sign
+    # included, as a property row keeps it (editor spec "Numeric Inputs").
+    check numberFieldValue("-0", "px") == "-0px"
     check numberFieldValue("auto", "px") == "auto"
     check steppedFieldValue("1.1px", "px", 0.1, none(float), none(float)) == "1.2px"
     check steppedFieldValue("0.3px", "px", -0.1, none(float), none(float)) == "0.2px"
@@ -1174,6 +1343,23 @@ suite "compound number field precision":
     check steppedFieldValue("-0.7deg", "deg", -0.1, none(float), none(float)) == "-0.8deg"
     check steppedFieldValue("0.05px", "px", -0.1, some(0.0), none(float)) == "0px"
     check steppedFieldValue("auto", "px", 1.0, none(float), none(float)) == ""
+
+  test "typed numbers and units are read as a property row reads them":
+    # Editor spec "Numeric Inputs" ("A number typed without arithmetic is
+    # kept exactly as authored", "A typed unit is kept") and "Planned
+    # interaction parity" (typed units obey the same property constraints).
+    for (typed, written) in [("+2", "+2px"), ("1.50px", "1.50px"),
+        ("1e-2", "1e-2px"), (".5", ".5px"), ("10PX", "10PX"), ("2dvh", "2dvh"),
+        ("2cm", "2cm"), ("1+1dvh", "2dvh"), ("1.0+1", "2px"),
+        ("2 px", "2 px"), ("1px 2px", "1px 2px")]:
+      check numberFieldValue(typed, "px") == written
+    check steppedFieldValue("10PX", "px", 1.0, none(float), none(float)) == "11PX"
+    check steppedFieldValue("2dvh", "px", -1.0, none(float), none(float)) == "1dvh"
+    # A step that changes nothing writes nothing: at a bound, or where
+    # binary64 has no number between.
+    check steppedFieldValue("0px", "px", -1.0, some(0.0), none(float)) == ""
+    check steppedFieldValue("100%", "%", 1.0, none(float), some(100.0)) == ""
+    check steppedFieldValue("1e20px", "px", 1.0, none(float), none(float)) == ""
 
   test "gradient and curve gestures keep authored digits and drop residue":
     # The angle control's press (45 degrees) and scrub (a degree per pixel)

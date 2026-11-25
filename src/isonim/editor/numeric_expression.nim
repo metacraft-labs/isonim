@@ -314,6 +314,19 @@ func isCssNumberText*(text: string): bool =
     if exponent == 0: return false
   i == text.len
 
+func keptNumberText*(number: string; typed, value: float): string =
+  ## How a numeric field spells a number typed as ``number`` (the text
+  ## before its unit, as ``parseNumericDimension`` returns it) whose value
+  ## ``typed`` the field holds as ``value``: ``number`` exactly as typed when
+  ## it is one CSS number token typed without arithmetic (`+2`, `1.50`,
+  ## `1e-2`, `-0`) and the field still holds the value typed; "" otherwise,
+  ## for the field to write ``value`` formatted (arithmetic, and a value a
+  ## bound changed). Editor spec "Numeric Inputs": "A number typed without
+  ## arithmetic is kept exactly as authored." The property row, the box
+  ## model and the compound number fields all spell a typed number by this
+  ## rule ("Planned interaction parity").
+  if number.isCssNumberText() and typed == value: number else: ""
+
 proc evaluateNumericExpression*(raw: string): Option[float] =
   ## The value of ``raw`` read whole as one expression with no unit, or none
   ## when it is not one (unmatched syntax, a unit or other text left over, a

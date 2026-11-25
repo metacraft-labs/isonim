@@ -773,6 +773,52 @@ proc numericStepText*(raw: string; delta: float): string =
   if next == value: return ""
   numberTokenText(next) & unit
 
+type
+  TypedFieldNumber* = object
+    ## A number typed into a numeric text field that holds its unit in its
+    ## text (the box model, a compound value's number fields), read as a
+    ## property row reads its field.
+    value*: float
+    number*: string
+      ## The number as the field writes it: exactly as typed when typed
+      ## without arithmetic (`+2`, `1.50`, `1e-2`, `-0`), else formatted.
+    unit*: string
+      ## The unit as typed (`px`, `PX`, `dvh`, `%`), or "" for none.
+
+proc readTypedFieldNumber*(raw: string): Option[TypedFieldNumber] =
+  ## ``raw`` read as a property row reads a typed value: one expression and
+  ## a unit spelled as CSS spells one, in the case it was typed
+  ## (``parseNumericDimension``), its number kept as typed when it has no
+  ## arithmetic (``keptNumberText``). None when it is not a number: a
+  ## keyword, a function, garbage, several values, or a number separated
+  ## from its unit by a space (`2 px`, which CSS reads as two values). Editor
+  ## spec "Numeric Inputs" and "Planned interaction parity": the box model
+  ## and compound number fields read typed numbers as the row does.
+  let parsed = parseNumericDimension(raw)
+  if parsed.value.isNone: return
+  let value = parsed.value.get
+  let kept = keptNumberText(parsed.number, value, value)
+  some(TypedFieldNumber(value: value,
+    number: (if kept.len > 0: kept else: formatExactNumber(value)),
+    unit: parsed.unit))
+
+proc stepTypedFieldNumber*(raw: string; delta: float;
+    minimum = none(float); maximum = none(float)): Option[TypedFieldNumber] =
+  ## ``raw`` (``readTypedFieldNumber``) moved by one arrow step of ``delta``
+  ## and held within the bounds, as a row steps (``numericStepText``): exact
+  ## to the finer of the value's and the step's precision, formatted, its
+  ## unit kept as typed. None when ``raw`` is not a number, or when the step
+  ## leaves the value as it was (at a bound, or `1e20px` + 1): a step that
+  ## changes nothing writes nothing.
+  let typed = readTypedFieldNumber(raw)
+  if typed.isNone: return
+  var next = steppedNumber(typed.get.value, delta)
+  if minimum.isSome and next < minimum.get: next = minimum.get
+  if maximum.isSome and next > maximum.get: next = maximum.get
+  if next == typed.get.value: return
+  some(TypedFieldNumber(value: next, number: formatExactNumber(next),
+    unit: typed.get.unit))
+
 proc attachNumericKeySteps*[R, E](r: R; inputNode: E; step: float) =
   ## Arrow-key stepping on a numeric input.
   ##
@@ -1035,9 +1081,8 @@ proc mountPropertyRow*[R, E](r: R; parent: E;
     # typed unit keeps the spelling the row already writes for its unit.
     let prior = untrack(proc(): WrittenNumber = written.val)
     let priorCode = untrack(proc(): string = currentUnitCode(cfg))
-    var spelled = WrittenNumber(value: v, code: unit.option.code)
-    if parsed.number.isCssNumberText() and sameNumber(v, parsed.value.get):
-      spelled.number = parsed.number
+    var spelled = WrittenNumber(value: v, code: unit.option.code,
+      number: keptNumberText(parsed.number, parsed.value.get, v))
     if parsed.unit.len > 0: spelled.unit = parsed.unit
     elif prior.code == priorCode and unit.option.code == priorCode:
       spelled.unit = prior.unit
@@ -1269,8 +1314,7 @@ proc mountPropertyRow*[R, E](r: R; parent: E;
                 let value = parsed.value.get
                 unparsedSource.val = ""
                 written.val = WrittenNumber(value: value, code: code,
-                  number: (if parsed.number.isCssNumberText(): parsed.number
-                           else: ""),
+                  number: keptNumberText(parsed.number, value, value),
                   unit: parsed.unit)
                 cfg.numericValue.val = value
               else: unparsedSource.val = source

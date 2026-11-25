@@ -23,7 +23,6 @@ from isonim/core/batch import untrack
 import isonim/core/nondet as nondet
 import isonim/dsl/ui
 import isonim/editor/types
-import isonim/editor/numeric_precision
 import isonim/editor/viewmodels
 import isonim/editor/views/view_lifecycle
 import ./property_commit
@@ -367,6 +366,12 @@ type
     maximum*: Option[float]
     shown*: proc(): string {.closure.}
     commit*: proc(text: string): bool {.closure.}
+      ## Commits a typed value, written as typed ("Numeric Inputs": "A
+      ## number typed without arithmetic is kept exactly as authored").
+    commitMoved*: proc(text: string): bool {.closure.}
+      ## Commits the value a step or a scrub moved to, which is written
+      ## formatted (a gradient angle is then normalised, as before); nil
+      ## commits it through ``commit``.
     draft*: proc(text: string) {.closure.}
     reason*: proc(): string {.closure.}
     generation*: proc(): int {.closure.}
@@ -375,31 +380,29 @@ type
       ## it ("Planned interaction parity").
 
 proc numberFieldValue*(text, unit: string): string =
-  ## The CSS text a typed field commits: arithmetic is evaluated and a bare
-  ## number takes ``unit`` (`8` -> `8px`, `10+4` -> `14px`); anything else is
-  ## committed as typed, for the property's validation to admit or refuse.
+  ## The CSS text a typed field commits, read as a property row reads a typed
+  ## value (``readTypedFieldNumber``): a number typed without arithmetic is
+  ## kept as typed (`+2px`, `1.50px`, `1e-2px`, `-0px`), arithmetic is
+  ## evaluated (`10+4` -> `14px`), a typed unit is kept as typed (`10PX`,
+  ## `2dvh`, `0.25turn`), and a bare number takes ``unit`` (`8` -> `8px`).
+  ## Anything else (`auto`, `2 px`) is committed as typed, for the property's
+  ## validation to admit or refuse.
   let raw = text.strip()
   if raw.len == 0: return ""
-  let parsed = parseNumericInput(raw)
-  if parsed.value.isNone: return raw
+  let parsed = readTypedFieldNumber(raw)
+  if parsed.isNone: return raw
   # The evaluator's result is already exact to its operands' precision
   # (editor spec "Numeric Inputs"): `0.1+0.2` is `0.3`, and an authored
   # `1.23456` keeps every digit, so no fixed rounding is applied here.
-  var value = parsed.value.get
-  if value == 0.0: value = 0.0 # no "-0px"
-  formatExactNumber(value) & (if parsed.unit.len > 0: parsed.unit else: unit)
+  parsed.get.number & (if parsed.get.unit.len > 0: parsed.get.unit else: unit)
 
 proc steppedFieldValue*(text, unit: string; delta: float;
     minimum, maximum: Option[float]): string =
   ## ``text`` moved by ``delta`` in its own unit, or "" when it is not a
-  ## number.
-  let parsed = parseNumericInput(text.strip())
-  if parsed.value.isNone: return ""
-  # Exact to the finer of the value's and the step's precision.
-  var next = steppedNumber(parsed.value.get, delta)
-  if minimum.isSome and next < minimum.get: next = minimum.get
-  if maximum.isSome and next > maximum.get: next = maximum.get
-  numberFieldValue(formatExactNumber(next) & parsed.unit, unit)
+  ## number or the step changes nothing (``stepTypedFieldNumber``).
+  let stepped = stepTypedFieldNumber(text, delta, minimum, maximum)
+  if stepped.isNone: return ""
+  stepped.get.number & (if stepped.get.unit.len > 0: stepped.get.unit else: unit)
 
 proc mountCompoundNumberField*[R, E](r: R; parent: E;
     field: CompoundNumberField): E =
@@ -434,6 +437,7 @@ proc mountCompoundNumberField*[R, E](r: R; parent: E;
   var startX = 0.0
   var startText = ""
   var startValue = NaN
+  var scrubValue = NaN
   var startUnit = ""
 
   proc resync() =
@@ -460,13 +464,18 @@ proc mountCompoundNumberField*[R, E](r: R; parent: E;
 
   var scrubCancelHook: proc() {.closure.} = proc() = discard
 
-  proc commitText(text: string) =
+  proc commitText(text: string; moved = false) =
     dirty = false
     let value = numberFieldValue(text, field.unit)
-    if value.len == 0 or blocked():
+    # The field's own shown text left as it was (Enter on an unchanged
+    # field) is no edit, as on a property row.
+    if value.len == 0 or blocked() or
+        text.strip() == untrack(proc(): string = field.shown()).strip():
       resync()
       return
-    if not field.commit(value): resync()
+    let sink = if moved and field.commitMoved != nil: field.commitMoved
+               else: field.commit
+    if not sink(value): resync()
 
   r.addEventListener(inputEl, "input", proc() = dirty = true)
   r.addEventListener(inputEl, "change", proc() =
@@ -500,7 +509,7 @@ proc mountCompoundNumberField*[R, E](r: R; parent: E;
         if key == "ArrowUp": size else: -size, field.minimum, field.maximum)
       if next.len == 0: return
       r.setInputValue(inputEl, next)
-      commitText(next))
+      commitText(next, moved = true))
 
   # The label scrubs: right increases, left decreases, by ``step`` per pixel
   # (Shift 10x, Alt 0.1x); the field shows the value as the pointer moves.
@@ -510,9 +519,10 @@ proc mountCompoundNumberField*[R, E](r: R; parent: E;
     scrubbing = false
     startX = x
     startText = untrack(proc(): string = field.shown())
-    let parsed = parseNumericInput(startText)
-    startValue = if parsed.value.isSome: parsed.value.get else: NaN
-    startUnit = parsed.unit
+    let parsed = readTypedFieldNumber(startText)
+    startValue = if parsed.isSome: parsed.get.value else: NaN
+    startUnit = if parsed.isSome: parsed.get.unit else: ""
+    scrubValue = startValue
   proc scrubMove(x: float; shift, alt: bool) =
     if not pressed: return
     if not scrubbing:
@@ -528,9 +538,12 @@ proc mountCompoundNumberField*[R, E](r: R; parent: E;
     let value = scrubbedValue(startValue, x - startX, 0.0,
       if field.step > 0: field.step else: 1.0, shift, alt,
       field.minimum, field.maximum)
-    # `scrubbedValue` is already exact to the start's and the step's precision.
-    let text = numberFieldValue(formatExactNumber(value) &
-      startUnit, field.unit)
+    scrubValue = value
+    # `scrubbedValue` is already exact to the start's and the step's
+    # precision. Until the value moves, the field keeps the start's own
+    # spelling (`1.50px`).
+    let text = if value == startValue: startText
+      else: numberFieldValue(formatExactNumber(value) & startUnit, field.unit)
     r.setInputValue(inputEl, text)
     if field.draft != nil: field.draft(text)
   proc scrubEnd() =
@@ -539,11 +552,13 @@ proc mountCompoundNumberField*[R, E](r: R; parent: E;
     if not scrubbing: return
     scrubbing = false
     let text = r.inputValue(inputEl)
-    if text == startText:
+    # A scrub that ends on the value it started from makes no edit.
+    if scrubValue == startValue:
       if field.draft != nil: field.draft("")
+      r.setInputValue(inputEl, startText)
       return
     if field.draft != nil: field.draft("")
-    commitText(text)
+    commitText(text, moved = true)
   proc scrubCancel() =
     if not pressed: return
     let was = scrubbing

@@ -229,6 +229,48 @@ suite "box model values":
     check boxModelStep(true, false) == 10.0
     check boxModelStep(false, true) == 0.1
 
+  test "a typed number is read as a property row reads it":
+    # Editor spec "Numeric Inputs": "A number typed without arithmetic is
+    # kept exactly as authored"; "Planned interaction parity": the box
+    # model's fields read typed numbers and units as a property row does.
+    for (typed, written) in [("+2", "+2px"), ("1.50px", "1.50px"),
+        ("1e-2", "1e-2px"), ("-0", "-0px"), (".5", ".5px"), ("1E2", "1E2px"),
+        ("+2PX", "+2PX"), ("10PX", "10PX"), ("2dvh", "2dvh"), ("2cm", "2cm"),
+        ("2Pt", "2Pt"), ("1.50REM", "1.50REM"),
+        # Arithmetic is evaluated and written formatted, in the typed unit.
+        ("10/3rem", "3.3333rem"), ("1+1dvh", "2dvh"), ("1.0+1", "2px"),
+        ("2^2px", "4px"), ("-(2+3)", "-5px"),
+        # Not a number: committed as typed, for the validation to refuse.
+        ("2 px", "2 px"), ("1px 2px", "1px 2px"), ("auto", "auto"),
+        ("var(--wl-space-card)", "var(--wl-space-card)")]:
+      check boxModelCssValue(typed) == written
+    # A bare number is pixels, in the spelling the side writes them in.
+    check boxModelCssValue("2", "18PX") == "2PX"
+    check boxModelCssValue("2", "1.5rem") == "2px"
+    # A unit the property does not take leaves the text as typed, so the
+    # refusal names what was typed.
+    check boxModelCssValue("1+1deg", property = "margin-top") == "1+1deg"
+    check boxModelCssValue("1+1dvh", property = "margin-top") == "2dvh"
+    # Shown as authored: pixels as a bare number in any case, any other unit
+    # as written (editor spec "Specialized Editors").
+    check boxModelDisplayValue("+2px") == "+2"
+    check boxModelDisplayValue("1.50px") == "1.50"
+    check boxModelDisplayValue("10PX") == "10"
+    check boxModelDisplayValue("2DVH") == "2DVH"
+    check boxModelDisplayValue("2REM") == "2REM"
+    check boxModelDisplayValue("5Q") == "5Q"
+    check boxModelDisplayValue("18PX") == "18"
+    check boxModelDisplayValue("1.50rem") == "1.50rem"
+    check boxModelDisplayValue("2 px") == "2 px"
+    # Steps keep the unit as typed, move in every unit, and change nothing
+    # when the value does not move.
+    check boxModelSteppedValue("10PX", 1.0) == "11PX"
+    check boxModelSteppedValue("2dvh", 1.0) == "3dvh"
+    check boxModelSteppedValue("1.50", 1.0) == "2.5px"
+    check boxModelSteppedValue("1e20px", 1.0) == ""
+    check boxModelSteppedText("0", -1.0, some(0.0)) == ""
+    check boxModelSteppedText("2 px", 1.0) == ""
+
 suite "the box model disclosure":
   test "Layout has the disclosure, a button that is closed until it is opened":
     createRoot proc(dispose: proc()) =
@@ -571,6 +613,229 @@ proc recaptured(vm: EditorVM; values: openArray[(string, string)]) =
       if prop.name == name: prop.value = value
   discard vm.selectInspectorElement(ElementRef())
   check vm.selectInspectorElement(element)
+
+proc recorder(outcomes: ref seq[BoxModelCommitOutcome]):
+    proc(outcome: BoxModelCommitOutcome) {.closure.} =
+  result = proc(outcome: BoxModelCommitOutcome) = outcomes[].add outcome
+
+suite "box model fields follow the property row's numeric rules":
+  test "a typed number is written and shown as typed; arithmetic is formatted":
+    createRoot proc(dispose: proc()) =
+      let r = MockRenderer()
+      let foundation = new(string)
+      foundation[] = DemoFoundationInitialSource
+      let vm = boxVm(foundation)
+      let panel = renderInspectorPanel[MockRenderer, MockNode](r, vm)
+      let top = panel.field("Padding top")
+      need(top)
+      r.commitField(panel, "Padding top", "1.50")
+      check vm.value("padding-top") == "1.50px"
+      check r.inputOf(top) == "1.50"
+      # The Layout row that shares the side's wiring shows it the same way.
+      check r.inputOf(panel.padRowInput("top")) == "1.50"
+      vm.write()
+      check foundation[] == withCardRule("padding: 18px; padding-top: 1.50px;")
+      # Enter on the unchanged field writes nothing.
+      top.press("Enter")
+      check vm.stacks == (1, 0)
+      for (typed, written, shown) in [("+2", "+2px", "+2"),
+          ("1e-2", "1e-2px", "1e-2"), ("-0", "-0px", "-0"),
+          ("10PX", "10PX", "10"),
+          # No typed unit keeps the side's spelling of pixels, as a row
+          # keeps the spelling it writes for its unit.
+          ("1.0+1", "2PX", "2")]:
+        r.commitField(panel, "Padding top", typed)
+        check vm.value("padding-top") == written
+        check r.inputOf(top) == shown
+        check display(panel.boxMessage) == "none"
+      r.commitField(panel, "Padding top", "12")
+      check vm.value("padding-top") == "12PX"
+      check vm.stacks == (7, 0)
+      dispose()
+
+  test "every unit the property takes is accepted, a spaced unit is refused":
+    createRoot proc(dispose: proc()) =
+      let r = MockRenderer()
+      let foundation = new(string)
+      foundation[] = DemoFoundationInitialSource
+      let vm = boxVm(foundation)
+      let panel = renderInspectorPanel[MockRenderer, MockNode](r, vm)
+      let left = panel.field("Margin left")
+      need(left)
+      for (typed, written, shown) in [("2dvh", "2dvh", "2dvh"),
+          ("3cm", "3cm", "3cm"), ("4PT", "4PT", "4PT"), ("1+1svh", "2svh", "2svh"),
+          ("5Q", "5Q", "5Q")]:
+        r.commitField(panel, "Margin left", typed)
+        check vm.value("margin-left") == written
+        check r.inputOf(left) == shown
+        check display(panel.boxMessage) == "none"
+      check vm.stacks == (5, 0)
+      vm.write()
+      check foundation[] == withCardRule("padding: 18px; margin-left: 5Q;")
+      # A space between the number and its unit is two values, refused as
+      # on a row and the text path; so is a unit margin does not take.
+      for (typed, reason) in [("2 px", "numeric amount"),
+          ("1+1deg", "Unsupported CSS unit")]:
+        r.commitField(panel, "Margin left", typed)
+        check display(panel.boxMessage) == "block"
+        check reason in textOf(panel.boxMessage)
+        check vm.value("margin-left") == "5Q"
+        check r.inputOf(left) == "5Q"
+      check vm.stacks == (5, 0)
+      dispose()
+
+  test "a step or a scrub moves the value and drops the kept spelling":
+    createRoot proc(dispose: proc()) =
+      let r = MockRenderer()
+      let foundation = new(string)
+      foundation[] = DemoFoundationInitialSource
+      let vm = boxVm(foundation)
+      let panel = renderInspectorPanel[MockRenderer, MockNode](r, vm)
+      let top = panel.field("Padding top")
+      need(top)
+      r.commitField(panel, "Padding top", "+2.50")
+      check vm.value("padding-top") == "+2.50px"
+      top.press("ArrowUp")
+      check vm.value("padding-top") == "3.5px"
+      check r.inputOf(top) == "3.5"
+      top.press("ArrowDown", alt = true)
+      check vm.value("padding-top") == "3.4px"
+      top.press("ArrowDown", shift = true)
+      check vm.value("padding-top") == "0px"
+      check vm.stacks == (4, 0)
+      # At the bound a step changes nothing and writes nothing.
+      top.press("ArrowDown")
+      check vm.stacks == (4, 0)
+      # A unit the old parse did not read is stepped in its own unit.
+      r.commitField(panel, "Padding top", "2DVH")
+      top.press("ArrowUp", shift = true)
+      check vm.value("padding-top") == "12DVH"
+      check r.inputOf(top) == "12DVH"
+      # A scrub from a kept spelling that ends where it started is no edit.
+      r.commitField(panel, "Padding top", "1.50")
+      let edits = vm.stacks
+      top.pointer("pointerdown", 100)
+      top.pointer("pointermove", 110)
+      check r.inputOf(top) == "21.5"
+      top.pointer("pointermove", 100)
+      check r.inputOf(top) == "1.50"
+      top.pointer("pointerup", 100)
+      check vm.stacks == edits
+      check vm.value("padding-top") == "1.50px"
+      # One that moves writes the value formatted.
+      top.pointer("pointerdown", 100)
+      top.pointer("pointermove", 104)
+      top.pointer("pointerup", 104)
+      check vm.value("padding-top") == "9.5px"
+      dispose()
+
+  test "an authored unit is shown as written, and retyping it in another case is an edit":
+    createRoot proc(dispose: proc()) =
+      let r = MockRenderer()
+      let foundation = new(string)
+      foundation[] = DemoFoundationInitialSource
+      var element = boxElement()
+      for prop in element.properties.mitems:
+        if prop.name == "padding-top": prop.value = "2DVH"
+        if prop.name == "margin-left": prop.value = "18PX"
+      let vm = boxVm(foundation, element = element)
+      let panel = renderInspectorPanel[MockRenderer, MockNode](r, vm)
+      let top = panel.field("Padding top")
+      need(top)
+      # Spec "Specialized Editors": any other unit is shown as written.
+      check r.inputOf(top) == "2DVH"
+      check r.inputOf(panel.field("Margin left")) == "18"
+      # Enter on the unchanged field is no edit.
+      top.fireEvent("focus")
+      top.press("Enter")
+      check vm.stacks == (0, 0)
+      # The unit retyped in another case is written, as the Pad top row
+      # writes it.
+      r.commitField(panel, "Padding top", "2dvh")
+      check vm.value("padding-top") == "2dvh"
+      check r.inputOf(top) == "2dvh"
+      check vm.stacks == (1, 0)
+      vm.write()
+      check foundation[] == withCardRule("padding: 18px; padding-top: 2dvh;")
+      # Retyping the authored spelling writes it back.
+      r.commitField(panel, "Padding top", "2DVH")
+      check vm.value("padding-top") == "2DVH"
+      check r.inputOf(top) == "2DVH"
+      check vm.stacks == (2, 0)
+      # A step keeps the unit as written.
+      top.press("ArrowUp")
+      check vm.value("padding-top") == "3DVH"
+      check r.inputOf(top) == "3DVH"
+      dispose()
+
+  test "a scrub and a canvas drag of a side keep its unit as written":
+    # The field shows `2DVH` as written; a scrub moves the number and keeps
+    # that spelling of the unit, as a row's scrub keeps its unit's spelling.
+    createRoot proc(dispose: proc()) =
+      let r = MockRenderer()
+      let foundation = new(string)
+      foundation[] = DemoFoundationInitialSource
+      var element = boxElement()
+      for prop in element.properties.mitems:
+        if prop.name == "padding-top": prop.value = "2DVH"
+      let vm = boxVm(foundation, element = element)
+      let panel = renderInspectorPanel[MockRenderer, MockNode](r, vm)
+      let top = panel.field("Padding top")
+      need(top)
+      check r.inputOf(top) == "2DVH"
+      # Out and back is no edit.
+      top.pointer("pointerdown", 100)
+      top.pointer("pointermove", 110)
+      check r.inputOf(top) == "22DVH"
+      top.pointer("pointermove", 100)
+      check r.inputOf(top) == "2DVH"
+      top.pointer("pointerup", 100)
+      check vm.stacks == (0, 0)
+      check vm.value("padding-top") == "2DVH"
+      # A scrub of +4 (two units per pixel near the field) writes 10DVH.
+      top.pointer("pointerdown", 100)
+      top.pointer("pointermove", 104)
+      check r.inputOf(top) == "10DVH"
+      top.pointer("pointerup", 104)
+      check vm.value("padding-top") == "10DVH"
+      check r.inputOf(top) == "10DVH"
+      check vm.stacks == (1, 0)
+      vm.write()
+      check foundation[] == withCardRule("padding: 18px; padding-top: 10DVH;")
+      # A canvas drag of the side moves it at the authored ratio, in DVH.
+      check vm.beginBoxCanvasDrag("padding-top", false) == "padding-top"
+      check vm.moveBoxCanvasDrag(20, 0, 5) == "12.5DVH"
+      check r.inputOf(top) == "12.5DVH"
+      let outcomes = new(seq[BoxModelCommitOutcome])
+      check vm.commitBoxCanvasDrag(recorder(outcomes))
+      check outcomes[].len == 1 and outcomes[][0].ok and outcomes[][0].changed
+      check vm.value("padding-top") == "12.5DVH"
+      check vm.stacks == (2, 0)
+      dispose()
+
+  test "a canvas drag reads every unit the field reads and keeps it as authored":
+    check boxCanvasDragValue("padding-top", 20, 0, 5, "2DVH") == "2.5DVH"
+    check boxCanvasDragValue("padding-top", 18, 0, 6, "18PX") == "24PX"
+    createRoot proc(dispose: proc()) =
+      let r = MockRenderer()
+      let foundation = new(string)
+      foundation[] = DemoFoundationInitialSource
+      var element = boxElement()
+      for prop in element.properties.mitems:
+        if prop.name == "padding-top": prop.value = "18.0px"
+      let vm = boxVm(foundation, element = element)
+      let panel = renderInspectorPanel[MockRenderer, MockNode](r, vm)
+      check r.inputOf(panel.field("Padding top")) == "18.0"
+      # A drag that returns to where it started commits nothing.
+      check vm.beginBoxCanvasDrag("padding-top", false) == "padding-top"
+      check vm.moveBoxCanvasDrag(18, 0, 6) == "24px"
+      check vm.moveBoxCanvasDrag(18, 0, 0) == "18px"
+      let outcomes = new(seq[BoxModelCommitOutcome])
+      check vm.commitBoxCanvasDrag(recorder(outcomes))
+      check outcomes[].len == 1 and outcomes[][0].ok and not outcomes[][0].changed
+      check vm.stacks == (0, 0)
+      check vm.value("padding-top") == "18.0px"
+      dispose()
 
 suite "shorthand sides follow the rule's declaration order":
   ## CSS cascade within one declaration block: an `!important` declaration
@@ -1509,10 +1774,6 @@ suite "scope, raw CSS, search and native projects":
 # commits it. The frame side (handles, capture, Escape, the preview rule) is
 # the editor-example Playwright case
 # `e2e_canvas_box_handles_preview_commit_cancel_and_refusal`.
-
-proc recorder(outcomes: ref seq[BoxModelCommitOutcome]):
-    proc(outcome: BoxModelCommitOutcome) {.closure.} =
-  result = proc(outcome: BoxModelCommitOutcome) = outcomes[].add outcome
 
 suite "canvas margin and padding handles":
   test "a handle follows the pointer: padding grows into the content, margin away from it":

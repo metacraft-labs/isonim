@@ -499,6 +499,41 @@ suite "untouched authored numbers in compound values":
     check serializeTimingFunction(curveWithPoint(c, 2, 0.4, c.y2)) ==
       "cubic-bezier(1e-1, 5e-1, 0.4, 1e0)"
 
+  test "a shadow takes every CSS length unit its property takes":
+    for length in ["2dvh", "1svw", "3cqi", "1lh", "2Q", "1rcap", "4PT"]:
+      let parsed = parseCssShadowList("0 0 " & length & " red")
+      check parsed.ok
+      if parsed.ok: check parsed.layers[0].blur == length.toLowerAscii()
+    check not parseCssShadowList("0 0 2deg red").ok
+
+  test "a typed angle or stop position is written as typed":
+    # Editor spec "Numeric Inputs": "A number typed without arithmetic is
+    # kept exactly as authored"; "A typed unit is kept". The angle and stop
+    # fields write what they read as a property row writes it.
+    let g = parseCssGradient("linear-gradient(90deg, red 0%, blue 100%)").gradient
+    check serializeCssGradient(g.gradientWithTypedAngle(45.0, "+45deg")) ==
+      "linear-gradient(+45deg, red 0%, blue 100%)"
+    check serializeCssGradient(g.gradientWithTypedAngle(90.0, "0.25turn")) ==
+      "linear-gradient(0.25turn, red 0%, blue 100%)"
+    let negative = g.gradientWithTypedAngle(-45.0, "-45deg")
+    check negative.angle == 315.0
+    check serializeCssGradient(negative) == "linear-gradient(-45deg, red 0%, blue 100%)"
+    # Typing what is already written is no edit.
+    check serializeCssGradient(g.gradientWithTypedAngle(90.0, "90deg")) ==
+      serializeCssGradient(g)
+    # A radial gradient has no angle.
+    let radial = parseCssGradient("radial-gradient(red, blue)").gradient
+    check serializeCssGradient(radial.gradientWithTypedAngle(45.0, "45deg")) ==
+      "radial-gradient(red, blue)"
+    var moved = 0
+    check serializeCssGradient(g.gradientWithStopMoved(0, 12.5, moved, "12.50%")) ==
+      "linear-gradient(90deg, red 12.50%, blue 100%)"
+    # A position the bounds move is written formatted.
+    check serializeCssGradient(g.gradientWithStopMoved(0, -5.0, moved, "-5%")) ==
+      "linear-gradient(90deg, red 0%, blue 100%)"
+    check serializeCssGradient(g.gradientWithStopMoved(1, 150.0, moved, "150%")) ==
+      "linear-gradient(90deg, red 0%, blue 100%)"
+
   test "stop positions and shadow lengths lower their unit and exponent marker only":
     ## Editor spec "Numeric Inputs": a number the edit did not change is kept
     ## as authored, with its unit, keyword and exponent marker in lower case.
