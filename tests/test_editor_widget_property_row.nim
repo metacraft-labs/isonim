@@ -38,6 +38,7 @@ import isonim/editor/types
 import isonim/editor/viewmodels
 import isonim/editor/css_value_grammar
 import isonim/editor/numeric_precision
+import isonim/editor/numeric_expression
 import isonim/editor/views/choice_row
 import isonim/editor/views/widgets/property_row
 import isonim/editor/views/widgets/property_commit
@@ -2393,6 +2394,161 @@ suite "a numeric row writes what was typed":
       check got.commits == @[typed]
       check not accepted("z-index", got.commits[0])
     check accepted("z-index", typeInto("z-index", number, @["+3"]).commits[0])
+
+  test "a grid placement takes one to four <grid-line>s and nothing else":
+    # isonim-pm issue 2026-11-24 "the grid-line validator accepts text that
+    # is not a grid line". CSS Grid 2 §8.3: `<grid-line> = auto |
+    # <custom-ident> | [ <integer> && <custom-ident>? ] | [ span && [
+    # <integer [1,∞]> || <custom-ident> ] ]`, the integer never zero and the
+    # name never `span` or `auto`; §8.4: grid-row and grid-column take one
+    # or two separated by `/`, grid-area one to four, the -start and -end
+    # longhands one. Editor spec "Planned interaction parity": invalid values
+    # are rejected without changing source.
+    for (p, v) in [("grid-row-start", "auto"), ("grid-row-start", "a"),
+        ("grid-row-start", "-1"), ("grid-row-start", "+1"),
+        ("grid-row-start", "2 a"), ("grid-row-start", "a 2"),
+        ("grid-row-start", "-3 a"), ("grid-row-start", "span 2"),
+        ("grid-row-start", "SPAN 2"), ("grid-row-start", "span a"),
+        ("grid-row-start", "span 2 a"), ("grid-row-start", "span a 2"),
+        ("grid-row-start", "2 span"), ("grid-row-start", "2 a span"),
+        ("grid-row-start", "none"), ("grid-row-start", "row"),
+        ("grid-row-start", "-a"), ("grid-column-end", "span calc(1 + 1)"),
+        ("grid-column-end", "min(1, 2) a"), ("grid-row", "1 / 3"),
+        ("grid-row", "1/3"), ("grid-row", "a / span 2"),
+        ("grid-row", "Span 2 / Auto"), ("grid-row", "calc(1 + 1) / -1"),
+        ("grid-column", "2 span / span a 2"), ("grid-area", "1 / 2 / 3 / 4"),
+        ("grid-area", "a / b / c"), ("grid-area", "1/2/3/4"),
+        ("grid-area", "span 2 / span 2 / auto / a 3"), ("grid-row", "inherit"),
+        # Identifiers as CSS Syntax 3 §4.3.9-4.3.11 reads them: non-ASCII
+        # code points and escapes (review R1), and a keyword spelled with an
+        # escape is that keyword (`sp\61n 2` is `span 2`).
+        ("grid-column-end", "ä"), ("grid-column-end", "名前"),
+        ("grid-row-start", "span 名前"), ("grid-row-start", "2 ä"),
+        ("grid-row-start", "\\31 a"), ("grid-row-start", "c\\ d"),
+        ("grid-row-start", "\\e4 2"), ("grid-row-start", "-ä"),
+        ("grid-row-start", "a\\2f b"), ("grid-row", "ä / span 名前"),
+        ("grid-area", "ä / 名前 / \\31 a / c\\ d"),
+        ("grid-row-start", "sp\\61n 2"), ("grid-row-start", "\\61uto"),
+        ("grid-row", "\\69nherit"), ("grid-row-start", "\\31"),
+        ("grid-row-start", "2 SPAN"), ("grid-row-start", "2 sp\\61n"),
+        ("grid-row-start", "span abs(sign(1px))"), ("grid-row", "abs(sign(1px)) / 3"),
+        ("grid-area", "1 / round(up, 2.5) a"), ("grid-row-start", "span sign(1hz)"),
+        ("grid-row", "abs(1dppx / 1x) / abs(2px * 2px / 1px / 1px)")]:
+      checkpoint p & ": " & v
+      check accepted(p, v)
+    for (p, v) in [("grid-row", "( 1 ) / ( 3 )"), ("grid-row", "1 / -1 / 2"),
+        ("grid-row", "(1) / (3)"), ("grid-row", "1 /"), ("grid-row", "/ 3"),
+        ("grid-row", "1 // 3"), ("grid-row", "0 / 3"), ("grid-row", "1 / 0"),
+        ("grid-row", "span 0 / 2"), ("grid-row", "a b / 1"),
+        ("grid-row", "1 / span"), ("grid-row", "1 / 2 / 3 / 4"),
+        ("grid-row", "auto / span default"), ("grid-area", "1 / 2 / 3 / 4 / 5"),
+        ("grid-area", "1 / 2 / / 4"), ("grid-area", "( 1 ) / 2"),
+        ("grid-row-start", "0"), ("grid-row-start", "-0"), ("grid-row-start", "+0"),
+        ("grid-row-start", "span 0"), ("grid-row-start", "span -1"),
+        ("grid-row-start", "span"), ("grid-row-start", "span span"),
+        ("grid-row-start", "auto 2"), ("grid-row-start", "span auto"),
+        ("grid-row-start", "a b"), ("grid-row-start", "2 3"),
+        ("grid-row-start", "1 2 a"), ("grid-row-start", "2 span a"),
+        ("grid-row-start", "default"), ("grid-row-start", "2 default"),
+        ("grid-row-start", "'a'"), ("grid-row-start", "1a"),
+        ("grid-row-start", "calc (1)"), ("grid-row-start", "1 / 3"),
+        ("grid-column-end", "span calc(1px)"), ("grid-row", "unset 2"),
+        # A reserved name stays reserved however it is spelled (CSS Grid 2
+        # §8.3, CSS Values 4 §4.2): case and escapes resolved.
+        ("grid-row-start", "sp\\61n"), ("grid-row-start", "a 2 sp\\61n b"),
+        ("grid-row-start", "sp\\61n sp\\61n"), ("grid-row-start", "2 \\61uto"),
+        ("grid-row-start", "\\61uto 2"),
+        ("grid-row-start", "2 \\64 efault"), ("grid-row-start", "2 \\69nherit"),
+        ("grid-row-start", "\\"), ("grid-row-start", "2 a\\"),
+        ("grid-row-start", "1\\61"), ("grid-row-start", "sign()"),
+        ("grid-row-start", "span sin(1px)"), ("grid-row", "abs(1px) / 3")]:
+      checkpoint p & ": " & v
+      check not accepted(p, v)
+
+  test "counter-set takes counter names and integers, as counter-reset does":
+    # isonim-pm issue 2026-11-24 "counter-set values are refused". CSS Lists
+    # 3 §4.1-4.3: counter-reset, counter-set and counter-increment take
+    # `none` or `[ <counter-name> <integer>? ]+`, a counter name being a
+    # `<custom-ident>` other than `none`; only counter-reset also takes
+    # `reversed(<counter-name>)`. The integer is the 5a35eb0 `<integer>`: a
+    # sign and digits, or a math function that resolves to a number.
+    for p in ["counter-set", "counter-reset", "counter-increment"]:
+      for v in ["none", "NONE", "c", "c 1", "c -1", "c 0", "c +5", "c 1 d",
+          "c d", "c 1 d 2", "c calc(1 + 1)", "c min(1, 2)", "c var(--n)",
+          "inherit", "ä 1", "c\\ d 1", "名前 -2 ä", "\\31 a 3",
+          "n\\6fne", "n\\6f ne", "c round(1.5)", "c abs(-2)", "c sign(1px)",
+          "c sin(1deg)", "c pow(2, 3)", "c round(up, 1.5, 1e0)",
+          # Math functions are typed by their signatures, arguments typed as
+          # calc() types them and nested calls the same way (CSS Values 4
+          # §10.3-10.8): sign() is a number whatever its argument's type.
+          "c abs(sign(1px))", "c mod(7, 3)",
+          "c ROUND(DOWN, 7, 2)", "c sign(calc(1px + 2px))", "c log(8, 2)",
+          "c calc(abs(-2) * 2)", "c min(round(1.5), 3)", "c sign(infinity)",
+          "c round(-infinity)", "c abs(NaN)", "c cos(pi)", "c tan(1turn)",
+          "c hypot(3, 4)", "c abs(6 / 0)", "c abs(2px / 1px)",
+          "c abs(round(1.5px, 1px) / 1px)", "c sign(1s / 1ms)",
+          # Frequencies and resolutions are dimensions too (review R3a), and
+          # unit powers are carried through `*` and `/` to the end of the
+          # expression (review R3b, CSS Values 4 §10.9).
+          "c sign(1hz)", "c abs(1dppx / 1x)", "c sign(1dppx)",
+          "c abs(1hz / 1khz)", "c round(1hz / 1hz)", "c sign(2dpi * 1dpcm)",
+          "c abs(2px * 2px / 1px / 1px)", "c abs(2px / 1px * 3s / 1ms)",
+          "c calc(1deg * 1deg / (1rad * 1turn))", "c abs(2px * (2px / 1px) / 1px)"]:
+        checkpoint p & ": " & v
+        check accepted(p, v)
+      for v in ["1", "c 1 2", "none c", "c none", "none 1", "c 1.5", "c 1px",
+          "c 1e2", "c 50%", "default", "c default", "c, d", "c / 1",
+          "c calc(1px)", "'c'", "1c", "c 1.0", "\\6e one 1", "c n\\6f ne",
+          "c \\64 efault", "\\69nherit 1", "c\\", "ä 1.5", "c abs(1px)",
+          "c round(1.5px)", "c asin(1)", "c hypot(3px, 4px)", "c mod(5%, 2%)",
+          "c round(1.5", "c sin(1px)", "c tan(1%)", "c sin()", "c sign()",
+          "c sign(foo)", "c sign(1, 2)", "c abs(1, 2)", "c abs(h1)",
+          "c round(down)", "c round(1.5px, 1px)", "c round(1px, 1)", "c mod(7)",
+          "c pow(2px, 2)", "c abs(sign(1px) * 1px)", "c abs(,1)",
+          "c round(1, down)", "c atan2(1, 1)", "c sign(1px +)", "c abs(e1)",
+          # No percentage in an `<integer>` slot (CSS Values 4 §10.9).
+          "c sign(1%)", "c sign(calc(1px + 2%))", "c calc(1% / 1%)",
+          "c abs(2px / 1s)", "c abs(2px * 1px)", "c abs(2 / 1px)",
+          "c abs(1hz)", "c abs(1hz / 1s)", "c abs(1dppx / 1hz)",
+          "c abs(2px * 2px / 1px)", "c abs(2px * 2px + 1px / 1px)",
+          "c round(1x)", "c abs(1foo / 1foo)"]:
+        checkpoint p & ": " & v
+        check not accepted(p, v)
+    for v in ["reversed(c)", "reversed(c) 2", "reversed( c ) -1",
+        "c reversed(d) 1"]:
+      check accepted("counter-reset", v)
+      check not accepted("counter-set", v)
+      check not accepted("counter-increment", v)
+    check not accepted("counter-reset", "reversed(none)")
+
+  test "a number and its unit separated by a space are refused on every path":
+    # isonim-pm issue 2026-11-24 "the numeric row accepts a space before the
+    # unit that the text path refuses". CSS Syntax 3 §4.3.3: a dimension is
+    # a number immediately followed by its unit, so `2 px` is a number and an
+    # identifier, two values. The text path reads it so; the numeric row and
+    # the box-model and compound fields (``parseNumericInput``) refuse it the
+    # same way, writing nothing (editor spec "Planned interaction parity":
+    # the same validation on every path, invalid values rejected without
+    # changing source). A unit attached to the expression's last operand is
+    # kept, spaced arithmetic and all.
+    for typed in ["2 px", "2  px", "2\tpx", "(1+2) px", "( 1+2 ) px",
+        "1 + 2 px", "2 ^ 2 px", "-2 px", "2 %", "10 / 3 rem", "2 PX",
+        "2 dvh", "0 px", "-(2 + 3) px", "1e2 px"]:
+      checkpoint typed
+      check not accepted("margin", typed)
+      for wired in [false, true]:
+        let got = typeInto("margin", lengthUnits, @[typed], wired)
+        check got.commits.len == 0
+        check got.field == "10"
+      check parseNumericInput(typed).value.isNone
+      check parseNumericDimension(typed).value.isNone
+    for (typed, written) in [("2px", "2px"), ("(1+2)px", "3px"),
+        ("( 1+2 )px", "3px"), ("1 + 2px", "3px"), ("2 ^ 2px", "4px"),
+        ("10 / 3rem", "3.3333rem"), ("-(2 + 3)px", "-5px"), ("2px ", "2px")]:
+      checkpoint typed
+      check accepted("margin", typed)
+      check typeInto("margin", lengthUnits, @[typed]).commits == @[written]
+      check parseNumericInput(typed).value.isSome
 
   test "a step or scrub that changes the value drops the kept spelling":
     # Review R5/R4: the kept spelling belongs to the value it spells. A scrub

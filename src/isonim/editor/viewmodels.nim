@@ -2073,6 +2073,25 @@ proc cssValueDiagnostics(prop: PropertyInfo;
   ## a multi-component value, checked function arguments) is accepted;
   ## anything else is judged by the single-value rules.
   let propName = prop.name.normalizedCssName()
+  if (propName in gridLineProperties or propName in counterProperties) and
+      normalized.kind != cvkTokenReference:
+    # A whole-value grammar decides these on its own (CSS Grid 2 §8.3-8.4,
+    # CSS Lists 3 §4), whatever single value the text first parses as:
+    # `grid-row: 1 / -1 / 2` or `( 1 ) / ( 3 )` is not a placement however
+    # its parts read.
+    if validGridLineOrCounterValue(propName, normalized.raw):
+      return @[]
+    return @[cssDiagnostic(pedInvalidCssValue, prop,
+      if propName in counterProperties:
+        propName & " must be none or counter names, each optionally " &
+          "followed by an integer."
+      else:
+        propName & " must be " & (case propName
+          of "grid-row", "grid-column": "one or two grid lines separated by /"
+          of "grid-area": "one to four grid lines separated by /"
+          else: "one grid line") &
+          ": auto, a line name, a non-zero integer with an optional name, " &
+          "or span with a positive integer, a name, or both.")]
   if cssValueAcceptedByGrammar(propName, normalized.raw.strip(),
       cssComponentAccepted):
     return @[]

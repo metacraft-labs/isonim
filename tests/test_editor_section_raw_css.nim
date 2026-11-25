@@ -892,7 +892,8 @@ suite "quoted family names and multi-part values are written as typed":
   ## example's production writer writes them.
   const extra = [("font-family", "serif"), ("flex", "none"),
     ("margin", "0px"), ("inset", "auto"), ("translate", "none"),
-    ("z-index", "0"), ("width", "0px"), ("grid-row", "auto")]
+    ("z-index", "0"), ("width", "0px"), ("grid-row", "auto"),
+    ("grid-area", "auto"), ("counter-set", "none")]
   proc extendedSource(): string =
     var add = ""
     for (p, v) in extra: add.add " " & p & ": " & v & ";"
@@ -1130,3 +1131,42 @@ suite "quoted family names and multi-part values are written as typed":
       vm.write()
       check foundation[] == source.replace(before, " grid-row: span 2;")
       dispose()
+
+  test "grid placements, counters and spaced units are written or refused by their grammar":
+    # isonim-pm issues 2026-11-24 "the grid-line validator accepts text that
+    # is not a grid line" (CSS Grid 2 §8.3-8.4), "counter-set values are
+    # refused" (CSS Lists 3 §4.2) and "the numeric row accepts a space
+    # before the unit that the text path refuses" (CSS Syntax 3 §4.3.3).
+    # Editor spec "Planned interaction parity": a valid value is written as
+    # typed, an invalid one refused with a reason, source unchanged.
+    for (property, value) in [("grid-row", "( 1 ) / ( 3 )"),
+        ("grid-row", "1 / -1 / 2"), ("grid-row", "0 / 3"),
+        ("grid-area", "1 / 2 / 3 / 4 / 5"), ("grid-area", "span 0"),
+        ("counter-set", "c 1 2"), ("counter-set", "reversed(c)"),
+        ("counter-set", "c 1.5"), ("width", "2 px"), ("width", "(1+2) px")]:
+      checkpoint property & ": " & value
+      createRoot proc(dispose: proc()) =
+        let source = extendedSource()
+        let foundation = new(string)
+        foundation[] = source
+        let vm = extendedVm(foundation)
+        let committed = vm.commit(property, value)
+        check not committed.ok
+        check committed.message.len > 0
+        check foundation[] == source
+        dispose()
+    for (property, value) in [("grid-row", "1 / -1"), ("grid-row", "a 2 / span b"),
+        ("grid-area", "1 / 2 / 3 / 4"), ("counter-set", "c 1"),
+        ("counter-set", "c -2 d"), ("counter-set", "c calc(1 + 1)")]:
+      checkpoint property & ": " & value
+      createRoot proc(dispose: proc()) =
+        let source = extendedSource()
+        let foundation = new(string)
+        foundation[] = source
+        let vm = extendedVm(foundation)
+        let before = " " & property & ": " & vm.value(property) & ";"
+        check before in source
+        check vm.commit(property, value).ok
+        vm.write()
+        check foundation[] == source.replace(before, " " & property & ": " & value & ";")
+        dispose()

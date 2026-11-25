@@ -232,10 +232,20 @@ proc parseLeading(raw: string): tuple[value: Option[float], rest: string] =
   ## The longest leading expression of ``raw`` and the text after it. The
   ## value is the expression's final value (an inexact one rounded once),
   ## none for unmatched syntax or a non-finite result.
+  ##
+  ## The text after it starts where the expression's last character ends,
+  ## so whitespace between the expression and a unit stays in it (`2 px`
+  ## leaves ` px`, which is no unit): CSS writes a dimension as a number
+  ## immediately followed by its unit (CSS Syntax 3 §4.3.3, "consume a
+  ## numeric token"), and the text path reads `2 px` as two values, so every
+  ## path refuses it (editor spec "Planned interaction parity").
   var p = MathParser(src: raw.strip(), pos: 0)
   let parsed = parseExpr(p)
   if parsed.isNone: return
-  skipSpaces(p)
+  # The parser skips the whitespace after each operand looking for an
+  # operator; step back over it.
+  while p.pos > 0 and p.src[p.pos - 1] in {' ', '\t', '\n', '\r', '\f'}:
+    dec p.pos
   let value = finalValue(parsed.get)
   if classify(value) in {fcNan, fcInf, fcNegInf}: return
   result = (some(value), p.src[p.pos ..< p.src.len])
