@@ -28,7 +28,7 @@
 ## real write bridge by metacraft-web-editor's
 ## `metacraft_long_tail_properties_validate_real_components`.
 
-import std/[options, strutils, tables, unittest]
+import std/[options, sequtils, strutils, tables, unittest]
 
 import isonim/core/[computation, owner, signals]
 import isonim/testing/mock_dom
@@ -44,7 +44,9 @@ const LongTailRule = ".long-tail-card { letter-spacing: 0px; text-transform: non
   "transition-duration: 0s; flex-wrap: nowrap; overflow: visible; " &
   "aspect-ratio: auto; }\n"
 
-proc demoVm(foundation: ref string; writable = true): EditorVM =
+proc demoVm(foundation: ref string; writable = true;
+    tokens = demoFoundationTokens();
+    schema = demoDesignSystemSchema()): EditorVM =
   let vector = new(string)
   vector[] = "<svg/>"
   result = createEditorVM(newEditorWorkspace(
@@ -54,8 +56,8 @@ proc demoVm(foundation: ref string; writable = true): EditorVM =
         group: "DestinationCard")])],
     initialStory = some(StoryRef(group: "DestinationCard", name: "Default",
       kind: skComponent, index: 0)),
-    foundationTokens = demoFoundationTokens(),
-    designSystemSchema = demoDesignSystemSchema(),
+    foundationTokens = tokens,
+    designSystemSchema = schema,
     permissions = EditorWorkspacePermissions(readSource: true,
       writeSource: writable),
     editAdapter = demoVectorEditAdapter(vector, foundation)))
@@ -563,7 +565,7 @@ suite "var() references written as typed":
         " transition-duration: 0s;", " transition-duration: var( --d);")
       dispose()
 
-  test "var(--name) keeps the token form it was written in":
+  test "var(--name) is written as typed, not in a token form":
     for property in ["letter-spacing", "filter"]:
       createRoot proc(dispose: proc()) =
         let foundation = new(string)
@@ -573,8 +575,186 @@ suite "var() references written as typed":
         check vm.commitInspectorValue(property, "var(--a)", sskSharedClass).ok
         vm.write()
         check foundation[] == DemoFoundationInitialSource.replace(before,
-          " " & property & ": token(a);")
+          " " & property & ": var(--a);")
         dispose()
+
+  test "a var() with a fallback is a use of the custom property, not of its fallback":
+    # Written as typed, and the token identity is the custom property's name
+    # alone, so the use counts towards that token (editor spec: the editor
+    # shows the token identity and its known direct usage).
+    createRoot proc(dispose: proc()) =
+      let foundation = new(string)
+      foundation[] = DemoFoundationInitialSource
+      let vm = demoVm(foundation)
+      let before = " letter-spacing: " & vm.value("letter-spacing") & ";"
+      check vm.commitInspectorValue("letter-spacing", "var(--wl-space-card, 4px)",
+        sskSharedClass).ok
+      vm.write()
+      check foundation[] == DemoFoundationInitialSource.replace(before,
+        " letter-spacing: var(--wl-space-card, 4px);")
+      check vm.value("letter-spacing") == "var(--wl-space-card, 4px)"
+      var tokenName = ""
+      for prop in vm.inspector.selectedElement.val.properties:
+        if prop.name == "letter-spacing": tokenName = prop.tokenName
+      check tokenName == "wl-space-card"
+      check vm.tokenChain(vm.value("letter-spacing")) == @["wl-space-card"]
+      var used: seq[string]
+      for prop in vm.foundationImpact("wl-space-card").affectedProperties:
+        used.add prop.name
+      check "letter-spacing" in used
+      check vm.foundationImpact("wl-space-card, 4px").affectedProperties.len == 0
+      dispose()
+
+  test "a custom property is never refused for its name; a design token must be defined":
+    # isonim-pm issue 2026-11-23-var-missing-is-refused-as-an-unknown-design-
+    # token: `var(--missing)` is valid CSS whatever the name (CSS Variables 1
+    # §3). A design-schema spelling names a token the project defines.
+    for value in ["var(--missing)", "var(--missing, 1px)"]:
+      createRoot proc(dispose: proc()) =
+        let foundation = new(string)
+        foundation[] = DemoFoundationInitialSource
+        let vm = demoVm(foundation)
+        let before = " letter-spacing: " & vm.value("letter-spacing") & ";"
+        check vm.commitInspectorValue("letter-spacing", value, sskSharedClass).ok
+        vm.write()
+        check foundation[] == DemoFoundationInitialSource.replace(before,
+          " letter-spacing: " & value & ";")
+        dispose()
+    for value in ["token(no.such.token)", "$no.such.token"]:
+      createRoot proc(dispose: proc()) =
+        let foundation = new(string)
+        foundation[] = DemoFoundationInitialSource
+        let vm = demoVm(foundation)
+        let outcome = vm.commitInspectorValue("letter-spacing", value, sskSharedClass)
+        check not outcome.ok
+        check outcome.message == "Unknown design token 'no.such.token'."
+        vm.write()
+        check foundation[] == DemoFoundationInitialSource
+        dispose()
+    # A token the example defines (its foundations) is accepted.
+    createRoot proc(dispose: proc()) =
+      let foundation = new(string)
+      foundation[] = DemoFoundationInitialSource
+      let vm = demoVm(foundation)
+      check vm.commitInspectorValue("letter-spacing", "token(space.card)",
+        sskSharedClass).ok
+      dispose()
+
+  test "a design-schema token key is defined without any foundation token":
+    # The example's schema defines `wanderlust.foundation.space.card`; with
+    # no foundation tokens that key alone is accepted, and a key neither
+    # defines is refused (review R3).
+    createRoot proc(dispose: proc()) =
+      let foundation = new(string)
+      foundation[] = DemoFoundationInitialSource
+      let vm = demoVm(foundation, tokens = @[])
+      let before = " letter-spacing: " & vm.value("letter-spacing") & ";"
+      let refused = vm.commitInspectorValue("letter-spacing", "token(no.such)",
+        sskSharedClass)
+      check not refused.ok
+      check refused.message == "Unknown design token 'no.such'."
+      check vm.commitInspectorValue("letter-spacing",
+        "token(wanderlust.foundation.space.card)", sskSharedClass).ok
+      vm.write()
+      check foundation[] == DemoFoundationInitialSource.replace(before,
+        " letter-spacing: token(wanderlust.foundation.space.card);")
+      dispose()
+
+  test "a project that defines no tokens refuses no design-token key":
+    # Nothing says which keys exist, so none is refused for its name.
+    var bare = demoDesignSystemSchema()
+    var kept: seq[DesignSchemaNode]
+    for node in bare.nodes:
+      if node.kind notin {dsnFoundation, dsnSemanticToken, dsnComponentToken}:
+        kept.add node
+    bare.nodes = kept
+    for value in ["token(no.such)", "$no.such"]:
+      createRoot proc(dispose: proc()) =
+        let foundation = new(string)
+        foundation[] = DemoFoundationInitialSource
+        let vm = demoVm(foundation, tokens = @[], schema = bare)
+        let before = " letter-spacing: " & vm.value("letter-spacing") & ";"
+        check vm.commitInspectorValue("letter-spacing", value, sskSharedClass).ok
+        vm.write()
+        check foundation[] == DemoFoundationInitialSource.replace(before,
+          " letter-spacing: token(no.such);")
+        dispose()
+
+  test "a Foundations alias names a defined design token":
+    # An alias to a key the project does not define would be written and
+    # break the token and every use of it: refused at the edit with the
+    # same reason a use site gets, and nothing is written.
+    for (value, reason) in [("token(nope)", "Unknown design token 'nope'."),
+        ("$nope", "Unknown design token 'nope'."),
+        ("token()", "Token references must name a token."),
+        ("$a b", "Token references must name a token.")]:
+      createRoot proc(dispose: proc()) =
+        let foundation = new(string)
+        foundation[] = DemoFoundationInitialSource
+        let vm = demoVm(foundation)
+        checkpoint value
+        let edit = vm.editFoundationToken("semantic.action.primary", value)
+        check edit.status == pesRejected
+        check edit.diagnostics.anyIt(it.message == reason)
+        discard vm.applyWorkspaceFileEdits()
+        check foundation[] == DemoFoundationInitialSource
+        dispose()
+    # A design-schema token key is a defined alias target too, with no
+    # foundation token of that name.
+    createRoot proc(dispose: proc()) =
+      let foundation = new(string)
+      foundation[] = DemoFoundationInitialSource
+      let vm = demoVm(foundation)
+      check vm.editFoundationToken("semantic.action.primary",
+        "token(wanderlust.foundation.radius.card)").status == pesAccepted
+      vm.write()
+      check "--wl-action-primary: token(wanderlust.foundation.radius.card);" in
+        foundation[]
+      dispose()
+    # An alias that closes a cycle is refused whatever the edited token's
+    # kind: `semantic.action.primary` already aliases `color.blue.600`, a
+    # palette colour.
+    createRoot proc(dispose: proc()) =
+      let foundation = new(string)
+      foundation[] = DemoFoundationInitialSource
+      let vm = demoVm(foundation)
+      let edit = vm.editFoundationToken("color.blue.600",
+        "token(semantic.action.primary)")
+      check edit.status == pesRejected
+      check edit.diagnostics.anyIt(it.kind == fedAliasCycle and
+        it.message == "Token aliases cannot form a cycle.")
+      discard vm.applyWorkspaceFileEdits()
+      check foundation[] == DemoFoundationInitialSource
+      dispose()
+    # A longer cycle is seen through the whole chain, not only one hop:
+    # space.card -> radius.card -> shadow.card, then shadow.card -> space.card.
+    createRoot proc(dispose: proc()) =
+      let foundation = new(string)
+      foundation[] = DemoFoundationInitialSource
+      let vm = demoVm(foundation)
+      check vm.editFoundationToken("space.card", "token(radius.card)").status ==
+        pesAccepted
+      check vm.editFoundationToken("radius.card", "token(shadow.card)").status ==
+        pesAccepted
+      let closing = vm.editFoundationToken("shadow.card", "token(space.card)")
+      check closing.status == pesRejected
+      check closing.diagnostics.anyIt(it.kind == fedAliasCycle and
+        it.message == "Token aliases cannot form a cycle.")
+      var shadow = ""
+      for token in vm.foundations.tokens.val:
+        if token.key == "shadow.card": shadow = token.value
+      check shadow == "0 12px 28px #0F172A"
+      dispose()
+    # An alias to a defined token is accepted and written.
+    createRoot proc(dispose: proc()) =
+      let foundation = new(string)
+      foundation[] = DemoFoundationInitialSource
+      let vm = demoVm(foundation)
+      check vm.editFoundationToken("semantic.action.primary",
+        "token(type.body.size)").status == pesAccepted
+      vm.write()
+      check "--wl-action-primary: token(type.body.size);" in foundation[]
+      dispose()
 
   test "a malformed reference is refused and nothing is written":
     for value in ["var(-a)", "var(--)", "var(--a b)", "VAR(--a;)", "vars(--a)"]:
@@ -699,4 +879,294 @@ suite "colour and list values holding var() keep their case when written":
         check vm.commitInspectorValue("color", value, sskSharedClass).ok
         vm.write()
         check foundation[] == source.replace(" color: black;", " color: " & written & ";")
+        dispose()
+
+suite "quoted family names and multi-part values are written as typed":
+  ## isonim-pm issues 2026-11-22 "font-family write-back adds a space after
+  ## commas inside quoted names" and 2026-11-23 "a flex value is written as
+  ## the result of arithmetic on its parts". Editor spec "Planned
+  ## interaction parity": a value is written, or refused with a reason
+  ## without changing source; typed arithmetic applies to a single numeric
+  ## value. The example's `.long-tail-card` rule is given these declarations,
+  ## each mapped by a schema entry as the example maps its own, and the
+  ## example's production writer writes them.
+  const extra = [("font-family", "serif"), ("flex", "none"),
+    ("margin", "0px"), ("inset", "auto"), ("translate", "none"),
+    ("z-index", "0"), ("width", "0px"), ("grid-row", "auto"),
+    ("grid-area", "auto"), ("counter-set", "none")]
+  proc extendedSource(): string =
+    var add = ""
+    for (p, v) in extra: add.add " " & p & ": " & v & ";"
+    const marker = " background-repeat: repeat; }\n"
+    check marker in DemoFoundationInitialSource
+    DemoFoundationInitialSource.replace(marker,
+      " background-repeat: repeat;" & add & " }\n")
+  proc extendedVm(foundation: ref string): EditorVM =
+    let vector = new(string)
+    vector[] = "<svg/>"
+    var adapter = demoVectorEditAdapter(vector, foundation)
+    let story = StoryRef(group: "DestinationCard", name: "Default",
+      kind: skComponent, index: 0)
+    for (p, _) in extra:
+      adapter.schema.add WorkspaceEditableSchemaEntry(
+        key: "classes.destination-card." & p, kind: wskSourceMap,
+        file: DemoFoundationSource, path: "classes.long-tail-card." & p,
+        story: story, property: p, removable: true, breakpointOverrides: true)
+    result = createEditorVM(newEditorWorkspace(
+      title = "Wanderlust written-form fixture",
+      storyGroups = @[StoryGroup(name: "DestinationCard", kind: skComponent,
+        expanded: true, items: @[StoryItem(name: "Default", kind: skComponent,
+          group: "DestinationCard")])],
+      initialStory = some(story),
+      foundationTokens = demoFoundationTokens(),
+      designSystemSchema = demoDesignSystemSchema(),
+      permissions = EditorWorkspacePermissions(readSource: true, writeSource: true),
+      editAdapter = adapter))
+    var element = demoInspectorElement()
+    for (p, v) in extra:
+      element.properties.add PropertyInfo(name: p, value: v,
+        origin: poTailwindClass, originDetail: "class:long-tail-card",
+        sourceFile: DemoFoundationSource, sourceLine: 10,
+        schemaKey: "classes.destination-card." & p,
+        sharedCount: 4, directStyleAllowed: true)
+    check result.selectInspectorElement(element)
+  proc commit(vm: EditorVM; property, value: string): PropertyCommitOutcome =
+    # A family the shared class cannot write yet (flex, inset, translate,
+    # z-index, width) is committed at the local instance, which the same
+    # writer writes.
+    result = vm.commitInspectorValue(property, value, sskSharedClass)
+    if not result.ok and "read-only until source-write tests exist" in result.message:
+      result = vm.commitInspectorValue(property, value, sskLocalInstance)
+
+  test "each value is written exactly as typed, and undo restores the file":
+    for (property, value, written) in [
+        ("font-family", "\"A,B\" var(--a)", "\"A,B\" var(--a)"),
+        ("font-family", "'A,B',serif", "'A,B', serif"),
+        ("font-family", "\"Helvetica Neue,Bold\", Arial", "\"Helvetica Neue,Bold\", Arial"),
+        ("font-family", "A\\,B,serif", "A\\,B, serif"),
+        ("font-family", "Inter,serif", "Inter, serif"),
+        ("flex", "+1 +1 +1px", "+1 +1 +1px"), ("flex", "1 +1", "1 +1"),
+        ("margin", "0 -16px", "0 -16px"), ("inset", "0 -1px", "0 -1px"),
+        ("translate", "0 -5px", "0 -5px"),
+        # A `/` that separates grid lines is no division.
+        ("grid-row", "1 / -1", "1 / -1"), ("grid-row", "1/3", "1/3"),
+        # A single value's typed arithmetic is still evaluated.
+        ("width", "100+50px", "150px"), ("margin", "10+6px", "16px"),
+        ("z-index", "2*5", "10"), ("flex", "1+1", "2")]:
+      checkpoint property & ": " & value
+      createRoot proc(dispose: proc()) =
+        let source = extendedSource()
+        let foundation = new(string)
+        foundation[] = source
+        let vm = extendedVm(foundation)
+        let before = " " & property & ": " & vm.value(property) & ";"
+        check before in source
+        let committed = vm.commit(property, value)
+        check committed.ok
+        check committed.message == ""
+        vm.write()
+        check foundation[] == source.replace(before, " " & property & ": " & written & ";")
+        check vm.runEditorCommand(eckUndo).status == ecsSucceeded
+        vm.write()
+        check foundation[] == source
+        dispose()
+
+  test "an invalid multi-part value is refused and the file is unchanged":
+    for (property, value) in [("flex", "1 -1"), ("flex", "+.5 -.5"),
+        ("z-index", "1 -1"), ("width", "100 -50px")]:
+      checkpoint property & ": " & value
+      createRoot proc(dispose: proc()) =
+        let source = extendedSource()
+        let foundation = new(string)
+        foundation[] = source
+        let vm = extendedVm(foundation)
+        let committed = vm.commit(property, value)
+        check not committed.ok
+        check committed.message.len > 0
+        check vm.inspector.pendingSourceEdits.val.len == 0
+        check foundation[] == source
+        dispose()
+
+  test "typed arithmetic read as two values is refused with that reading named":
+    createRoot proc(dispose: proc()) =
+      let source = extendedSource()
+      let foundation = new(string)
+      foundation[] = source
+      let vm = extendedVm(foundation)
+      let committed = vm.commit("width", "100 -50px")
+      check not committed.ok
+      check committed.message.startsWith("`100 -50px` was read as 2 values")
+      check foundation[] == source
+      # Spaced on both sides it is one expression, and is evaluated.
+      check vm.commit("width", "100 - 50px").ok
+      vm.write()
+      check foundation[] == source.replace(" width: 0px;", " width: 50px;")
+      dispose()
+
+  test "typed arithmetic is the numeric row's, and a signed number is written as typed":
+    # isonim-pm issues 2026-11-24 "the text path's arithmetic evaluator
+    # differs from the numeric field's" and "a signed number typed without
+    # arithmetic is rewritten on commit". Editor spec "Numeric Inputs": the
+    # arithmetic precision rules, and "A number typed without arithmetic is
+    # kept exactly as authored".
+    for (property, value, written) in [
+        ("width", "1/30000px", "0.00003333px"), ("width", "1.23456+1px", "2.23456px"),
+        ("width", "1/1024px", "0.0009765625px"), ("width", "10/3rem", "3.3333rem"),
+        ("width", "100/3*2px", "66.6667px"), ("width", "(1/3)*3px", "1px"),
+        ("margin", "-(2+3)px", "-5px"), ("margin", "-2^2px", "-4px"),
+        ("width", "2^-(1)px", "0.5px"), ("width", "2^2px", "4px"),
+        ("width", "1e2+5px", "105px"), ("z-index", "-(2+3)", "-5"),
+        ("width", "+2px", "+2px"), ("width", "-0px", "-0px"),
+        ("margin", "-.5px", "-.5px"), ("margin", "+1.5px", "+1.5px"),
+        ("z-index", "+2", "+2"), ("width", "1e2px", "1e2px"),
+        # Parentheses alone are arithmetic: the group is evaluated.
+        ("width", "(2)px", "2px"), ("z-index", "((2))", "2")]:
+      checkpoint property & ": " & value
+      createRoot proc(dispose: proc()) =
+        let source = extendedSource()
+        let foundation = new(string)
+        foundation[] = source
+        let vm = extendedVm(foundation)
+        let before = " " & property & ": " & vm.value(property) & ";"
+        check before in source
+        let committed = vm.commit(property, value)
+        check committed.ok
+        vm.write()
+        check foundation[] == source.replace(before, " " & property & ": " & written & ";")
+        check vm.runEditorCommand(eckUndo).status == ecsSucceeded
+        vm.write()
+        check foundation[] == source
+        dispose()
+    # Invalid as typed: refused, never reduced to a valid value.
+    for (property, value) in [("width", "+1.px"), ("width", "10px+5em"),
+        ("width", "1/0px"), ("width", "1/30000")]:
+      checkpoint property & ": " & value
+      createRoot proc(dispose: proc()) =
+        let source = extendedSource()
+        let foundation = new(string)
+        foundation[] = source
+        let vm = extendedVm(foundation)
+        let committed = vm.commit(property, value)
+        check not committed.ok
+        check committed.message.len > 0
+        check foundation[] == source
+        dispose()
+
+  test "a spaced power or a parenthesised group is one expression, written as the numeric row writes it":
+    # isonim-pm issue 2026-11-24 "the text path splits spaced powers and
+    # parentheses into several values". Editor spec "Planned interaction
+    # parity": typed arithmetic obeys the same constraints on every path, so
+    # `2 ^ 2px` and `( 1+2 )px` are written as the numeric row writes them.
+    for (property, value, written) in [
+        ("width", "2 ^ 2px", "4px"), ("width", "2^ 2px", "4px"),
+        ("width", "2 ^2px", "4px"), ("width", "( 1+2 )px", "3px"),
+        ("width", "( 1 + 2 ) * 2px", "6px"), ("margin", "-( 2 + 3 )px", "-5px"),
+        ("width", "2 ^ ( 1 + 1 )px", "4px"), ("z-index", "( 1 + 2 )", "3")]:
+      checkpoint property & ": " & value
+      createRoot proc(dispose: proc()) =
+        let source = extendedSource()
+        let foundation = new(string)
+        foundation[] = source
+        let vm = extendedVm(foundation)
+        let before = " " & property & ": " & vm.value(property) & ";"
+        check before in source
+        let committed = vm.commit(property, value)
+        check committed.ok
+        vm.write()
+        check foundation[] == source.replace(before, " " & property & ": " & written & ";")
+        check vm.runEditorCommand(eckUndo).status == ecsSucceeded
+        vm.write()
+        check foundation[] == source
+        dispose()
+    # A multi-part neighbour stays several values: written as typed, and an
+    # invalid one is refused rather than evaluated.
+    for (property, value) in [("margin", "0 2 ^ 2px"), ("margin", "( 1+2 )px 0"),
+        ("width", "( 1 ) ( 2 )px"), ("width", "(1+2) px")]:
+      checkpoint property & ": " & value
+      createRoot proc(dispose: proc()) =
+        let source = extendedSource()
+        let foundation = new(string)
+        foundation[] = source
+        let vm = extendedVm(foundation)
+        let committed = vm.commit(property, value)
+        check not committed.ok
+        check foundation[] == source
+        dispose()
+
+  test "an <integer> property refuses a fraction or an exponent":
+    # CSS Values 4 §5.2: an `<integer>` is a sign and digits only.
+    for (property, value) in [("z-index", "1e-2"), ("z-index", "+1e2"),
+        ("z-index", "1e0"), ("z-index", "1.0"), ("grid-row", "1.5"),
+        ("grid-row", "span 1e1")]:
+      checkpoint property & ": " & value
+      createRoot proc(dispose: proc()) =
+        let source = extendedSource()
+        let foundation = new(string)
+        foundation[] = source
+        let vm = extendedVm(foundation)
+        let committed = vm.commit(property, value)
+        check not committed.ok
+        check committed.message.len > 0
+        check foundation[] == source
+        dispose()
+    createRoot proc(dispose: proc()) =
+      let source = extendedSource()
+      let foundation = new(string)
+      foundation[] = source
+      let vm = extendedVm(foundation)
+      let before = " z-index: " & vm.value("z-index") & ";"
+      check before in source
+      check vm.commit("z-index", "+3").ok
+      vm.write()
+      check foundation[] == source.replace(before, " z-index: +3;")
+      dispose()
+    createRoot proc(dispose: proc()) =
+      let source = extendedSource()
+      let foundation = new(string)
+      foundation[] = source
+      let vm = extendedVm(foundation)
+      let before = " grid-row: " & vm.value("grid-row") & ";"
+      check before in source
+      check vm.commit("grid-row", "span 2").ok
+      vm.write()
+      check foundation[] == source.replace(before, " grid-row: span 2;")
+      dispose()
+
+  test "grid placements, counters and spaced units are written or refused by their grammar":
+    # isonim-pm issues 2026-11-24 "the grid-line validator accepts text that
+    # is not a grid line" (CSS Grid 2 §8.3-8.4), "counter-set values are
+    # refused" (CSS Lists 3 §4.2) and "the numeric row accepts a space
+    # before the unit that the text path refuses" (CSS Syntax 3 §4.3.3).
+    # Editor spec "Planned interaction parity": a valid value is written as
+    # typed, an invalid one refused with a reason, source unchanged.
+    for (property, value) in [("grid-row", "( 1 ) / ( 3 )"),
+        ("grid-row", "1 / -1 / 2"), ("grid-row", "0 / 3"),
+        ("grid-area", "1 / 2 / 3 / 4 / 5"), ("grid-area", "span 0"),
+        ("counter-set", "c 1 2"), ("counter-set", "reversed(c)"),
+        ("counter-set", "c 1.5"), ("width", "2 px"), ("width", "(1+2) px")]:
+      checkpoint property & ": " & value
+      createRoot proc(dispose: proc()) =
+        let source = extendedSource()
+        let foundation = new(string)
+        foundation[] = source
+        let vm = extendedVm(foundation)
+        let committed = vm.commit(property, value)
+        check not committed.ok
+        check committed.message.len > 0
+        check foundation[] == source
+        dispose()
+    for (property, value) in [("grid-row", "1 / -1"), ("grid-row", "a 2 / span b"),
+        ("grid-area", "1 / 2 / 3 / 4"), ("counter-set", "c 1"),
+        ("counter-set", "c -2 d"), ("counter-set", "c calc(1 + 1)")]:
+      checkpoint property & ": " & value
+      createRoot proc(dispose: proc()) =
+        let source = extendedSource()
+        let foundation = new(string)
+        foundation[] = source
+        let vm = extendedVm(foundation)
+        let before = " " & property & ": " & vm.value(property) & ";"
+        check before in source
+        check vm.commit(property, value).ok
+        vm.write()
+        check foundation[] == source.replace(before, " " & property & ": " & value & ";")
         dispose()

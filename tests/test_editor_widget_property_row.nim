@@ -38,8 +38,10 @@ import isonim/editor/types
 import isonim/editor/viewmodels
 import isonim/editor/css_value_grammar
 import isonim/editor/numeric_precision
+import isonim/editor/numeric_expression
 import isonim/editor/views/choice_row
 import isonim/editor/views/widgets/property_row
+import isonim/editor/views/widgets/property_commit
 import isonim/testing/mock_dom
 
 # --------------------------------------------------------------------------- #
@@ -1871,19 +1873,59 @@ suite "a typed value is checked against its property's CSS grammar":
     # A name with a hex escape (CSS Syntax 3 §4.3.7): the whitespace ending
     # the escape belongs to the name.
     accepts("width", "var(--\\31 a)")
-    # The token form the editor already wrote stays the same:
-    # `var(--name)` is written as `token(name)`, now on every property.
-    for (p, v, t) in [("width", "var(--a)", "token(a)"), ("width", "var(--a )", "token(a)"),
-        ("aspect-ratio", "var(--x)", "token(x)"), ("overflow", "var(--x)", "token(x)"),
-        ("width", "var(--\\31 a)", "token(\\31 a)")]:
+    # A `var()` reference is written as typed, never in the `token(name)`
+    # form no CSS reader understands (isonim-pm issue 2026-11-22-var-values-
+    # are-written-in-a-token-form-...): the fallback and every other
+    # reference stay. Its token identity is still the custom property.
+    for (p, v) in [("width", "var(--a)"), ("width", "var(--a )"),
+        ("aspect-ratio", "var(--x)"), ("overflow", "var(--x)"),
+        ("width", "var(--\\31 a)"), ("width", "var(--a) var(--b)"),
+        ("width", "var(--a, 1px)"), ("width", "var(--a, var(--b, 2px))"),
+        ("font-family", "var(--a, \"x,y\")"), ("background-image", "var(--a), url(x.png)"),
+        ("margin", "var(--a) auto var(--b)")]:
       accepts(p, v)
-      check written(p, v) == t
-    # A value the token parser would write as a token form naming no custom
-    # property is judged by the property's grammar, as before: it is never
-    # written changed.
+      check written(p, v) == v
+    check parseCssPropertyValue("width", "var(--a)").tokenName == "a"
+    check parseCssPropertyValue("width", "var(--a)").kind == cvkTokenReference
+    # Valid at parse time (CSS Variables 1 §3.1) and written as typed, so
+    # accepted on every property, whatever its own grammar.
     for (p, v) in [("filter", "var(--x), var(--y)"), ("overflow", "var(--x), var(--y)"),
-        ("aspect-ratio", "var(--x), var(--y)")]:
+        ("aspect-ratio", "var(--x), var(--y)"), ("filter", "var(--x, blur(2px))"),
+        ("overflow", "var(--x, hidden)"), ("aspect-ratio", "var(--x, 16 / 9)"),
+        ("aspect-ratio", "var(--x) / var(--y)")]:
+      accepts(p, v)
+      check written(p, v) == v
+    # The design-schema spellings keep the `token(key)` form their token
+    # workflows read; one holding a var() would be written changed, so it is
+    # judged by the property's grammar as before.
+    check written("width", "token(a)") == "token(a)"
+    check written("width", "$a") == "token(a)"
+    for (p, v) in [("overflow", "token(a) var(--b)"), ("aspect-ratio", "token(a, var(--b))")]:
       refuses(p, v)
+    # `$key` is one key (as `tokenReferenceIn` reads it): `$a var(--b)` is
+    # not a token reference, holds a var(), and is written as typed rather
+    # than as `token(a var(--b))`.
+    for p in ["width", "filter"]:
+      accepts(p, "$a var(--b)")
+      check written(p, "$a var(--b)") == "$a var(--b)"
+    # Nor is `$` with whitespace of any kind in it: no longer written as
+    # `token(a)` / `token(a b)`, it is judged by the property's grammar.
+    for v in ["$ a", "$a b", "$a\tb"]:
+      refuses("width", v)
+      refuses("color", v)
+    # A custom property is never refused for its name, `missing` included.
+    for v in ["var(--missing)", "var(--missing, 1px)"]:
+      accepts("width", v)
+      check written("width", v) == v
+    # The token identity of a var() is the custom property's name alone; its
+    # fallback stays in the written text.
+    for (v, name) in [("var(--wl-space-card, 4px)", "wl-space-card"),
+        ("var(--a,1px)", "a"), ("var(--a , var(--b, 2px))", "a"),
+        ("var(--a)", "a"), ("var(--a )", "a"), ("var(--\\31 a)", "\\31 a"),
+        ("var(--a) var(--b)", "a")]:
+      checkpoint v
+      check parseCssPropertyValue("padding", v).tokenName == name
+      check written("padding", v) == v
     # Malformed references and near-misses stay refused.
     for v in ["var(-a)", "var(--)", "var(--a b)", "var(--a;)", "vars(--a)", "var(a)",
         "var()", "var( )", "var(--a 1px)", "var(--a/**/b)", "VAR(-a)", "VAR(--)",
@@ -1895,3 +1937,796 @@ suite "a typed value is checked against its property's CSS grammar":
         ("color", "var(--)"), ("font-family", "var(--a b), serif"),
         ("margin", "var(-a) 1px")]:
       refuses(p, v)
+
+  test "a quoted family name and a multi-part value are written as typed":
+    # isonim-pm issues 2026-11-22 "font-family write-back adds a space after
+    # commas inside quoted names" and 2026-11-23 "a flex value is written as
+    # the result of arithmetic on its parts". Editor spec "Planned
+    # interaction parity": a value is written, or refused with a reason; it
+    # is never changed. Typed arithmetic applies to a single numeric value.
+    proc reasons(property, value: string): seq[string] =
+      for d in validateCssPropertyValue(PropertyInfo(name: property,
+          directStyleAllowed: true),
+          PropertyEditRequest(property: property, newValue: value, kind: pekCss),
+          parseCssPropertyValue(property, value)):
+        result.add d.message
+    # What an inspector commit writes: the typed text normalised (typed
+    # arithmetic), then read as the property's value.
+    proc committed(property, value: string): string =
+      parseCssPropertyValue(property,
+        normalizePrimitiveInputValue(property, value)).canonical
+    proc refusedAtCommit(property, value: string): bool =
+      let text = normalizePrimitiveInputValue(property, value)
+      reasons(property, text).len > 0
+    # A quoted family name is a string (CSS Fonts 4 §2.1); its contents,
+    # commas and spaces included, are the name. An escaped comma belongs to
+    # the name too (CSS Syntax 3 §4.3.7), and a comment is no separator.
+    for (v, w) in [("\"A,B\" var(--a)", "\"A,B\" var(--a)"),
+        ("\"A,B\"", "\"A,B\""), ("'A,B',serif", "'A,B', serif"),
+        ("\"A ,B\" , serif", "\"A ,B\", serif"),
+        ("\"a\\\",b\", serif", "\"a\\\",b\", serif"),
+        ("'a\\'b,c', serif", "'a\\'b,c', serif"),
+        ("\"x,y,z\",Arial,sans-serif", "\"x,y,z\", Arial, sans-serif"),
+        ("serif,\"A,B\"", "serif, \"A,B\""), ("\"A,,B\"", "\"A,,B\""),
+        ("A\\,B,serif", "A\\,B, serif"), ("\"A;B,C\"", "\"A;B,C\""),
+        ("Inter,serif /* a,b */", "Inter, serif /* a,b */"),
+        ("var(--f,\"a,b\"), serif", "var(--f, \"a,b\"), serif"),
+        # The separating commas of an unquoted list keep their normalisation.
+        ("Inter,serif", "Inter, serif"), ("Inter ,  serif", "Inter, serif"),
+        ("a,b,c", "a, b, c")]:
+      checkpoint "font-family: " & v
+      check reasons("font-family", v).len == 0
+      check committed("font-family", v) == w
+    # A value of several components is never one arithmetic expression: a
+    # sign stuck to a number starts a component (CSS Syntax 3 §4.3.12).
+    for (p, v) in [("flex", "+1 +1 +1px"), ("flex", "1 +1"), ("flex", "+1 +1"),
+        ("flex", "+1 +1 +1PX"), ("margin", "0 -16px"), ("inset", "0 -1px"),
+        ("translate", "0 -5px"), ("background-position", "0 -10px"),
+        ("scale", "1 -1"), ("transform-origin", "0 -1px"), ("gap", "0 -0"),
+        ("box-shadow", "0 -1px"), ("text-shadow", "0 -1px"),
+        # A `/` that separates components is no division.
+        ("grid-row", "1 / -1"), ("grid-row", "1/3"), ("grid-column", "2/4"),
+        ("grid-area", "1 / 2 / 3 / 4"), ("border-radius", "0 / 5px"),
+        ("aspect-ratio", "16 / 9")]:
+      checkpoint p & ": " & v
+      check normalizePrimitiveInputValue(p, v) == v
+      check not refusedAtCommit(p, v)
+      check committed(p, v) == v
+    # Invalid multi-part values are refused, never reduced to a valid one.
+    for (p, v) in [("flex", "1 -1"), ("flex", "0 -1"), ("flex", "+.5 -.5"),
+        ("z-index", "1 -1"), ("opacity", "1 -1"), ("line-height", "1 +1"),
+        ("order", "1 -1"), ("width", "100 -50px"), ("width", "100 +50"),
+        ("border-radius", "1/1px")]:
+      checkpoint p & ": " & v
+      check normalizePrimitiveInputValue(p, v) == v
+      check refusedAtCommit(p, v)
+    # The text path names that reading when it refuses typed arithmetic
+    # that CSS reads as two values and whose result the property would take.
+    for (p, v) in [("width", "100 -50px"), ("z-index", "1 -1"), ("opacity", "1 -1")]:
+      checkpoint p & ": " & v
+      let why = reasons(p, normalizePrimitiveInputValue(p, v))
+      check why.len > 0
+      if why.len > 0:
+        check why[0].startsWith("`" & v & "` was read as 2 values")
+    # A refusal with no arithmetic reading keeps its own reason only.
+    for (p, v) in [("width", "100px 50px"), ("flex", "1 1 -1px"),
+        ("width", "100 +50"), ("accent-color", "0 -1px")]:
+      let why = reasons(p, v)
+      check why.len > 0
+      if why.len > 0:
+        check "was read as" notin why[0]
+    # A custom property's value is arbitrary tokens (CSS Variables 1 §2): it
+    # is never evaluated, whatever it holds.
+    for v in ["10/2", "2*3", "1+1", "100 - 50px", "-0px", "+2", "1 -1",
+        "+1 +1 +1px", "1 / -1", "6*4px"]:
+      for p in ["--x", "--space-card"]:
+        checkpoint p & ": " & v
+        check normalizePrimitiveInputValue(p, v) == v
+    # A single value's typed arithmetic still applies, spaced or not.
+    for (p, v, w) in [("width", "100+50px", "150px"), ("width", "100 + 50px", "150px"),
+        ("width", "100 - 50px", "50px"), ("width", "6*4px", "24px"),
+        ("width", "100/4px", "25px"), ("width", "100 /4px", "25px"),
+        ("height", "2.5-0.7px", "1.8px"), ("font-size", "6*4px", "24px"),
+        ("padding", "10+6px", "16px"), ("margin", "-2*4px", "-8px"),
+        ("line-height", "1+0.5", "1.5"), ("opacity", "1-0.25", "0.75"),
+        ("z-index", "2*5", "10"), ("flex", "1+1", "2"), ("gap", "4*2px", "8px"),
+        ("letter-spacing", "-1+0.5px", "-0.5px"), ("text-indent", "- 1em", "-1em")]:
+      checkpoint p & ": " & v
+      check not refusedAtCommit(p, v)
+      check committed(p, v) == w
+    # A numeric field evaluates what is typed into it and adds its unit.
+    createRoot proc(dispose: proc()) =
+      let value = createSignal(10.0)
+      let unit = createSignal(pxUnit)
+      var seen: seq[string]
+      var cfg = propertyRowNumeric(
+        name = "Width", value = value, unit = unit, units = @[pxUnit])
+      cfg.onCommitValue = proc(v: string) = seen.add v
+      let (r, root) = mkRoot()
+      discard r.mountPropertyRow(root, cfg)
+      let input = findByAttr(root, "data-property-row-input", "true")
+      r.setInputValue(input, "100+50")
+      fireEvent(input, "change")
+      check seen == @["150px"]
+      check committed("width", seen[^1]) == "150px"
+      dispose()
+
+  test "typed arithmetic gives the numeric row's result on the text path":
+    # isonim-pm issues 2026-11-24 "the text path's arithmetic evaluator
+    # differs from the numeric field's" and "a signed number typed without
+    # arithmetic is rewritten on commit". Editor spec "Numeric Inputs" (the
+    # arithmetic precision rules; "A number typed without arithmetic is kept
+    # exactly as authored") and "Planned interaction parity" ("Typed
+    # arithmetic, units and arrow adjustments obey the same property
+    # constraints"): one evaluator, whichever path commits the text.
+    let units = @[pxUnit, PropertyUnitOption(label: "rem", code: "rem"),
+      PropertyUnitOption(label: "turn", code: "turn")]
+    proc rowCommit(typed: string): string =
+      ## What a mounted numeric row commits for ``typed`` ("" when nothing).
+      var got = ""
+      createRoot proc(dispose: proc()) =
+        let value = createSignal(10.0)
+        let unit = createSignal(pxUnit)
+        var seen: seq[string]
+        var cfg = propertyRowNumeric(name = "Width", value = value,
+          unit = unit, units = units)
+        cfg.onCommitValue = proc(v: string) = seen.add v
+        let (r, root) = mkRoot()
+        discard r.mountPropertyRow(root, cfg)
+        let input = findByAttr(root, "data-property-row-input", "true")
+        r.setInputValue(input, typed)
+        fireEvent(input, "change")
+        if seen.len > 0: got = seen[^1]
+        dispose()
+      got
+    # Every typed example of the spec, through both paths. The row adds its
+    # active unit (px) to a unitless expression; the text path keeps the
+    # text unitless, for the property's validation.
+    for (typed, expected) in [("100+50", "150"), ("200/2", "100"),
+        ("50*3", "150"), ("0.1+0.2px", "0.3px"), ("2.5-0.7", "1.8"),
+        ("1.1*3", "3.3"), ("120+1/8", "120.125"),
+        ("1/1024turn", "0.0009765625turn"), ("10/3", "3.3333"),
+        ("(1/3)*3", "1"), ("1/3+1/3+1/3", "1"), ("100/3*2", "66.6667"),
+        ("1/30000", "0.00003333"), ("-(2+3)", "-5"), ("-2^2", "-4"),
+        ("2^-(1)", "0.5"), ("10/3rem", "3.3333rem"),
+        ("1.23456+1px", "2.23456px"), ("1/30000px", "0.00003333px"),
+        ("2^2", "4"), ("1e2+5", "105"), ("-(-(1/3))*3px", "1px"),
+        # Parentheses alone are arithmetic: the group is evaluated.
+        ("(2)px", "2px"), ("((2))", "2")]:
+      checkpoint typed
+      check normalizePrimitiveInputValue("width", typed) == expected
+      let row = rowCommit(typed)
+      if expected[^1].isDigit: check row == expected & "px"
+      else: check row == expected
+    # A number typed without arithmetic, sign and spelling included, is
+    # written exactly as typed; an invalid one is then refused, not reduced.
+    for (p, v) in [("width", "+2"), ("width", "+2px"), ("width", "-0px"),
+        ("width", "+0"), ("margin", "-.5px"), ("margin", "+1.5px"),
+        ("z-index", "+2"), ("z-index", "-0"), ("order", "+3"),
+        ("opacity", "+.5"), ("line-height", "+1.5"), ("width", "1e2px"),
+        ("width", "1e-2px"), ("width", "+1e2px"), ("width", "1E2px"),
+        ("width", "+1.px"), ("width", "1.23456px"), ("flex-grow", "-0"),
+        ("transition-duration", "+0.3s")]:
+      checkpoint p & ": " & v
+      check normalizePrimitiveInputValue(p, v) == v
+    for (p, v) in [("width", "+2px"), ("width", "-0px"), ("margin", "-.5px"),
+        ("z-index", "+2"), ("opacity", "+.5"), ("line-height", "+1.5")]:
+      checkpoint p & ": " & v
+      check validateCssPropertyValue(PropertyInfo(name: p, directStyleAllowed: true),
+        PropertyEditRequest(property: p, newValue: v, kind: pekCss),
+        parseCssPropertyValue(p, v)).len == 0
+    # A sign standing apart from its number, or before a group, is arithmetic.
+    for (p, v, w) in [("margin", "- 5px", "-5px"), ("z-index", "+(2)", "2"),
+        ("margin", "5 - -3px", "8px"), ("letter-spacing", "(-2)^2px", "4px"),
+        ("width", "0*-1px", "0px")]:
+      checkpoint p & ": " & v
+      check normalizePrimitiveInputValue(p, v) == w
+    # Not a single expression of one unit: written as typed, for the
+    # property's validation (which refuses each of these for width).
+    for v in ["10px+5em", "10px+5px", "1rem+1px", "10px*2", "100/0",
+        "1/0px", "0/0px", "1**2px", "--5px", "-+5px", "(1+2", "1+2)", "()px",
+        "2(3)px", "(0-8)^0.5px", "1e400px", "1e308*10px"]:
+      checkpoint "width: " & v
+      check normalizePrimitiveInputValue("width", v) == v
+      check rowCommit(v) == ""
+      check validateCssPropertyValue(PropertyInfo(name: "width",
+        directStyleAllowed: true),
+        PropertyEditRequest(property: "width", newValue: v, kind: pekCss),
+        parseCssPropertyValue("width", v)).len > 0
+
+suite "a numeric row writes what was typed":
+  # The DOM is the mock renderer's (the suite's own harness, mkRoot); the
+  # row's commit logic, the evaluator and the property validator are real.
+  let lengthUnits = @[pxUnit, emUnit, PropertyUnitOption(label: "rem", code: "rem"),
+    PropertyUnitOption(label: "%", code: "%")]
+  proc chipText(n: MockNode): string =
+    if n == nil: return ""
+    if n.kind == mnkText: return n.text
+    for c in n.children: result.add chipText(c)
+  proc accepted(property, value: string): bool =
+    let text = normalizePrimitiveInputValue(property, value)
+    validateCssPropertyValue(PropertyInfo(name: property, directStyleAllowed: true),
+      PropertyEditRequest(property: property, newValue: text, kind: pekCss),
+      parseCssPropertyValue(property, text)).len == 0
+  type Typed = tuple[commits: seq[string], field, chip, fieldAfterSource,
+    chipAfterSource: string]
+  proc typeInto(property: string; units: seq[PropertyUnitOption];
+      typed: seq[string]; wired = true; minValue = none(float)): Typed =
+    ## Type each of ``typed`` into a mounted row (wired to ``property`` when
+    ## ``wired``) and commit it with `change`, then `blur`. An accepted commit
+    ## becomes the row's authored source, as the pipeline makes it.
+    var res: Typed
+    createRoot proc(dispose: proc()) =
+      let value = createSignal(10.0)
+      let unit = createSignal(units[0])
+      let source = createSignal("10" & units[0].code)
+      var cfg = propertyRowNumeric(name = property, value = value, unit = unit,
+        units = units, minValue = minValue,
+        wiring = (if wired: InspectorRowWiring(cssProperty: property,
+          authoredValue: proc(): string = source.val)
+          else: InspectorRowWiring()))
+      cfg.onCommitValue = proc(v: string) = res.commits.add v
+      let (r, root) = mkRoot()
+      discard r.mountPropertyRow(root, cfg)
+      let input = findByAttr(root, "data-property-row-input", "true")
+      let chip = findByAttr(root, "data-property-row-unit", "true")
+      for t in typed:
+        let before = res.commits.len
+        r.setInputValue(input, t)
+        fireEvent(input, "change")
+        fireEvent(input, "blur")
+        res.field = r.inputValue(input)
+        res.chip = chipText(chip)
+        if wired and res.commits.len > before and accepted(property, res.commits[^1]):
+          source.val = normalizePrimitiveInputValue(property, res.commits[^1])
+          fireEvent(input, "blur")
+        res.fieldAfterSource = r.inputValue(input)
+        res.chipAfterSource = chipText(chip)
+      dispose()
+    res
+
+  test "a number typed without arithmetic is written exactly as typed":
+    # isonim-pm issue 2026-11-24 "the numeric row rewrites a number typed
+    # without arithmetic". Editor spec "Numeric Inputs": "A number typed
+    # without arithmetic is kept exactly as authored."
+    for wired in [false, true]:
+      for (typed, written, field) in [("+2", "+2px", "+2"), ("+2px", "+2px", "+2"),
+          ("1.50px", "1.50px", "1.50"), ("1e-2px", "1e-2px", "1e-2"),
+          ("-0px", "-0px", "-0"), ("1E2px", "1E2px", "1E2"),
+          ("-007px", "-007px", "-007"), ("00.10em", "00.10em", "00.10"),
+          (".5px", ".5px", ".5"), ("+1e+2px", "+1e+2px", "+1e+2"),
+          ("10.0", "10.0px", "10.0"),
+          # Arithmetic is written by its value, as before.
+          ("1+1", "2px", "2"), ("(2)", "2px", "2"), ("- 2", "-2px", "-2"),
+          ("1.50*1px", "1.5px", "1.5"),
+          # `1.` is not a CSS number: the row reads it, and writes its value.
+          ("1.", "1px", "1")]:
+        checkpoint $wired & " " & typed
+        let got = typeInto("margin", lengthUnits, @[typed], wired)
+        # One commit: the blur after it writes nothing more.
+        check got.commits == @[written]
+        check got.field == field
+        check got.fieldAfterSource == field
+    # The bounds change a typed number: it is then written by its value.
+    let clamped = typeInto("width", lengthUnits, @["-5px"], minValue = some(0.0))
+    check clamped.commits == @["0px"]
+    # Retyping the authored text writes nothing; retyping the same value in
+    # another spelling writes that spelling.
+    check typeInto("margin", lengthUnits, @["+2px", "+2", "+2px"]).commits == @["+2px"]
+    check typeInto("margin", lengthUnits, @["+2px", "2"]).commits == @["+2px", "2px"]
+    check typeInto("margin", lengthUnits, @["10"]).commits.len == 0
+    check typeInto("margin", lengthUnits, @["10.0px"]).commits == @["10.0px"]
+
+  test "the authored spelling survives a unit change and a refused edit":
+    createRoot proc(dispose: proc()) =
+      let value = createSignal(10.0)
+      let unit = createSignal(pxUnit)
+      let rejected = createSignal(0)
+      var commits: seq[string]
+      var refuse = false
+      var cfg = propertyRowNumeric(name = "Margin", value = value, unit = unit,
+        units = @[pxUnit, emUnit])
+      cfg.commitRejected = rejected
+      cfg.onCommitValue = proc(v: string) =
+        commits.add v
+        if refuse: rejected.val = rejected.val + 1
+      let (r, root) = mkRoot()
+      discard r.mountPropertyRow(root, cfg)
+      let input = findByAttr(root, "data-property-row-input", "true")
+      let chip = findByAttr(root, "data-property-row-unit", "true")
+      r.setInputValue(input, "+1.50")
+      fireEvent(input, "change")
+      check commits == @["+1.50px"]
+      # The chip changes the unit, not the number the edit did not change.
+      fireEvent(chip, "click")
+      check commits == @["+1.50px", "+1.50em"]
+      check r.inputValue(input) == "+1.50"
+      # A refused edit restores the value and its spelling.
+      refuse = true
+      r.setInputValue(input, "3")
+      fireEvent(input, "change")
+      check r.inputValue(input) == "+1.50"
+      check value.val == 1.5
+      dispose()
+
+  test "a spaced power or a parenthesised group is one value on the text path, as in the row":
+    # isonim-pm issue 2026-11-24 "the text path splits spaced powers and
+    # parentheses into several values". Editor spec "Planned interaction
+    # parity": a typed expression gives the same result whichever path
+    # commits it.
+    for (typed, expected) in [("2 ^ 2px", "4px"), ("2^ 2px", "4px"),
+        ("2 ^2px", "4px"), ("( 1+2 )px", "3px"), ("(1+2 )px", "3px"),
+        ("( 1+2)px", "3px"), ("( 1 + 2 ) * 2px", "6px"), ("2 * ( 3 )px", "6px"),
+        ("-( 2 + 3 )px", "-5px"), ("( ( 1 ) )px", "1px"),
+        ("2 ^ ( 1 + 1 )px", "4px"), ("10 / ( 2 + 3 )px", "2px"),
+        ("2 ^ -1px", "0.5px"), ("( 2 ) ^ 2px", "4px"), ("( 1 - 0.5 )", "0.5")]:
+      checkpoint typed
+      check normalizePrimitiveInputValue("margin", typed) == expected
+      let row = typeInto("margin", lengthUnits, @[typed], wired = false).commits
+      check row.len == 1
+      if row.len == 1:
+        check row[0] == (if expected[^1].isDigit: expected & "px" else: expected)
+    # Multi-part neighbours, slash separators, functions and custom
+    # properties are kept exactly as they were.
+    for (p, v) in [("flex", "1 -1"), ("margin", "0 -16px"), ("grid-row", "1 / -1"),
+        ("margin", "0 2 ^ 2px"), ("margin", "( 1+2 )px 0"), ("margin", "0 ( 1+2 )px"),
+        ("margin", "2 ^ 2px 0"), ("padding", "( 4 )px ( 8 )px"), ("flex", "2 ^ 2 1"),
+        ("width", "( 1 ) ( 2 )px"), ("width", "1 ( 2 )px"), ("width", "(1+2) px"),
+        ("grid-row", "( 1 ) / -1"), ("aspect-ratio", "16 / ( 9 )"),
+        ("--x", "2 ^ 2px"), ("--x", "( 1+2 )px"), ("--space", "1 -1"),
+        ("transform", "translate( 1px , 2px )"), ("width", "calc( 1px + 2px )"),
+        ("grid-template-columns", "repeat( 2 , 1fr )"), ("color", "rgb( 0 0 0 )"),
+        ("box-shadow", "0 ( 1 )px 2px"), ("translate", "( 1 )px -2px")]:
+      checkpoint p & ": " & v
+      check normalizePrimitiveInputValue(p, v) == v
+
+  test "a numeric row admits every unit its property accepts":
+    # isonim-pm issue 2026-11-24 "the numeric row refuses valid CSS units the
+    # property accepts". Editor spec "Planned interaction parity": the same
+    # validation on every path. The chip shows a typed unit it does not
+    # offer, and keeps cycling through its own units only.
+    for (p, typed, written, chip) in [("width", "12dvh", "12dvh", "dvh"),
+        ("width", "1cm", "1cm", "cm"), ("width", "12pt", "12pt", "pt"),
+        ("width", "2Q", "2Q", "q"), ("width", "5cqw", "5cqw", "cqw"),
+        ("width", "1lh", "1lh", "lh"), ("width", "3svmin", "3svmin", "svmin"),
+        ("width", "12PX", "12PX", "px"), ("width", "12Em", "12Em", "em"),
+        ("width", "12DVH", "12DVH", "dvh"), ("width", "(1+2)PX", "3PX", "px"),
+        ("width", "10/4dvh", "2.5dvh", "dvh"), ("width", "+2PX", "+2PX", "px"),
+        ("margin", "-5dvh", "-5dvh", "dvh"), ("font-size", "12pt", "12pt", "pt")]:
+      checkpoint p & ": " & typed
+      let got = typeInto(p, lengthUnits, @[typed])
+      check got.commits == @[written]
+      check accepted(p, written)
+      check got.chip == chip
+      check got.chipAfterSource == chip
+      check got.fieldAfterSource == got.field
+    let angle = @[PropertyUnitOption(label: "deg", code: "deg"),
+      PropertyUnitOption(label: "turn", code: "turn")]
+    for (typed, written, chip) in [("45rad", "45rad", "rad"), ("45GRAD", "45GRAD", "grad"),
+        ("1Turn", "1Turn", "turn"), ("45DEG", "45DEG", "deg")]:
+      checkpoint "rotate: " & typed
+      let got = typeInto("rotate", angle, @[typed])
+      check got.commits == @[written]
+      check got.chip == chip
+    let time = @[PropertyUnitOption(label: "s", code: "s")]
+    for (typed, written, chip) in [("250ms", "250ms", "ms"), ("2MS", "2MS", "ms"),
+        ("2S", "2S", "s")]:
+      checkpoint "transition-duration: " & typed
+      let got = typeInto("transition-duration", time, @[typed])
+      check got.commits == @[written]
+      check got.chip == chip
+    # A unit the property does not accept is refused, and the field and chip
+    # are restored.
+    for (p, units, typed) in [("width", lengthUnits, "10deg"), ("width", lengthUnits, "10s"),
+        ("width", lengthUnits, "10foo"), ("width", lengthUnits, "10e"),
+        ("width", lengthUnits, "10fr"), ("rotate", angle, "10px"),
+        ("rotate", angle, "10dvh"), ("transition-duration", time, "10deg"),
+        ("transition-duration", time, "10sec")]:
+      checkpoint p & ": " & typed
+      let got = typeInto(p, units, @[typed])
+      check got.commits.len == 0
+      check got.field == "10"
+      check got.chip == units[0].label
+    # With no property to validate against, a row takes only its own units,
+    # in any case.
+    check typeInto("width", lengthUnits, @["12dvh"], wired = false).commits.len == 0
+    check typeInto("width", lengthUnits, @["12PX"], wired = false).commits == @["12PX"]
+    # The chip cycles its own units, from the first, after a typed one.
+    createRoot proc(dispose: proc()) =
+      let value = createSignal(10.0)
+      let unit = createSignal(pxUnit)
+      var commits: seq[string]
+      var cfg = propertyRowNumeric(name = "Width", value = value, unit = unit,
+        units = @[pxUnit, emUnit], wiring = InspectorRowWiring(cssProperty: "width"))
+      cfg.onCommitValue = proc(v: string) = commits.add v
+      let (r, root) = mkRoot()
+      discard r.mountPropertyRow(root, cfg)
+      let input = findByAttr(root, "data-property-row-input", "true")
+      let chip = findByAttr(root, "data-property-row-unit", "true")
+      r.setInputValue(input, "12dvh")
+      fireEvent(input, "change")
+      fireEvent(chip, "click")
+      check commits == @["12dvh", "12px"]
+      check chipText(chip) == "px"
+      dispose()
+
+  test "an <integer> property refuses a fraction or an exponent, typed or in the row":
+    # CSS Values 4 §5.2: an `<integer>` is an optional sign and digits only;
+    # `1.0`, `1e2` and `1e-2` are `<number>`s. z-index (CSS 2.1 §9.9.1),
+    # order (CSS Display 3 §5.1), grid lines (CSS Grid 2 §8.3) and counter
+    # values (CSS Lists 3 §4) take integers; a number typed without
+    # arithmetic is written as typed ("Numeric Inputs"), so an integer
+    # property must refuse it rather than reduce it.
+    for (p, v) in [("z-index", "1e-2"), ("z-index", "+1e2"), ("z-index", "1.0"),
+        ("z-index", "1e0"), ("z-index", "1E2"), ("z-index", ".5"),
+        ("order", "1e2"), ("order", "1.0"), ("grid-row", "1.5"),
+        ("grid-row", "1e2"), ("grid-row", "span 1.5"), ("grid-row", "1.0 / 3"),
+        ("grid-row", "span calc(1px + 1px)"), ("counter-reset", "c calc(1px)"),
+        ("grid-column-end", "-1.5"), ("grid-area", "1.5 / 2"),
+        ("counter-reset", "c 1e2"), ("counter-reset", "c .5"),
+        ("counter-increment", "c 1.5"), ("grid-row", "0.5px"),
+        ("grid-row-start", "2%"), ("counter-reset", "c 1px")]:
+      checkpoint p & ": " & v
+      check not accepted(p, v)
+    for (p, v) in [("z-index", "1"), ("z-index", "-3"), ("z-index", "+2"),
+        ("z-index", "007"), ("z-index", "0"), ("order", "-1"),
+        ("grid-row", "1 / -1"), ("grid-row", "span 2"), ("grid-row", "2 a"),
+        ("grid-row", "auto"), ("grid-area", "1 / 2 / 3 / 4"),
+        ("counter-reset", "c 1"), ("counter-reset", "c -3 d +2"),
+        ("counter-reset", "none"), ("counter-increment", "c"),
+        ("font-weight", "1.5"), ("flex-grow", "1.5"),
+        # A math function stands for an integer (CSS Values 4 §10.9), spaced
+        # arguments and all (review R1).
+        ("grid-row", "span calc(1 + 1)"), ("grid-area", "1 / calc(2 + 1)"),
+        ("grid-column", "span min(2, 3)"), ("grid-row-start", "span calc(1 + 1)"),
+        ("grid-column", "1 / calc(2 + 1)"), ("counter-reset", "c min(1, 2)"),
+        ("counter-reset", "c calc(1 + 1)"), ("counter-increment", "c calc(1 + 1)"),
+        ("counter-reset", "c var(--n)"), ("counter-reset", "reversed(c) 3"),
+        # `auto` is z-index's keyword (CSS 2.1 §9.9.1).
+        ("z-index", "auto"), ("z-index", "AUTO")]:
+      checkpoint p & ": " & v
+      check accepted(p, v)
+    # A z-index row writes `1e-2` as typed, and the property refuses it.
+    let number = @[PropertyUnitOption(label: "number", code: "")]
+    for typed in ["1e-2", "+1e2", "1e0", "2.0"]:
+      checkpoint "z-index row: " & typed
+      let got = typeInto("z-index", number, @[typed])
+      check got.commits == @[typed]
+      check not accepted("z-index", got.commits[0])
+    check accepted("z-index", typeInto("z-index", number, @["+3"]).commits[0])
+
+  test "a grid placement takes one to four <grid-line>s and nothing else":
+    # isonim-pm issue 2026-11-24 "the grid-line validator accepts text that
+    # is not a grid line". CSS Grid 2 §8.3: `<grid-line> = auto |
+    # <custom-ident> | [ <integer> && <custom-ident>? ] | [ span && [
+    # <integer [1,∞]> || <custom-ident> ] ]`, the integer never zero and the
+    # name never `span` or `auto`; §8.4: grid-row and grid-column take one
+    # or two separated by `/`, grid-area one to four, the -start and -end
+    # longhands one. Editor spec "Planned interaction parity": invalid values
+    # are rejected without changing source.
+    for (p, v) in [("grid-row-start", "auto"), ("grid-row-start", "a"),
+        ("grid-row-start", "-1"), ("grid-row-start", "+1"),
+        ("grid-row-start", "2 a"), ("grid-row-start", "a 2"),
+        ("grid-row-start", "-3 a"), ("grid-row-start", "span 2"),
+        ("grid-row-start", "SPAN 2"), ("grid-row-start", "span a"),
+        ("grid-row-start", "span 2 a"), ("grid-row-start", "span a 2"),
+        ("grid-row-start", "2 span"), ("grid-row-start", "2 a span"),
+        ("grid-row-start", "none"), ("grid-row-start", "row"),
+        ("grid-row-start", "-a"), ("grid-column-end", "span calc(1 + 1)"),
+        ("grid-column-end", "min(1, 2) a"), ("grid-row", "1 / 3"),
+        ("grid-row", "1/3"), ("grid-row", "a / span 2"),
+        ("grid-row", "Span 2 / Auto"), ("grid-row", "calc(1 + 1) / -1"),
+        ("grid-column", "2 span / span a 2"), ("grid-area", "1 / 2 / 3 / 4"),
+        ("grid-area", "a / b / c"), ("grid-area", "1/2/3/4"),
+        ("grid-area", "span 2 / span 2 / auto / a 3"), ("grid-row", "inherit"),
+        # Identifiers as CSS Syntax 3 §4.3.9-4.3.11 reads them: non-ASCII
+        # code points and escapes (review R1), and a keyword spelled with an
+        # escape is that keyword (`sp\61n 2` is `span 2`).
+        ("grid-column-end", "ä"), ("grid-column-end", "名前"),
+        ("grid-row-start", "span 名前"), ("grid-row-start", "2 ä"),
+        ("grid-row-start", "\\31 a"), ("grid-row-start", "c\\ d"),
+        ("grid-row-start", "\\e4 2"), ("grid-row-start", "-ä"),
+        ("grid-row-start", "a\\2f b"), ("grid-row", "ä / span 名前"),
+        ("grid-area", "ä / 名前 / \\31 a / c\\ d"),
+        ("grid-row-start", "sp\\61n 2"), ("grid-row-start", "\\61uto"),
+        ("grid-row", "\\69nherit"), ("grid-row-start", "\\31"),
+        ("grid-row-start", "2 SPAN"), ("grid-row-start", "2 sp\\61n"),
+        ("grid-row-start", "span abs(sign(1px))"), ("grid-row", "abs(sign(1px)) / 3"),
+        ("grid-area", "1 / round(up, 2.5) a"), ("grid-row-start", "span sign(1hz)"),
+        ("grid-row", "abs(1dppx / 1x) / abs(2px * 2px / 1px / 1px)")]:
+      checkpoint p & ": " & v
+      check accepted(p, v)
+    for (p, v) in [("grid-row", "( 1 ) / ( 3 )"), ("grid-row", "1 / -1 / 2"),
+        ("grid-row", "(1) / (3)"), ("grid-row", "1 /"), ("grid-row", "/ 3"),
+        ("grid-row", "1 // 3"), ("grid-row", "0 / 3"), ("grid-row", "1 / 0"),
+        ("grid-row", "span 0 / 2"), ("grid-row", "a b / 1"),
+        ("grid-row", "1 / span"), ("grid-row", "1 / 2 / 3 / 4"),
+        ("grid-row", "auto / span default"), ("grid-area", "1 / 2 / 3 / 4 / 5"),
+        ("grid-area", "1 / 2 / / 4"), ("grid-area", "( 1 ) / 2"),
+        ("grid-row-start", "0"), ("grid-row-start", "-0"), ("grid-row-start", "+0"),
+        ("grid-row-start", "span 0"), ("grid-row-start", "span -1"),
+        ("grid-row-start", "span"), ("grid-row-start", "span span"),
+        ("grid-row-start", "auto 2"), ("grid-row-start", "span auto"),
+        ("grid-row-start", "a b"), ("grid-row-start", "2 3"),
+        ("grid-row-start", "1 2 a"), ("grid-row-start", "2 span a"),
+        ("grid-row-start", "default"), ("grid-row-start", "2 default"),
+        ("grid-row-start", "'a'"), ("grid-row-start", "1a"),
+        ("grid-row-start", "calc (1)"), ("grid-row-start", "1 / 3"),
+        ("grid-column-end", "span calc(1px)"), ("grid-row", "unset 2"),
+        # A reserved name stays reserved however it is spelled (CSS Grid 2
+        # §8.3, CSS Values 4 §4.2): case and escapes resolved.
+        ("grid-row-start", "sp\\61n"), ("grid-row-start", "a 2 sp\\61n b"),
+        ("grid-row-start", "sp\\61n sp\\61n"), ("grid-row-start", "2 \\61uto"),
+        ("grid-row-start", "\\61uto 2"),
+        ("grid-row-start", "2 \\64 efault"), ("grid-row-start", "2 \\69nherit"),
+        ("grid-row-start", "\\"), ("grid-row-start", "2 a\\"),
+        ("grid-row-start", "1\\61"), ("grid-row-start", "sign()"),
+        ("grid-row-start", "span sin(1px)"), ("grid-row", "abs(1px) / 3")]:
+      checkpoint p & ": " & v
+      check not accepted(p, v)
+
+  test "counter-set takes counter names and integers, as counter-reset does":
+    # isonim-pm issue 2026-11-24 "counter-set values are refused". CSS Lists
+    # 3 §4.1-4.3: counter-reset, counter-set and counter-increment take
+    # `none` or `[ <counter-name> <integer>? ]+`, a counter name being a
+    # `<custom-ident>` other than `none`; only counter-reset also takes
+    # `reversed(<counter-name>)`. The integer is the 5a35eb0 `<integer>`: a
+    # sign and digits, or a math function that resolves to a number.
+    for p in ["counter-set", "counter-reset", "counter-increment"]:
+      for v in ["none", "NONE", "c", "c 1", "c -1", "c 0", "c +5", "c 1 d",
+          "c d", "c 1 d 2", "c calc(1 + 1)", "c min(1, 2)", "c var(--n)",
+          "inherit", "ä 1", "c\\ d 1", "名前 -2 ä", "\\31 a 3",
+          "n\\6fne", "n\\6f ne", "c round(1.5)", "c abs(-2)", "c sign(1px)",
+          "c sin(1deg)", "c pow(2, 3)", "c round(up, 1.5, 1e0)",
+          # Math functions are typed by their signatures, arguments typed as
+          # calc() types them and nested calls the same way (CSS Values 4
+          # §10.3-10.8): sign() is a number whatever its argument's type.
+          "c abs(sign(1px))", "c mod(7, 3)",
+          "c ROUND(DOWN, 7, 2)", "c sign(calc(1px + 2px))", "c log(8, 2)",
+          "c calc(abs(-2) * 2)", "c min(round(1.5), 3)", "c sign(infinity)",
+          "c round(-infinity)", "c abs(NaN)", "c cos(pi)", "c tan(1turn)",
+          "c hypot(3, 4)", "c abs(6 / 0)", "c abs(2px / 1px)",
+          "c abs(round(1.5px, 1px) / 1px)", "c sign(1s / 1ms)",
+          # Frequencies and resolutions are dimensions too (review R3a), and
+          # unit powers are carried through `*` and `/` to the end of the
+          # expression (review R3b, CSS Values 4 §10.9).
+          "c sign(1hz)", "c abs(1dppx / 1x)", "c sign(1dppx)",
+          "c abs(1hz / 1khz)", "c round(1hz / 1hz)", "c sign(2dpi * 1dpcm)",
+          "c abs(2px * 2px / 1px / 1px)", "c abs(2px / 1px * 3s / 1ms)",
+          "c calc(1deg * 1deg / (1rad * 1turn))", "c abs(2px * (2px / 1px) / 1px)"]:
+        checkpoint p & ": " & v
+        check accepted(p, v)
+      for v in ["1", "c 1 2", "none c", "c none", "none 1", "c 1.5", "c 1px",
+          "c 1e2", "c 50%", "default", "c default", "c, d", "c / 1",
+          "c calc(1px)", "'c'", "1c", "c 1.0", "\\6e one 1", "c n\\6f ne",
+          "c \\64 efault", "\\69nherit 1", "c\\", "ä 1.5", "c abs(1px)",
+          "c round(1.5px)", "c asin(1)", "c hypot(3px, 4px)", "c mod(5%, 2%)",
+          "c round(1.5", "c sin(1px)", "c tan(1%)", "c sin()", "c sign()",
+          "c sign(foo)", "c sign(1, 2)", "c abs(1, 2)", "c abs(h1)",
+          "c round(down)", "c round(1.5px, 1px)", "c round(1px, 1)", "c mod(7)",
+          "c pow(2px, 2)", "c abs(sign(1px) * 1px)", "c abs(,1)",
+          "c round(1, down)", "c atan2(1, 1)", "c sign(1px +)", "c abs(e1)",
+          # No percentage in an `<integer>` slot (CSS Values 4 §10.9).
+          "c sign(1%)", "c sign(calc(1px + 2%))", "c calc(1% / 1%)",
+          "c abs(2px / 1s)", "c abs(2px * 1px)", "c abs(2 / 1px)",
+          "c abs(1hz)", "c abs(1hz / 1s)", "c abs(1dppx / 1hz)",
+          "c abs(2px * 2px / 1px)", "c abs(2px * 2px + 1px / 1px)",
+          "c round(1x)", "c abs(1foo / 1foo)"]:
+        checkpoint p & ": " & v
+        check not accepted(p, v)
+    for v in ["reversed(c)", "reversed(c) 2", "reversed( c ) -1",
+        "c reversed(d) 1"]:
+      check accepted("counter-reset", v)
+      check not accepted("counter-set", v)
+      check not accepted("counter-increment", v)
+    check not accepted("counter-reset", "reversed(none)")
+
+  test "a number and its unit separated by a space are refused on every path":
+    # isonim-pm issue 2026-11-24 "the numeric row accepts a space before the
+    # unit that the text path refuses". CSS Syntax 3 §4.3.3: a dimension is
+    # a number immediately followed by its unit, so `2 px` is a number and an
+    # identifier, two values. The text path reads it so; the numeric row and
+    # the box-model and compound fields (``parseNumericInput``) refuse it the
+    # same way, writing nothing (editor spec "Planned interaction parity":
+    # the same validation on every path, invalid values rejected without
+    # changing source). A unit attached to the expression's last operand is
+    # kept, spaced arithmetic and all.
+    for typed in ["2 px", "2  px", "2\tpx", "(1+2) px", "( 1+2 ) px",
+        "1 + 2 px", "2 ^ 2 px", "-2 px", "2 %", "10 / 3 rem", "2 PX",
+        "2 dvh", "0 px", "-(2 + 3) px", "1e2 px"]:
+      checkpoint typed
+      check not accepted("margin", typed)
+      for wired in [false, true]:
+        let got = typeInto("margin", lengthUnits, @[typed], wired)
+        check got.commits.len == 0
+        check got.field == "10"
+      check parseNumericInput(typed).value.isNone
+      check parseNumericDimension(typed).value.isNone
+    for (typed, written) in [("2px", "2px"), ("(1+2)px", "3px"),
+        ("( 1+2 )px", "3px"), ("1 + 2px", "3px"), ("2 ^ 2px", "4px"),
+        ("10 / 3rem", "3.3333rem"), ("-(2 + 3)px", "-5px"), ("2px ", "2px")]:
+      checkpoint typed
+      check accepted("margin", typed)
+      check typeInto("margin", lengthUnits, @[typed]).commits == @[written]
+      check parseNumericInput(typed).value.isSome
+
+  test "a step or scrub that changes the value drops the kept spelling":
+    # Review R5/R4: the kept spelling belongs to the value it spells. A scrub
+    # that moves the value writes the value; a value that returns is written
+    # by its value, not by the old spelling; a chip cycled away and back
+    # writes the chip's code.
+    for wired in [false, true]:
+      checkpoint "wired=" & $wired
+      createRoot proc(dispose: proc()) =
+        let value = createSignal(10.0)
+        let unit = createSignal(pxUnit)
+        let source = createSignal("10px")
+        var commits: seq[string]
+        var cfg = propertyRowNumeric(name = "Margin", value = value, unit = unit,
+          units = @[pxUnit, emUnit],
+          wiring = (if wired: InspectorRowWiring(cssProperty: "margin",
+            authoredValue: proc(): string = source.val) else: InspectorRowWiring()))
+        cfg.onCommitValue = proc(v: string) =
+          commits.add v
+          if wired: source.val = v
+        let (r, root) = mkRoot()
+        discard r.mountPropertyRow(root, cfg)
+        let input = findByAttr(root, "data-property-row-input", "true")
+        let handle = findByAttr(root, "data-property-row-slot", "label-scrubber")
+        let chip = findByAttr(root, "data-property-row-unit", "true")
+        proc drag(dx: float) =
+          fireEventWith(handle, "mousedown", MockEvent(clientX: 0, clientY: 0))
+          fireEventWith(handle, "mousemove", MockEvent(clientX: dx, clientY: 0))
+          fireEventWith(handle, "mouseup", MockEvent(clientX: dx, clientY: 0))
+        r.setInputValue(input, "1.50")
+        fireEvent(input, "change")
+        check commits == @["1.50px"]
+        drag(1)
+        check commits[^1] == "3.5px"
+        check r.inputValue(input) == "3.5"
+        drag(-1)
+        check commits[^1] == "1.5px"
+        check r.inputValue(input) == "1.5"
+        # A drag that returns to its start writes nothing and keeps the
+        # spelling it had.
+        r.setInputValue(input, "+1.50")
+        fireEvent(input, "change")
+        let before = commits.len
+        fireEventWith(handle, "mousedown", MockEvent(clientX: 0, clientY: 0))
+        fireEventWith(handle, "mousemove", MockEvent(clientX: 5, clientY: 0))
+        fireEventWith(handle, "mousemove", MockEvent(clientX: 0, clientY: 0))
+        fireEventWith(handle, "mouseup", MockEvent(clientX: 0, clientY: 0))
+        check commits.len == before
+        check r.inputValue(input) == "+1.50"
+        # A value moved by its caller, then back, is written by its value.
+        value.val = 7.0
+        value.val = 1.5
+        fireEvent(chip, "click")
+        check commits[^1] == "1.5em"
+        # A typed unit spelling is the chip's only while the chip holds it.
+        r.setInputValue(input, "12PX")
+        fireEvent(input, "change")
+        check commits[^1] == "12PX"
+        fireEvent(chip, "click")
+        check commits[^1] == "12em"
+        # Round the chip's cycle back to px: px, not the typed PX.
+        var turns = 0
+        while chipText(chip) != "px" and turns < 12:
+          fireEvent(chip, "click")
+          inc turns
+        check chipText(chip) == "px"
+        check commits[^1] == "12px"
+        dispose()
+
+  test "zero typed with the other sign is written once, as typed":
+    # Review R2. Editor spec "Numeric Inputs" (:353-354): "A number typed
+    # without arithmetic is kept exactly as authored." `-0` and `0` are the
+    # same value in another spelling, so the typed spelling is written, once;
+    # retyping it, or the blur after it, writes nothing more.
+    for (start, typed, written) in [("0px", "-0", "-0px"), ("-0px", "0", "0px"),
+        ("0px", "-0px", "-0px"), ("-0px", "+0", "+0px")]:
+      for wired in [false, true]:
+        checkpoint start & " <- " & typed & " wired=" & $wired
+        createRoot proc(dispose: proc()) =
+          let value = createSignal(0.0)
+          let unit = createSignal(pxUnit)
+          let source = createSignal(start)
+          var commits: seq[string]
+          var cfg = propertyRowNumeric(name = "Margin", value = value, unit = unit,
+            units = @[pxUnit],
+            wiring = (if wired: InspectorRowWiring(cssProperty: "margin",
+              authoredValue: proc(): string = source.val) else: InspectorRowWiring()))
+          cfg.onCommitValue = proc(v: string) =
+            commits.add v
+            if wired: source.val = v
+          let (r, root) = mkRoot()
+          discard r.mountPropertyRow(root, cfg)
+          let input = findByAttr(root, "data-property-row-input", "true")
+          if not wired:
+            # An unwired row learns its spelling from what was typed.
+            r.setInputValue(input, start)
+            fireEvent(input, "change")
+            commits.setLen(0)
+          r.setInputValue(input, typed)
+          fireEvent(input, "change")
+          fireEvent(input, "blur")
+          r.setInputValue(input, typed)
+          fireEvent(input, "change")
+          fireEvent(input, "blur")
+          check commits == @[written]
+          check r.inputValue(input) == written[0 ..< written.len - 2]
+          dispose()
+
+  test "an arrow step that changes nothing writes nothing":
+    # Review R6: the arrow keys' text is ``numericStepText``. A step binary64
+    # cannot take (1e20 + 1 is 1e20) gives "", so no respelling is committed
+    # and no history entry is made.
+    check numericStepText("1e20px", 1.0) == ""
+    check numericStepText("1e20", -1.0) == ""
+    check numericStepText("100000000000000000000px", 1.0) == ""
+    check numericStepText("1.1px", 0.1) == "1.2px"
+    check numericStepText("1e-20px", 1.0) == "1px"
+    check numericStepText("+1.50", 1.0) == "2.5"
+    check numericStepText("0.125turn", 0.1) == "0.225turn"
+    check numericStepText("10PX", 1.0) == "11PX"
+    check numericStepText("12dvh", -10.0) == "2dvh"
+    check numericStepText("1.", 1.0) == "2"
+    for raw in ["", "abc", "calc(1px)", "1px+2", "--1", "1 px", "1px2"]:
+      checkpoint raw
+      check numericStepText(raw, 1.0) == ""
+
+  test "a value that moves while the row is bound copies its value, not the kept spelling":
+    # Review round 2, Q1. While the row is bound to a variable the linked chip
+    # replaces the value field, so the field's own effects are not mounted;
+    # the value can still move, and More > Copy reads the row's CSS value. A
+    # kept spelling belongs to the value it spells (editor spec "Numeric
+    # Inputs", :353-354): after `1.50` and a move to 7, Copy gives `7px`, not
+    # the stale `1.50px`.
+    for wired in [false, true]:
+      checkpoint "wired=" & $wired
+      createRoot proc(dispose: proc()) =
+        let value = createSignal(10.0)
+        let unit = createSignal(pxUnit)
+        let source = createSignal("10px")
+        let bound = createSignal(none(VariableBinding))
+        let clipboard = createSignal(PropertyClipboardEntry())
+        var commits: seq[string]
+        var cfg = propertyRowNumeric(name = "Margin", value = value, unit = unit,
+          units = @[pxUnit, emUnit],
+          bindingReactive = proc(): Option[VariableBinding] = bound.val,
+          wiring = (if wired: InspectorRowWiring(cssProperty: "margin",
+            authoredValue: proc(): string = source.val) else: InspectorRowWiring()))
+        cfg.cssProperty = "margin"
+        cfg.clipboard = clipboard
+        cfg.onCommitValue = proc(v: string) =
+          commits.add v
+          if wired: source.val = v
+        let (r, root) = mkRoot()
+        let row = r.mountPropertyRow(root, cfg)
+        var input = findByAttr(root, "data-property-row-input", "true")
+        r.setInputValue(input, "1.50")
+        fireEvent(input, "change")
+        check commits == @["1.50px"]
+        bound.val = some(VariableBinding(state: vbsBound, variableKey: "spacing/4",
+          resolvedValue: "7px"))
+        # Bound: the linked chip, no value field.
+        check findByAttr(root, "data-property-row-linked-chip", "true") != nil
+        check findByAttr(root, "data-property-row-input", "true") == nil
+        value.val = 7.0
+        row.fireEvent("contextmenu")
+        let menu = findByAttr(row, "data-property-actions-menu", "true")
+        require menu != nil
+        let copy = findByAttr(menu, "data-property-action", "copy")
+        require copy != nil
+        copy.fireEvent("click")
+        check clipboard.val.value == "7px"
+        # Unbound again (an unwired row has no source to reload): the field
+        # shows the value, and a unit change writes it, not the old spelling.
+        if not wired:
+          bound.val = none(VariableBinding)
+          input = findByAttr(root, "data-property-row-input", "true")
+          require input != nil
+          check r.inputValue(input) == "7"
+          fireEvent(findByAttr(root, "data-property-row-unit", "true"), "click")
+          check commits[^1] == "7em"
+        dispose()

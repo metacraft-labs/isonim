@@ -461,9 +461,9 @@ proc commitInspectorValue*(vm: EditorVM; property, rawValue: string;
   ## where ``applyInspectorValue`` (component_edit.nim:1625) is
   ## ``vm.editCssProperty(propName, normalizePrimitiveInputValue(...),
   ## scope, peoInspector)``. The normalisation is what turns ``6*4px``
-  ## into ``24px`` — ``evalNumericExpression`` inside
-  ## ``normalizePrimitiveInputValue`` is the expression parser, and it
-  ## is reached here exactly as the old path reached it.
+  ## into ``24px`` — ``normalizePrimitiveInputValue`` evaluates it with
+  ## the numeric field's evaluator (``numeric_expression``), and it is
+  ## reached here exactly as the old path reached it.
   ##
   ## What is NOT verbatim, and is the point of the exercise: the old
   ## path discarded both results. Every refusal below was already being

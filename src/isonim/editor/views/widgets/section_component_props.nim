@@ -22,6 +22,7 @@ import isonim/editor/types
 import isonim/editor/viewmodels
 import isonim/editor/views/widgets/property_commit
 import isonim/editor/views/widgets/property_row
+import isonim/editor/numeric_expression
 
 const
   textMuted = "#6B6F80"
@@ -83,19 +84,28 @@ proc mountSectionComponentProps*[R, E](r: R; parent: E; vm: EditorVM) =
         onBindRequest = vm.inspectorBindRequestHandler(prop.name),
         onDetachRequest = vm.inspectorDetachRequestHandler(prop.name),
         wiring = vm.inspectorRowWiring(prop.name))
-      let parsed = parseNumericInput(authored)
+      let parsed = parseNumericDimension(authored)
+      # A unit the property accepts stays a numeric row, with that unit on
+      # its chip, whether or not the row's own list has it (`12dvh`, `10PX`):
+      # a committed value must not remount the row as a text row without its
+      # chip, scrub and steps (editor spec "Numeric Inputs": every numeric
+      # CSS value uses the unified control).
+      let unitAdmitted = parsed.value.isSome and (parsed.unit.len == 0 or
+        parsed.unit.toLowerAscii() in numericInputUnits or
+        numericUnitAccepted(prop.name, parsed.unit))
       # CSS aspect ratios are compound literals, not arithmetic drafts. Keep
       # "4 / 3" intact when a successful commit rebuilds this row.
-      if parsed.value.isSome and prop.name != "aspect-ratio":
+      if unitAdmitted and prop.name != "aspect-ratio":
         let numeric = createSignal(parsed.value.get)
-        let authoredUnit = PropertyUnitOption(label: parsed.unit, code: parsed.unit)
+        let code = parsed.unit.toLowerAscii()
+        let authoredUnit = PropertyUnitOption(label: code, code: code)
         let unit = createSignal(authoredUnit)
         var units = @[authoredUnit]
         if prop.name in ["transition-duration", "transition-delay",
             "animation-duration", "animation-delay"]:
-          for code in ["ms", "s"]:
-            if code != parsed.unit:
-              units.add PropertyUnitOption(label: code, code: code)
+          for other in ["ms", "s"]:
+            if other != code:
+              units.add PropertyUnitOption(label: other, code: other)
         cfg = propertyRowNumeric(name = prop.name, value = numeric, unit = unit,
           units = units, binding = vm.inspectorBindingFor(prop.name),
           onBindRequest = vm.inspectorBindRequestHandler(prop.name),

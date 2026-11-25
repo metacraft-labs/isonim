@@ -267,6 +267,21 @@ suite "property copy / paste / reset":
       findByAttr(menu, "data-property-action", "paste").fireEvent("click")
       check commits == @["12px"]
       check cfg.numericValue.val == 12.0
+      # A pasted number is written as authored, in a unit the property
+      # accepts even when the chip does not offer it (isonim-pm issues
+      # 2026-11-24 on the numeric row; editor spec "Numeric Inputs"), and a
+      # unit the property refuses is refused.
+      for (pasted, written) in [("+1.50px", "+1.50px"), ("2dvh", "2dvh"),
+          ("3PT", "3PT")]:
+        clipboard.val = PropertyClipboardEntry(property: "gap", value: pasted)
+        row.fireEvent("contextmenu")
+        findByAttr(menu, "data-property-action", "paste").fireEvent("click")
+        check commits[^1] == written
+      clipboard.val = PropertyClipboardEntry(property: "rotate", value: "2deg")
+      row.fireEvent("contextmenu")
+      findByAttr(menu, "data-property-action", "paste").fireEvent("click")
+      check commits[^1] == "3PT"
+      check cfg.commitMessage.val == "Cannot paste 2deg into Width."
       dispose()
 
   test "Reset is listed, disabled and says why; read-only rows refuse paste":

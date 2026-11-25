@@ -7,9 +7,10 @@
 ## code holding the root can inspect them before disposing it, whether or
 ## not anything ever read them.
 ##
-## Nested roots do not count: a `createRoot` inside another root is not
-## owned by it (disposing the outer root does not dispose it), so its
-## resources are enumerated from the nested root, not the outer one.
+## A nested `createRoot` is one of the children of the root it was created
+## under, so its resources count for the outer root. A detached root
+## (`createDetachedRoot`) is not disposed with the outer root, so its
+## resources are enumerated from the detached root, not the outer one.
 ##
 ## MOCK POLICY (workspace rule: every mock justified in the header).
 ## None. The async overloads run against real platform futures; a future
@@ -113,14 +114,38 @@ suite "resource registration with the owner":
         check found[0] == latest.resource.state
       dispose()
 
-  test "a nested createRoot's resources belong to the nested root only":
+  test "a nested createRoot's resources count for the outer root":
+    createRoot do (dispose: proc()):
+      let outer = getOwner()
+      let own = createDeferredResource[int]()
+      var nestedOwner: OwnerBase
+      var nestedRes: DeferredResource[int]
+      createRoot do (d: proc()):
+        nestedOwner = getOwner()
+        nestedRes = createDeferredResource[int]()
+      # The outer root's own resource first, then its children's.
+      let outerFound = ownedResourceStates(outer)
+      check outerFound.len == 2
+      if outerFound.len == 2:
+        check outerFound[0] == own.resource.state
+        check outerFound[1] == nestedRes.resource.state
+      let nestedFound = ownedResourceStates(nestedOwner)
+      check nestedFound.len == 1
+      if nestedFound.len == 1:
+        check nestedFound[0] == nestedRes.resource.state
+      # Disposing the outer root disposes the nested one with it.
+      dispose()
+      check ownedResourceStates(outer).len == 0
+      check ownedResourceStates(nestedOwner).len == 0
+
+  test "a detached root's resources belong to the detached root only":
     createRoot do (dispose: proc()):
       let outer = getOwner()
       let own = createDeferredResource[int]()
       var nestedOwner: OwnerBase
       var nestedRes: DeferredResource[int]
       var disposeNested: proc()
-      createRoot do (d: proc()):
+      createDetachedRoot do (d: proc()):
         disposeNested = d
         nestedOwner = getOwner()
         nestedRes = createDeferredResource[int]()
@@ -132,8 +157,8 @@ suite "resource registration with the owner":
       check nestedFound.len == 1
       if nestedFound.len == 1:
         check nestedFound[0] == nestedRes.resource.state
-      # Disposing the outer root leaves the nested root's record alone,
-      # matching disposal: the nested root outlives it.
+      # Disposing the outer root leaves the detached root's record alone,
+      # matching disposal: the detached root outlives it.
       dispose()
       check ownedResourceStates(outer).len == 0
       check ownedResourceStates(nestedOwner).len == 1

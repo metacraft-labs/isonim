@@ -220,6 +220,33 @@ test-c:
     nim c -r tests/test_nimcache_is_worktree_local.nim
     nim c -r tests/test_signals.nim
     nim c -r tests/test_effects.nim
+    nim c -r tests/test_glitch_free.nim
+    nim c -r tests/test_error_routing.nim
+    nim c -r tests/test_owned_roots.nim
+    nim c -r tests/test_viewmodel_dispose.nim
+    nim c -r --mm:refc --out:build/tests/test_viewmodel_dispose_refc tests/test_viewmodel_dispose.nim
+    # The async value primitive (futures, streams, placeholders, readiness
+    # marks, the five statements about what the View shows, and edge
+    # cases), under every memory manager.
+    nim c -r tests/test_async_value.nim
+    nim c -r --mm:arc --out:build/tests/test_async_value_arc tests/test_async_value.nim
+    nim c -r --mm:refc --out:build/tests/test_async_value_refc tests/test_async_value.nim
+    nim c -r tests/test_async_stream.nim
+    nim c -r --mm:arc --out:build/tests/test_async_stream_arc tests/test_async_stream.nim
+    nim c -r --mm:refc --out:build/tests/test_async_stream_refc tests/test_async_stream.nim
+    nim c -r tests/test_async_provisional.nim
+    nim c -r --mm:arc --out:build/tests/test_async_provisional_arc tests/test_async_provisional.nim
+    nim c -r --mm:refc --out:build/tests/test_async_provisional_refc tests/test_async_provisional.nim
+    nim c -r tests/test_async_fundamentals.nim
+    nim c -r --mm:arc --out:build/tests/test_async_fundamentals_arc tests/test_async_fundamentals.nim
+    nim c -r --mm:refc --out:build/tests/test_async_fundamentals_refc tests/test_async_fundamentals.nim
+    nim c -r tests/test_async_edges.nim
+    nim c -r --mm:arc --out:build/tests/test_async_edges_arc tests/test_async_edges.nim
+    nim c -r --mm:refc --out:build/tests/test_async_edges_refc tests/test_async_edges.nim
+    # The private flush observation leaf, enabled: real graphs, nested
+    # flushes and flushes that end in an error (`just test-internal-flush-observation` adds the
+    # omission proof and the semantic inverses).
+    nim c -r -d:isonimInternalFlushObservation --out:build/tests/test_internal_flush_observation tests/test_internal_flush_observation.nim
     nim c -r tests/test_branded_task_app.nim
     nim c -r tests/test_clock.nim
     nim c -r tests/test_nondet_seams.nim
@@ -369,6 +396,26 @@ test-js: build-tailwind
     nim js -r tests/test_signals.nim
     nim js -r --out:build/test_frame_renderer.js tests/test_frame_renderer.nim
     nim js -r tests/test_effects.nim
+    nim js -r tests/test_glitch_free.nim
+    nim js -r tests/test_error_routing.nim
+    nim js -r tests/test_owned_roots.nim
+    nim js -d:nodejs --out:build/test_viewmodel_dispose.js tests/test_viewmodel_dispose.nim
+    python3 tools/run_nim_js_test.py build/test_viewmodel_dispose.js
+    nim js -d:nodejs --out:build/test_async_value.js tests/test_async_value.nim
+    python3 tools/run_nim_js_test.py build/test_async_value.js
+    nim js -d:nodejs --out:build/test_async_stream.js tests/test_async_stream.nim
+    python3 tools/run_nim_js_test.py build/test_async_stream.js
+    nim js -d:nodejs --out:build/test_async_provisional.js tests/test_async_provisional.nim
+    python3 tools/run_nim_js_test.py build/test_async_provisional.js
+    nim js -d:nodejs --out:build/test_async_fundamentals.js tests/test_async_fundamentals.nim
+    python3 tools/run_nim_js_test.py build/test_async_fundamentals.js
+    nim js -d:nodejs --out:build/test_async_edges.js tests/test_async_edges.nim
+    python3 tools/run_nim_js_test.py build/test_async_edges.js
+    # The timing checks with futures that answer after their latency
+    # (asynchronous: promise callbacks run between fake-clock steps).
+    nim js -d:nodejs --out:build/test_async_timing_js.js tests/test_async_timing_js.nim
+    python3 tools/run_nim_js_test.py build/test_async_timing_js.js
+    nim js -r -d:isonimInternalFlushObservation --out:build/tests/test_internal_flush_observation.js tests/test_internal_flush_observation.nim
     nim js -r tests/test_clock.nim
     nim js tests/test_nondet_seams.nim
     python3 tools/run_nim_js_test.py tests/test_nondet_seams.js
@@ -452,6 +499,10 @@ test-context:
 test-effects:
     nim c -r tests/test_effects.nim
     nim js -r tests/test_effects.nim
+    nim c -r tests/test_error_routing.nim
+    nim js -r tests/test_error_routing.nim
+    nim c -r tests/test_owned_roots.nim
+    nim js -r tests/test_owned_roots.nim
 
 # Run only rxcore/renderer/mock-dom tests
 test-rxcore:
@@ -1309,6 +1360,30 @@ bench-size:
     @echo "Raw:      $(wc -c < benchmarks/keyed/isonim/dist/main.raw.js 2>/dev/null || echo '?') bytes"
     @echo "Minified: $(wc -c < benchmarks/keyed/isonim/dist/main.js) bytes"
     @echo "Gzipped:  $(gzip -c benchmarks/keyed/isonim/dist/main.js | wc -c) bytes"
+
+# Install the root package.json dependencies (terser among them) from
+# yarn.lock, once, with the same command `build-tailwind` uses.
+node-deps:
+    @test -x node_modules/.bin/terser || yarn install --frozen-lockfile
+
+# In-process micro-benchmark of the reactive core (no DOM): selection,
+# rebuild and memory, one line per case. CORE_BENCH_ITERATIONS and
+# CORE_BENCH_WARMUP override the sample counts (defaults 7 and 2).
+core-bench:
+    mkdir -p build/bench
+    nim js -d:danger -d:nodejs --hints:off -o:build/bench/core_bench.js benchmarks/core/core_bench.nim
+    node --expose-gc build/bench/core_bench.js
+
+# Bundle-size check of the js-framework-benchmark app: prints raw, minified
+# and gzip bytes and fails when gzip grows past benchmarks/baseline.json by
+# more than its budget.
+size-check: node-deps
+    python3 benchmarks/size_check.py
+
+# The benchmark half of the core regression gate: the micro-benchmark and
+# the size check. Run it together with `just test-c` and `just test-js`
+# whenever the reactive core changes.
+core-gate-bench: core-bench size-check
 
 # Run benchmark tests
 bench-test:

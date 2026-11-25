@@ -443,7 +443,7 @@ suite "signal checkpoints":
       let source = createSignal(0)
       createEffect(proc() =
         if source.val == 1: session.stop())
-      let effect = Owner.owned[^1]
+      let effect = ComputationBase(Owner.owned[^1])
       contributionAction = proc() = inc contributions
       discard backend.schedule((proc() =
         source.value = 1
@@ -700,7 +700,7 @@ suite "signal checkpoints":
       let source = createSignal(1)
       let derived = createSignal(0)
       createEffect(proc() = derived.val = source.val * 10)
-      let effect = Owner.owned[^1]
+      let effect = ComputationBase(Owner.owned[^1])
       var expected: string
       discard backend.schedule((proc() =
         # Stage the same real queue that a batch leaves for flushUpdates.

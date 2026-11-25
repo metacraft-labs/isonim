@@ -1841,3 +1841,934 @@ suite "A native-inspector composition refuses at the act what it cannot write":
       check vm.applyDirectCanvasSpacing("padding-top", "8px").ok
       check vm.inspector.pendingSourceEdits.val.len == 1
       dispose()
+
+suite "A foundation token edit writes only the token's own declaration":
+  # isonim-pm issue 2026-11-23-a-foundation-token-edit-rewrites-every-token-
+  # that-shares-its-old-value; editor spec "Native project source
+  # capabilities" (editing a token changes its owner declaration and keeps
+  # the use-site `var()` binding) and "Saving" (an edit changes exactly the
+  # one owning declaration). The example's production writer and save, over
+  # its real foundation source, in which `--wl-type-body-size` and
+  # `--wl-space-card` are both `16px`. No mock writer.
+
+  func tokenText(source, name: string): string =
+    ## The text after `name:` up to its `;`, as written.
+    let at = source.find(name & ":")
+    doAssert at >= 0, name
+    let stop = source.find(';', at)
+    source[at + name.len + 1 ..< stop].strip()
+
+  proc writeFoundation(vm: EditorVM): WorkspaceEditResult =
+    ## One save of everything pending, as the debounce's `eckSave` writes it.
+    vm.applyWorkspaceFileEdits()
+
+  test "a single edit leaves a token with the same value untouched":
+    createRoot proc(dispose: proc()) =
+      let foundation = new(string)
+      foundation[] = DemoFoundationInitialSource
+      let vm = wanderlustVm(foundation)
+      check vm.editFoundationToken("space.card", "20px").status == pesAccepted
+      vm.save()
+      check foundation[] == DemoFoundationInitialSource.replace(
+        "--wl-space-card: 16px;", "--wl-space-card: 20px;")
+      check foundation[].tokenText("--wl-type-body-size") == "16px"
+      dispose()
+
+  test "two sequential edits of tokens with the same value both save":
+    createRoot proc(dispose: proc()) =
+      let foundation = new(string)
+      foundation[] = DemoFoundationInitialSource
+      let vm = wanderlustVm(foundation)
+      check vm.editFoundationToken("type.body.size", "18px").status == pesAccepted
+      check vm.editFoundationToken("space.card", "20px").status == pesAccepted
+      check vm.inspector.pendingSourceEdits.val.len == 2
+      vm.save()
+      check foundation[] == DemoFoundationInitialSource
+        .replace("--wl-type-body-size: 16px;", "--wl-type-body-size: 18px;")
+        .replace("--wl-space-card: 16px;", "--wl-space-card: 20px;")
+      dispose()
+
+  test "the same in the other order, written one at a time":
+    createRoot proc(dispose: proc()) =
+      let foundation = new(string)
+      foundation[] = DemoFoundationInitialSource
+      let vm = wanderlustVm(foundation)
+      check vm.editFoundationToken("space.card", "20px").status == pesAccepted
+      vm.save()
+      check vm.editFoundationToken("type.body.size", "18px").status == pesAccepted
+      vm.save()
+      check foundation[] == DemoFoundationInitialSource
+        .replace("--wl-type-body-size: 16px;", "--wl-type-body-size: 18px;")
+        .replace("--wl-space-card: 16px;", "--wl-space-card: 20px;")
+      dispose()
+
+  test "a token whose declaration changed underneath is refused, nothing written":
+    # The other `16px` is still in the file, so only the writer's check of
+    # the token's own declaration can tell the edit is stale.
+    createRoot proc(dispose: proc()) =
+      let foundation = new(string)
+      foundation[] = DemoFoundationInitialSource
+      let vm = wanderlustVm(foundation)
+      check vm.editFoundationToken("space.card", "20px").status == pesAccepted
+      let underneath = DemoFoundationInitialSource.replace(
+        "--wl-space-card: 16px;", "--wl-space-card: 12px;")
+      foundation[] = underneath
+      let saved = vm.writeFoundation()
+      check not saved.ok
+      check saved.diagnostics.len == 1
+      if saved.diagnostics.len == 1:
+        check saved.diagnostics[0].kind == wedSourceConflict
+        check saved.diagnostics[0].message.contains(
+          "declares --wl-space-card: 12px, not 16px")
+      check foundation[] == underneath
+      dispose()
+
+  test "a token whose value is gone from the file is refused, nothing written":
+    createRoot proc(dispose: proc()) =
+      let foundation = new(string)
+      foundation[] = DemoFoundationInitialSource
+      let vm = wanderlustVm(foundation)
+      check vm.editFoundationToken("radius.card", "20px").status == pesAccepted
+      let underneath = DemoFoundationInitialSource.replace(
+        "--wl-radius-card: 14px;", "--wl-radius-card: 10px;")
+      foundation[] = underneath
+      check not vm.writeFoundation().ok
+      check foundation[] == underneath
+      dispose()
+
+  test "alias values: an alias edit leaves a same-valued alias untouched":
+    createRoot proc(dispose: proc()) =
+      let foundation = new(string)
+      foundation[] = DemoFoundationInitialSource
+      let vm = wanderlustVm(foundation)
+      check vm.editFoundationToken("space.card", "token(radius.card)").status == pesAccepted
+      check foundation[].tokenText("--wl-type-body-size") == "16px"
+      check vm.editFoundationToken("type.body.size", "token(radius.card)").status == pesAccepted
+      vm.save()
+      check foundation[].tokenText("--wl-space-card") == "token(radius.card)"
+      check foundation[].tokenText("--wl-type-body-size") == "token(radius.card)"
+      # Both now hold the same alias; changing one changes only that one.
+      check vm.editFoundationToken("space.card", "token(shadow.card)").status == pesAccepted
+      vm.save()
+      check foundation[].tokenText("--wl-space-card") == "token(shadow.card)"
+      check foundation[].tokenText("--wl-type-body-size") == "token(radius.card)"
+      check foundation[].tokenText("--wl-action-primary") == "token(color.blue.600)"
+      dispose()
+
+  test "alias values: the semantic alias is rewritten in its own declaration":
+    createRoot proc(dispose: proc()) =
+      let foundation = new(string)
+      foundation[] = DemoFoundationInitialSource & ".alias-copy { --x: token(color.blue.600); }\n"
+      let before = foundation[]
+      let vm = wanderlustVm(foundation)
+      check vm.editFoundationToken("semantic.action.primary", "#1D4ED8").status == pesAccepted
+      vm.save()
+      check foundation[] == before.replace(
+        "--wl-action-primary: token(color.blue.600);",
+        "--wl-action-primary: #1D4ED8;")
+      dispose()
+
+  test "a multi-line declaration keeps its layout, and the other lines stay":
+    createRoot proc(dispose: proc()) =
+      let foundation = new(string)
+      let source = DemoFoundationInitialSource
+        .replace("--wl-space-card: 16px;", "--wl-space-card:\n  16px\n;")
+        .replace("--wl-shadow-card: 0 12px 28px #0F172A;",
+          "--wl-shadow-card\n  : 0 12px 28px #0F172A;")
+      foundation[] = source
+      let vm = wanderlustVm(foundation)
+      check vm.editFoundationToken("type.body.size", "18px").status == pesAccepted
+      check vm.editFoundationToken("space.card", "20px").status == pesAccepted
+      check vm.editFoundationToken("shadow.card", "0 4px 8px #0F172A").status == pesAccepted
+      vm.save()
+      check foundation[] == source
+        .replace("--wl-type-body-size: 16px;", "--wl-type-body-size: 18px;")
+        .replace("--wl-space-card:\n  16px\n;", "--wl-space-card:\n  20px\n;")
+        .replace("--wl-shadow-card\n  : 0 12px 28px #0F172A;",
+          "--wl-shadow-card\n  : 0 4px 8px #0F172A;")
+      dispose()
+
+  test "a var() use site of the token keeps its binding":
+    createRoot proc(dispose: proc()) =
+      let foundation = new(string)
+      let source = DemoFoundationInitialSource.replace(
+        ".destination-card { padding: 18px; }",
+        ".destination-card { padding: var(--wl-space-card); margin: 16px; }")
+      foundation[] = source
+      let vm = wanderlustVm(foundation)
+      check vm.editFoundationToken("space.card", "20px").status == pesAccepted
+      vm.save()
+      check foundation[] == source.replace("--wl-space-card: 16px;",
+        "--wl-space-card: 20px;")
+      dispose()
+
+  test "a token edit at a bound inspector row's token scope writes the token's declaration":
+    createRoot proc(dispose: proc()) =
+      let foundation = new(string)
+      let source = DemoFoundationInitialSource.replace(
+        "--wl-shadow-card: 0 12px 28px #0F172A;",
+        "--wl-shadow-card: 0 14px 28px #0F172A;")
+      foundation[] = source
+      let vm = wanderlustVm(foundation)
+      # `border-radius` is bound to `radius.card` (14px); `14px` also
+      # appears in the shadow above.
+      check vm.editSharedDesignProperty("border-radius", "20px",
+        sskComponentToken).status == pesAccepted
+      vm.save()
+      check foundation[] == source.replace("--wl-radius-card: 14px;",
+        "--wl-radius-card: 20px;")
+      dispose()
+
+  proc rowValue(vm: EditorVM; property: string): string =
+    for prop in vm.inspector.selectedElement.val.properties:
+      if prop.name == property: return prop.value
+
+  proc scopeChoice(vm: EditorVM; property: string;
+      kind: SourceScopeChoiceKind): SourceScopeChoice =
+    for prop in vm.inspector.selectedElement.val.properties:
+      if prop.name == property:
+        for choice in vm.sourceScopeChoices(prop):
+          if choice.kind == kind: return choice
+
+  test "a row the token does not set: its token scope is disabled with the reason, refused at the act":
+    # The example's padding row is the class rule's 18px; the schema names
+    # `space.card` (16px) as the component's padding token. Writing the
+    # token would not change the card's padding, and writing the class rule
+    # would reroute the edit (editor spec "Saving"). The scope is shown
+    # disabled with the writer's reason and a commit is refused before
+    # anything is previewed, journaled or written.
+    createRoot proc(dispose: proc()) =
+      let foundation = new(string)
+      foundation[] = DemoFoundationInitialSource
+      let vm = wanderlustVm(foundation)
+      const reason = "The --wl-space-card token holds 16px, not 18px, so it " &
+        "does not set this element's padding."
+      let chip = vm.scopeChoice("padding", sskComponentToken)
+      check chip.kind == sskComponentToken
+      check not chip.editable
+      check chip.reason == reason
+      let committed = vm.commitInspectorValue("padding", "20px",
+        sskComponentToken)
+      check not committed.ok
+      check vm.rowValue("padding") == "18px"
+      check vm.inspector.pendingSourceEdits.val.len == 0
+      check foundation[] == DemoFoundationInitialSource
+      # Nothing is left pending to block a later edit's write.
+      check vm.editFoundationToken("radius.card", "20px").status == pesAccepted
+      vm.save()
+      check foundation[] == DemoFoundationInitialSource.replace(
+        "--wl-radius-card: 14px;", "--wl-radius-card: 20px;")
+      dispose()
+
+  test "two token-scope edits of a bound row before the write are both admitted":
+    # The second edit expects the first's unwritten value; the writer is
+    # asked about it against the file as it is now.
+    createRoot proc(dispose: proc()) =
+      let foundation = new(string)
+      foundation[] = DemoFoundationInitialSource
+      let vm = wanderlustVm(foundation)
+      check vm.commitInspectorValue("border-radius", "20px",
+        sskComponentToken).ok
+      check vm.scopeChoice("border-radius", sskComponentToken).editable
+      check vm.commitInspectorValue("border-radius", "24px",
+        sskComponentToken).ok
+      check vm.inspector.pendingSourceEdits.val.len == 2
+      vm.save()
+      check foundation[] == DemoFoundationInitialSource.replace(
+        "--wl-radius-card: 14px;", "--wl-radius-card: 24px;")
+      dispose()
+
+  test "a row whose declaration is the token's var() edits the token at its scope":
+    createRoot proc(dispose: proc()) =
+      let foundation = new(string)
+      let source = DemoFoundationInitialSource.replace(
+        ".destination-card { padding: 18px; }",
+        ".destination-card { padding: var(--wl-space-card); }")
+      foundation[] = source
+      let vm = wanderlustVm(foundation)
+      var element = demoInspectorElement()
+      for prop in element.properties.mitems:
+        if prop.name == "padding": prop.value = "var(--wl-space-card)"
+      check vm.selectInspectorElement(element)
+      check vm.scopeChoice("padding", sskComponentToken).editable
+      check vm.commitInspectorValue("padding", "20px", sskComponentToken).ok
+      vm.save()
+      check foundation[] == source.replace("--wl-space-card: 16px;",
+        "--wl-space-card: 20px;")
+      dispose()
+
+  test "a preview capture of the padding row (no provenance): token scope refused at the act":
+    # A click on the preview selects the row as a capture (`computed:` or
+    # `iframe-dom:`), whose plan expects nothing. The element's own
+    # declaration -- `.destination-card { padding: 18px; }` -- decides.
+    for detail in ["computed:padding", "iframe-dom:padding"]:
+      createRoot proc(dispose: proc()) =
+        let foundation = new(string)
+        foundation[] = DemoFoundationInitialSource
+        let vm = wanderlustVm(foundation)
+        var element = demoInspectorElement()
+        for prop in element.properties.mitems:
+          if prop.name == "padding": prop.originDetail = detail
+        check vm.selectInspectorElement(element)
+        let chip = vm.scopeChoice("padding", sskComponentToken)
+        check not chip.editable
+        check chip.reason == "The --wl-space-card token holds 16px, not " &
+          "18px, so it does not set this element's padding."
+        check not vm.commitInspectorValue("padding", "18px",
+          sskComponentToken).ok
+        check not vm.commitInspectorValue("padding", "22px",
+          sskComponentToken).ok
+        check vm.rowValue("padding") == "18px"
+        check vm.inspector.pendingSourceEdits.val.len == 0
+        check foundation[] == DemoFoundationInitialSource
+        # The class scope still writes the class rule only.
+        check vm.commitInspectorValue("padding", "22px", sskSharedClass).ok
+        vm.save()
+        check foundation[] == DemoFoundationInitialSource.replace(
+          ".destination-card { padding: 18px; }",
+          ".destination-card { padding: 22px; }")
+        dispose()
+
+  test "a preview capture of a row whose rule uses var(--token) edits the token":
+    for detail in ["computed:padding", "iframe-dom:padding"]:
+      createRoot proc(dispose: proc()) =
+        let foundation = new(string)
+        let source = DemoFoundationInitialSource.replace(
+          ".destination-card { padding: 18px; }",
+          ".destination-card { padding: var(--wl-space-card); }")
+        foundation[] = source
+        let vm = wanderlustVm(foundation)
+        var element = demoInspectorElement()
+        for prop in element.properties.mitems:
+          if prop.name == "padding":
+            prop.originDetail = detail
+            prop.value = "16px"
+        check vm.selectInspectorElement(element)
+        check vm.scopeChoice("padding", sskComponentToken).editable
+        check vm.commitInspectorValue("padding", "20px", sskComponentToken).ok
+        vm.save()
+        check foundation[] == source.replace("--wl-space-card: 16px;",
+          "--wl-space-card: 20px;")
+        dispose()
+
+  test "a rule holding the token's value, not its var(), is refused at its scope":
+    # Same value, no reference: the token still does not set this element.
+    for detail in ["class:destination-card", "computed:padding"]:
+      createRoot proc(dispose: proc()) =
+        let foundation = new(string)
+        let source = DemoFoundationInitialSource.replace(
+          ".destination-card { padding: 18px; }",
+          ".destination-card { padding: 16px; }")
+        foundation[] = source
+        let vm = wanderlustVm(foundation)
+        var element = demoInspectorElement()
+        for prop in element.properties.mitems:
+          if prop.name == "padding":
+            prop.value = "16px"
+            prop.originDetail = detail
+        check vm.selectInspectorElement(element)
+        let chip = vm.scopeChoice("padding", sskComponentToken)
+        check not chip.editable
+        check chip.reason == "This element's padding is declared 16px in " &
+          "the .destination-card rule, not as var(--wl-space-card), so the " &
+          "--wl-space-card token does not set it."
+        check not vm.commitInspectorValue("padding", "20px",
+          sskComponentToken).ok
+        check foundation[] == source
+        dispose()
+
+  test "a row bound to another token's var() is refused at this token's scope":
+    # border-radius has no class rule of its own here, so only its value
+    # can tell: var(--wl-space-card) is not the --wl-radius-card token.
+    createRoot proc(dispose: proc()) =
+      let foundation = new(string)
+      foundation[] = DemoFoundationInitialSource
+      let vm = wanderlustVm(foundation)
+      var element = demoInspectorElement()
+      for prop in element.properties.mitems:
+        if prop.name == "border-radius": prop.value = "var(--wl-space-card)"
+      check vm.selectInspectorElement(element)
+      let chip = vm.scopeChoice("border-radius", sskComponentToken)
+      check not chip.editable
+      check chip.reason == "The --wl-radius-card token holds 14px, not " &
+        "var(--wl-space-card), so it does not set this element's border-radius."
+      check not vm.commitInspectorValue("border-radius", "20px",
+        sskComponentToken).ok
+      check vm.inspector.pendingSourceEdits.val.len == 0
+      check foundation[] == DemoFoundationInitialSource
+      dispose()
+
+  test "a pending Foundations edit does not admit a row the token does not set":
+    createRoot proc(dispose: proc()) =
+      let foundation = new(string)
+      foundation[] = DemoFoundationInitialSource
+      let vm = wanderlustVm(foundation)
+      check vm.editFoundationToken("space.card", "20px").status == pesAccepted
+      # The unbound padding row (its rule says 18px).
+      check not vm.scopeChoice("padding", sskComponentToken).editable
+      check not vm.commitInspectorValue("padding", "24px",
+        sskComponentToken).ok
+      # A row with no rule of its own, whose value (10px) is neither the
+      # token's on disk (14px) nor the pending edit's.
+      check vm.editFoundationToken("radius.card", "20px").status == pesAccepted
+      var element = demoInspectorElement()
+      for prop in element.properties.mitems:
+        if prop.name == "border-radius": prop.value = "10px"
+      check vm.selectInspectorElement(element)
+      check not vm.scopeChoice("border-radius", sskComponentToken).editable
+      check not vm.commitInspectorValue("border-radius", "24px",
+        sskComponentToken).ok
+      check vm.inspector.pendingSourceEdits.val.len == 2
+      vm.save()
+      check foundation[] == DemoFoundationInitialSource
+        .replace("--wl-space-card: 16px;", "--wl-space-card: 20px;")
+        .replace("--wl-radius-card: 14px;", "--wl-radius-card: 20px;")
+      dispose()
+
+  test "a token-scope edit after a written edit's undo, before the undo is written, is admitted":
+    createRoot proc(dispose: proc()) =
+      let foundation = new(string)
+      foundation[] = DemoFoundationInitialSource
+      let vm = wanderlustVm(foundation)
+      check vm.commitInspectorValue("border-radius", "20px",
+        sskComponentToken).ok
+      vm.save()
+      check foundation[].tokenText("--wl-radius-card") == "20px"
+      check vm.runEditorCommand(eckUndo).status == ecsSucceeded
+      check vm.inspector.pendingSourceEdits.val.len == 1
+      check vm.rowValue("border-radius") == "14px"
+      check vm.scopeChoice("border-radius", sskComponentToken).editable
+      check vm.commitInspectorValue("border-radius", "24px",
+        sskComponentToken).ok
+      vm.save()
+      check foundation[] == DemoFoundationInitialSource.replace(
+        "--wl-radius-card: 14px;", "--wl-radius-card: 24px;")
+      dispose()
+
+  test "a var() row's token edit is refused at save when the token changed underneath":
+    createRoot proc(dispose: proc()) =
+      let foundation = new(string)
+      let source = DemoFoundationInitialSource.replace(
+        ".destination-card { padding: 18px; }",
+        ".destination-card { padding: var(--wl-space-card); }")
+      foundation[] = source
+      let vm = wanderlustVm(foundation)
+      var element = demoInspectorElement()
+      for prop in element.properties.mitems:
+        if prop.name == "padding": prop.value = "var(--wl-space-card)"
+      check vm.selectInspectorElement(element)
+      check vm.commitInspectorValue("padding", "20px", sskComponentToken).ok
+      let underneath = source.replace("--wl-space-card: 16px;",
+        "--wl-space-card: 12px;")
+      foundation[] = underneath
+      let saved = vm.applyWorkspaceFileEdits()
+      check not saved.ok
+      check saved.diagnostics.len == 1
+      if saved.diagnostics.len == 1:
+        check saved.diagnostics[0].kind == wedSourceConflict
+        check saved.diagnostics[0].message.contains(
+          "declares --wl-space-card: 12px, not 16px")
+      check foundation[] == underneath
+      dispose()
+
+  test "a var() row's token edit is refused at save when its use site changed underneath":
+    createRoot proc(dispose: proc()) =
+      let foundation = new(string)
+      let source = DemoFoundationInitialSource.replace(
+        ".destination-card { padding: 18px; }",
+        ".destination-card { padding: var(--wl-space-card); }")
+      foundation[] = source
+      let vm = wanderlustVm(foundation)
+      var element = demoInspectorElement()
+      for prop in element.properties.mitems:
+        if prop.name == "padding": prop.value = "var(--wl-space-card)"
+      check vm.selectInspectorElement(element)
+      check vm.commitInspectorValue("padding", "20px", sskComponentToken).ok
+      let underneath = source.replace("padding: var(--wl-space-card);",
+        "padding: 16px;")
+      foundation[] = underneath
+      let saved = vm.applyWorkspaceFileEdits()
+      check not saved.ok
+      check foundation[] == underneath
+      dispose()
+
+  const varRule = ".destination-card { padding: var(--wl-space-card); }"
+
+  proc cascadeElement(decider: string; conditions = "";
+      extraRules: seq[string] = @[]): ElementRef =
+    ## The card as a click on the preview captures it: padding read without
+    ## provenance, and the preview cascade's answer for it.
+    result = demoInspectorElement()
+    result.matchedRules = @[".destination-card", ".long-tail-card"] & extraRules
+    for prop in result.properties.mitems:
+      if prop.name == "padding":
+        prop.originDetail = "computed:padding"
+        prop.value = "18px"
+        prop.cascadeDecider = decider
+        prop.cascadeConditions = conditions
+
+  test "a token-scope row edit is refused where another declaration decides the property":
+    # The element's rule carries the token (var()), but the preview's
+    # cascade says another declaration decides padding for this element:
+    # writing the token would change only the token's other uses.
+    for (decider, conditions, extraCss, extraRules) in [
+        ("#card-x", "", "#card-x { padding: 18px; }\n", @["#card-x"]),
+        ("style", "", "", newSeq[string]()),
+        ("@media (min-width: 1px) .destination-card", "@media (min-width: 1px)",
+          "@media (min-width: 1px) {\n  .destination-card { padding: 18px; }\n}\n",
+          @["@media (min-width: 1px) .destination-card"]),
+        (".card-b", "", ".card-b { padding: 18px; }\n", @[".card-b"])]:
+      createRoot proc(dispose: proc()) =
+        let foundation = new(string)
+        let source = DemoFoundationInitialSource.replace(
+          ".destination-card { padding: 18px; }", varRule) & extraCss
+        foundation[] = source
+        let vm = wanderlustVm(foundation)
+        check vm.selectInspectorElement(cascadeElement(decider, conditions,
+          extraRules))
+        let chip = vm.scopeChoice("padding", sskComponentToken)
+        check not chip.editable
+        let deciding = if decider == "style": "The element's inline style"
+          else: "`" & decider & "`"
+        check chip.reason == deciding & " decides padding for this element " &
+          "ahead of `.destination-card`, whose var() carries the token, so " &
+          "changing the token would not change what this element renders; " &
+          "it would change only the token's other uses."
+        check not vm.commitInspectorValue("padding", "18px",
+          sskComponentToken).ok
+        check vm.inspector.pendingSourceEdits.val.len == 0
+        check foundation[] == source
+        dispose()
+
+  test "a token-scope row edit is admitted where the element's var() rule decides":
+    createRoot proc(dispose: proc()) =
+      let foundation = new(string)
+      let source = DemoFoundationInitialSource.replace(
+        ".destination-card { padding: 18px; }", varRule)
+      foundation[] = source
+      let vm = wanderlustVm(foundation)
+      var element = cascadeElement(".destination-card")
+      for prop in element.properties.mitems:
+        if prop.name == "padding": prop.value = "16px"
+      check vm.selectInspectorElement(element)
+      check vm.scopeChoice("padding", sskComponentToken).editable
+      check vm.commitInspectorValue("padding", "20px", sskComponentToken).ok
+      vm.save()
+      check foundation[] == source.replace("--wl-space-card: 16px;",
+        "--wl-space-card: 20px;")
+      dispose()
+
+  test "two top-level rules for the element's class: token scope refused at the act":
+    # Reviewer case K1: which of the rules owns padding cannot be told.
+    createRoot proc(dispose: proc()) =
+      let foundation = new(string)
+      let source = DemoFoundationInitialSource.replace(
+        ".destination-card { padding: 18px; }",
+        varRule & "\n.destination-card { padding: 18px; }")
+      foundation[] = source
+      let vm = wanderlustVm(foundation)
+      var element = demoInspectorElement()
+      for prop in element.properties.mitems:
+        if prop.name == "padding": prop.originDetail = "computed:padding"
+      check vm.selectInspectorElement(element)
+      let chip = vm.scopeChoice("padding", sskComponentToken)
+      check not chip.editable
+      check chip.reason == "This element's own padding declaration cannot " &
+        "be identified (the source has 2 .destination-card rules), so " &
+        "whether the --wl-space-card token sets it cannot be told."
+      check not vm.commitInspectorValue("padding", "18px",
+        sskComponentToken).ok
+      check vm.inspector.pendingSourceEdits.val.len == 0
+      check foundation[] == source
+      dispose()
+
+  test "a var() row's token edit is refused at save when its owner can no longer be identified":
+    # Changes made underneath after the edit was staged (reviewer V4, V5,
+    # V9-V12): the rule or its declaration removed, duplicated, renamed or
+    # moved into @media. An unrelated change does not stop the write.
+    let staged = DemoFoundationInitialSource.replace(
+      ".destination-card { padding: 18px; }", varRule)
+    for (name, underneath, refused) in [
+        ("rule removed", staged.replace(varRule & "\n", ""), true),
+        ("declaration removed", staged.replace(varRule,
+          ".destination-card { }"), true),
+        ("second declaration added", staged.replace(varRule,
+          ".destination-card { padding: var(--wl-space-card); padding: 18px; }"), true),
+        ("rule duplicated", staged.replace(varRule, varRule & "\n" & varRule), true),
+        ("selector renamed", staged.replace(varRule,
+          ".card-x { padding: var(--wl-space-card); }"), true),
+        ("rule moved into @media", staged.replace(varRule & "\n", "") &
+          "@media (min-width: 1px) {\n  .destination-card { padding: 18px; }\n}\n", true),
+        ("unrelated change", staged.replace("--wl-motion-fast: 120ms;",
+          "--wl-motion-fast: 150ms;"), false)]:
+      createRoot proc(dispose: proc()) =
+        let foundation = new(string)
+        foundation[] = staged
+        let vm = wanderlustVm(foundation)
+        var element = demoInspectorElement()
+        for prop in element.properties.mitems:
+          if prop.name == "padding": prop.value = "var(--wl-space-card)"
+        check vm.selectInspectorElement(element)
+        check vm.commitInspectorValue("padding", "20px", sskComponentToken).ok
+        foundation[] = underneath
+        let saved = vm.applyWorkspaceFileEdits()
+        if refused:
+          checkpoint name
+          check not saved.ok
+          check foundation[] == underneath
+        else:
+          checkpoint name
+          check saved.ok
+          check foundation[] == underneath.replace("--wl-space-card: 16px;",
+            "--wl-space-card: 20px;")
+        dispose()
+
+  test "an !important var() use site edits the token at its scope":
+    # The priority says how the declaration competes, not what it
+    # references (round-4 review N2).
+    for (detail, rowValue) in [("class:destination-card",
+        "var(--wl-space-card) !important"), ("computed:padding", "16px")]:
+      createRoot proc(dispose: proc()) =
+        let foundation = new(string)
+        let source = DemoFoundationInitialSource.replace(
+          ".destination-card { padding: 18px; }",
+          ".destination-card { padding: var(--wl-space-card) !important; }")
+        foundation[] = source
+        let vm = wanderlustVm(foundation)
+        var element = cascadeElement(".destination-card")
+        for prop in element.properties.mitems:
+          if prop.name == "padding":
+            prop.originDetail = detail
+            prop.value = rowValue
+        check vm.selectInspectorElement(element)
+        let chip = vm.scopeChoice("padding", sskComponentToken)
+        check chip.editable
+        check chip.reason != "The --wl-space-card token holds 16px, not " &
+          "var(--wl-space-card) !important, so it does not set this " &
+          "element's padding."
+        check vm.commitInspectorValue("padding", "20px", sskComponentToken).ok
+        vm.save()
+        check foundation[] == source.replace("--wl-space-card: 16px;",
+          "--wl-space-card: 20px;")
+        dispose()
+
+  test "an !important var() row's token edit is refused at save when the token changed underneath":
+    createRoot proc(dispose: proc()) =
+      let foundation = new(string)
+      let source = DemoFoundationInitialSource.replace(
+        ".destination-card { padding: 18px; }",
+        ".destination-card { padding: var(--wl-space-card) !important; }")
+      foundation[] = source
+      let vm = wanderlustVm(foundation)
+      var element = demoInspectorElement()
+      for prop in element.properties.mitems:
+        if prop.name == "padding": prop.value = "var(--wl-space-card) !important"
+      check vm.selectInspectorElement(element)
+      check vm.commitInspectorValue("padding", "20px", sskComponentToken).ok
+      let underneath = source.replace("--wl-space-card: 16px;",
+        "--wl-space-card: 12px;")
+      foundation[] = underneath
+      let saved = vm.applyWorkspaceFileEdits()
+      check not saved.ok
+      check foundation[] == underneath
+      dispose()
+
+  test "a captured var() row's token edit is refused at save when the token changed underneath":
+    # A click on the preview captures the row without provenance, so its
+    # plan expects nothing; once admitted (the element's rule is a direct
+    # var() of the token) it expects the token's value (round-5 review N3).
+    for rule in ["padding: var(--wl-space-card);",
+        "padding: var(--wl-space-card) !important;"]:
+      for detail in ["computed:padding", "iframe-dom:padding"]:
+        createRoot proc(dispose: proc()) =
+          let foundation = new(string)
+          let source = DemoFoundationInitialSource.replace(
+            ".destination-card { padding: 18px; }",
+            ".destination-card { " & rule & " }")
+          foundation[] = source
+          let vm = wanderlustVm(foundation)
+          var element = cascadeElement(".destination-card")
+          for prop in element.properties.mitems:
+            if prop.name == "padding":
+              prop.originDetail = detail
+              prop.value = "16px"
+          check vm.selectInspectorElement(element)
+          check vm.commitInspectorValue("padding", "20px", sskComponentToken).ok
+          let pending = vm.inspector.pendingSourceEdits.val
+          check pending.len == 1
+          if pending.len == 1:
+            check pending[0].expectedOldValue == "16px"
+          let underneath = source.replace("--wl-space-card: 16px;",
+            "--wl-space-card: 12px;")
+          foundation[] = underneath
+          let saved = vm.applyWorkspaceFileEdits()
+          checkpoint rule & " " & detail
+          check not saved.ok
+          if saved.diagnostics.len == 1:
+            check saved.diagnostics[0].message.contains(
+              "declares --wl-space-card: 12px, not 16px")
+          check foundation[] == underneath
+          dispose()
+
+  test "a var() use site with a comment before its !important edits the token":
+    # Round-5 review N4: the comment is not part of the reference.
+    for (detail, rowValue) in [("class:destination-card",
+        "var(--wl-space-card) /* keep */ !important"),
+        ("computed:padding", "16px")]:
+      createRoot proc(dispose: proc()) =
+        let foundation = new(string)
+        let source = DemoFoundationInitialSource.replace(
+          ".destination-card { padding: 18px; }",
+          ".destination-card { padding: var(--wl-space-card) /* keep */ !important; }")
+        foundation[] = source
+        let vm = wanderlustVm(foundation)
+        var element = cascadeElement(".destination-card")
+        for prop in element.properties.mitems:
+          if prop.name == "padding":
+            prop.originDetail = detail
+            prop.value = rowValue
+        check vm.selectInspectorElement(element)
+        check vm.scopeChoice("padding", sskComponentToken).editable
+        check vm.commitInspectorValue("padding", "20px", sskComponentToken).ok
+        # It expects the token's value, so a change underneath is refused.
+        let pending = vm.inspector.pendingSourceEdits.val
+        check pending.len == 1
+        if pending.len == 1:
+          check pending[0].expectedOldValue == "16px"
+        vm.save()
+        check foundation[] == source.replace("--wl-space-card: 16px;",
+          "--wl-space-card: 20px;")
+        dispose()
+
+  test "a use site that wraps the token's var() in calc() is refused at its scope":
+    # Round-5 review N5: only a direct var() reference exposes the token.
+    for detail in ["class:destination-card", "computed:padding"]:
+      createRoot proc(dispose: proc()) =
+        let foundation = new(string)
+        let source = DemoFoundationInitialSource.replace(
+          ".destination-card { padding: 18px; }",
+          ".destination-card { padding: calc(var(--wl-space-card) + 2px); }")
+        foundation[] = source
+        let vm = wanderlustVm(foundation)
+        var element = cascadeElement(".destination-card")
+        for prop in element.properties.mitems:
+          if prop.name == "padding":
+            prop.originDetail = detail
+            prop.value = if detail.startsWith("class:"):
+              "calc(var(--wl-space-card) + 2px)" else: "18px"
+        check vm.selectInspectorElement(element)
+        check not vm.scopeChoice("padding", sskComponentToken).editable
+        check not vm.commitInspectorValue("padding", "20px",
+          sskComponentToken).ok
+        check vm.inspector.pendingSourceEdits.val.len == 0
+        check foundation[] == source
+        dispose()
+
+  proc capturedVarVm(foundation: ref string; source: string): EditorVM =
+    ## The example over ``source``, its card selected as a click on the
+    ## preview captures it (padding read without provenance).
+    foundation[] = source
+    result = wanderlustVm(foundation)
+    var element = cascadeElement(".destination-card")
+    for prop in element.properties.mitems:
+      if prop.name == "padding": prop.value = "16px"
+    check result.selectInspectorElement(element)
+
+  test "a captured row's token edit on a stale model is refused at the act as a source change":
+    # Round-6 review N6/N9: the token was changed in the file before the
+    # act, while the editor still shows 16px.
+    createRoot proc(dispose: proc()) =
+      let foundation = new(string)
+      let vm = foundation.capturedVarVm(DemoFoundationInitialSource.replace(
+        ".destination-card { padding: 18px; }", varRule))
+      let changed = foundation[].replace("--wl-space-card: 16px;",
+        "--wl-space-card: 12px;")
+      foundation[] = changed
+      let committed = vm.commitInspectorValue("padding", "24px",
+        sskComponentToken)
+      check not committed.ok
+      check committed.message == "The --wl-space-card declaration now holds " &
+        "12px in the source, not the 16px the editor shows: the source " &
+        "changed under the editor. Reload it, then retry. Nothing was changed."
+      check vm.inspector.pendingSourceEdits.val.len == 0
+      check foundation[] == changed
+      dispose()
+
+  test "a var() with a comment inside it is a direct reference":
+    # Round-6 review N8: a comment inside var() is whitespace.
+    for rule in ["padding: var(/* c */--wl-space-card);",
+        "padding: var(--wl-space-card /* d */);"]:
+      for detail in ["class:destination-card", "computed:padding"]:
+        createRoot proc(dispose: proc()) =
+          let foundation = new(string)
+          let source = DemoFoundationInitialSource.replace(
+            ".destination-card { padding: 18px; }",
+            ".destination-card { " & rule & " }")
+          foundation[] = source
+          let vm = wanderlustVm(foundation)
+          var element = cascadeElement(".destination-card")
+          for prop in element.properties.mitems:
+            if prop.name == "padding":
+              prop.originDetail = detail
+              prop.value = if detail.startsWith("class:"):
+                rule["padding: ".len ..< rule.len - 1] else: "16px"
+          check vm.selectInspectorElement(element)
+          checkpoint rule & " " & detail
+          check vm.scopeChoice("padding", sskComponentToken).editable
+          check vm.commitInspectorValue("padding", "20px", sskComponentToken).ok
+          let pending = vm.inspector.pendingSourceEdits.val
+          check pending.len == 1
+          if pending.len == 1:
+            check pending[0].expectedOldValue == "16px"
+          vm.save()
+          check foundation[] == source.replace("--wl-space-card: 16px;",
+            "--wl-space-card: 20px;")
+          dispose()
+
+  test "a Foundations undo a later row edit of the token depends on is refused when called directly":
+    # Round-6 review N7: `undoFoundationTokenEdit` called outside the history
+    # timeline. Nothing changes, and the save writes both edits.
+    createRoot proc(dispose: proc()) =
+      let foundation = new(string)
+      let source = DemoFoundationInitialSource.replace(
+        ".destination-card { padding: 18px; }", varRule)
+      let vm = foundation.capturedVarVm(source)
+      check vm.editFoundationToken("space.card", "20px").status == pesAccepted
+      check vm.commitInspectorValue("padding", "24px", sskComponentToken).ok
+      check not vm.undoFoundationTokenEdit()
+      check vm.foundations.diagnostics.val.len == 1
+      check vm.token == "20px"
+      check vm.inspector.pendingSourceEdits.val.len == 2
+      vm.save()
+      check foundation[] == source.replace("--wl-space-card: 16px;",
+        "--wl-space-card: 24px;")
+      dispose()
+
+  test "the editor's Undo takes the row edit back before the Foundations edit it depends on":
+    # The UI path (one timeline, eckUndo): newest first, so no pending plan
+    # is ever left expecting a value nothing writes.
+    createRoot proc(dispose: proc()) =
+      let foundation = new(string)
+      let source = DemoFoundationInitialSource.replace(
+        ".destination-card { padding: 18px; }", varRule)
+      let vm = foundation.capturedVarVm(source)
+      check vm.editFoundationToken("space.card", "20px").status == pesAccepted
+      check vm.commitInspectorValue("padding", "24px", sskComponentToken).ok
+      check vm.nextHistoryKind(redo = false) == ehkInspector
+      check vm.runEditorCommand(eckUndo).status == ecsSucceeded
+      check vm.inspector.pendingSourceEdits.val.len == 1
+      check vm.nextHistoryKind(redo = false) == ehkFoundation
+      check vm.runEditorCommand(eckUndo).status == ecsSucceeded
+      check vm.token == "16px"
+      check vm.inspector.pendingSourceEdits.val.len == 0
+      check foundation[] == source
+      dispose()
+
+  test "an !important literal rule is still refused at the token's scope":
+    createRoot proc(dispose: proc()) =
+      let foundation = new(string)
+      let source = DemoFoundationInitialSource.replace(
+        ".destination-card { padding: 18px; }",
+        ".destination-card { padding: 18px !important; }")
+      foundation[] = source
+      let vm = wanderlustVm(foundation)
+      var element = cascadeElement(".destination-card")
+      check vm.selectInspectorElement(element)
+      let chip = vm.scopeChoice("padding", sskComponentToken)
+      check not chip.editable
+      check chip.reason == "The --wl-space-card token holds 16px, not " &
+        "18px !important, so it does not set this element's padding."
+      check not vm.commitInspectorValue("padding", "20px",
+        sskComponentToken).ok
+      check vm.inspector.pendingSourceEdits.val.len == 0
+      check foundation[] == source
+      dispose()
+
+  test "a Foundations edit of a token declared twice is refused at the act":
+    createRoot proc(dispose: proc()) =
+      let foundation = new(string)
+      let source = DemoFoundationInitialSource &
+        ".compact { --wl-space-card: 16px; }\n"
+      foundation[] = source
+      let vm = wanderlustVm(foundation)
+      let edited = vm.editFoundationToken("space.card", "20px")
+      check edited.status == pesRejected
+      check edited.diagnostics.len == 1
+      if edited.diagnostics.len == 1:
+        check edited.diagnostics[0].message ==
+          DemoFoundationSource & " has 2 --wl-space-card declarations, so " &
+          "the one this edit owns cannot be identified. Nothing was changed."
+      check vm.token == "16px"
+      check vm.inspector.pendingSourceEdits.val.len == 0
+      check vm.foundations.undoStack.val.len == 0
+      # A later edit of another token is written.
+      check vm.editFoundationToken("type.body.size", "18px").status == pesAccepted
+      vm.save()
+      check foundation[] == source.replace("--wl-type-body-size: 16px;",
+        "--wl-type-body-size: 18px;")
+      dispose()
+
+  test "a Foundations edit of a token with no declaration is refused at the act":
+    createRoot proc(dispose: proc()) =
+      let foundation = new(string)
+      let source = DemoFoundationInitialSource.replace(
+        "--wl-motion-fast: 120ms;\n", "")
+      foundation[] = source
+      let vm = wanderlustVm(foundation)
+      let edited = vm.editFoundationToken("motion.fast", "200ms")
+      check edited.status == pesRejected
+      check edited.diagnostics.len == 1
+      if edited.diagnostics.len == 1:
+        check edited.diagnostics[0].message.contains(
+          "has no --wl-motion-fast declaration")
+      check vm.inspector.pendingSourceEdits.val.len == 0
+      check foundation[] == source
+      dispose()
+
+  test "a duplicated token declaration is refused, nothing written":
+    let foundation = new(string)
+    foundation[] = DemoFoundationInitialSource &
+      "@media (min-width: 900px) {\n  --wl-space-card: 16px;\n}\n"
+    let vector = new(string)
+    vector[] = "<svg/>"
+    let adapter = demoVectorEditAdapter(vector, foundation)
+    var token: WorkspaceEditableSchemaEntry
+    for entry in adapter.schema:
+      if entry.key == "wanderlust.foundation.space.card": token = entry
+    let patched = adapter.patchFile(SourceEditPlan(property: "--wl-space-card",
+      schemaKey: token.key, file: token.file, newValue: "20px",
+      expectedOldValue: "16px", planKind: cspTokenUpdate), foundation[], token)
+    check not patched.ok
+    check patched.diagnostics.len == 1
+    check patched.diagnostics[0].message.contains(
+      "2 --wl-space-card declarations")
+
+  test "the writer replaces nothing by text outside a token or class entry":
+    let foundation = new(string)
+    foundation[] = DemoFoundationInitialSource
+    let vector = new(string)
+    vector[] = "<svg><path/></svg><svg><path/></svg>"
+    let adapter = demoVectorEditAdapter(vector, foundation)
+    var symbol: WorkspaceEditableSchemaEntry
+    for entry in adapter.schema:
+      if entry.kind == wskSvgSymbol: symbol = entry
+    # The symbol's markup twice: which copy is the symbol cannot be told.
+    let twice = adapter.patchFile(SourceEditPlan(property: "svgContent",
+      schemaKey: symbol.key, file: symbol.file, newValue: "<svg/>",
+      expectedOldValue: "<svg><path/></svg>"), vector[], symbol)
+    check not twice.ok
+    check twice.diagnostics.len == 1
+    # Once: replaced where it stands.
+    let once = adapter.patchFile(SourceEditPlan(property: "svgContent",
+      schemaKey: symbol.key, file: symbol.file, newValue: "<svg/>",
+      expectedOldValue: "<svg><path/></svg>"), "<svg><path/></svg>\n", symbol)
+    check once.ok
+    check once.patch.afterContent == "<svg/>\n"
+    # An entry that is neither a class rule's declaration nor a token's.
+    let other = WorkspaceEditableSchemaEntry(key: "fixture.other",
+      kind: wskSourceMap, file: DemoFoundationSource, path: "fixture.other",
+      property: "margin")
+    let refused = adapter.patchFile(SourceEditPlan(property: "margin",
+      schemaKey: other.key, file: other.file, newValue: "20px",
+      expectedOldValue: "16px"), foundation[], other)
+    check not refused.ok

@@ -20,13 +20,19 @@ type
       checkpointLease*: SignalLease
     observers*: seq[ComputationBase]
     observerSlots*: seq[int]
+    memoComputation*: ComputationBase
+      ## For a memo's signal: the computation that produces its value, so a
+      ## reader can bring it up to date before reading (pull). Nil for a
+      ## plain signal.
 
   OwnerBase* = ref object of RootObj
     ## Base of the disposal tree. Owner tracks child computations and cleanup callbacks.
     when defined(isonimRecordable):
       checkpointSignals*: seq[SignalRegistration]
         ## Metadata only: the owner tree must never keep a signal alive.
-    owned*: seq[ComputationBase]     ## Child computations
+    owned*: seq[OwnerBase]
+      ## Children disposed with this node: the computations created under
+      ## it, and the roots `owner.createRoot` made under it.
     cleanups*: seq[proc()]            ## Cleanup callbacks
     owner*: OwnerBase                 ## Parent owner
     contextTable*: ContextTable       ## Context values keyed by ContextId
@@ -37,6 +43,14 @@ type
       ## that create none. Cleared with the node, so a computation that
       ## re-runs drops what its previous run created. Enumerated through
       ## `resource.ownedResourceStates`.
+    ownerSlot*: int
+      ## For a root registered in its owner's `owned`: its index there, so
+      ## that disposing it by hand takes it out of that list in constant
+      ## time (`unlinkRoot`). Stale once the root is out of the list
+      ## (detached, released, or disposed with its owner), which
+      ## `unlinkRoot` detects by identity. Only roots read it: on a
+      ## computation it is written when the computation moves into a
+      ## released root's place, and never read.
 
   ComputationBase* = ref object of OwnerBase
     ## Type-erased base for computations.
@@ -46,8 +60,37 @@ type
     state*: ComputationState
     pure*: bool
     fn*: proc()                       ## The computation function (type-erased)
-    updatedAt*: int                   ## Execution counter for cycle detection
     memoSignal*: SignalStateBase      ## When non-nil, this computation acts as a memo
+    errored*: bool
+      ## Its last run ended in an error that went to a handler (or was
+      ## reported as unhandled). The next run that succeeds tells the
+      ## handlers above it that it recovered (see `computation.handleError`).
+
+  ErrorHandler* = proc(err: ref CatchableError)
+    ## Receives an error raised by a computation (or one of its cleanups)
+    ## under the owner the handler is registered on.
+
+  ErrorBox* = ref object of RootObj
+    ## The error handling registered on an owner, kept in its context table
+    ## under `errorHandlerKey`, so owners without a handler pay nothing.
+    handler*: proc(err: ref CatchableError; source: ComputationBase)
+      ## Never nil. Called with the error and the computation it came from;
+      ## with `err` nil, `source`, whose last run had failed, has just run
+      ## successfully (an error boundary shows its content again).
+
+const errorHandlerKey* = 0
+  ## Context ids start at 1 (`context.createContext`), so 0 is free.
+
+proc setErrorBox*(node: OwnerBase; box: ErrorBox) =
+  ## Registers `box` on `node`, replacing an earlier one.
+  if node.contextTable.isNil:
+    node.contextTable = newHashMapRef[int, RootRef]()
+  node.contextTable[errorHandlerKey] = box
+
+proc errorBox*(handler: ErrorHandler): ErrorBox =
+  ## A box that passes errors to `handler` and ignores recoveries.
+  ErrorBox(handler: proc(err: ref CatchableError; source: ComputationBase) =
+    if err != nil: handler(err))
 
 # Thread-local tracking context
 var Listener* {.threadvar.}: ComputationBase
@@ -86,28 +129,34 @@ proc removeSourceObserver(source: SignalStateBase; obsSlot: int) =
   source.observers.setLen(lastIdx)
   source.observerSlots.setLen(lastIdx)
 
+proc isComputationNode*(node: OwnerBase): bool {.inline.} =
+  ## True when `node` is a computation (not a bare root owner).
+  ##
+  ## A browser hot reload retains these owners but re-evaluates Nim's
+  ## generated RTTI declarations, so on JS `of` no longer identifies a
+  ## retained computation. The stable computation fields identify our own
+  ## graph nodes instead; native targets use Nim's normal runtime type check.
+  when defined(js):
+    {.emit: [result, " = ", node, " != null && Object.prototype.hasOwnProperty.call(", node,
+      ", 'sources') && Object.prototype.hasOwnProperty.call(", node,
+      ", 'sourceSlots');"].}
+  else:
+    result = node != nil and node of ComputationBase
+
+proc asComputation*(node: OwnerBase): ComputationBase {.inline.} =
+  ## Converts a node `isComputationNode` accepted. Unchecked on JS, for the
+  ## same hot-reload reason.
+  when defined(js):
+    {.emit: [result, " = ", node, ";"].}
+  else:
+    result = ComputationBase(node)
+
 proc cleanNode*(node: OwnerBase; dispose: bool = false) =
   ## Removes a node from the reactive graph.
   ## For computations: unlinks from sources' observer lists.
   ## For all owners: runs cleanup callbacks and recursively cleans owned nodes.
-
-  # A browser hot reload retains these owners but re-evaluates Nim's generated
-  # RTTI declarations. Their object identities no longer identify the old
-  # computation. The stable computation fields identify our own graph nodes;
-  # native targets continue using Nim's normal runtime type check.
-  var isComputation: bool
-  when defined(js):
-    {.emit: [isComputation, " = Object.prototype.hasOwnProperty.call(", node,
-      ", 'sources') && Object.prototype.hasOwnProperty.call(", node,
-      ", 'sourceSlots');"].}
-  else:
-    isComputation = node of ComputationBase
-  if isComputation:
-    var comp: ComputationBase
-    when defined(js):
-      {.emit: [comp, " = ", node, ";"].}
-    else:
-      comp = ComputationBase(node)
+  if isComputationNode(node):
+    let comp = asComputation(node)
     for i in 0 ..< comp.sources.len:
       let source = comp.sources[i]
       let obsSlot = comp.sourceSlots[i]
@@ -124,12 +173,22 @@ proc cleanNode*(node: OwnerBase; dispose: bool = false) =
 
   # An exceptional cleanup must not strand later child scopes or callbacks.
   # Drain every established resource once, then propagate the first failure.
+  # Children first, from the end of the list (the last created first,
+  # until a root released by hand moves the last child into its place),
+  # then this node's own cleanups: disposal unwinds. By index from the
+  # end, because a child's cleanup may release a sibling root by hand
+  # (`unlinkRoot`), which moves the last child into the released one's
+  # place: every child is still visited, at worst twice, and cleaning a
+  # cleaned node does nothing.
   var firstCleanupError: ref Exception
-  for child in node.owned:
-    try:
-      cleanNode(child, dispose = true)
-    except Exception:
-      if firstCleanupError == nil: firstCleanupError = getCurrentException()
+  var i = node.owned.len
+  while i > 0:
+    dec i
+    if i < node.owned.len:
+      try:
+        cleanNode(node.owned[i], dispose = true)
+      except Exception:
+        if firstCleanupError == nil: firstCleanupError = getCurrentException()
   node.owned.setLen(0)
   node.resourceStates.setLen(0)
   when defined(isonimRecordable):
@@ -145,7 +204,24 @@ proc cleanNode*(node: OwnerBase; dispose: bool = false) =
   if firstCleanupError != nil:
     raise firstCleanupError
 
-proc notifyObservers*(signal: SignalStateBase) =
-  ## Marks all observers as stale. Called after a signal value changes.
-  for obs in signal.observers:
-    obs.state = csStale
+proc unlinkRoot*(root: OwnerBase) =
+  ## Takes `root` out of its owner's children, by moving the last child
+  ## into its place, so that its owner no longer disposes it. Does nothing
+  ## for a root that is not one of them (detached, made with no current
+  ## owner, already taken out, or already disposed with its owner): a root
+  ## is never added to a list again once out of it, so the identity test
+  ## below is the whole check, and the slot is never reset.
+  let p = root.owner
+  if p != nil:
+    let i = root.ownerSlot
+    let last = p.owned.len - 1
+    if i <= last and p.owned[i] == root:
+      let moved = p.owned[last]
+      moved.ownerSlot = i
+      p.owned[i] = moved
+      when defined(js):
+        # Shrinking only: the generic `setLen` would also carry the code
+        # that grows a seq.
+        {.emit: [p, ".owned.length = ", last, ";"].}
+      else:
+        p.owned.setLen(last)

@@ -77,7 +77,9 @@ proc newUiSlotRegistry*(): UiSlotRegistry =
   # tear it down at app exit (rare in dev, but clean).
   var capturedDispose: proc()
   var capturedOwner: OwnerBase
-  createRoot proc(dispose: proc()) =
+  # Detached: the registry may be created lazily inside a component, and
+  # its owner must outlive that component.
+  createDetachedRoot proc(dispose: proc()) =
     capturedDispose = dispose
     capturedOwner = getOwner()
   result.persistentOwner = capturedOwner

@@ -106,6 +106,11 @@ try {
  await edit('font-family','serif','monospace',typed('monospace'));
  await edit('font-family','monospace','serif',async target=>{const input=target.locator('[data-property-row-input]');await input.click();await input.press('ControlOrMeta+A');await page.keyboard.type('serif');await row('font-weight').locator('[data-property-row-field-label]').click();});
  await edit('font-family','serif','monospace',typed('monospace'));
+ // A quoted family name is written as typed, its comma included; only the
+ // separating comma is spaced (isonim-pm issue 2026-11-22, font-family
+ // write-back). The browser serialises the string with double quotes.
+ await edit('font-family','monospace',"'A,B', monospace",typed("'A,B',monospace"),'font-family','"A,B", monospace');
+ await edit('font-family',"'A,B', monospace",'monospace',typed('monospace'));
  await edit('font-weight','400','500',choice(3,true));
  await edit('font-weight','500','600',choice(4,false));
  reference['line-height']='27px';await edit('font-size','16px','18px',scrub(1));

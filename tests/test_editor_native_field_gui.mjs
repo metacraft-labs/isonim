@@ -187,6 +187,26 @@ try {
   assert.deepEqual((await sides('secondary-action')).sides,['20px','20px','20px','4px']);
   record('the all-sides field still writes where the shorthand decides sides');
  }
+ // N3: a typed var() reaches the native project's file as typed, with its
+ // fallback (isonim-pm issue 2026-11-22-var-values-are-written-in-a-token-
+ // form-...; editor spec: "Editing the token keeps the use-site `var()`
+ // binding intact"). `--a` is not defined, so the preview's 130px can only
+ // come from the fallback of a declaration the browser kept.
+ {
+  await select('action');const s0=await snapshot(),requests0=proof.sourceRequests.length;
+  let field=page.locator('[aria-label="Edit raw CSS for Layout section"]').first();
+  if(!await field.isVisible()){await page.locator('[aria-label="Show raw CSS for Layout section"]').first().click();await field.waitFor({state:'visible'});}
+  await field.click();await field.fill('width: var(--a, 130px)');await field.press('Enter');
+  await settled(s0.undoCount+1,'raw width var()');
+  const rule=ruleOf('action');
+  assert.ok(rule.includes('width:var(--a, 130px);'),'the file holds the var() as typed: '+rule);
+  assert.ok(!rule.includes('token('),'no token form is written: '+rule);
+  assert.ok(proof.sourceRequests.length>requests0,'the native worker wrote it');
+  const deadline=Date.now()+60000;let width=(await sides('action')).width;
+  while(Date.now()<deadline&&width!=='130px'){await page.waitForTimeout(250);width=(await sides('action')).width;}
+  assert.equal(width,'130px','the preview renders the written declaration through its fallback');
+  record('a typed var() with a fallback is written to the native file as typed and renders');
+ }
  assert.deepEqual(proof.errors,[]);assert.deepEqual(proof.agentRequests,[]);
  writeFileSync(root+'/proof.json',JSON.stringify(proof,null,2));console.log('Native field GUI passed:',root,proof.cases.length);
 } finally {if(browser)await browser.close();if(browserServer)await browserServer.close();server.kill('SIGTERM');await new Promise(resolve=>{if(server.exitCode!==null)return resolve();server.once('exit',resolve);setTimeout(()=>{server.kill('SIGKILL');resolve();},15000).unref();});}

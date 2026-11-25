@@ -8,6 +8,7 @@
 ## look like presentation tokens, and the view-model module carries none.
 
 import std/[math, sequtils, strutils]
+from std/unicode import Rune, toUTF8
 import isonim/editor/css_color_literal
 import isonim/editor/css_compound_values
 
@@ -181,6 +182,17 @@ func commaItems(text: string): seq[string] =
 func cssNumberToken(token: string): bool =
   var value = 0.0
   tryParseFloatValue(token, value)
+
+func cssIntegerText*(token: string): bool =
+  ## Whether ``token`` is written as an `<integer>`: an optional sign, then
+  ## decimal digits only (CSS Values 4 §5.2: "one or more decimal digits 0
+  ## through 9 ... The first digit of an integer may be immediately preceded
+  ## by - or +"). A fraction or an exponent makes a `<number>`, not an
+  ## integer, whatever its value (`1.0`, `1e2`, `1e0`; CSS Syntax 3 §4.3.12
+  ## gives such a number token the type flag "number").
+  var i = 0
+  if i < token.len and token[i] in {'+', '-'}: inc i
+  i < token.len and token[i .. ^1].allIt(it in {'0'..'9'})
 
 const cssLengthUnits* = [
   # Font-relative lengths (CSS Values 4 §6.1.1).
@@ -381,6 +393,12 @@ func splitCssDimension*(text: string): tuple[number, unit: string] =
   (text[0 ..< i], text[i .. ^1])
 
 const cssMathFunctions = ["calc", "min", "max", "clamp"]
+const otherCssMathFunctions = ["round", "mod", "rem", "sin", "cos", "tan",
+  "asin", "acos", "atan", "atan2", "pow", "sqrt", "hypot", "log", "exp",
+  "abs", "sign"]
+  ## The CSS Values 4 math functions (§10.3-10.8) besides
+  ## ``cssMathFunctions``. Only an `<integer>` slot takes them
+  ## (``integerMathType``); elsewhere the editor does not, as before.
 
 type CssMathValue = object
   ## A math expression's type and, when it folds, its value: numbers, and a
@@ -475,11 +493,11 @@ func divideValues(a, b: CssMathValue): CssMathValue =
   finiteValue(CssMathValue(t: a.t, known: known, unit: a.unit,
     value: if known: a.value / b.value else: 0.0))
 
-func cssMathSumValue(text: string): CssMathValue =
-  ## A calc() sum (CSS Values 4 §10.1, §10.9): products of operands joined
-  ## by `+` and `-`, which must be surrounded by whitespace (so `1px+2px` is
-  ## one malformed operand). `*` needs a number on one side; `/` needs a
-  ## number divisor that does not fold to zero.
+func mathSumTokens(text: string): seq[string] =
+  ## ``text``'s calc() sum cut into operands and the operators between them
+  ## (`+` and `-` standing alone, `*` and `/` anywhere at the top level),
+  ## alternating and starting with an operand; empty when it is not so
+  ## shaped.
   var tokens: seq[string]
   let structural = structuralChars(text)
   var depth = 0
@@ -498,9 +516,18 @@ func cssMathSumValue(text: string): CssMathValue =
     else:
       current.add ch
   if current.len > 0: tokens.add current
-  if tokens.len == 0 or tokens.len mod 2 == 0: return mathInvalid()
+  if tokens.len == 0 or tokens.len mod 2 == 0: return @[]
   for i in countup(1, tokens.len - 2, 2):
-    if tokens[i] notin ["+", "-", "*", "/"]: return mathInvalid()
+    if tokens[i] notin ["+", "-", "*", "/"]: return @[]
+  tokens
+
+func cssMathSumValue(text: string): CssMathValue =
+  ## A calc() sum (CSS Values 4 §10.1, §10.9): products of operands joined
+  ## by `+` and `-`, which must be surrounded by whitespace (so `1px+2px` is
+  ## one malformed operand). `*` needs a number on one side; `/` needs a
+  ## number divisor that does not fold to zero.
+  let tokens = mathSumTokens(text)
+  if tokens.len == 0: return mathInvalid()
   var total: CssMathValue
   var first = true
   var subtract = false
@@ -570,6 +597,168 @@ func cssMathFunctionCall*(token: string;
   ## of the ``allowed`` types (a `var()`-typed result is taken).
   let t = cssMathCallType(token)
   t != cmtInvalid and (t == cmtAny or t in allowed)
+
+type
+  MathDimension = enum
+    ## The base types a dimension in a math expression has (CSS Values 4
+    ## §10.9 and CSS Typed OM's base types); a percentage is not among them
+    ## in an `<integer>` slot, which gives it nothing to resolve against.
+    mdLength, mdAngle, mdTime, mdFrequency, mdResolution
+  IntegerMathType = object
+    ## A math expression's type as an `<integer>` slot reads it (CSS Values 4
+    ## §10.9): the power of each base type, carried through `*` and `/`
+    ## and judged only for the whole expression, so `2px * 2px / 1px / 1px`
+    ## is a number. ``any`` is a `var()`, whose type is known only once it
+    ## resolves; it matches every type. Never folded: an `<integer>` slot
+    ## rounds and clamps its value (§10.12), so a division by zero or an
+    ## infinite result is not an error there.
+    ok, any: bool
+    powers: array[MathDimension, int]
+
+func intInvalid(): IntegerMathType = IntegerMathType()
+func intNumber(): IntegerMathType = IntegerMathType(ok: true)
+func intAny(): IntegerMathType = IntegerMathType(ok: true, any: true)
+func intOf(d: MathDimension): IntegerMathType =
+  result = IntegerMathType(ok: true)
+  result.powers[d] = 1
+
+func isNumber(t: IntegerMathType): bool =
+  t.ok and (t.any or t.powers.allIt(it == 0))
+
+func sameType(a, b: IntegerMathType): IntegerMathType =
+  ## The type of a sum or of arguments that must agree (§10.9): one type;
+  ## a `var()` takes the other's.
+  if not a.ok or not b.ok: return intInvalid()
+  if a.any: return b
+  if b.any: return a
+  if a.powers == b.powers: a else: intInvalid()
+
+func combine(a, b: IntegerMathType; sign: int): IntegerMathType =
+  ## `*` (``sign`` 1) or `/` (``sign`` -1): powers add or subtract.
+  if not a.ok or not b.ok: return intInvalid()
+  if a.any or b.any: return intAny()
+  result = intNumber()
+  for d in MathDimension: result.powers[d] = a.powers[d] + sign * b.powers[d]
+
+func dimensionOfUnit(unit: string): tuple[ok: bool, d: MathDimension] =
+  if unit in cssLengthUnits: (true, mdLength)
+  elif unit in ["deg", "grad", "rad", "turn"]: (true, mdAngle)
+  elif unit in ["s", "ms"]: (true, mdTime)
+  elif unit in ["hz", "khz"]: (true, mdFrequency)
+  elif unit in ["dpi", "dpcm", "dppx", "x"]: (true, mdResolution)
+  else: (false, mdLength)
+
+func integerMathCall(token: string): IntegerMathType
+
+func integerMathOperand(token: string): IntegerMathType =
+  ## A calc() operand (§10.1): a number or a dimension, a constant
+  ## (§10.7.2: `e`, `pi`, `infinity`, `-infinity`, `NaN`), a `var()`, a
+  ## parenthesised sum or a math function.
+  let text = token.toLowerAscii()
+  if text.startsWith("(") and text.endsWith(")") and isCompleteFunction(text):
+    return integerMathCall("calc" & text)
+  let name = cssFunctionName(text)
+  if '(' in text and (name in cssMathFunctions or name in otherCssMathFunctions):
+    return integerMathCall(text)
+  if name == "var" and isCompleteFunction(text): return intAny()
+  if text in ["e", "pi", "infinity", "-infinity", "nan"]: return intNumber()
+  let (number, unit) = splitCssDimension(text)
+  var value = 0.0
+  if number.len == 0 or not tryParseFloatValue(number, value):
+    return intInvalid()
+  if unit.len == 0: return intNumber()
+  let (known, d) = dimensionOfUnit(unit)
+  if known: intOf(d) else: intInvalid()
+
+func integerMathSum(text: string): IntegerMathType =
+  ## A calc() sum (§10.1), cut as ``cssMathSumValue`` cuts it: products
+  ## whose powers are carried, joined by `+` and `-` between terms of one
+  ## type.
+  let tokens = mathSumTokens(text)
+  if tokens.len == 0: return intInvalid()
+  var total = IntegerMathType()
+  var first = true
+  var j = 0
+  while j < tokens.len:
+    var product = integerMathOperand(tokens[j])
+    while j + 2 < tokens.len and tokens[j + 1] in ["*", "/"]:
+      product = combine(product, integerMathOperand(tokens[j + 2]),
+        if tokens[j + 1] == "*": 1 else: -1)
+      j += 2
+    if not product.ok: return intInvalid()
+    total = if first: product else: sameType(total, product)
+    if not total.ok: return intInvalid()
+    first = false
+    j += 2
+  total
+
+func integerMathCall(token: string): IntegerMathType =
+  ## The type of a complete math function call (CSS Values 4 §10.2-10.8).
+  ## Each argument is a calc() sum, none empty; the arity and argument types
+  ## are each function's own:
+  ##
+  ## * `calc(A)`; `min(A#)`, `max(A#)`, `clamp(A, B, C)`, `hypot(A#)`,
+  ##   `mod(A, B)`, `rem(A, B)`: one type, the result's.
+  ## * `round([<rounding-strategy>,]? A [, B]?)`: the strategy (`nearest`,
+  ##   `up`, `down`, `to-zero`) only first; A and B of one type, B omitted
+  ##   only when A is a number.
+  ## * `abs(A)`: A's type. `sign(A)`: a number, whatever A's type.
+  ## * `sin()`, `cos()`, `tan()`: a number or an angle, giving a number.
+  ## * `asin()`, `acos()`, `atan()`: a number, giving an angle;
+  ##   `atan2(A, B)`: one type, giving an angle.
+  ## * `pow(A, B)`, `sqrt(A)`, `log(A [, B]?)`, `exp(A)`: numbers.
+  let text = token.strip().toLowerAscii()
+  let name = cssFunctionName(text)
+  if (name notin cssMathFunctions and name notin otherCssMathFunctions) or
+      not isCompleteFunction(text) or text.len < name.len + 2:
+    return intInvalid()
+  var args = commaItems(text[name.len + 1 ..< text.len - 1])
+  if name == "round" and args.len > 0 and
+      args[0] in ["nearest", "up", "down", "to-zero"]:
+    args = args[1 .. ^1]
+  var types: seq[IntegerMathType]
+  for arg in args:
+    if arg.len == 0: return intInvalid()
+    let t = integerMathSum(arg)
+    if not t.ok: return intInvalid()
+    types.add t
+  func common(ts: seq[IntegerMathType]): IntegerMathType =
+    result = intAny()
+    for t in ts:
+      result = sameType(result, t)
+      if not result.ok: return
+  let n = types.len
+  let angle = intOf(mdAngle)
+  case name
+  of "calc", "abs":
+    if n == 1: types[0] else: intInvalid()
+  of "min", "max", "hypot":
+    if n >= 1: common(types) else: intInvalid()
+  of "clamp":
+    if n == 3: common(types) else: intInvalid()
+  of "mod", "rem":
+    if n == 2: common(types) else: intInvalid()
+  of "round":
+    if n == 2 or (n == 1 and types[0].isNumber): common(types)
+    else: intInvalid()
+  of "sign":
+    if n == 1: intNumber() else: intInvalid()
+  of "sin", "cos", "tan":
+    if n == 1 and (types[0].isNumber or sameType(types[0], angle).ok):
+      intNumber()
+    else: intInvalid()
+  of "asin", "acos", "atan":
+    if n == 1 and types[0].isNumber: angle else: intInvalid()
+  of "atan2":
+    if n == 2 and common(types).ok: angle else: intInvalid()
+  of "pow":
+    if n == 2 and types.allIt(it.isNumber): intNumber() else: intInvalid()
+  of "sqrt", "exp":
+    if n == 1 and types[0].isNumber: intNumber() else: intInvalid()
+  of "log":
+    if n in 1 .. 2 and types.allIt(it.isNumber): intNumber()
+    else: intInvalid()
+  else: intInvalid()
 
 type CssComponentCheck* = proc(property, value: string): bool {.closure.}
   ## Whether ``value``, one component or sample value, passes
@@ -1281,10 +1470,272 @@ const keywordOnlyProperties* = ["display", "position", "visibility",
   "order", "font-weight", "color", "background-color", "border-color",
   "border-top-color", "border-right-color", "border-bottom-color",
   "border-left-color", "outline-color", "fill", "stroke", "caret-color",
-  "accent-color", "text" & "-decoration-color", "column-rule-color"]
+  "accent-color", "text" & "-decoration-color", "column-rule-color",
+  # Grid lines and counters: names and `<integer>`s (CSS Grid 2 §8.3, CSS
+  # Lists 3 §4), so `0.5px` or `2%` is refused.
+  "grid-row", "grid-column", "grid-row-start", "grid-row-end",
+  "grid-column-start", "grid-column-end", "grid-area", "counter-reset",
+  "counter-set", "counter-increment"]
   ## Properties whose grammar takes no length or percentage (keywords,
   ## numbers or colours): a value that parses as one is judged by the
   ## keyword grammar, which refuses it.
+
+const gridLineProperties* = ["grid-row", "grid-column", "grid-row-start",
+  "grid-row-end", "grid-column-start", "grid-column-end", "grid-area"]
+  ## The grid-placement properties (CSS Grid 2 §8.3-8.4), whose values are
+  ## `<grid-line>`s.
+const counterProperties* = ["counter-reset", "counter-set",
+  "counter-increment"]
+  ## The counter properties (CSS Lists 3 §4.1-4.3).
+
+const cssWhitespaceChars = {' ', '\t', '\n', '\r', '\f'}
+  ## CSS whitespace (CSS Syntax 3 §4.2).
+
+func cssEscapeEnd(text: string; at: int): int =
+  ## The index just past the escape that starts with the `\` at ``at``
+  ## (CSS Syntax 3 §4.3.7): one to six hex digits and one optional
+  ## whitespace after them, or any other code point (one UTF-8 sequence);
+  ## ``at`` when the escape is not valid (CSS Syntax 3 §4.3.8: a `\`
+  ## before a newline or at the end).
+  var i = at + 1
+  if i >= text.len or text[i] in {'\n', '\r', '\f'}: return at
+  if text[i] in HexDigits:
+    let start = i
+    while i < text.len and i - start < 6 and text[i] in HexDigits: inc i
+    if i < text.len and text[i] in cssWhitespaceChars:
+      # `\r\n` is one whitespace (CSS Syntax 3 §3.3).
+      if text[i] == '\r' and i + 1 < text.len and text[i + 1] == '\n': inc i
+      inc i
+    return i
+  inc i
+  while i < text.len and (ord(text[i]) and 0xC0) == 0x80: inc i
+  i
+
+func lineWords(text: string): tuple[ok: bool, parts: seq[seq[string]]] =
+  ## ``text`` cut into its `/`-separated parts and each part into its words,
+  ## at the whitespace and `/` outside parentheses: a function and its
+  ## arguments are one word (`span calc(1 + 1)` is `span`, `calc(1 + 1)`).
+  ## Not ``ok`` when a parenthesis is unmatched.
+  result.ok = true
+  var depth = 0
+  var word = ""
+  var part: seq[string]
+  var i = 0
+  while i < text.len:
+    let c = text[i]
+    if c == '\\':
+      # An escape is part of the word it is in, the whitespace that may end a
+      # hex escape included (CSS Syntax 3 §4.3.7): `\31 a` is one word.
+      let e = max(cssEscapeEnd(text, i), i + 1)
+      word.add text[i ..< min(e, text.len)]
+      i = e
+      continue
+    inc i
+    if c == '(':
+      inc depth
+      word.add c
+    elif c == ')':
+      if depth == 0: return (false, @[])
+      dec depth
+      word.add c
+    elif depth == 0 and (c in Whitespace or c == '/'):
+      if word.len > 0: part.add word
+      word = ""
+      if c == '/':
+        result.parts.add part
+        part = @[]
+    else:
+      word.add c
+  if depth != 0: return (false, @[])
+  if word.len > 0: part.add word
+  result.parts.add part
+
+func integerWord(word: string; positive = false; nonZero = false): bool =
+  ## Whether ``word`` is an `<integer>` (``cssIntegerText``, CSS Values 4
+  ## §5.2): a sign and digits only, so `1.5`, `1.0`, `1e2` and `0.5px` are
+  ## not. ``positive`` asks for `[1,∞]` and ``nonZero`` excludes zero (CSS
+  ## Grid 2 §8.3). A math function stands for an integer when it resolves to
+  ## a number (CSS Values 4 §10.9: the result is rounded to the nearest
+  ## integer), so `calc(1 + 1)` and `min(1, 2)` are integers and `calc(1px)`
+  ## is not. A math function is not range-checked when parsed (CSS Values 4
+  ## §10.12: an out-of-range result is clamped), so `span calc(0)` is taken.
+  ## Every CSS Values 4 math function is typed by its signature
+  ## (§10.2-10.8, ``integerMathCall``), with unit powers carried through
+  ## `*` and `/`: `round(1.5)`, `abs(-2)`, `sign(1px)`, `sin(1deg)`,
+  ## `abs(sign(1px))`, `abs(1dppx / 1x)` and `abs(2px * 2px / 1px / 1px)`
+  ## are numbers; `abs(1px)`, `sin(1px)`, `asin(1)`, `sign()`, `abs(1, 2)`
+  ## and `round(down)` are not.
+  if '(' in word:
+    let name = cssFunctionName(word)
+    if name notin cssMathFunctions and name notin otherCssMathFunctions:
+      return false
+    return integerMathCall(word).isNumber
+  if not cssIntegerText(word): return false
+  let negative = word[0] == '-'
+  let zero = word.allIt(it in {'+', '-', '0'})
+  if positive: not negative and not zero
+  elif nonZero: not zero
+  else: true
+
+func cssIdentifierName(word: string): tuple[ok: bool, name: string] =
+  ## Whether ``word`` is exactly one CSS identifier (CSS Syntax 3 §4.3.9 "would
+  ## start an ident sequence", §4.3.11 "consume an ident sequence"), and the
+  ## name it spells with its escapes resolved (§4.3.7): ident code points
+  ## are letters, digits, `-`, `_` and every non-ASCII code point, and any
+  ## code point may be escaped, so `ä`, `名前`, `\31 a` (`1a`) and
+  ## `c\ d` (`c d`) are identifiers. An escape of zero, a surrogate or a
+  ## value past U+10FFFF names U+FFFD.
+  const nameStart = {'a'..'z', 'A'..'Z', '_', '\x80'..'\xFF'}
+  const nameChars = nameStart + {'0'..'9', '-'}
+  if word.len == 0: return
+  # Would start an identifier (§4.3.9).
+  var i = 0
+  let startOk =
+    if word[0] == '-':
+      word.len > 1 and (word[1] in nameStart + {'-'} or
+        (word[1] == '\\' and cssEscapeEnd(word, 1) > 1))
+    elif word[0] == '\\': cssEscapeEnd(word, 0) > 0
+    else: word[0] in nameStart
+  if not startOk: return
+  var name = ""
+  while i < word.len:
+    let c = word[i]
+    if c == '\\':
+      let e = cssEscapeEnd(word, i)
+      if e == i: return
+      let body = word[i + 1 ..< e].strip(leading = false,
+        chars = cssWhitespaceChars)
+      if body.len > 0 and body.allIt(it in HexDigits) and body.len <= 6:
+        var code = 0
+        for h in body: code = code * 16 + parseHexInt($h)
+        if code == 0 or code in 0xD800..0xDFFF or code > 0x10FFFF:
+          code = 0xFFFD
+        name.add Rune(code).toUTF8
+      else:
+        name.add word[i + 1 ..< e]
+      i = e
+    elif c in nameChars:
+      name.add c
+      inc i
+    else:
+      return
+  (true, name)
+
+func customIdentWord(word: string; excluded: openArray[string]): bool =
+  ## A `<custom-ident>` (CSS Values 4 §4.2): an identifier
+  ## (``cssIdentifierName``: non-ASCII and escaped code points included)
+  ## that is not a CSS-wide keyword, not `default`, and none of the
+  ## property's own ``excluded`` keywords. The reserved names are compared
+  ## ASCII case-insensitively and as the identifier spells them, escapes
+  ## resolved, so `SPAN` and `sp\61n` are `span`.
+  let (ok, name) = cssIdentifierName(word)
+  let lower = name.toLowerAscii()
+  ok and lower notin cssWideKeywords and lower != "default" and
+    lower notin excluded
+
+func keywordText(word: string): string =
+  ## ``word`` as a keyword is matched: an identifier by the name it spells,
+  ## escapes resolved, in ASCII lower case (CSS Syntax 3 §4.3.11; CSS Values
+  ## 4 §4.1: keywords are ASCII case-insensitive), so `SPAN` and `sp\61n` are
+  ## `span`; any other word in lower case.
+  let (ok, name) = cssIdentifierName(word)
+  if ok: name.toLowerAscii() else: word.toLowerAscii()
+
+func gridLineName(word: string): bool =
+  ## A grid line's `<custom-ident>`: CSS Grid 2 §8.3 also excludes `span`
+  ## and `auto`.
+  customIdentWord(word, ["span", "auto"])
+
+func validGridLine*(words: openArray[string]): bool =
+  ## Whether ``words`` are one `<grid-line>` (CSS Grid 2 §8.3):
+  ##
+  ##   auto | <custom-ident> |
+  ##   [ [ <integer [-∞,-1]> | <integer [1,∞]> ] && <custom-ident>? ] |
+  ##   [ span && [ <integer [1,∞]> || <custom-ident> ] ]
+  ##
+  ## So `auto`, `a`, `2`, `-1`, `2 a`, `a 2`, `span 2`, `span a`,
+  ## `span 2 a`, `span a 2`, `2 span` and `2 a span` are, and `0`, `span 0`,
+  ## `span -1`, `auto 2`, `span`, `span span`, `2 3` and `a b` are not.
+  ## `span` and its `[<integer> || <custom-ident>]` group are the two
+  ## operands of `&&`, so the group's words stay together: `span` comes
+  ## first or last (`2 span a` is not a grid line).
+  if words.len == 0 or words.len > 3: return false
+  let lower = words.mapIt(keywordText(it))
+  let spans = lower.count("span")
+  if spans > 1: return false
+  if spans == 0:
+    if words.len == 1:
+      return lower[0] == "auto" or gridLineName(words[0]) or
+        integerWord(lower[0], nonZero = true)
+    if words.len == 2:
+      return (integerWord(lower[0], nonZero = true) and gridLineName(words[1])) or
+        (gridLineName(words[0]) and integerWord(lower[1], nonZero = true))
+    return false
+  let at = lower.find("span")
+  if at != 0 and at != words.len - 1: return false
+  var group: seq[string]
+  for i, word in words:
+    if i != at: group.add word
+  case group.len
+  of 1:
+    integerWord(group[0].toLowerAscii(), positive = true) or gridLineName(group[0])
+  of 2:
+    (integerWord(group[0].toLowerAscii(), positive = true) and gridLineName(group[1])) or
+      (gridLineName(group[0]) and integerWord(group[1].toLowerAscii(), positive = true))
+  else:
+    false
+
+func validGridPlacement*(propName, raw: string): bool =
+  ## Whether ``raw`` is a value of the grid-placement property ``propName``
+  ## (CSS Grid 2 §8.4): `grid-row-start`, `grid-row-end`,
+  ## `grid-column-start` and `grid-column-end` take one `<grid-line>`;
+  ## `grid-row` and `grid-column` one or two, separated by `/`; `grid-area`
+  ## one to four. A CSS-wide keyword is the whole value.
+  let text = raw.strip()
+  if keywordText(text) in cssWideKeywords: return true
+  let (ok, parts) = lineWords(text)
+  if not ok: return false
+  let most =
+    case propName
+    of "grid-row", "grid-column": 2
+    of "grid-area": 4
+    else: 1
+  parts.len in 1 .. most and parts.allIt(validGridLine(it))
+
+func counterName(word: string; reversed: bool): bool =
+  ## A `<counter-name>` (CSS Lists 3 §4: a `<custom-ident>` that is not
+  ## `none`) or, with ``reversed``, a `reversed(<counter-name>)` (CSS Lists 3
+  ## §4.1, `counter-reset` only).
+  if customIdentWord(word, ["none"]): return true
+  if not reversed: return false
+  let lower = word.toLowerAscii()
+  if not (lower.startsWith("reversed(") and lower.endsWith(")")): return false
+  customIdentWord(word["reversed(".len ..< word.len - 1].strip(), ["none"])
+
+func validCounterValue*(propName, raw: string): bool =
+  ## Whether ``raw`` is a value of the counter property ``propName`` (CSS
+  ## Lists 3 §4.1-4.3): `none`, or one or more counter names, each optionally
+  ## followed by an `<integer>` (any sign, zero included). `counter-reset`
+  ## also takes `reversed(<counter-name>)`. So `c`, `c 1`, `c -2 d`,
+  ## `c calc(1 + 1)` and `none` are, and `1`, `c 1 2`, `none c`, `c 1.5`,
+  ## `c 1px` and `none 1` are not. A CSS-wide keyword is the whole value.
+  let text = raw.strip()
+  if keywordText(text) in cssWideKeywords: return true
+  let (ok, parts) = lineWords(text)
+  if not ok or parts.len != 1 or parts[0].len == 0: return false
+  let words = parts[0]
+  if words.len == 1 and keywordText(words[0]) == "none": return true
+  var i = 0
+  while i < words.len:
+    if not counterName(words[i], propName == "counter-reset"): return false
+    inc i
+    if i < words.len and integerWord(words[i].toLowerAscii()): inc i
+  true
+
+func validGridLineOrCounterValue*(propName, raw: string): bool =
+  ## ``validGridPlacement`` or ``validCounterValue``, by ``propName``.
+  if propName in counterProperties: validCounterValue(propName, raw)
+  else: validGridPlacement(propName, raw)
 
 func validKeywordForProperty*(propName, raw: string): bool =
   ## Whether a keyword-shaped value is one ``propName`` accepts. Fails closed:
@@ -1426,9 +1877,15 @@ func validKeywordForProperty*(propName, raw: string): bool =
     cssAllIn(text, ["row", "column", "dense"], 2) and
       not (text.contains("row") and text.contains("column"))
   of "grid-column", "grid-row", "grid-column-start", "grid-column-end",
-      "grid-row-start", "grid-row-end", "grid-area", "grid-template-areas",
+      "grid-row-start", "grid-row-end", "grid-area":
+    # `<grid-line>`s (CSS Grid 2 §8.3-8.4, ``validGridPlacement``).
+    validGridPlacement(propName, text)
+  of "counter-reset", "counter-set", "counter-increment":
+    # Counter names and `<integer>`s (CSS Lists 3 §4, ``validCounterValue``).
+    validCounterValue(propName, text)
+  of "grid-template-areas",
       "grid-template", "grid", "animation", "animation-name", "will-change",
-      "content", "quotes", "counter-reset", "counter-increment",
+      "content", "quotes",
       "font-feature-settings", "font-variation-settings":
     # These grammars take author-chosen names (grid lines and areas,
     # animation and counter names, strings): any non-empty value.

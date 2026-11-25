@@ -70,11 +70,101 @@ when defined(isonimInternalFlushObservation):
     ## Narrow private proof counter; reading it never queries/creates a token.
     flushEpochConstructions
 
-# Forward declaration — implemented in computation.nim, registered here via callback
-var updateComputationCb*: proc(comp: ComputationBase)
+# Forward declaration — implemented in computation.nim, registered here via
+# a callback so this module does not import it.
+var runTopCb*: proc(comp: ComputationBase)
+  ## Brings a queued computation up to date: a stale one re-runs; a pending
+  ## one first refreshes the memos it read and re-runs only if one of them
+  ## actually changed (see `computation.runTop`).
+
+# ---------------------------------------------------------------------------
+# Marking
+# ---------------------------------------------------------------------------
+#
+# A write marks the computations that read the written signal *stale* (they
+# must re-run) and everything downstream of the memos among them *pending*
+# (they may have to re-run, if a memo they read ends up with a new value).
+# Marked computations are queued: memos (`pure`) in `Updates`, effects in
+# `Effects`. A downstream node is queued once, when it is first marked; a
+# direct reader of the written signal is queued on every write (see
+# `markSignalWrite`). A queued node that is already clean when the flush
+# reaches it is skipped, so a duplicate entry costs one state check.
+# The flush then brings each queued node up to date by
+# pulling its sources first, so no computation ever runs against a mix of
+# old and new inputs, and a node whose memo inputs all turn out unchanged
+# does not run at all.
+
+var ownerMarked* {.threadvar.}: bool
+  ## Set when a computation that owns children is marked during the current
+  ## outermost flush. Only then can a queued node have an out-of-date owner,
+  ## so `runTop` walks owner chains only then (the common case, many leaf
+  ## effects and no re-running parent, skips the walk entirely).
+var flushDepth* {.threadvar.}: int
+  ## How many flushes are running (nested ones included).
+
+proc enqueue(comp: ComputationBase) {.inline.} =
+  if comp.owned.len > 0: ownerMarked = true
+  if comp.pure: Updates.add(comp)
+  else: Effects.add(comp)
+
+proc markDownstream*(signal: SignalStateBase) =
+  ## Mark every clean computation downstream of `signal` pending and queue it.
+  var i = 0
+  while i < signal.observers.len:
+    let obs = signal.observers[i]
+    if obs.state == csClean:
+      obs.state = csPending
+      enqueue(obs)
+      if obs.memoSignal != nil: markDownstream(obs.memoSignal)
+    inc i
+
+proc markSignalWrite*(signal: SignalStateBase) =
+  ## A plain signal was written: its readers are stale. Each is queued even
+  ## if it is already marked, so a write made from inside a flush (nested
+  ## batch) still runs its readers before that nested batch returns.
+  var i = 0
+  while i < signal.observers.len:
+    let obs = signal.observers[i]
+    let wasClean = obs.state == csClean
+    obs.state = csStale
+    enqueue(obs)
+    if wasClean and obs.memoSignal != nil: markDownstream(obs.memoSignal)
+    inc i
+
+proc markMemoChanged*(signal: SignalStateBase) =
+  ## A memo produced a new value: its readers are stale. They were already
+  ## marked pending and queued when the memo itself was marked; a reader that
+  ## is clean (it subscribed after that) is queued now. A reader that is a
+  ## stale memo is queued again too: a flush abandoned by a `Defect` leaves
+  ## the memos it did not reach stale and in no queue (see `flushUpdates`),
+  ## and marking skips a node that is not clean, so without this its readers
+  ## would never hear of the change. When it is queued already, the second
+  ## entry finds it clean and costs one state check.
+  var i = 0
+  while i < signal.observers.len:
+    let obs = signal.observers[i]
+    let previous = obs.state
+    obs.state = csStale
+    if previous == csClean:
+      enqueue(obs)
+      if obs.memoSignal != nil: markDownstream(obs.memoSignal)
+    elif previous == csStale and obs.pure:
+      enqueue(obs)
+    inc i
+
+var flushError* {.threadvar.}: ref CatchableError
+  ## The first error of the current outermost flush that no handler took
+  ## (`computation.handleError` keeps it; the outermost flush rethrows it).
 
 proc flushUpdates*() =
-  ## Process all queued updates: memos (pure) first, then effects.
+  ## Process all queued updates: memos (pure) first, then effects. Each
+  ## queued node is brought up to date through `runTopCb`, which pulls the
+  ## memos it reads before deciding whether it must re-run.
+  ##
+  ## A computation that raises a `CatchableError` does not stop the flush:
+  ## the error goes to the nearest handler above it (see
+  ## `computation.handleError`), and one no handler takes is rethrown by the
+  ## outermost flush after the queue is empty.
   if batchDepth > 0:
     return
   when defined(isonimInternalFlushObservation):
@@ -90,17 +180,55 @@ proc flushUpdates*() =
             if internalFlushReturned: ifsReturned else: ifsUnwound
         activeFlushEpoch = nil
   inc ExecCount
+  inc flushDepth
   let pendingUpdates = Updates
   let pendingEffects = Effects
   Updates = newNativeSeq[ComputationBase]()
   Effects = newNativeSeq[ComputationBase]()
-  if updateComputationCb != nil:
-    for comp in pendingUpdates:
-      if comp.state == csStale:
-        updateComputationCb(comp)
-    for comp in pendingEffects:
-      if comp.state == csStale:
-        updateComputationCb(comp)
+  var phase = 0
+  var i = 0
+  var completed = false
+  var failure: ref CatchableError
+  try:
+    if runTopCb != nil:
+      while i < pendingUpdates.len:
+        runTopCb(pendingUpdates[i])
+        inc i
+      phase = 1
+      i = 0
+      while i < pendingEffects.len:
+        runTopCb(pendingEffects[i])
+        inc i
+    completed = true
+  finally:
+    dec flushDepth
+    if not completed:
+      # Only a `Defect`, or on JS an exception that is not a Nim exception
+      # (a `TypeError` from a host API), gets here: those are not routed to
+      # handlers and still abandon the rest of the flush, propagating
+      # unchanged. The abandoned nodes must stay reachable by later writes:
+      # marking skips a node that is not clean, so a pending node, or a
+      # stale effect, goes back to clean and the next change it depends on
+      # queues it again; a stale memo stays stale so the next read
+      # recomputes it, and a change of a memo it reads queues it again
+      # (`markMemoChanged`). The release starts at the node being processed
+      # (index `i`): the exception may have come from a memo it was pulling,
+      # in which case that node is still pending and in no other queue.
+      proc release(comp: ComputationBase) =
+        if comp.state == csPending or (comp.state == csStale and not comp.pure):
+          comp.state = csClean
+      if phase == 0:
+        for k in i ..< pendingUpdates.len: release(pendingUpdates[k])
+        for k in 0 ..< pendingEffects.len: release(pendingEffects[k])
+      else:
+        for k in i ..< pendingEffects.len: release(pendingEffects[k])
+    if flushDepth == 0:
+      ownerMarked = false
+      # Taken even when unwinding, so a kept error never leaks into the next
+      # flush; the exception that is unwinding wins.
+      failure = flushError
+      flushError = nil
+  if failure != nil: raise failure
   when defined(isonimInternalFlushObservation):
     internalFlushReturned = true
 

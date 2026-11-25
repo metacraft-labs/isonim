@@ -6,7 +6,7 @@
 import isonim/core/[owner, computation, batch, graph, signals]
 
 # Re-export core types and procs that renderers need
-export owner.createRoot, owner.onCleanup, owner.getOwner, owner.runWithOwner
+export owner.createRoot, owner.createDetachedRoot, owner.onCleanup, owner.getOwner, owner.runWithOwner
 export signals.createSignal, signals.val, signals.`val=`, signals.update
 export computation.createEffect, computation.createRenderEffect, computation.createMemo
 export batch.batch, batch.untrack

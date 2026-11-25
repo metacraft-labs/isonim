@@ -63,14 +63,16 @@ proc collectResourceStates(node: OwnerBase;
 proc ownedResourceStates*(root: OwnerBase): seq[Signal[ResourceState]] =
   ## The state signals of every live resource created under `root`: those
   ## created while `root` itself was the current owner and those created
-  ## inside any computation it owns, at any depth, in creation order per
-  ## owner (depth-first). Read each one untracked with `.value`.
+  ## inside any computation or nested root it owns, at any depth,
+  ## depth-first: an owner's own resources in creation order, then its
+  ## children's in the order of its child list (creation order until a
+  ## nested root is released by hand, which moves the last child into its
+  ## place). Read each one untracked with `.value`.
   ##
-  ## A nested `createRoot` does NOT count. A nested root is not owned by
-  ## the owner it was created under — disposing the outer root does not
-  ## dispose it, and its lifetime is its creator's to manage — so its
-  ## resources belong to it, not to the outer root; enumerate them from
-  ## the nested root's own owner (`getOwner()` inside it).
+  ## A nested `createRoot` counts, because it is one of the children
+  ## disposed with `root`. A `createDetachedRoot` does not: its lifetime is
+  ## its creator's to manage, so its resources belong to it; enumerate them
+  ## from the detached root's own owner (`getOwner()` inside it).
   ##
   ## Call it before disposing `root`: disposal clears the record.
   if root != nil:

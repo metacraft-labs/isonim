@@ -299,3 +299,21 @@ tests/test_editor_loop_handlers
 /tests/test_editor_edit_regime
 /tests/test_scene_graph_hooks
 /tests/test_style_provenance
+
+# Native binaries that `just test-c` (and, for the last one, `just test-dsl`)
+# builds next to their sources and that the list above did not cover yet.
+tests/test_frame_renderer
+tests/test_navigator
+tests/test_network_profile
+tests/test_readiness_marks
+tests/test_service_streams
+tests/test_glitch_free
+tests/test_error_routing
+tests/test_owned_roots
+tests/test_viewmodel_dispose
+tests/test_async_value
+tests/test_async_stream
+tests/test_async_provisional
+tests/test_async_fundamentals
+tests/test_async_edges
+tests/test_dsl_stylesheet_classes

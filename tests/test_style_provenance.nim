@@ -21,6 +21,7 @@ import std/[unittest, os, osproc, strutils, strformat, options, algorithm,
             sequtils]
 import isonim/core/[signals, owner]
 import isonim/editor/viewmodels
+import isonim/dsl/[style_binding, style_provenance]
 
 const
   repoRoot = currentSourcePath().parentDir.parentDir
@@ -335,6 +336,42 @@ suite "DSE the headless editor consumes provenance":
       check vm.styleCascadeLayers(classProp).anyIt(it.kind == sclSharedClass)
       check vm.styleDiagnostics(classProp).anyIt(
         it.kind == sdkUnsafeDetachment)
+      dispose()
+
+  test "one reading of a token reference, shared with the editor":
+    # `var(--name[, fallback])` names the custom property only; `$key` is one
+    # key, so whitespace of any kind ends it (review R1).
+    check tokenReferenceIn("var(--zc-space-token, 4px)") == "zc-space-token"
+    check tokenReferenceIn("var(--a,var(--b))") == "a"
+    check tokenReferenceIn("var(--a)") == "a"
+    check tokenReferenceIn("token(semantic.a)") == "semantic.a"
+    check tokenReferenceIn("$a") == "a"
+    for v in ["$a b", "$ a", "$a\tb", "$a\nb", "$a var(--b)"]:
+      checkpoint v
+      check tokenReferenceIn(v) == ""
+    check styleAttrBinding("padding", "var(--zc-space-token, 4px)").token ==
+      "zc-space-token"
+
+  test "an authored var() with a fallback links the custom property":
+    # The linked chip's key is the custom property, so it resolves through
+    # the foundations instead of showing a broken link named after the
+    # fallback text.
+    let wire = encodeStyleBindings(@[
+      styleAttrBinding("padding", "var(--zc-space-token, 4px)")])
+    createRoot proc(dispose: proc()) =
+      let vm = createEditorVM()
+      vm.foundations.tokens.val = @[
+        FoundationTokenEntry(key: "zc-space-token", kind: ftkSpacingScale,
+          value: "12px", sourceFile: "tokens.nim", sourceLine: 7)]
+      let inner = domRef("fixture.nim", 35, "", "", "12px", wire,
+        elementId = "inner")
+      check vm.selectInspectorElement(inner)
+      let bound = vm.inspectorBindingFor("padding")
+      check bound.isSome
+      check bound.get.variableKey == "zc-space-token"
+      check bound.get.state == vbsBound
+      check bound.get.resolvedValue == "12px"
+      check vm.foundationImpact("zc-space-token").affectedProperties.len == 1
       dispose()
 
   test "a token the foundations do not know is broken, not absent":

@@ -418,9 +418,9 @@ proc renderCompactChoiceRow*[R, E](r: R; label, ariaLabel: string;
   var previousSignature = ""
   var disposeChildren: proc()
   var first = true
+  # The option chips live in a root under the row's owner, released on each
+  # remount and disposed with that owner.
   let parentOwner = getOwner()
-  onCleanup(proc() =
-    if disposeChildren != nil: disposeChildren())
   createRenderEffect proc() =
     let options = optionsThunk()
     latest = options

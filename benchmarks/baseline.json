@@ -1,0 +1,52 @@
+{
+  "size": {
+    "raw": 61457,
+    "minified": 31477,
+    "gzip": 6911,
+    "budget_gzip_bytes": 1024,
+    "commit": "5a35eb01f8aa379a031774065e06cfbdd03b28e8",
+    "host": "nixos-ci-bare-002",
+    "load_average": "33.10 43.48 46.00",
+    "measured_at": "2026-11-24T14:56:05+00:00"
+  },
+  "core_bench": {
+    "commit": "5a35eb01f8aa379a031774065e06cfbdd03b28e8",
+    "host": "nixos-ci-bare-002",
+    "measured_at": "2026-11-24T15:25:00+00:00",
+    "load_average": "77.46-88.82 (1-minute, over the five runs), on 32 CPUs",
+    "runs": 5,
+    "iterations_per_run": 7,
+    "note": "Each case: the median over the five runs of each run's median, and the lowest minimum of any run. The host was shared and heavily loaded, so run-to-run spread was about +-25% for select and up to 2.5x for rebuild; compare a candidate with this baseline only at similar load, or better, run the baseline commit and the candidate alternately on the same host.",
+    "select": {
+      "median_ms": 1047.68,
+      "min_ms": 826.76,
+      "run_medians_ms": [
+        1227.54,
+        874.61,
+        1102.8,
+        960.2,
+        1047.68
+      ]
+    },
+    "rebuild": {
+      "median_ms": 56.89,
+      "min_ms": 37.26,
+      "run_medians_ms": [
+        80.41,
+        39.69,
+        43.67,
+        92.33,
+        56.89
+      ]
+    },
+    "memory_ready": {
+      "median_mb": 4.02
+    },
+    "memory_run": {
+      "median_mb": 6.0
+    },
+    "memory_clear": {
+      "median_mb": 4.02
+    }
+  }
+}

@@ -58,6 +58,9 @@ just editor-serve      # build and serve the editor at localhost:8090
 just test-browser-editor-example
 just test-browser-editor-consumer
 just test-browser-editor
+just core-bench        # reactive-core micro-benchmark (JS, node), one line per case
+just size-check        # benchmark app main.js raw/min/gzip vs benchmarks/baseline.json
+just core-gate-bench   # both; run with test-c and test-js when the core changes
 ```
 
 Focused editor checks used frequently:

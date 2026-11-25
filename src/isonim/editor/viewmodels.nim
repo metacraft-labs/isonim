@@ -16,6 +16,7 @@ import isonim/editor/html_classes
 import isonim/editor/css_patch
 import isonim/editor/css_color_literal
 import isonim/editor/css_value_grammar
+import isonim/editor/numeric_expression
 import isonim/editor/numeric_precision
 import isonim/editor/design_review/context_policy
 import isonim/editor/element_semantics
@@ -1673,14 +1674,38 @@ func hasUnsupportedNumericUnit(raw: string): bool =
   suffix.allIt(it.isAlphaAscii)
 
 func tokenNameFromRaw(raw: string): string =
-  let text = raw.strip()
-  if text.startsWith("token(") and text.endsWith(")"):
-    return text[6 ..< text.len - 1].strip()
-  if text.startsWith("$") and text.len > 1:
-    return text[1 .. ^1].strip()
-  if text.startsWith("var(--") and text.endsWith(")"):
-    return text[6 ..< text.len - 1].strip()
-  ""
+  ## The token a value references, or "": `dsl/style_provenance`'s reading,
+  ## so the inspector and the DSL's provenance agree on every spelling
+  ## (`var(--name[, fallback])` names the custom property only).
+  tokenReferenceIn(raw)
+
+func familyListParts(text: string): seq[string] =
+  ## ``text`` cut at the commas that separate its families. A comma inside a
+  ## quoted name, after a backslash or inside a comment belongs to that name
+  ## or comment (CSS Fonts 4 §2.1: a quoted family name is a string, and its
+  ## contents are the name; CSS Syntax 3 §4.3.7 escapes, §4.3.2 comments).
+  var start = 0
+  var i = 0
+  var quote = '\0'
+  while i < text.len:
+    let c = text[i]
+    if c == '\\':
+      i += 2
+      continue
+    if quote != '\0':
+      if c == quote: quote = '\0'
+    elif c in {'"', '\''}:
+      quote = c
+    elif c == '/' and i + 1 < text.len and text[i + 1] == '*':
+      let close = text.find("*/", i + 2)
+      if close < 0: break
+      i = close + 2
+      continue
+    elif c == ',':
+      result.add text[start ..< i]
+      start = i + 1
+    inc i
+  result.add text[start ..< text.len]
 
 func holdsVarReference(text: string): bool =
   ## Whether ``text`` holds a real `var()` reference: one outside a string
@@ -1698,7 +1723,16 @@ proc parseCssPropertyValue*(property, raw: string;
   if token.len > 0:
     result.kind = cvkTokenReference
     result.tokenName = token
-    result.canonical = "token(" & token & ")"
+    # A `var()` reference is CSS and is written as typed: its fallback and
+    # any other part stay, so every writer (CSS, the native source worker,
+    # the example's stylesheet) receives a valid declaration (editor spec:
+    # "Editing the token keeps the use-site `var()` binding intact";
+    # "Planned interaction parity": a value is written as it is or refused).
+    # The token identity is `tokenName`, not the written text. Only the
+    # design-schema spellings (`token(key)`, `$key`) keep the `token(key)`
+    # form their token workflows read.
+    if not text.startsWith("var(--"):
+      result.canonical = "token(" & token & ")"
     return
 
   if text.startsWith("calc(") and text.endsWith(")"):
@@ -1717,8 +1751,11 @@ proc parseCssPropertyValue*(property, raw: string;
     # `var()` spelled otherwise (`VAR(--f),serif`) is accepted only as valid
     # at parse time and is written exactly as typed (editor spec "Planned
     # interaction parity": a value is written as it is or refused).
+    # Only the separating commas are spaced; a quoted name, an escaped
+    # comma and a comment are written as typed (spec "Planned interaction
+    # parity": a value is written or refused, never changed).
     if not holdsVarReference(text) or "var(" in text:
-      result.canonical = text.split(',').mapIt(it.strip()).join(", ")
+      result.canonical = familyListParts(text).mapIt(it.strip()).join(", ")
     return
   if prop == "z-index":
     result.kind = cvkZIndex
@@ -1964,9 +2001,15 @@ proc cssValueShapeDiagnostics(prop: PropertyInfo;
       result.add cssDiagnostic(pedInvalidCssValue, prop,
         "Opacity must be numeric.")
   if normalized.kind == cvkZIndex:
+    # `auto | <integer>` (CSS 2.1 §9.9.1): a sign and digits only, so a
+    # fraction or an exponent (`1.0`, `1e2`, `1e-2`) is refused, as `order`
+    # refuses it (``cssIntegerText``, CSS Values 4 §5.2).
+    # `auto` is z-index's keyword (CSS 2.1 §9.9.1, CSS Positioned Layout 3
+    # §4.1), in any case.
     var parsed = 0.0
-    if normalized.canonical.contains(".") or
-        not tryParseFloatValue(normalized.canonical, parsed):
+    if normalized.canonical.strip().toLowerAscii() != "auto" and
+        (not cssIntegerText(normalized.canonical) or
+        not tryParseFloatValue(normalized.canonical, parsed)):
       result.add cssDiagnostic(pedInvalidCssValue, prop,
         "z-index must be an integer.")
   if normalized.kind == cvkColor and not validCssColorLiteral(raw):
@@ -2030,6 +2073,25 @@ proc cssValueDiagnostics(prop: PropertyInfo;
   ## a multi-component value, checked function arguments) is accepted;
   ## anything else is judged by the single-value rules.
   let propName = prop.name.normalizedCssName()
+  if (propName in gridLineProperties or propName in counterProperties) and
+      normalized.kind != cvkTokenReference:
+    # A whole-value grammar decides these on its own (CSS Grid 2 §8.3-8.4,
+    # CSS Lists 3 §4), whatever single value the text first parses as:
+    # `grid-row: 1 / -1 / 2` or `( 1 ) / ( 3 )` is not a placement however
+    # its parts read.
+    if validGridLineOrCounterValue(propName, normalized.raw):
+      return @[]
+    return @[cssDiagnostic(pedInvalidCssValue, prop,
+      if propName in counterProperties:
+        propName & " must be none or counter names, each optionally " &
+          "followed by an integer."
+      else:
+        propName & " must be " & (case propName
+          of "grid-row", "grid-column": "one or two grid lines separated by /"
+          of "grid-area": "one to four grid lines separated by /"
+          else: "one grid line") &
+          ": auto, a line name, a non-zero integer with an optional name, " &
+          "or span with a positive integer, a name, or both.")]
   if cssValueAcceptedByGrammar(propName, normalized.raw.strip(),
       cssComponentAccepted):
     return @[]
@@ -2053,26 +2115,41 @@ proc cssComponentAccepted(property, value: string): bool =
   cssValueDiagnostics(PropertyInfo(name: property, directStyleAllowed: true),
     parseCssPropertyValue(property, value)).len == 0
 
-func tokenFormNamesReference(raw: string): bool =
-  ## Whether the value the editor writes for ``raw`` (`parseCssPropertyValue`'s
-  ## canonical) is ``raw`` itself or the token form of the one reference
-  ## typed. `var(--name)` is written as `token(name)`; a value the token
-  ## parser reads more loosely -- `var(--a) var(--b)`, a fallback, a comment
-  ## -- would be written as a token form naming something that is not a
-  ## custom property, so the parse-time relaxation below does not admit it
-  ## (editor spec "Planned interaction parity": a value is written as it is
-  ## or refused, never changed).
-  let token = tokenNameFromRaw(raw)
-  if token.len == 0: return true
-  raw.strip().startsWith("var(--") and cssNameEnd(token, 0) == token.len
+func designTokenSpelling(raw: string): bool =
+  ## Whether ``raw`` is in one of the design-schema token spellings
+  ## (`token(key)`, `$key`), which are not CSS and are written in the
+  ## `token(key)` form (`parseCssPropertyValue`). Such a value holding a
+  ## `var()` -- `$a var(--b)` -- would be written changed, so the parse-time
+  ## relaxation below does not admit it (editor spec "Planned interaction
+  ## parity": a value is written as it is or refused, never changed). A
+  ## value starting with `var(--` is written as typed and is not one.
+  tokenNameFromRaw(raw).len > 0 and not raw.strip().startsWith("var(--")
 
 proc validateCssValue(prop: PropertyInfo; request: PropertyEditRequest;
     normalized: CSSPropertyValue; varRelaxed: bool): seq[PropertyEditDiagnostic]
 
+proc arithmeticReading(property, raw: string): tuple[count: int, value: string]
+
 proc validateCssPropertyValue*(prop: PropertyInfo; request: PropertyEditRequest;
     normalized: CSSPropertyValue): seq[PropertyEditDiagnostic] =
-  validateCssValue(prop, request, normalized,
-    tokenFormNamesReference(normalized.raw))
+  result = validateCssValue(prop, request, normalized,
+    not designTokenSpelling(normalized.raw))
+  # Text typed as arithmetic that CSS reads as several values (`100 -50px`),
+  # refused although its arithmetic result would be accepted, is refused
+  # with that reading named, not only the property's grammar.
+  if result.len > 0:
+    let reading = arithmeticReading(prop.name, normalized.raw)
+    if reading.value.len > 0:
+      var evaluated = request
+      evaluated.newValue = reading.value
+      if validateCssValue(prop, evaluated,
+          parseCssPropertyValue(prop.name, reading.value, normalized.variant),
+          true).len == 0:
+        result[0].message = "`" & normalized.raw.strip() & "` was read as " &
+          $reading.count & " values, not as one expression: a sign " &
+          "attached to a number after a space starts a new value. For " &
+          "arithmetic, put spaces on both sides of the operator " &
+          "(`100 - 50px`). " & result[0].message
 
 proc validateCssValue(prop: PropertyInfo; request: PropertyEditRequest;
     normalized: CSSPropertyValue; varRelaxed: bool): seq[PropertyEditDiagnostic] =
@@ -2111,9 +2188,9 @@ proc validateCssValue(prop: PropertyInfo; request: PropertyEditRequest;
   # reference is matched as CSS reads it (CSS Syntax 3): the function name
   # in any case, with whitespace or comments inside the parentheses, which
   # `hasVarReference` and `varReferenceProblem` above already allow. A value
-  # whose token form would not name the reference typed
-  # (`tokenFormNamesReference`) is judged as before, by the property's
-  # grammar, except beside a CSS-wide keyword. This is the one place that
+  # in a design-schema token spelling (`designTokenSpelling`), which would
+  # be written changed, is judged as before, by the property's grammar,
+  # except beside a CSS-wide keyword. This is the one place that
   # relaxation lives.
   let hasVar = hasVarReference(normalized.raw)
   let wideAmongParts = cssWideKeywordAmongParts(normalized.raw)
@@ -2126,9 +2203,6 @@ proc validateCssValue(prop: PropertyInfo; request: PropertyEditRequest;
   if normalized.kind == cvkTokenReference and normalized.tokenName.len == 0:
     result.add cssDiagnostic(pedInvalidTokenReference, prop,
       "Token references must name a token.")
-  if normalized.kind == cvkTokenReference and normalized.tokenName == "missing":
-    result.add cssDiagnostic(pedInvalidTokenReference, prop,
-      "Unknown design token '" & normalized.tokenName & "'.")
   if propName == "display" and
       normalized.canonical == "contents" and prop.sharedCount > 0:
     result.add cssDiagnostic(pedInvalidPropertyCombination, prop,
@@ -2287,83 +2361,9 @@ func primitiveUnitFromText(raw: string): string =
   else:
     ""
 
-proc evalNumericExpression(raw: string; value: var float): bool =
-  let text = raw.strip()
-  if text.len == 0:
-    return false
-  var i = 0
-
-  proc skipSpaces() =
-    while i < text.len and text[i].isSpaceAscii:
-      inc i
-
-  proc parseFactor(v: var float): bool =
-    skipSpaces()
-    if i >= text.len:
-      return false
-    var sign = 1.0
-    if text[i] == '+':
-      inc i
-    elif text[i] == '-':
-      sign = -1.0
-      inc i
-    skipSpaces()
-    let start = i
-    var sawDigit = false
-    while i < text.len and (text[i].isDigit or text[i] == '.'):
-      if text[i].isDigit:
-        sawDigit = true
-      inc i
-    if not sawDigit:
-      return false
-    try:
-      v = sign * text[start ..< i].parseFloat()
-      true
-    except ValueError:
-      false
-
-  proc parseTerm(v: var float): bool =
-    if not parseFactor(v):
-      return false
-    while true:
-      skipSpaces()
-      if i >= text.len or text[i] notin {'*', '/'}:
-        return true
-      let op = text[i]
-      inc i
-      var rhs = 0.0
-      if not parseFactor(rhs):
-        return false
-      if op == '*':
-        v *= rhs
-      else:
-        if abs(rhs) < 0.000001:
-          return false
-        v /= rhs
-
-  proc parseExpr(v: var float): bool =
-    if not parseTerm(v):
-      return false
-    while true:
-      skipSpaces()
-      if i >= text.len or text[i] notin {'+', '-'}:
-        return true
-      let op = text[i]
-      inc i
-      var rhs = 0.0
-      if not parseTerm(rhs):
-        return false
-      if op == '+':
-        v += rhs
-      else:
-        v -= rhs
-
-  if not parseExpr(value):
-    return false
-  skipSpaces()
-  i == text.len
-
 func renderPrimitiveNumber(value: float): string =
+  ## A unit-cycled number (``cyclePrimitiveUnit``). Typed arithmetic is
+  ## written with ``arithmeticResultText``, not this.
   if abs(value - round(value)) < 0.000001:
     $int(round(value))
   else:
@@ -2374,12 +2374,88 @@ func renderPrimitiveNumber(value: float): string =
       rendered = rendered[0 ..< rendered.len - 1]
     rendered
 
+func arithmeticResultText(value: float): string =
+  ## The text of a typed expression's result, spelled as the numeric row
+  ## spells its committed value (``formatExactNumber``, CSS number token
+  ## text), so either path writes the same digits; never `-0`.
+  numberTokenText(if value == 0.0: 0.0 else: value)
+
+const slashSeparatedProperties = ["aspect-ratio", "border-radius",
+  "border-image", "font", "grid", "grid-area", "grid-column", "grid-row",
+  "grid-template", "background", "mask", "mask-border"]
+  ## Properties whose grammar uses `/` between components (CSS Sizing 4
+  ## §5.1, Backgrounds 3 §4.4 and §5.1, Fonts 4 §2.8, Grid 2 §7.4, §8.4,
+  ## Masking 1 §7.6 and §8.7, Backgrounds 3 §3.10): there a `/` is a
+  ## separator, never a division (`grid-row: 1 / -1`).
+
+func componentCount(text: string): int =
+  ## How many whitespace-separated values ``text`` reads as. A new value
+  ## starts where an operand follows another operand with no operator
+  ## between them (`1 -1`, `+1 +1 +1px`, `0 -16px`). A sign attached to a
+  ## number starts a new component (CSS Syntax 3 §4.3.12), so `100 -50px` is
+  ## two values, while `100 - 50px`, `100-50px`, `100 /4px` and `2 ^ 2px`
+  ## are one expression: an operator standing alone, or ending a word, or a
+  ## word starting with `*`, `/` or `^`, continues it. `^` is the numeric
+  ## field's power operator (``numeric_expression``) and no CSS value uses
+  ## it, so a spaced `^` continues the expression on every path (editor
+  ## spec "Planned interaction parity").
+  ##
+  ## A parenthesised group is one operand however it is spaced
+  ## (`( 1+2 )px`, `-( 2 + 3 )`): inside it, up to the word that closes it,
+  ## nothing starts a new value. A group is a `(` that opens a word or
+  ## follows an operator or another `(`, as the numeric field reads one. A
+  ## function's parenthesis follows its name (`rgb(0 0 0)`,
+  ## `repeat(2, 1fr)`) and keeps its arguments separate.
+  const operators = {'+', '-', '*', '/', '^'}
+  var previousIsOperand = false
+  var previousEndsInOperator = false
+  var depth = 0
+    ## Open arithmetic groups.
+  var functions: seq[bool]
+    ## Every open parenthesis, outermost first: whether it is a group.
+  for word in text.splitWhitespace():
+    let inGroup = depth > 0
+    let operatorOnly = word.allIt(it in operators)
+    let continues = word[0] in {'*', '/', '^'}
+    if result == 0 or (not inGroup and not operatorOnly and not continues and
+        previousIsOperand and not previousEndsInOperator):
+      inc result
+    for i, c in word:
+      if c == '(':
+        let group = i == 0 or word[i - 1] in operators + {'('}
+        functions.add group
+        if group: inc depth
+      elif c == ')' and functions.len > 0:
+        if functions.pop(): dec depth
+    previousIsOperand = not operatorOnly
+    previousEndsInOperator = word[^1] in operators
+
+func severalComponents(text: string): bool =
+  componentCount(text) > 1
+
 proc normalizePrimitiveInputValue*(property, raw: string): string =
   ## Normalize direct primitive input before it becomes a source plan.
+  ##
+  ## Typed arithmetic applies to a single numeric value (editor spec
+  ## "Numeric Inputs"; "Planned interaction parity": a value is written or
+  ## refused, never changed) and is evaluated by the numeric field's own
+  ## evaluator (``numeric_expression``), so an expression gives the same
+  ## result whichever path commits it. A number typed without arithmetic,
+  ## sign included, is returned as typed. A value of several components (`flex: 1 -1`,
+  ## `margin: 0 -16px`) or one whose `/` is a separator
+  ## (`grid-row: 1 / -1`) is returned as typed, for the property's own
+  ## validation to admit or refuse.
   let text = raw.strip()
   if text.len == 0:
     return ""
-  if property.normalizedCssName() == "aspect-ratio" and text.contains("/"):
+  let prop = property.normalizedCssName()
+  # A custom property's value is arbitrary tokens (CSS Variables 1 §2): it is
+  # written as typed, whatever it holds.
+  if prop.startsWith("--"):
+    return text
+  if prop in slashSeparatedProperties and text.contains("/"):
+    return text
+  if severalComponents(text):
     return text
   if text.startsWith("token(") or text.startsWith("var(") or
       text.startsWith("rgb") or text.startsWith("hsl") or text.contains("gradient("):
@@ -2388,12 +2464,33 @@ proc normalizePrimitiveInputValue*(property, raw: string): string =
   let expr =
     if unit.len > 0: text[0 ..< text.len - unit.len].strip()
     else: text
-  if not expr.anyIt(it in {'+', '-', '*', '/'}):
+  # A number typed without arithmetic, sign included (`+2`, `-0px`, `1e-2`),
+  # is written exactly as typed ("Numeric Inputs").
+  if not expr.hasArithmetic():
     return text
-  var computed = 0.0
-  if evalNumericExpression(expr, computed):
-    return renderPrimitiveNumber(computed) & unit
+  let computed = evaluateNumericExpression(expr)
+  if computed.isSome:
+    return arithmeticResultText(computed.get) & unit
   text
+
+proc arithmeticReading(property, raw: string): tuple[count: int, value: string] =
+  ## When ``raw`` is read as several values (`100 -50px`) but would be one
+  ## arithmetic expression if its spaces were ignored, how many values it
+  ## reads as and what the expression evaluates to; else (0, "").
+  let text = raw.strip()
+  let prop = property.normalizedCssName()
+  if prop.startsWith("--") or
+      (prop in slashSeparatedProperties and text.contains("/")):
+    return
+  let count = componentCount(text)
+  if count < 2:
+    return
+  let unit = primitiveUnitFromText(text)
+  let expr = text[0 ..< text.len - unit.len].strip()
+  if expr.hasArithmetic():
+    let computed = evaluateNumericExpression(expr)
+    if computed.isSome:
+      result = (count, arithmeticResultText(computed.get) & unit)
 
 proc cyclePrimitiveUnit*(property, raw: string): string =
   let text = normalizePrimitiveInputValue(property, raw)
@@ -5412,6 +5509,38 @@ type PreparedPropertyEdit* = object
   outcome*: PropertyEditResult
   transaction*: CSSPropertyEditTransaction
 
+func designTokenUndefined(schema: DesignSystemSchema;
+    foundationTokens: seq[FoundationTokenEntry]; key: string): bool =
+  ## Whether the project defines design tokens -- token nodes of its design
+  ## schema or foundation tokens -- and none of them is ``key`` (compared as
+  ## `sameTokenKey` does, ignoring case). A project that defines no tokens
+  ## says nothing about which keys exist, so no key is undefined in it.
+  let wanted = key.toLowerAscii()
+  var definesTokens = foundationTokens.len > 0
+  for token in foundationTokens:
+    if token.key.toLowerAscii() == wanted: return false
+  for node in schema.nodes:
+    if node.kind in {dsnFoundation, dsnSemanticToken, dsnComponentToken}:
+      definesTokens = true
+      if node.key.toLowerAscii() == wanted: return false
+  definesTokens
+
+func unknownDesignTokenDiagnostics(schema: DesignSystemSchema;
+    foundationTokens: seq[FoundationTokenEntry]; prop: PropertyInfo;
+    normalized: CSSPropertyValue): seq[PropertyEditDiagnostic] =
+  ## A design-schema token spelling (`token(key)`, `$key`) names a token the
+  ## project defines (`designTokenUndefined`); one it does not define is
+  ## refused with the reason. A `var(--name)` is never refused for its name:
+  ## a custom property needs no declaration (CSS Variables 1 §3; an
+  ## undefined one is invalid at computed-value time, where its fallback
+  ## applies).
+  if normalized.kind != cvkTokenReference or
+      not designTokenSpelling(normalized.raw):
+    return
+  if designTokenUndefined(schema, foundationTokens, normalized.tokenName):
+    result.add cssDiagnostic(pedInvalidTokenReference, prop,
+      "Unknown design token '" & normalized.tokenName & "'.")
+
 proc preparePropertyEdit*(inspector: InspectorVM;
     request: PropertyEditRequest): PreparedPropertyEdit =
   ## Validate and plan without changing selection, journal or history. Native
@@ -5479,6 +5608,8 @@ proc preparePropertyEdit*(inspector: InspectorVM;
 
   let normalized = parseCssPropertyValue(prop.name, normalizedRequest.newValue)
   diagnostics.add prop.validateCssPropertyValue(normalizedRequest, normalized)
+  diagnostics.add unknownDesignTokenDiagnostics(inspector.designSystemSchema.val,
+    inspector.availableVariables.val, prop, normalized)
 
   if diagnostics.len > 0:
     outcome = withStatus(pesRejected, diagnostics)
@@ -5654,17 +5785,53 @@ proc settleRuleSides(adapter: WorkspaceEditAdapter;
     schema: WorkspaceEditableSchemaEntry;
     transaction: var CSSPropertyEditTransaction): string
 
+func onDiskExpectation(pending: seq[SourceEditPlan];
+    plan: SourceEditPlan): SourceEditPlan =
+  ## ``plan`` expecting what the source holds before the pending edits of its
+  ## entry are written. Each pending plan of an entry is written in journal
+  ## order and expects the value the one before it writes; a new plan that
+  ## expects the last one's value therefore expects, of the source as it is
+  ## now, what the first one expects. Anything else is left as it is.
+  ##
+  ## A pending undo or redo of a written edit (`restoreWrite`) is part of the
+  ## chain: it puts back the value it restores (its ``newValue``) over the
+  ## value that write left, which is what the source holds now (its
+  ## ``oldValue``; it verifies its lines, not a value, so it expects none).
+  result = plan
+  if plan.expectedOldValue.len == 0 or plan.schemaKey.len == 0: return
+  var first = -1
+  var last = -1
+  for i, existing in pending:
+    if existing.schemaKey == plan.schemaKey and
+        existing.breakpointCondition == plan.breakpointCondition:
+      if first < 0: first = i
+      last = i
+  if last >= 0 and pending[last].newValue.strip() == plan.expectedOldValue.strip():
+    let head = pending[first]
+    result.expectedOldValue =
+      if head.restoreWrite.recorded and head.expectedOldValue.len == 0:
+        head.oldValue
+      else:
+        head.expectedOldValue
+
 proc writerEditRefusal(editor: EditorVM; plan: SourceEditPlan): string =
   ## The project writer's statement against changing ``plan``'s declaration
   ## for its entry alone (`WorkspaceEditAdapter.editRefusal`), or "". Part
   ## of the commit-time check only: callers that track signals use
   ## `sourcePlanAdmissionRefusal`.
+  ##
+  ## The writer answers from the source as it is now, so the plan it is asked
+  ## about expects what the source holds now (`onDiskExpectation`), not the
+  ## value an earlier, still unwritten edit of the same entry left in the
+  ## model.
   let adapter = editor.workspaceEditAdapter
   if adapter.isNil or adapter.editRefusal.isNil or editor.hasAsyncSourceProject:
     return
   let resolved = adapter.resolveWorkspaceSchema(plan)
   if not resolved.ok: return
-  adapter.editRefusal(plan, resolved.entry)
+  adapter.editRefusal(
+    editor.inspector.pendingSourceEdits.val.onDiskExpectation(plan),
+    resolved.entry)
 
 proc decidedElsewhereRefusal(editor: EditorVM; plan: SourceEditPlan): string =
   ## Why a value edit would change nothing the selected element renders, or
@@ -5705,17 +5872,33 @@ proc decidedElsewhereRefusal(editor: EditorVM; plan: SourceEditPlan): string =
   if rule.len == 0: return
   let element = editor.inspector.selectedElement.val
   if element.matchedRules.count(rule) != 1: return
+  # A token-scope edit of a row writes the token, not ``rule``: ``rule`` is
+  # the element's rule whose `var()` carries the token (`editRule`), and it
+  # keeps its declaration as it is. So it decides after the edit exactly
+  # when it decides now: there is no home to insert into, and a deciding
+  # rule under another condition decides at the preview's conditions, which
+  # is what the user sees the edit against.
+  let tokenScope = plan.sourceScope in {sskComponentToken, sskSemanticToken,
+    sskGlobalPrimitiveToken}
   for prop in element.properties:
     if prop.name != plan.property: continue
     let decider = prop.cascadeDecider
-    if decider.len == 0 or decider == rule or rule in prop.cascadeHomes:
+    if decider.len == 0 or decider == rule:
       return
-    if prop.cascadeConditions.len > 0 and
-        not rule.startsWith(prop.cascadeConditions & " "):
-      return
+    if not tokenScope:
+      if rule in prop.cascadeHomes:
+        return
+      if prop.cascadeConditions.len > 0 and
+          not rule.startsWith(prop.cascadeConditions & " "):
+        return
     let deciding =
       if decider == "style": "The element's inline style"
       else: "`" & decider & "`"
+    if tokenScope:
+      return deciding & " decides " & plan.property & " for this element " &
+        "ahead of `" & rule & "`, whose var() carries the token, so " &
+        "changing the token would not change what this element renders; " &
+        "it would change only the token's other uses."
     return deciding & " decides " & plan.property & " for this element " &
       "ahead of `" & rule & "`, so changing it in `" & rule & "` would not " &
       "change what this element renders; it would change only the other " &
@@ -7069,7 +7252,8 @@ func propertyDiagnosticFromDesign(kind: PropertyEditDiagnosticKind;
     property: design.property)
 
 proc planLayoutControlEdit*(schema: DesignSystemSchema; element: ElementRef;
-    command: LayoutControlCommand): LayoutControlPlan =
+    command: LayoutControlCommand;
+    foundationTokens: seq[FoundationTokenEntry] = @[]): LayoutControlPlan =
   result.command = command
   result.capabilities = layoutControlCapabilities(command.family)
   if command.family == lcfResponsiveOverride:
@@ -7180,7 +7364,8 @@ proc planLayoutControlEdit*(schema: DesignSystemSchema; element: ElementRef;
     newValue: command.value, kind: pekLayout, scope: command.scope,
     origin: peoInspector)
   let normalized = parseCssPropertyValue(command.property, command.value)
-  let diagnostics = routedProp.validateCssPropertyValue(request, normalized)
+  let diagnostics = routedProp.validateCssPropertyValue(request, normalized) &
+    unknownDesignTokenDiagnostics(schema, foundationTokens, routedProp, normalized)
   if diagnostics.len > 0:
     result.diagnostics = diagnostics
     return
@@ -7212,7 +7397,8 @@ proc planLayoutControlEdit*(schema: DesignSystemSchema; element: ElementRef;
 proc planLayoutControlEdit*(editor: EditorVM;
     command: LayoutControlCommand): LayoutControlPlan =
   planLayoutControlEdit(editor.designSystemSchema.val,
-    editor.inspector.selectedElement.val, command)
+    editor.inspector.selectedElement.val, command,
+    editor.foundations.tokens.val)
 
 proc planResponsiveLayoutOverride*(editor: EditorVM; modeKey, property,
     value: string; family = lcfResponsiveOverride): LayoutControlPlan =
@@ -8309,7 +8495,9 @@ proc sharedDesignEditorFor(editor: EditorVM; prop: PropertyInfo;
     origin: peoInspector)
   let normalized = parseCssPropertyValue(prop.name,
     normalizePrimitiveInputValue(prop.name, valueText))
-  var diagnostics = prop.validateCssPropertyValue(request, normalized)
+  var diagnostics = prop.validateCssPropertyValue(request, normalized) &
+    unknownDesignTokenDiagnostics(editor.designSystemSchema.val,
+      editor.foundations.tokens.val, prop, normalized)
   let category = prop.sharedDesignCategory(choice.kind)
   var status = sdesEditable
   var readOnlyReason = ""
@@ -8524,7 +8712,23 @@ proc propertyResetRefusal*(editor: EditorVM; property: string;
     return "No source edit adapter is ready to remove this declaration."
   let planned = editor.plannedInspectorCommit(property, "", scope,
     "This " & property & " declaration cannot be removed.")
-  if planned.refusal.len > 0: return planned.refusal
+  if planned.refusal.len > 0:
+    # A shared scope the writer refuses a value edit for is shown disabled
+    # with that reason (`sourceScopeChoices`). Reset is a removal, and a
+    # removal the scope's entry cannot make at all says so first: that is
+    # why Reset is refused, whatever a value edit there would meet.
+    if scope != sskLocalInstance:
+      let choices = editor.sourceScopeChoices(prop)
+      let choice = choices.firstChoiceOfKind(scope)
+      if choice.kind == scope and choice.schemaKey.len > 0:
+        let removal = prop.sharedScopePlan(PropertyEditRequest(
+          property: property, newValue: "", kind: pekCss, scope: pesShared,
+          origin: peoInspector), choices, choice)
+        if removal.planKind == cspPropertyRemoval:
+          let stated = editor.sourcePlanAdmissionRefusal(removal)
+          if stated.len > 0 and stated != UnrepresentableSourceEditMessage:
+            return stated
+    return planned.refusal
   let plan = planned.plan
   if checkWrite:
     return editor.sourcePlanCommitRefusal(plan)
@@ -8804,6 +9008,52 @@ proc commitResponsiveOverride*(editor: EditorVM; property, value,
     result.add record
   ResponsiveOverrideOutcome(ok: true, plan: plan)
 
+proc withTokenValueExpectation(editor: EditorVM;
+    plan: SourceEditPlan): SourceEditPlan =
+  ## ``plan`` expecting its token's value instead of a direct `var()`
+  ## reference to that token, for a token-scope plan of a row whose value is
+  ## that reference. The token is the foundation token the plan's schema key
+  ## names; its value is the editor's (with an unwritten edit of it, the
+  ## act-time question maps it back to the source, `onDiskExpectation`).
+  result = plan
+  if plan.sourceScope notin {sskComponentToken, sskSemanticToken,
+      sskGlobalPrimitiveToken} or plan.planKind == cspPropertyRemoval:
+    return
+  # The row's priority (`!important`) and the comments around it are not
+  # part of the reference.
+  let reference = plan.expectedOldValue.cssValueWithoutPriority().strip()
+  if not (reference.startsWith("var(") and reference.endsWith(")")):
+    return
+  # A comment inside the var() is whitespace, as CSS reads it.
+  let inner = reference[4 .. ^2].withoutCssComments().strip()
+  for token in editor.foundations.tokens.val:
+    if token.schemaKey.len > 0 and token.schemaKey == plan.schemaKey and
+        token.property.startsWith("--") and inner == token.property:
+      result.expectedOldValue = token.value
+      return
+
+proc withCapturedTokenExpectation(editor: EditorVM;
+    plan: SourceEditPlan): SourceEditPlan =
+  ## ``plan`` expecting its token's value, for a token-scope plan that
+  ## expects nothing: a row read from the preview without provenance
+  ## (`computed:`, `iframe-dom:`, `capturedWithoutProvenance`). Applied only
+  ## after the act-time check admitted the plan as it was -- the project's
+  ## writer admits a row that expects nothing only where the element's own
+  ## declaration is a direct `var()` of the token -- so the write can still
+  ## tell the token changed underneath (editor spec "Saving": such a change
+  ## is refused by the write itself). The token's value is the editor's;
+  ## with an unwritten edit of it, that edit is written first.
+  result = plan
+  if plan.sourceScope notin {sskComponentToken, sskSemanticToken,
+      sskGlobalPrimitiveToken} or plan.planKind == cspPropertyRemoval or
+      plan.expectedOldValue.len > 0:
+    return
+  for token in editor.foundations.tokens.val:
+    if token.schemaKey.len > 0 and token.schemaKey == plan.schemaKey and
+        token.property.startsWith("--") and token.value.len > 0:
+      result.expectedOldValue = token.value
+      return
+
 proc editSharedDesignProperty*(editor: EditorVM; property, newValue: string;
     sourceScope: SourceScopeChoiceKind): SharedDesignEditResult {.discardable.} =
   result = editor.planSharedDesignEdit(property, newValue, sourceScope)
@@ -8811,6 +9061,12 @@ proc editSharedDesignProperty*(editor: EditorVM; property, newValue: string;
     editor.inspector.editDiagnostics.val = result.diagnostics
     return
 
+  # A row whose value is a direct `var(--token)` reference, edited at that
+  # token's scope, expects the token's value -- the reference is its value
+  # by definition and verifies nothing -- so the write can still tell the
+  # token changed underneath (editor spec "Saving": such a change is refused
+  # by the write itself).
+  result.sourceEdit = editor.withTokenValueExpectation(result.sourceEdit)
   # The scope was admitted on the field's current value, but a plan's
   # identity can depend on the value committed (a token reference sets its
   # token, an empty value removes the declaration). Check the plan that will
@@ -8824,6 +9080,20 @@ proc editSharedDesignProperty*(editor: EditorVM; property, newValue: string;
     editor.inspector.editDiagnostics.val = @[refused]
     return SharedDesignEditResult(status: pesRejected, editor: result.editor,
       diagnostics: @[refused])
+  # Admitted expecting nothing: a token-scope edit of a captured row now
+  # expects the token's value, asked again so a model the source no longer
+  # matches is refused here rather than by the write.
+  let captured = editor.withCapturedTokenExpectation(result.sourceEdit)
+  if captured.expectedOldValue != result.sourceEdit.expectedOldValue:
+    let stale = editor.sourcePlanCommitRefusal(captured)
+    if stale.len > 0:
+      let refused = PropertyEditDiagnostic(kind: pedSchemaViolation,
+        message: stale & " Nothing was changed.",
+        file: captured.file, line: captured.line, property: property)
+      editor.inspector.editDiagnostics.val = @[refused]
+      return SharedDesignEditResult(status: pesRejected, editor: result.editor,
+        diagnostics: @[refused])
+    result.sourceEdit = captured
   var plan = result.sourceEdit
   editor.inspector.stampHistoryEntry(plan)
   editor.inspector.inheritUnwrittenExpectation(plan)
@@ -9840,12 +10110,24 @@ proc validateFoundationTokenEdit(editor: EditorVM; token: FoundationTokenEntry;
     if not parsed.ok and not aliasLike:
       result.add foundationDiagnostic(fedInvalidTokenValue, token,
         "Color tokens must use a hex color or token alias.")
-  if token.kind == ftkSemanticColor and
-      value.isTokenAliasValue:
-    let target = tokenNameFromRaw(value)
-    if editor.foundations.tokens.val.hasAliasCycle(token.key, target):
+  # A token alias names one token the project defines, as a use site's
+  # design-token spelling must (`unknownDesignTokenDiagnostics`), and does
+  # not close a cycle -- whatever the edited token's kind: the chain is
+  # read through every token's `aliasOf` (`hasAliasCycle`). An alias with
+  # no key (`token()`, `$a b`), to an undefined key, or closing a cycle
+  # would be written and break this token and every use of it.
+  if value.isTokenAliasValue:
+    let aliasKey = tokenNameFromRaw(value)
+    if aliasKey.len == 0:
+      result.add foundationDiagnostic(fedInvalidTokenValue, token,
+        "Token references must name a token.")
+    elif designTokenUndefined(editor.designSystemSchema.val,
+        editor.foundations.tokens.val, aliasKey):
+      result.add foundationDiagnostic(fedInvalidTokenValue, token,
+        "Unknown design token '" & aliasKey & "'.")
+    elif editor.foundations.tokens.val.hasAliasCycle(token.key, aliasKey):
       result.add foundationDiagnostic(fedAliasCycle, token,
-        "Semantic token aliases cannot form a cycle.")
+        "Token aliases cannot form a cycle.")
   if token.kind in {ftkSpacingScale, ftkRadiusScale, ftkBreakpoint} and
       not value.validCssLength and not value.isTokenAliasValue:
     result.add foundationDiagnostic(fedInvalidTokenValue, token,
@@ -9905,10 +10187,28 @@ proc selectFoundationToken*(editor: EditorVM; key: string): bool {.discardable.}
   false
 
 proc undoFoundationTokenEdit*(editor: EditorVM): bool {.discardable.} =
+  ## Undo the latest foundation token edit. The editor's own Undo runs it
+  ## through the one history timeline (`runEditorCommand(eckUndo)`), which
+  ## reaches it only when it is the newest edit. Called directly, a later
+  ## pending edit of the same token -- an inspector row's edit at the token's
+  ## scope, which expects the value this edit gives the token -- would be
+  ## left expecting a value nothing writes, so the undo is refused, with
+  ## nothing changed, until that later edit is undone or written.
   let stack = editor.foundations.undoStack.val
   if stack.len == 0:
     return false
   let entry = stack[^1]
+  let mine = entry.sourceEdit
+  if mine.historyId > 0 and mine.schemaKey.len > 0:
+    for pending in editor.inspector.pendingSourceEdits.val:
+      if pending.schemaKey == mine.schemaKey and
+          pending.historyId > mine.historyId:
+        editor.foundations.diagnostics.val = @[FoundationEditDiagnostic(
+          kind: fedMissingTokenSchema,
+          message: "Undo refused: a later, unwritten edit of the " &
+            entry.key & " token depends on this one. Undo that edit first. " &
+            "Nothing was changed.", key: entry.key)]
+        return false
   var updated = editor.foundations.tokens.val
   for i, token in updated:
     if token.key.sameTokenKey(entry.key):
@@ -9982,6 +10282,19 @@ proc editFoundationToken*(editor: EditorVM; key, newValue: string): FoundationEd
       diagnostics: @[diagnostic])
 
   var plan = token.sourcePlan(newValue)
+  # And what the project's writer states against writing this token now
+  # (`WorkspaceEditAdapter.editRefusal`: no declaration of it, or several),
+  # which the write would otherwise refuse after the edit was previewed and
+  # journaled, leaving it pending (editor spec "Saving": a refusal the editor
+  # can know at the act is made at the act).
+  let writerRefusal = editor.writerEditRefusal(plan)
+  if writerRefusal.len > 0:
+    let diagnostic = FoundationEditDiagnostic(kind: fedMissingTokenSchema,
+      message: writerRefusal & " Nothing was changed.", key: key,
+      file: token.sourceFile, line: token.sourceLine)
+    editor.foundations.diagnostics.val = @[diagnostic]
+    return FoundationEditResult(status: pesRejected,
+      diagnostics: @[diagnostic])
   editor.inspector.stampHistoryEntry(plan)
   editor.inspector.inheritUnwrittenExpectation(plan)
   var updatedTokens = editor.foundations.tokens.val

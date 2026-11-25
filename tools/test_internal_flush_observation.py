@@ -11,7 +11,6 @@ from pathlib import Path
 import argparse
 import hashlib
 import json
-import os
 import shutil
 import subprocess
 import sys
@@ -20,14 +19,44 @@ import time
 
 ROOT = Path(__file__).resolve().parent.parent
 BATCH = ROOT / 'src/isonim/core/batch.nim'
-BASE = 'b338890f6f44876384af64294831cf3cbf942931'
+LEAF_GUARD = 'when defined(isonimInternalFlushObservation):'
+
+
+def omit_observation_leaf(text):
+    """Return batch source with every observation-gated block removed.
+
+    The leaf is exactly the indented bodies of `when defined(...)` lines that
+    name the observation define. Deriving the comparison source from the
+    candidate itself (rather than from a fixed historical commit) keeps the
+    ordinary-output proof valid while the rest of the scheduler evolves: it
+    shows that the gated code, and only it, leaves no trace when disabled.
+    """
+    kept, skip_indent, removed = [], None, 0
+    for line in text.splitlines(keepends=True):
+        indent = len(line) - len(line.lstrip())
+        if skip_indent is not None:
+            if not line.strip() or indent > skip_indent:
+                continue
+            # An `elif`/`else` arm would run in ordinary builds; dropping the
+            # guard alone would change what the omitted source means.
+            assert not (indent == skip_indent and
+                        line.lstrip().startswith(('elif', 'else'))), line
+            skip_indent = None
+        if line.strip() == LEAF_GUARD:
+            skip_indent, removed = indent, removed + 1
+            continue
+        kept.append(line)
+    omitted = ''.join(kept)
+    # A guard that matched nothing would make the comparison trivially equal.
+    assert removed >= 1 and removed == text.count('isonimInternalFlushObservation'), \
+        f'observation leaf blocks: removed {removed}'
+    return omitted
 
 
 def main():
     if sys.flags.optimize:
         raise RuntimeError("qualification requires Python assertions enabled")
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument('--parent', default=BASE)
     parser.add_argument('--minimum-available-mib', type=int, default=0)
     parser.add_argument('--minimum-free-mib', type=int, default=0)
     args = parser.parse_args()
@@ -126,9 +155,7 @@ def main():
     ordinary_out = output / 'ordinary.js'
     ordinary_entry = ROOT / 'tests/test_effects.nim'
     ordinary_flags = ['--hints:off', '-d:release', '--stackTrace:off', '--lineTrace:off']
-    parent_source = subprocess.check_output(
-        ['git', 'show', args.parent + ':src/isonim/core/batch.nim'], cwd=ROOT,
-        env=dict(os.environ, GIT_OPTIONAL_LOCKS='0', GIT_NO_LAZY_FETCH='1'))
+    parent_source = omit_observation_leaf(original.decode()).encode()
     (evidence / 'parent-batch.nim').write_bytes(parent_source)
     try:
         BATCH.write_bytes(parent_source)
@@ -155,7 +182,7 @@ def main():
         else:
             execute('ordinary-debug-c', artifact)
     expected_scenarios = ['local', 'activity', 'nested', 'throw', 'reset', 'reuse',
-                          'caught-inner', 'ambient-exception', 'open-batch-and-pure',
+                          'caught-inner', 'nested-error', 'ambient-exception', 'open-batch-and-pure',
                           'direct-and-invalid', 'nested-first-query']
 
     def verify_scenarios(raw):
@@ -338,7 +365,7 @@ def main():
              for name in named}
     assert before == after, 'source/config drift during qualification'
     (evidence / 'COMPLETE.json').write_text(json.dumps(dict(
-        parent=args.parent, sourceInputs=before, semanticInverses=len(mutations),
+        omittedParentSha256=hashlib.sha256(parent_source).hexdigest(), sourceInputs=before, semanticInverses=len(mutations),
         ordinaryLiteralBytes=len(candidate), ordinarySha256=hashlib.sha256(candidate).hexdigest(),
         nativeCrossThreadRuntimeQualified=thread_runtime,
         limits='No stop/quiescence, event/microtask drainage, GC or privacy acceptance'),

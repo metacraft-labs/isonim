@@ -158,7 +158,14 @@ proc thrownEpoch(defect: bool): InternalFlushEpoch =
     expect(defect and actual == originalDefect, "throw-exact-defect-identity")
     caught = true
   echo "WITNESS:throw:original-object-caught"
-  expect(caught and trace == @[1] and source.val == 1, "throw-real-abandoned-work")
+  # An ordinary error no longer abandons the flush: the second effect still
+  # runs, and the writer gets the original error object once the flush has
+  # finished. This changed on purpose (operator decision, 2026-11-19): one
+  # throwing computation must not silently drop unrelated updates in the
+  # same flush. A Defect is a programming error, not an error state, and
+  # still abandons the rest of the flush.
+  let expectedTrace = if defect: @[1] else: @[1, 2]
+  expect(caught and trace == expectedTrace and source.val == 1, "throw-real-completed-work")
   expect(captured != nil, "throw-issued")
   result = captured
 
@@ -191,11 +198,13 @@ scenario("reuse", proc() =
 )
 
 scenario("caught-inner", proc() =
+  # A nested flush unwinds only for a Defect now (an ordinary error waits for
+  # the outermost flush: see "nested-error").
   let outer = createSignal(0)
   let inner = createSignal(0)
   var epoch: InternalFlushEpoch
   var trace: seq[int]
-  let original = newException(ValueError, "caught inner flush")
+  let original = newException(AssertionDefect, "caught inner flush")
   var dispose: proc()
   createRoot proc(stop: proc()) =
     dispose = stop
@@ -211,7 +220,7 @@ scenario("caught-inner", proc() =
         var caught = false
         try:
           batch proc() = inner.val = 1
-        except ValueError as actual:
+        except AssertionDefect as actual:
           expect(actual == original, "caught-inner-exact-error")
           caught = true
         expect(caught and trace == @[1, 2], "caught-inner-real-error")
@@ -222,6 +231,44 @@ scenario("caught-inner", proc() =
   batch proc() = outer.val = 1
   expect(trace == @[1, 2, 3], "caught-inner-remaining-outer-ran")
   expect(internalFlushState(epoch) == ifsReturned, "caught-inner-outer-returned")
+)
+
+scenario("nested-error", proc() =
+  # An ordinary error in a nested flush does not unwind it: the effect that
+  # opened the nested batch carries on, the rest of the outer flush runs,
+  # and the outermost flush rethrows the original object at its end.
+  let outer = createSignal(0)
+  let inner = createSignal(0)
+  var epoch: InternalFlushEpoch
+  var trace: seq[int]
+  let original = newException(ValueError, "nested flush error")
+  var dispose: proc()
+  createRoot proc(stop: proc()) =
+    dispose = stop
+    createEffect proc() =
+      if inner.val > 0:
+        trace.add(2)
+        raise original
+    createEffect proc() =
+      if outer.val > 0:
+        trace.add(1)
+        epoch = currentInternalFlushEpoch()
+        batch proc() = inner.val = 1
+        expect(trace == @[1, 2], "nested-error-inner-ran")
+        expect(internalFlushState(epoch) == ifsActive, "nested-error-outer-active")
+        trace.add(3)
+    createEffect proc() =
+      if outer.val > 0: trace.add(4)
+  defer: dispose()
+  var caught = false
+  try:
+    batch proc() = outer.val = 1
+  except ValueError as actual:
+    expect(actual == original, "nested-error-exact-identity")
+    caught = true
+  expect(caught and trace == @[1, 2, 3, 4], "nested-error-all-work-ran")
+  expect(internalFlushState(epoch) == ifsUnwound, "nested-error-outer-unwound")
+  expect(currentInternalFlushEpoch() == nil, "nested-error-cleared")
 )
 
 scenario("ambient-exception", proc() =

@@ -227,7 +227,7 @@ func cssValueParts(text: string): CssValueParts =
     result.value = text[tokens[0] .. valueEnd]
   result.trail = text[tokens[^1] + 1 .. ^1]
 
-func withoutCssComments(text: string): string =
+func withoutCssComments*(text: string): string =
   ## ``text`` with its comments removed; a comment between two tokens leaves
   ## one space, as CSS reads it, and no run of spaces is left behind.
   var at = 0

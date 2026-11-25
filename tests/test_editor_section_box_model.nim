@@ -904,9 +904,9 @@ suite "shorthand sides follow the rule's declaration order":
       r.commitField(panel, "Padding, all sides", "1.5rem")
       check vm.sides("padding-") == @["1.5rem", "1.5rem", "1.5rem", "1.5rem"]
       r.commitField(panel, "Padding, all sides", "var(--wl-space-card)")
-      # The editor normalises a typed variable to the project's token
-      # reference, and the shorthand's own row shows that; so do its sides.
-      const token = "token(wl-space-card)"
+      # A typed variable is written as typed, and the shorthand's own row
+      # shows it; so do its sides.
+      const token = "var(--wl-space-card)"
       check vm.value("padding") == token
       for side in Sides:
         check vm.value("padding-" & side) == token
@@ -928,8 +928,8 @@ suite "shorthand sides follow the rule's declaration order":
       let vm = boxVm(foundation, orderless = true)
       check vm.editCssProperty("padding", "var(--wl-space-card)",
         pesShared).status == pesAccepted
-      check vm.sides("padding-") == @["token(wl-space-card)",
-        "token(wl-space-card)", "token(wl-space-card)", "token(wl-space-card)"]
+      check vm.sides("padding-") == @["var(--wl-space-card)",
+        "var(--wl-space-card)", "var(--wl-space-card)", "var(--wl-space-card)"]
       dispose()
 
   test "`! important` with a space is a priority":

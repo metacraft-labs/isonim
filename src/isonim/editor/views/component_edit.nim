@@ -4083,7 +4083,9 @@ proc installPreviewSelectionBridge*[R, E](r: R; frame: E; vm: EditorVM) =
         return false
       var disposeWiring: proc()
       var wiring: InspectorRowWiring
-      createRoot proc(dispose: proc()) =
+      # Detached: the wiring lives until the commit settles, which can be
+      # after whatever owner is current here has gone.
+      createDetachedRoot proc(dispose: proc()) =
         disposeWiring = dispose
         wiring = inspectorRowWiring(vm, property)
       discard commitBoxModelField(vm, property, wiring, $value,

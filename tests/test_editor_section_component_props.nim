@@ -220,3 +220,51 @@ suite "Phase G section_component_props":
     let explicit=domSelection(declared="Button")
     check explicit.schemaKey == "Button"
     check isComponentInstance(explicit)
+
+  test "a committed unit outside the row's list keeps the row numeric":
+    # isonim-pm issue 2026-11-24 "the numeric row refuses valid CSS units the
+    # property accepts" (review R3): after `12dvh` or `10PX` is committed the
+    # list is rebuilt from the property's value, and the row must come back
+    # as a numeric row with the unit on its chip, not as a text row (editor
+    # spec "Numeric Inputs": every numeric CSS value uses the one control).
+    proc chipText(n: MockNode): string =
+      if n == nil: return ""
+      if n.kind == mnkText: return n.text
+      for c in n.children: result.add chipText(c)
+    for (authored, field, chip) in [("12dvh", "12", "dvh"), ("10PX", "10", "px"),
+        ("2cm", "2", "cm"), ("1.50px", "1.50", "px")]:
+      checkpoint authored
+      createRoot do (dispose: proc()):
+        let r = MockRenderer()
+        let root = r.createElement("div")
+        let vm = createEditorVM()
+        var permissions = vm.workspacePermissions.val
+        permissions.writeSource = true
+        vm.workspacePermissions.val = permissions
+        proc select(value: string) =
+          vm.inspector.selectedElement.val = ElementRef(id: "card", tag: "div",
+            properties: @[PropertyInfo(name: "height", value: value,
+              authoredValue: value, schemaKey: "Card.height",
+              directStyleAllowed: true)])
+        select("10px")
+        var requests: seq[string]
+        vm.inspectorSourceCommit = proc(element: ElementRef; property, value: string;
+            scope: SourceScopeChoiceKind; done: proc(ok: bool; diagnostic: string) {.closure.}) =
+          requests.add value
+          done(true, "")
+        mountSectionComponentProps[MockRenderer, MockNode](r, root, vm)
+        var row = findByAttr(root, "data-property-row-css-property", "height")
+        require row != nil
+        check row.attributes["data-property-row-kind"] == "numeric"
+        let input = findByAttr(row, "data-property-row-input", "true")
+        r.setInputValue(input, authored)
+        input.fireEvent("change")
+        check requests == @[authored]
+        # The commit's result comes back as the property's value.
+        select(authored)
+        row = findByAttr(root, "data-property-row-css-property", "height")
+        require row != nil
+        check row.attributes["data-property-row-kind"] == "numeric"
+        check r.inputValue(findByAttr(row, "data-property-row-input", "true")) == field
+        check chipText(findByAttr(row, "data-property-row-unit", "true")) == chip
+        dispose()
