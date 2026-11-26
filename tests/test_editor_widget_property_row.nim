@@ -2173,7 +2173,8 @@ suite "a numeric row writes what was typed":
       PropertyEditRequest(property: property, newValue: text, kind: pekCss),
       parseCssPropertyValue(property, text)).len == 0
   type Typed = tuple[commits: seq[string], field, chip, fieldAfterSource,
-    chipAfterSource: string]
+    chipAfterSource: string, refused: seq[string], message: string,
+    sent: seq[string]]
   proc typeInto(property: string; units: seq[PropertyUnitOption];
       typed: seq[string]; wired = true; minValue = none(float)): Typed =
     ## Type each of ``typed`` into a mounted row (wired to ``property`` when
@@ -2184,12 +2185,26 @@ suite "a numeric row writes what was typed":
       let value = createSignal(10.0)
       let unit = createSignal(units[0])
       let source = createSignal("10" & units[0].code)
+      let rejected = createSignal(0)
+      let message = createSignal("")
       var cfg = propertyRowNumeric(name = property, value = value, unit = unit,
         units = units, minValue = minValue,
         wiring = (if wired: InspectorRowWiring(cssProperty: property,
-          authoredValue: proc(): string = source.val)
+          authoredValue: proc(): string = source.val,
+          commitRejected: rejected, commitMessage: message)
           else: InspectorRowWiring()))
-      cfg.onCommitValue = proc(v: string) = res.commits.add v
+      # The pipeline's validation, as the inspector's commit asks it: a value
+      # the property's grammar refuses is refused, with a reason, and the
+      # row puts its control back.
+      cfg.onCommitValue = proc(v: string) =
+        res.sent.add v
+        if wired and not accepted(property, v):
+          res.refused.add v
+          message.val = "refused: " & v
+          rejected.val = rejected.val + 1
+        else:
+          message.val = ""
+          res.commits.add v
       let (r, root) = mkRoot()
       discard r.mountPropertyRow(root, cfg)
       let input = findByAttr(root, "data-property-row-input", "true")
@@ -2206,6 +2221,7 @@ suite "a numeric row writes what was typed":
           fireEvent(input, "blur")
         res.fieldAfterSource = r.inputValue(input)
         res.chipAfterSource = chipText(chip)
+        res.message = message.val
       dispose()
     res
 
@@ -2415,8 +2431,9 @@ suite "a numeric row writes what was typed":
     for typed in ["1e-2", "+1e2", "1e0", "2.0"]:
       checkpoint "z-index row: " & typed
       let got = typeInto("z-index", number, @[typed])
-      check got.commits == @[typed]
-      check not accepted("z-index", got.commits[0])
+      check got.sent == @[typed]
+      check got.refused == @[typed]
+      check not accepted("z-index", typed)
     check accepted("z-index", typeInto("z-index", number, @["+3"]).commits[0])
 
   test "a grid placement takes one to four <grid-line>s and nothing else":
@@ -2564,6 +2581,13 @@ suite "a numeric row writes what was typed":
         let got = typeInto("margin", lengthUnits, @[typed], wired)
         check got.commits.len == 0
         check got.field == "10"
+        # A row wired to its property hands the text to the property's
+        # commit, which refuses it with its reason; it is not dropped
+        # (isonim-pm issue 2026-11-22, related case of 2026-11-25).
+        if wired:
+          check got.refused == @[typed.strip()]
+          check got.message.len > 0
+        else: check got.refused.len == 0
       check parseNumericInput(typed).value.isNone
       check parseNumericDimension(typed).value.isNone
     for (typed, written) in [("2px", "2px"), ("(1+2)px", "3px"),
@@ -2573,6 +2597,330 @@ suite "a numeric row writes what was typed":
       check accepted("margin", typed)
       check typeInto("margin", lengthUnits, @[typed]).commits == @[written]
       check parseNumericInput(typed).value.isSome
+
+  test "text that is not a number is written as the text path writes it, or refused with its reason":
+    # isonim-pm issue 2026-11-22 "a numeric row silently drops a typed var()
+    # value" and its 2026-11-25 related case (`2 px`). Editor spec "Planned
+    # interaction parity": every exposed property uses the same validation,
+    # source writeback, preview synchronization and undo history, and "a
+    # refused source edit restores the control and preview and explains the
+    # refusal". A numeric row's text that is not a number with a unit it
+    # admits goes to the row's own commit as typed: written when the
+    # property's validation accepts it, refused with the reason when not.
+    for typed in ["var(--a)", "VAR(--a)", "var(--a, 200px)", "var(--a) 1px",
+        "var(--a, var(--b, 3px))", "calc(var(--a) + 1px)", "calc(100% - 8px)",
+        "min(var(--a), 10px)", "auto", "inherit", "fit-content"]:
+      checkpoint typed
+      check accepted("width", typed)
+      let got = typeInto("width", lengthUnits, @[typed])
+      check got.commits == @[typed]
+      check got.refused.len == 0
+      check got.message == ""
+      # The field shows the value as written, before and after the source
+      # takes it, and Enter or leaving the field again writes nothing more.
+      check got.field == typed
+      check got.fieldAfterSource == typed
+    # Spaced only around the value: written without the outer space.
+    check typeInto("width", lengthUnits, @[" var(--a) "]).commits == @["var(--a)"]
+    for typed in ["2 px", "abc", "12deg", "#fff", "var(--a", "var()",
+        "var(--a) !important", "calc()", "1px 2px", "12px !important"]:
+      checkpoint typed
+      check not accepted("width", typed)
+      let got = typeInto("width", lengthUnits, @[typed])
+      check got.commits.len == 0
+      check got.refused == @[typed]
+      check got.message == "refused: " & typed
+      check got.field == "10"
+    # An <integer> row: a length is refused, `auto` written.
+    let number = @[PropertyUnitOption(label: "number", code: "")]
+    let z = typeInto("z-index", number, @["2px", "auto"])
+    check z.refused == @["2px"]
+    check z.commits == @["auto"]
+    check z.field == "auto"
+
+  test "an empty field, or the text already shown, writes nothing and says nothing":
+    # Editor spec "Visual box model" for the fields that follow the row: "An
+    # empty field, or the value already in place, commits nothing; removing
+    # a declaration is Reset".
+    for typed in ["", " ", "\t"]:
+      checkpoint typed
+      let got = typeInto("width", lengthUnits, @[typed])
+      check got.commits.len == 0
+      check got.refused.len == 0
+      check got.message == ""
+      check got.field == "10"
+    let again = typeInto("width", lengthUnits, @["var(--a)", "var(--a)", ""])
+    check again.commits == @["var(--a)"]
+    check again.field == "var(--a)"
+    # A refusal's reason survives leaving the field; an empty field, or the
+    # value already in place, then clears it (numvar review Q1).
+    let refused = typeInto("width", lengthUnits, @["2 px"])
+    check refused.message == "refused: 2 px"
+    for after in [@["2 px", ""], @["2 px", "10"], @["2 px", "10px"],
+        @["var(--a)", "2 px", "var(--a)"]]:
+      checkpoint $after
+      let cleared = typeInto("width", lengthUnits, after)
+      check cleared.message == ""
+      check cleared.commits.len == (if after[0] == "var(--a)": 1 else: 0)
+
+  test "a number typed over a value that is not a number is written, and a refusal shows that value again":
+    # The row's last number is not what the source holds while the field
+    # shows `var(--a)`: typing that number writes it. A refused number puts
+    # back the text the field showed, not a number the source does not have.
+    let got = typeInto("width", lengthUnits, @["var(--a)", "10px", "var(--a)"])
+    check got.commits == @["var(--a)", "10px", "var(--a)"]
+    let refused = typeInto("width", lengthUnits, @["var(--a)", "2 px"])
+    check refused.commits == @["var(--a)"]
+    check refused.refused == @["2 px"]
+    check refused.field == "var(--a)"
+    createRoot proc(dispose: proc()) =
+      let value = createSignal(10.0)
+      let unit = createSignal(pxUnit)
+      let source = createSignal("var(--a)")
+      let rejected = createSignal(0)
+      var seen: seq[string]
+      var cfg = propertyRowNumeric(name = "W", value = value, unit = unit,
+        units = @[pxUnit], wiring = InspectorRowWiring(cssProperty: "width",
+          authoredValue: proc(): string = source.val, commitRejected: rejected,
+          commitMessage: createSignal("")))
+      cfg.onCommitValue = proc(v: string) =
+        seen.add v
+        rejected.val = rejected.val + 1
+      let (r, root) = mkRoot()
+      discard r.mountPropertyRow(root, cfg)
+      let input = findByAttr(root, "data-property-row-input", "true")
+      check r.inputValue(input) == "var(--a)"
+      r.setInputValue(input, "12px")
+      fireEvent(input, "change")
+      check seen == @["12px"]
+      check r.inputValue(input) == "var(--a)"
+      dispose()
+
+  test "a refusal names the kind of value in words, never the parser's name for it":
+    # numvar review R2. Editor spec "Planned interaction parity": a refused
+    # edit "explains the refusal".
+    proc reasons(property, value: string): seq[string] =
+      let text = normalizePrimitiveInputValue(property, value)
+      for d in validateCssPropertyValue(PropertyInfo(name: property,
+          directStyleAllowed: true), PropertyEditRequest(property: property,
+          newValue: text, kind: pekCss), parseCssPropertyValue(property, text)):
+        result.add d.message
+    check reasons("border-width", "#fff") ==
+      @["`border-width` takes a width (a length, thin, medium or thick), not a colour."]
+    check reasons("border-top-width", "rgb(1 2 3)") ==
+      @["`border-top-width` takes a width (a length, thin, medium or thick), not a colour."]
+    for (property, value) in [("width", "#fff"), ("gap", "#fff"),
+        ("transform", "calc(1px + 2px)"), ("font-size", "#fff"),
+        ("margin-top", "#fff"), ("color", "12px"), ("border-radius", "#fff"),
+        ("overflow", "12px"), ("filter", "12px")]:
+      checkpoint property & ": " & value
+      let got = reasons(property, value)
+      check got.len > 0
+      for message in got:
+        check "cvk" notin message
+    check reasons("width", "#fff") == @["`width` does not take a colour (#fff)."]
+    # numvar review R5: `border-image-width` is not a `<line-width>`
+    # (CSS Backgrounds 3 §6.5); a colour is refused in the general words.
+    check reasons("border-image-width", "#fff") ==
+      @["`border-image-width` does not take a colour (#fff)."]
+    # numvar review R4: a math function in a property that takes lengths is
+    # refused for what is wrong with it, never with a sentence saying the
+    # property takes no lengths; the first reason (the one a row shows) is
+    # the math function's.
+    let mathReason = "calc() must hold a complete, finite expression whose " &
+      "operands have the types this property takes."
+    for property in ["font-size", "letter-spacing", "border-width",
+        "border-top-width", "line-height", "outline-offset", "margin-top"]:
+      for value in ["calc(2)", "calc(1px + )", "calc(1px / 0)",
+          "calc(infinity * 1px)", "calc(1px + 1deg)"]:
+        # A number is a line-height (CSS Inline 3 §4.2).
+        if property == "line-height" and value == "calc(2)": continue
+        checkpoint property & ": " & value
+        let got = reasons(property, value)
+        check got.len > 0
+        if got.len > 0: check got[0] == mathReason
+        for message in got:
+          check "does not take a length" notin message
+    # Lengths the editor's grammar does not check for a property that takes
+    # them are refused as unchecked, not as lengths the property refuses.
+    check reasons("border-spacing", "10px") ==
+      @["The editor cannot check 10px for `border-spacing` yet, so it is not written."]
+    # numvar review R7: a property with a grammar of its own leads with its
+    # own reason for a lone math value, not with a sentence saying it takes
+    # no lengths or that a well-formed calc() is malformed.
+    for (property, own) in [
+        ("box-shadow", "Shadow values must be none or complete shadow layers."),
+        ("text-shadow", "Shadow values must be none or complete shadow layers."),
+        ("transform", "Transform values must use supported CSS transform functions."),
+        ("filter", "Filter values must use supported CSS filter functions.")]:
+      for value in ["calc(10px + 5px)", "calc(50%)", "calc(1px + )"]:
+        checkpoint property & ": " & value
+        let got = reasons(property, value)
+        check got.len > 0
+        if got.len > 0: check got[0] == own
+        for message in got:
+          check "does not take" notin message
+          check not message.startsWith("calc() must hold")
+    # A side's border shorthand and `background` take lengths in CSS; what
+    # the editor's grammar does not check there is refused as unchecked.
+    for (property, value) in [("border-top", "calc(10px + 5px)"),
+        ("border-top", "10px"), ("background", "calc(10px + 5px)"),
+        ("background", "50%"), ("border-image-width", "50%"),
+        ("border-spacing", "1px 2px"), ("column-width", "10px"),
+        ("tab-size", "calc(10px + 5px)"), ("stroke-width", "50%"),
+        ("scroll-margin", "1em")]:
+      checkpoint property & ": " & value
+      check reasons(property, value) == @["The editor cannot check " & value &
+        " for `" & property & "` yet, so it is not written."]
+    check reasons("background-image", "calc(10px + 5px)")[0] ==
+      "`background-image` does not take a length or percentage (calc(10px + 5px))."
+    # Text that is no list of lengths is not called an unchecked length.
+    # numvar review R9/R11: the joined text is offered only where the
+    # property takes it; otherwise the property's own reason leads and the
+    # space is noted after it.
+    for (property, value, first) in [
+        ("width", "2 px", "`2 px`: a unit must touch its number (write `2px`)."),
+        ("font-size", "2 PX", "`2 PX`: a unit must touch its number (write `2PX`)."),
+        ("margin-top", "-1.5 em", "`-1.5 em`: a unit must touch its number (write `-1.5em`)."),
+        ("width", "10 %", "`10 %`: a unit must touch its number (write `10%`)."),
+        ("opacity", "2 px", "Opacity must be numeric."),
+        ("width", "2 deg", "Unsupported keyword '2 deg' for width."),
+        ("transform", "2 px", "Transform values must use supported CSS transform functions."),
+        ("font-size", "-1.5 em", "font-size cannot be negative."),
+        # No number: the amount sentence stays.
+        ("border-top", "opacity 1s", "CSS length values must use a numeric amount."),
+        ("width", "abc 10px", "CSS length values must use a numeric amount.")]:
+      checkpoint property & ": " & value
+      let got = reasons(property, value)
+      check got.len > 0
+      if got.len > 0:
+        check got[0] == first
+      if "must touch" in first or value.contains(' ') and "numeric amount" notin first:
+        for message in got: check "numeric amount" notin message
+      # Advice to write the joined text is given only when it is taken.
+      for message in got:
+        if "(write `" in message:
+          let joined = message.split("(write `")[1].split("`")[0]
+          check reasons(property, joined).len == 0
+      if "must touch" notin first and value.splitWhitespace().len == 2 and
+          value.splitWhitespace()[0][^1].isDigit:
+        check got[^1] == "`" & value & "`: a unit must touch its number."
+      for message in got:
+        check "cannot check" notin message
+        check "does not take a length" notin message
+    # numvar review R8: malformed math in such a property is refused for
+    # being malformed, not called an unchecked length.
+    let mathReason2 = "calc() must hold a complete, finite expression whose " &
+      "operands have the types this property takes."
+    for property in ["background", "border-top", "border-spacing"]:
+      for value in ["calc()", "calc(1px + )", "calc(10px + 1s)", "calc(1deg)"]:
+        checkpoint property & ": " & value
+        let got = reasons(property, value)
+        check got.len > 0
+        if got.len > 0: check got[0] == mathReason2
+        for message in got: check "cannot check" notin message
+      check reasons(property, "calc(10px + 5px)") == @["The editor cannot check " &
+        "calc(10px + 5px) for `" & property & "` yet, so it is not written."]
+    # numvar review R12: a plain number in math is well formed where the
+    # property takes numbers.
+    for property in ["tab-size", "border-image-width", "border-image-outset"]:
+      checkpoint property
+      check reasons(property, "calc(2)") == @["The editor cannot check calc(2) for `" &
+        property & "` yet, so it is not written."]
+    check reasons("border-spacing", "calc(2)")[0] == mathReason2
+    # numvar review R10: a range the property gives leads over "cannot check".
+    check reasons("column-width", "-1px")[0] == "column-width cannot be negative."
+    check reasons("column-rule-width", "-5px")[0] == "column-rule-width cannot be negative."
+    # A property that takes no lengths still says so.
+    check reasons("opacity", "calc(1px + 2px)")[0] ==
+      "`opacity` does not take a length or percentage (calc(1px + 2px))."
+
+  test "a read-only row keeps saying why after an empty field or the value in place":
+    # numvar review R6. Q1 clears an earlier refusal's reason on a commit
+    # that writes nothing; a read-only row's reason is not a refusal of the
+    # last commit and stays (Rotation over `matrix()` shows it this way).
+    for typed in [@[""], @["10"], @["10px"], @["var(--a)", ""], @[" "]]:
+      checkpoint $typed
+      createRoot proc(dispose: proc()) =
+        let value = createSignal(10.0)
+        let unit = createSignal(pxUnit)
+        let reason = "Read-only: this row's owner cannot be edited here."
+        let message = createSignal(reason)
+        var seen: seq[string]
+        var cfg = propertyRowNumeric(name = "W", value = value, unit = unit,
+          units = @[pxUnit], wiring = InspectorRowWiring(cssProperty: "width",
+            commitRejected: createSignal(0), commitMessage: message,
+            readOnlyReason: proc(): string = reason))
+        cfg.onCommitValue = proc(v: string) = seen.add v
+        let (r, root) = mkRoot()
+        discard r.mountPropertyRow(root, cfg)
+        let input = findByAttr(root, "data-property-row-input", "true")
+        for t in typed:
+          r.setInputValue(input, t)
+          fireEvent(input, "change")
+          fireEvent(input, "blur")
+        check seen.len == 0
+        check message.val == reason
+        dispose()
+
+  test "Copy property and a unit change carry the value the row shows, not the number it last held":
+    createRoot proc(dispose: proc()) =
+      let value = createSignal(10.0)
+      let unit = createSignal(pxUnit)
+      let message = createSignal("")
+      let clipboard = createSignal(PropertyClipboardEntry())
+      var seen: seq[string]
+      var cfg = propertyRowNumeric(name = "W", value = value, unit = unit,
+        units = @[pxUnit, emUnit], wiring = InspectorRowWiring(cssProperty: "width",
+          authoredValue: proc(): string = "var(--a)", commitRejected: createSignal(0),
+          commitMessage: message, clipboard: clipboard))
+      cfg.onCommitValue = proc(v: string) = seen.add v
+      let (r, root) = mkRoot()
+      let row = r.mountPropertyRow(root, cfg)
+      row.fireEvent("contextmenu")
+      let menu = findByAttr(root, "data-property-actions-menu", "true")
+      check menu != nil
+      if menu != nil:
+        findByAttr(menu, "data-property-action", "copy").fireEvent("click")
+      check clipboard.val.value == "var(--a)"
+      fireEvent(findByAttr(root, "data-property-row-unit", "true"), "click")
+      check seen.len == 0
+      check unit.val == pxUnit
+      check message.val == "Type a numeric value to replace this expression."
+      dispose()
+
+  test "a row that writes its number into a larger value refuses other text with a reason":
+    # Rotation writes its angle into `transform`'s rotate() (numericCssValue):
+    # `var(--a)` typed there cannot be written as the property's value.
+    createRoot proc(dispose: proc()) =
+      let value = createSignal(10.0)
+      let unit = createSignal(PropertyUnitOption(label: "deg", code: "deg"))
+      let message = createSignal("")
+      var seen: seq[string]
+      var cfg = propertyRowNumeric(name = "Rotation", value = value, unit = unit,
+        units = @[PropertyUnitOption(label: "deg", code: "deg")],
+        wiring = InspectorRowWiring(cssProperty: "transform",
+          commitMessage: message, commitRejected: createSignal(0),
+          numericCssValue: proc(v: string): string = "rotate(" & v & ")"))
+      cfg.onCommitValue = proc(v: string) = seen.add v
+      let (r, root) = mkRoot()
+      discard r.mountPropertyRow(root, cfg)
+      let input = findByAttr(root, "data-property-row-input", "true")
+      r.setInputValue(input, "var(--a)")
+      fireEvent(input, "change")
+      fireEvent(input, "blur")
+      check seen.len == 0
+      check message.val == "Rotation takes a number in deg; var(--a) is not one."
+      # A number in a unit the row does not write is refused the same way.
+      r.setInputValue(input, "12px")
+      fireEvent(input, "change")
+      check seen.len == 0
+      check message.val == "Rotation takes a number in deg; 12px is not one."
+      check r.inputValue(input) == "10"
+      r.setInputValue(input, "20")
+      fireEvent(input, "change")
+      check seen == @["rotate(20deg)"]
+      dispose()
 
   test "a step or scrub that changes the value drops the kept spelling":
     # Review R5/R4: the kept spelling belongs to the value it spells. A scrub

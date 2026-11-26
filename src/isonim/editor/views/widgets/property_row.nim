@@ -1062,6 +1062,12 @@ proc mountPropertyRow*[R, E](r: R; parent: E;
   # or pasted value and by the authored source, read by the field and the
   # commit.
   let written = createSignal(WrittenNumber())
+  # The value a numeric row shows when it is not a number (`var(--a)`,
+  # `auto`), as the source or a typed commit holds it; "" while the row holds
+  # a number. Owned by the numeric control (``unparsedSource``); read by the
+  # row's value for Copy property and a scope re-commit, which must carry
+  # that value, not the number the row last held.
+  let numericText = createSignal("")
 
   proc readTypedNumber(raw: string): Option[tuple[value: float,
       option: PropertyUnitOption, spelled: WrittenNumber]] =
@@ -1097,6 +1103,8 @@ proc mountPropertyRow*[R, E](r: R; parent: E;
     ## (``WrittenNumber``).
     case cfg.kind
     of prkNumeric:
+      let shownText = numericText.val
+      if shownText.len > 0: return shownText
       let spelled = written.val
       let displayed = writtenNumberText(cfg, spelled, cfg.numericValue.val) &
         writtenUnitText(cfg, spelled)
@@ -1112,6 +1120,9 @@ proc mountPropertyRow*[R, E](r: R; parent: E;
 
   var rowAlive = true
   var valueSlotGeneration = 0
+  # The numeric control's commit of typed text, for Paste property (a paste
+  # is committed exactly as if it had been typed); nil until it mounts.
+  var numericTypedCommit: proc(text: string) {.closure.} = nil
   onCleanup(proc() = rowAlive = false)
   proc commitText(value: string; restore: proc() {.closure.} = nil) =
     ## Commit ``value``, and put the control back if the pipeline refuses it.
@@ -1161,6 +1172,7 @@ proc mountPropertyRow*[R, E](r: R; parent: E;
 
   proc buildValueSlot(activeBinding: Option[VariableBinding]) =
     inc valueSlotGeneration
+    numericTypedCommit = nil
     var literalInput: E
     ## VBIND-M2: (re)build the value slot for the current binding
     ## state. Called once for the static path, or from a render
@@ -1284,6 +1296,9 @@ proc mountPropertyRow*[R, E](r: R; parent: E;
         r.appendChild(valueSlot, row)
         literalInput = inputNode
         let unparsedSource = createSignal("")
+        createRenderEffect proc() =
+          numericText.val = unparsedSource.val
+        onCleanup(proc() = numericText.val = "")
         if cfg.authoredValue != nil:
           createRenderEffect proc() =
             let source = cfg.authoredValue()
@@ -1321,6 +1336,12 @@ proc mountPropertyRow*[R, E](r: R; parent: E;
             else: unparsedSource.val = source
         proc shown(value: float): string =
           writtenNumberText(cfg, untrack(proc(): WrittenNumber = written.val), value)
+        proc shownNow(): string =
+          ## What the field shows for the row's committed state: an authored
+          ## or typed value that is not a number as written, else the number.
+          let raw = untrack(proc(): string = unparsedSource.val)
+          if raw.len > 0: raw
+          else: shown(untrack(proc(): float = cfg.numericValue.val))
         r.setInputValue(inputNode, shown(cfg.numericValue.val))
 
         # Reactive bind — when ``numericValue`` mutates externally the
@@ -1352,6 +1373,67 @@ proc mountPropertyRow*[R, E](r: R; parent: E;
 
         var valueSlotActive = true
         onCleanup(proc() = valueSlotActive = false)
+
+        # Typed or pasted text that is not a number with a unit the row
+        # admits (`var(--a)`, `auto`, `calc(100% - 8px)`, `2 px`, `10deg` in
+        # a width). Editor spec "Planned interaction parity": every exposed
+        # property uses the same validation, source writeback, preview
+        # synchronization and undo history, and a refused source edit
+        # restores the control and explains the refusal. So the text is
+        # committed as typed through the row's own commit -- the path a text
+        # row or Raw CSS takes for the property -- and is written, or refused
+        # with the validator's or the writer's reason. It is never dropped
+        # without one. Empty text, or the text the field already shows,
+        # commits nothing (as in the box model: removing a declaration is
+        # Reset). A row whose number is written into a larger value
+        # (``numericCssValue``: Rotation's angle inside `transform`) cannot
+        # write other text there, and says so.
+        # The text a refusal put back in the field. Leaving the field right
+        # after a refusal re-reads that text; that is not a new commit, and
+        # the refusal's reason stays until the user commits something.
+        var restoredText = ""
+        proc clearRefusal(text: string) =
+          ## A commit that writes nothing -- an empty field, or the value
+          ## already in place -- clears the reason of an earlier refusal (a
+          ## read-only row keeps saying why it is read-only).
+          let restored = restoredText
+          restoredText = ""
+          if text.len > 0 and text == restored: return
+          if cfg.commitMessage != nil and (cfg.readOnlyReason == nil or
+              untrack(cfg.readOnlyReason).len == 0):
+            cfg.commitMessage.val = ""
+
+        proc commitTypedText(raw: string) =
+          let text = raw.strip()
+          let priorRaw = unparsedSource.val
+          if text.len == 0 or text == priorRaw:
+            # The value already in place, or nothing: no edit, and a reason
+            # shown for an earlier refusal no longer applies.
+            clearRefusal(text)
+            r.setInputValue(inputNode, shownNow())
+            return
+          var units: seq[string]
+          for option in cfg.availableUnits:
+            if option.code.len > 0: units.add option.code
+          let refusal =
+            if cfg.cssProperty.len == 0 or cfg.numericCssValue != nil:
+              cfg.name & " takes a number" &
+                (if units.len > 0: " in " & units.join(", ") else: "") &
+                "; " & text & " is not one."
+            else: ""
+          if refusal.len > 0:
+            if cfg.commitMessage != nil: cfg.commitMessage.val = refusal
+            restoredText = shownNow()
+            r.setInputValue(inputNode, restoredText)
+            return
+          unparsedSource.val = text
+          r.setInputValue(inputNode, text)
+          restoredText = ""
+          commitText(text, proc() =
+            unparsedSource.val = priorRaw
+            restoredText = shownNow()
+            r.setInputValue(inputNode, restoredText))
+
         let commit = proc() =
           if not valueSlotActive: return
           let raw = r.inputValue(inputNode)
@@ -1363,12 +1445,16 @@ proc mountPropertyRow*[R, E](r: R; parent: E;
             let priorRaw = unparsedSource.val
             let priorWritten = written.val
             # Nothing to write when the row would write what it already
-            # writes: the same value, unit and spelling.
-            if sameNumber(v, priorValue) and nextUnit.code == priorUnit.code and
+            # writes: the same value, unit and spelling. A row showing a value
+            # that is not a number (`var(--a)`) writes a typed number even
+            # when it equals the number the row last held.
+            if priorRaw.len == 0 and sameNumber(v, priorValue) and
+                nextUnit.code == priorUnit.code and
                 writtenNumberText(cfg, spelled, v) ==
                   writtenNumberText(cfg, priorWritten, priorValue) and
                 (if spelled.unit.len > 0: spelled.unit else: nextUnit.code) ==
                   writtenUnitText(cfg, priorWritten):
+              clearRefusal(raw.strip())
               r.setInputValue(inputNode, shown(v))
               return
             batch(proc() =
@@ -1377,23 +1463,31 @@ proc mountPropertyRow*[R, E](r: R; parent: E;
               cfg.numericUnit.val = nextUnit
               cfg.numericValue.val = v)
             r.setInputValue(inputNode, shown(v))
+            restoredText = ""
             commitValue(proc() =
               batch(proc() =
                 written.val = priorWritten
                 cfg.numericValue.val = priorValue
                 cfg.numericUnit.val = priorUnit
                 unparsedSource.val = priorRaw)
-              r.setInputValue(inputNode, shown(priorValue)))
+              restoredText = shownNow()
+              r.setInputValue(inputNode, restoredText))
           else:
-            # Reject garbage — restore the previous value so the input
-            # never displays an unparseable string after losing focus.
-            r.setInputValue(inputNode, shown(cfg.numericValue.val))
+            commitTypedText(raw)
         r.addEventListener(inputNode, "change", commit)
         r.addEventListener(inputNode, "blur", commit)
+        numericTypedCommit = proc(text: string) =
+          r.setInputValue(inputNode, text)
+          commit()
         attachNumericKeySteps(r, inputNode, cfg.numericStep)
 
         let cycleUnit = proc() =
           if not valueSlotActive: return
+          # A value that is not a number has no unit to change, as it has no
+          # number to scrub.
+          if unparsedSource.val.len > 0:
+            if cfg.commitMessage != nil: cfg.commitMessage.val = "Type a numeric value to replace this expression."
+            return
           let nxt = nextUnit(cfg)
           let priorUnit = cfg.numericUnit.val
           if nxt.code == priorUnit.code: return
@@ -1982,6 +2076,12 @@ proc mountPropertyRow*[R, E](r: R; parent: E;
     let refusal = "Cannot paste " & value & " into " & cfg.name & "."
     case cfg.kind
     of prkNumeric:
+      # As if typed into the field: a number is read as the field reads it,
+      # and other text is committed as typed for the property to validate,
+      # or refused with its reason (``commitTypedText``).
+      if value.len > 0 and numericTypedCommit != nil:
+        numericTypedCommit(value)
+        return
       let typed = readTypedNumber(value)
       if typed.isNone:
         refusePaste(refusal)

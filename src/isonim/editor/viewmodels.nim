@@ -1892,6 +1892,27 @@ func ownGrammarProblem(propName, raw: string): string =
     else: "transition takes comma-separated transitions, each a property, a non-negative duration, an easing function and a delay, each at most once."
   else: ""
 
+func cssValueKindWords(kind: CSSValueKind): string =
+  ## A value kind as a refusal names it to the user (never the enum name).
+  case kind
+  of cvkKeyword: "this keyword"
+  of cvkLength: "a length"
+  of cvkPercentage: "a percentage"
+  of cvkLengthPercentage: "a length or percentage"
+  of cvkColor: "a colour"
+  of cvkGradient: "a gradient"
+  of cvkShadow: "a shadow"
+  of cvkFontStack: "a font family list"
+  of cvkZIndex: "a number"
+  of cvkOpacity: "an opacity"
+  of cvkTimingFunction: "a timing function"
+  of cvkTokenReference: "a design token"
+  of cvkTransform: "a transform"
+  of cvkTransition: "a transition"
+  of cvkFilter: "a filter"
+  of cvkOverflow: "an overflow value"
+  of cvkAccessibility: "an accessibility value"
+
 const nonNegativeLengthProperties = ["width", "height", "min-width",
   "min-height", "max-width", "max-height", "block-size", "inline-size",
   "min-block-size", "min-inline-size", "max-block-size", "max-inline-size",
@@ -1917,6 +1938,39 @@ func cssDiagnostic(kind: PropertyEditDiagnosticKind; prop: PropertyInfo;
 
 proc cssComponentAccepted(property, value: string): bool
 
+func cssLengthTakingProperty(propName: string): bool =
+  ## Whether ``propName`` takes a length in CSS where the editor's value
+  ## categories do not list one (or not every form of one), so that a
+  ## length it refuses there is one it cannot check, not one the property
+  ## refuses: `border-spacing` (CSS Tables 3 §6.2), `border-image-width` and
+  ## `border-image-outset` (Backgrounds 3 §6.5-6.6), a side's border
+  ## shorthand (§4.4, its width), `background` (§3.10, its position and
+  ## size), `column-width` and `column-rule-width` (Multi-column 1 §2.1,
+  ## §4.2), `stroke-width` (SVG 2), `tab-size` (Text 3 §4.2),
+  ## `text-decoration-thickness` and `text-underline-offset` (Text
+  ## Decoration 4 §2.4, §2.7), `scroll-margin*` and `scroll-padding*`
+  ## (Scroll Snap 1 §4.1-4.2), `word-spacing` and `outline-width`.
+  propName in ["word-spacing", "outline-width", "border-spacing",
+    "border-image-width", "border-image-outset", "border-top", "border-right",
+    "border-bottom", "border-left", "background", "column-width",
+    "column-rule-width", "stroke-width", "tab-size",
+    "text-decoration-thickness", "text-underline-offset"] or
+    propName.startsWith("scroll-margin") or propName.startsWith("scroll-padding")
+
+func cssNumberTakingProperty(propName: string): bool =
+  ## Of `cssLengthTakingProperty`'s properties, those that also take a plain
+  ## number: `tab-size` (Text 3 §4.2), `border-image-width` and
+  ## `border-image-outset` (Backgrounds 3 §6.5-6.6), `stroke-width` (SVG 2).
+  propName in ["tab-size", "border-image-width", "border-image-outset",
+    "stroke-width"]
+
+func cssPercentTakingProperty(propName: string): bool =
+  ## Of `cssLengthTakingProperty`'s properties, those that also take a
+  ## percentage.
+  propName in ["border-image-width", "background", "stroke-width",
+    "text-decoration-thickness", "text-underline-offset"] or
+    propName.startsWith("scroll-padding")
+
 proc cssValueShapeDiagnostics(prop: PropertyInfo;
     normalized: CSSPropertyValue): seq[PropertyEditDiagnostic] =
   ## The single-value rules: the value's kind, unit, range and keyword.
@@ -1938,12 +1992,79 @@ proc cssValueShapeDiagnostics(prop: PropertyInfo;
       normalized.kind in {cvkLength, cvkPercentage, cvkLengthPercentage}) or
     (propName == "outline-width" and
       normalized.kind in {cvkLength, cvkLengthPercentage})
+  # A border width is a `<line-width>` (CSS Backgrounds 3 §4.3): the border
+  # category's colours are the colour longhands' and the shorthand's, not
+  # the widths'. `border-image-width` is not one (§6.5: lengths, percentages,
+  # numbers or auto); it refuses a colour too, in the general words.
+  let isBorderWidth = propName == "border-width" or
+    (propName.startsWith("border-") and propName.endsWith("-width"))
+  let isLineWidth = isBorderWidth and propName != "border-image-width"
+  # Text that first reads as a length but is no list of lengths (`2 px`,
+  # `opacity 1s`) in a property that takes lengths: a kind sentence would
+  # call it a length the property refuses; the reason that says what is
+  # wrong with it comes later and is the one shown.
+  var unchecked = false
+  let misreadLength = cssLengthTakingProperty(propName) and
+    normalized.kind == cvkLength and not raw.splitWhitespace().allIt(
+      splitCssDimension(it).number.len > 0 and
+      splitCssDimension(it).unit.toLowerAscii() in cssLengthUnits)
   if not spacingLength and ((isRadius and normalized.kind notin {cvkKeyword, cvkLength,
       cvkPercentage, cvkLengthPercentage, cvkTokenReference}) or
+      (isBorderWidth and normalized.kind == cvkColor) or
       (not isRadius and normalized.kind notin allowed and not (
       propName == "opacity" and normalized.kind == cvkOpacity))):
-    result.add cssDiagnostic(pedInvalidCssValue, prop,
-      "This property does not accept " & $normalized.kind & " values.")
+    # A math function reads as a length-or-percentage before its operands
+    # are typed. In a property that takes lengths or percentages that kind
+    # is no reason: the math function's own check below says what is wrong
+    # (`calc(2)` in font-size is a number, `calc(1px + )` is incomplete), so
+    # the kind sentence, which would say the property takes no lengths, is
+    # left out when that check refuses, and is put in words that hold when
+    # it does not (the value is still refused, as before).
+    # Some properties take lengths in CSS although their category here does
+    # not list them, or not every form of one (`cssLengthTakingProperty`).
+    let lengthInCss = cssLengthTakingProperty(propName)
+    let takesLengths = isRadius or isBorderWidth or lengthInCss or
+      allowed.anyIt(it in {cvkLength, cvkPercentage, cvkLengthPercentage})
+    # Such a length the editor's category refuses is one it cannot check,
+    # not one the property refuses.
+    # (Lengths only: `opacity 1s` or `2 px` is no list of lengths, whatever
+    # kind it first reads as.)
+    let lengthList = raw.splitWhitespace().allIt(
+      splitCssDimension(it).number.len > 0 and
+      splitCssDimension(it).unit.toLowerAscii() in cssLengthUnits)
+    # A math value is unchecked only when it is well formed as a length (or
+    # a length-percentage, where the property takes percentages): malformed
+    # math (`calc(1px + )`, `calc(10px + 1s)`) is refused for that, with the
+    # calc() reason below, whatever the property's lengths.
+    # (A number too, where the property takes one: `tab-size: calc(2)`.)
+    var mathTypes = if cssPercentTakingProperty(propName): cssLengthPercentTypes
+                    else: cssLengthTypes
+    if cssNumberTakingProperty(propName): mathTypes.incl cmtNumber
+    let wellFormedMath = normalized.kind == cvkLengthPercentage and
+      (not raw.toLowerAscii().startsWith("calc(") or
+       cssMathFunctionCall(raw, mathTypes))
+    let uncheckedLength = lengthInCss and
+      ((normalized.kind == cvkLength and lengthList) or
+       wellFormedMath or
+       (normalized.kind == cvkPercentage and cssPercentTakingProperty(propName)))
+    # For these the calc() check below does not know their lengths either,
+    # so its sentence would call a well-formed calc() malformed: the
+    # unchecked-length reason comes first instead.
+    let mathValue = normalized.kind == cvkLengthPercentage and takesLengths and
+      not uncheckedLength
+    let mathRefused = mathValue and raw.toLowerAscii().startsWith("calc(") and
+      not cssMathFunctionCall(raw, cssMathTypesFor(propName, cssComponentAccepted))
+    unchecked = uncheckedLength and not (isLineWidth and normalized.kind == cvkColor)
+    if not mathRefused:
+      result.add cssDiagnostic(pedInvalidCssValue, prop,
+        if isLineWidth and normalized.kind == cvkColor:
+          "`" & propName & "` takes a width (a length, thin, medium or thick), not a colour."
+        elif uncheckedLength:
+          "The editor cannot check " & raw & " for `" & propName &
+            "` yet, so it is not written."
+        else:
+          "`" & propName & "` does not take " & cssValueKindWords(normalized.kind) &
+            " (" & raw & ").")
 
   if hasUnsupportedNumericUnit(raw):
     result.add cssDiagnostic(pedInvalidCssValue, prop,
@@ -2066,6 +2187,51 @@ proc cssValueShapeDiagnostics(prop: PropertyInfo;
   if propName == "font-family" and not validFontFamilyList(raw):
     result.add cssDiagnostic(pedInvalidCssValue, prop,
       "Font families must be a comma-separated list of names or quoted strings.")
+  # A property with a grammar of its own (a shadow, a transform, a filter, a
+  # transition time list, an aspect ratio, a family list) says what is wrong
+  # in its own words. Its reason is the true one for any value it refuses, a
+  # lone math function included (`box-shadow: calc(10px + 5px)` is a length,
+  # not a shadow layer, but box-shadow does take lengths, inside one), so it
+  # comes first -- the reason a row shows -- and the generic kind and calc()
+  # sentences, which would say the property takes no lengths or that a
+  # well-formed calc() is malformed, are left out (the value is refused all
+  # the same).
+  const grammarReasons = [
+    "Filter values must use supported CSS filter functions.",
+    "Transform values must use supported CSS transform functions.",
+    "Transition property must be all, none, or CSS property names.",
+    "Transition times must be comma-separated durations in s or ms.",
+    "Shadow values must be none or complete shadow layers.",
+    "Aspect ratio must be auto or a positive width / height pair.",
+    "Font families must be a comma-separated list of names or quoted strings."]
+  # An unchecked length is refused for that alone: the calc() and amount
+  # checks below read the property with the same incomplete grammar, so
+  # their sentences would call a well-formed value malformed.
+  if unchecked:
+    result = result.filterIt(not it.message.startsWith("calc() must hold") and
+      it.message != "CSS length values must use a numeric amount.")
+    # A reason the property's own range gives (`column-width` cannot be
+    # negative) says more than that the editor cannot check it: it leads.
+    if result.len > 1 and result[0].message.startsWith("The editor cannot check "):
+      result.add result[0]
+      result.delete(0)
+  if misreadLength and result.len > 1 and
+      result[0].message.startsWith("`" & propName & "` does not take "):
+    result.delete(0)
+  var own = -1
+  for i, d in result:
+    if d.message in grammarReasons:
+      own = i
+      break
+  if own >= 0:
+    let kindPrefix = "`" & propName & "` does not take "
+    var ordered = @[result[own]]
+    for i, d in result:
+      if i == own or d.message.startsWith(kindPrefix) or
+          d.message.startsWith("calc() must hold a complete"):
+        continue
+      ordered.add d
+    result = ordered
 
 proc cssValueDiagnostics(prop: PropertyInfo;
     normalized: CSSPropertyValue): seq[PropertyEditDiagnostic] =
@@ -2130,10 +2296,51 @@ proc validateCssValue(prop: PropertyInfo; request: PropertyEditRequest;
 
 proc arithmeticReading(property, raw: string): tuple[count: int, value: string]
 
+func spacedUnitText(raw: string): string =
+  ## `2 px` -> `2px`: the text joined, when ``raw`` is one number, white
+  ## space and a CSS unit or `%`; else "".
+  let parts = raw.strip().splitWhitespace()
+  if parts.len != 2: return ""
+  let (number, unit) = splitCssDimension(parts[0])
+  if number.len == 0 or number != parts[0] or unit.len > 0: return ""
+  let u = parts[1].toLowerAscii()
+  if u == "%" or u in cssLengthUnits or u in ["deg", "rad", "grad", "turn",
+      "s", "ms", "hz", "khz", "dpi", "dpcm", "dppx", "x", "fr"]:
+    parts[0] & parts[1]
+  else: ""
+
 proc validateCssPropertyValue*(prop: PropertyInfo; request: PropertyEditRequest;
     normalized: CSSPropertyValue): seq[PropertyEditDiagnostic] =
   result = validateCssValue(prop, request, normalized,
     not designTokenSpelling(normalized.raw))
+  # A number and its unit separated by a space (`2 px`) are two values to
+  # CSS (Syntax 3 §4.3.3: a dimension is a number immediately followed by
+  # its unit). That is what is wrong with it, so it is the reason shown,
+  # ahead of what the property's grammar makes of the two parts.
+  # The joined text is offered only when the property takes it; otherwise
+  # the property's own reason leads and the space is noted after it.
+  if result.len > 0:
+    let spaced = spacedUnitText(normalized.raw)
+    if spaced.len > 0:
+      result = result.filterIt(it.message notin [
+        "CSS length values must use a numeric amount.",
+        "CSS percentage values must use a numeric amount."])
+      var joined = request
+      joined.newValue = spaced
+      let joinedReasons = validateCssValue(prop, joined,
+        parseCssPropertyValue(prop.name, spaced, normalized.variant),
+        not designTokenSpelling(spaced))
+      if joinedReasons.len == 0:
+        result.insert(cssDiagnostic(pedInvalidCssValue, prop, "`" &
+          normalized.raw.strip() & "`: a unit must touch its number (write `" &
+          spaced & "`)."), 0)
+      else:
+        # Nothing but the space was said about it: the property's reason is
+        # the one the joined text meets (`font-size: -1.5 em` -> font-size
+        # cannot be negative).
+        if result.len == 0: result.add joinedReasons[0]
+        result.add cssDiagnostic(pedInvalidCssValue, prop, "`" &
+          normalized.raw.strip() & "`: a unit must touch its number.")
   # Text typed as arithmetic that CSS reads as several values (`100 -50px`),
   # refused although its arithmetic result would be accepted, is refused
   # with that reading named, not only the property's grammar.

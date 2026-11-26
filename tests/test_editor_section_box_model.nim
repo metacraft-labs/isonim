@@ -674,7 +674,7 @@ suite "box model fields follow the property row's numeric rules":
       check foundation[] == withCardRule("padding: 18px; margin-left: 5Q;")
       # A space between the number and its unit is two values, refused as
       # on a row and the text path; so is a unit margin does not take.
-      for (typed, reason) in [("2 px", "numeric amount"),
+      for (typed, reason) in [("2 px", "a unit must touch its number (write `2px`)"),
           ("1+1deg", "Unsupported CSS unit")]:
         r.commitField(panel, "Margin left", typed)
         check display(panel.boxMessage) == "block"
@@ -2757,3 +2757,237 @@ suite "a shorthand edit moves only the sides it decides":
       "padding-bottom": "padding-bottom", "padding-left": "padding-left"})
     check bare.nativeShorthandOverridden("padding") == ""
     check bare.nativeShorthandOverridden("padding-top") == ""
+
+suite "text that is not a number, typed into a padding row or its box field":
+  # isonim-pm issue 2026-11-22 "a numeric row silently drops a typed var()
+  # value" and its 2026-11-25 related case (`2 px`). Editor spec "Planned
+  # interaction parity": every exposed editable property uses the same
+  # validation, source writeback, preview synchronization and undo history,
+  # and "a refused source edit restores the control and preview and
+  # explains the refusal"; "Visual box model": "A field is not a second
+  # editing path: it commits through the same pipeline as the property row
+  # of its property." Through the example's production writer.
+  test "a var() is written and undone through the same pipeline; `2 px` is refused with the same reason":
+    createRoot proc(dispose: proc()) =
+      let r = MockRenderer()
+      let foundation = new(string)
+      foundation[] = DemoFoundationInitialSource
+      let vm = boxVm(foundation)
+      let panel = renderInspectorPanel[MockRenderer, MockNode](r, vm)
+      # The row's value slot is rebuilt when the selection's properties
+      # change, so its input is looked up again for every step.
+      proc row(): MockNode = panel.padRowInput("top")
+      proc rowMessage(): MockNode =
+        findByAttr(findByAttr(panel, "data-property-row", "pad-top"),
+          "data-property-row-message", "true")
+      proc typeRow(text: string) =
+        let input = row()
+        r.setInputValue(input, text)
+        input.fireEvent("change")
+        if row() == input: input.fireEvent("blur")
+      let top = panel.field("Padding top")
+      need(row())
+      need(top)
+      need(rowMessage())
+      # The row: written as typed, one undo entry, shown as written. (A
+      # custom property the project defines no token for, so the row stays a
+      # literal row rather than a bound one.)
+      typeRow("var(--pad)")
+      check vm.value("padding-top") == "var(--pad)"
+      check vm.stacks == (1, 0)
+      check vm.inspector.undoStack.val[^1].record.newValue == "var(--pad)"
+      check textOf(rowMessage()) == ""
+      check r.inputOf(row()) == "var(--pad)"
+      check r.inputOf(top) == "var(--pad)"
+      vm.write()
+      check foundation[] == withCardRule(
+        "padding: 18px; padding-top: var(--pad);")
+      # Upper case and a fallback are written as typed too.
+      typeRow("VAR(--pad, 12px)")
+      check vm.value("padding-top") == "VAR(--pad, 12px)"
+      check vm.stacks == (2, 0)
+      vm.write()
+      # `2 px` is two values: refused with the reason the text path gives,
+      # nothing staged, and the field shows the source's value again.
+      let reason = vm.propertyValueCommitRefusal("padding-top", "2 px",
+        sskSharedClass)
+      # It names the space (numvar review R9), on the text path as here.
+      check reason == "`2 px`: a unit must touch its number (write `2px`)."
+      check vm.commitInspectorValue("padding-top", "2 px", sskSharedClass).message == reason
+      typeRow("2 px")
+      check vm.stacks == (2, 0)
+      check vm.inspector.pendingSourceEdits.val.len == 0
+      check textOf(rowMessage()) == reason
+      check r.inputOf(row()) == "VAR(--pad, 12px)"
+      check vm.value("padding-top") == "VAR(--pad, 12px)"
+      # The box field refuses it with the same reason.
+      r.commitField(panel, "Padding top", "2 px")
+      check textOf(panel.boxMessage) == "Padding top: " & reason
+      check vm.stacks == (2, 0)
+      # A number typed over the var() is written, even the row's old number.
+      typeRow("18")
+      check vm.value("padding-top") == "18px"
+      check vm.stacks == (3, 0)
+      vm.write()
+      # Undo goes back through each write.
+      check vm.runEditorCommand(eckUndo).status == ecsSucceeded
+      vm.write()
+      check vm.value("padding-top") == "VAR(--pad, 12px)"
+      check r.inputOf(row()) == "VAR(--pad, 12px)"
+      check vm.runEditorCommand(eckUndo).status == ecsSucceeded
+      vm.write()
+      check vm.runEditorCommand(eckUndo).status == ecsSucceeded
+      vm.write()
+      check foundation[] == DemoFoundationInitialSource
+      check r.inputOf(row()) == "18"
+      dispose()
+
+proc numericRow(panel: MockNode; property: string): MockNode =
+  ## The numeric property row that edits ``property``.
+  proc walk(node: MockNode): MockNode =
+    if node == nil: return nil
+    if node.kind == mnkElement and
+        node.attributes.getOrDefault("data-property-row-css-property") == property and
+        node.attributes.getOrDefault("data-property-row-kind") == "numeric":
+      return node
+    for child in node.children:
+      let found = walk(child)
+      if found != nil: return found
+  walk(panel)
+
+suite "a numeric row shows a value that is not a number as written":
+  # numvar review R1 and R3. A keyword or a reference the source holds is
+  # what the row shows -- after the row writes it, after an undo or a redo
+  # puts it back and after the row is rebuilt -- as a native project's row
+  # and a box field show it (editor spec "Visual box model": "any other
+  # unit, keyword or function as written"); a number typed over it is
+  # written, never dropped as "the value already in place" (isonim-pm issue
+  # 2026-11-22). Through the example's production writer.
+  proc input(panel: MockNode; property: string): MockNode =
+    findByAttr(panel.numericRow(property), "data-property-row-input", "true")
+  proc message(panel: MockNode; property: string): string =
+    textOf(findByAttr(panel.numericRow(property), "data-property-row-message", "true"))
+  proc typeRow(r: MockRenderer; panel: MockNode; property, text: string) =
+    let node = panel.input(property)
+    r.setInputValue(node, text)
+    node.fireEvent("change")
+    if panel.input(property) == node: node.fireEvent("blur")
+  proc chooseLocal(panel: MockNode; property: string) =
+    let chip = findByAttr(panel.numericRow(property), "aria-label",
+      "Apply local instance scope for " & property)
+    check chip != nil
+    if chip != nil: chip.fireEvent("click")
+
+  test "a CSS-wide keyword typed into a padding row is shown; the number shown before it is written":
+    createRoot proc(dispose: proc()) =
+      let r = MockRenderer()
+      let foundation = new(string)
+      foundation[] = DemoFoundationInitialSource
+      let vm = boxVm(foundation)
+      let panel = renderInspectorPanel[MockRenderer, MockNode](r, vm)
+      need(panel.input("padding-top"))
+      check r.inputOf(panel.input("padding-top")) == "18"
+      for keyword in ["inherit", "initial", "unset"]:
+        checkpoint keyword
+        r.typeRow(panel, "padding-top", keyword)
+        check vm.value("padding-top") == keyword
+        check r.inputOf(panel.input("padding-top")) == keyword
+        check r.inputOf(panel.field("Padding top")) == keyword
+        vm.write()
+      check vm.stacks == (3, 0)
+      # 18 is the number the row held before the keywords: it is written.
+      r.typeRow(panel, "padding-top", "18")
+      check vm.value("padding-top") == "18px"
+      check vm.stacks == (4, 0)
+      check panel.message("padding-top") == ""
+      vm.write()
+      # Undo and redo put the keyword back, shown as written.
+      check vm.runEditorCommand(eckUndo).status == ecsSucceeded
+      vm.write()
+      check vm.value("padding-top") == "unset"
+      check r.inputOf(panel.input("padding-top")) == "unset"
+      check vm.runEditorCommand(eckRedo).status == ecsSucceeded
+      vm.write()
+      check r.inputOf(panel.input("padding-top")) == "18"
+      check vm.runEditorCommand(eckUndo).status == ecsSucceeded
+      vm.write()
+      # A rebuilt panel shows the keyword too.
+      let again = renderInspectorPanel[MockRenderer, MockNode](r, vm)
+      check r.inputOf(again.input("padding-top")) == "unset"
+      # Retyping the keyword is the value already in place: nothing is
+      # written, and a reason shown for an earlier refusal is cleared.
+      r.typeRow(panel, "padding-top", "2 px")
+      check panel.message("padding-top").len > 0
+      check vm.stacks == (3, 1)
+      r.typeRow(panel, "padding-top", "unset")
+      check vm.stacks == (3, 1)
+      check panel.message("padding-top") == ""
+      # The unit chip has nothing to change on a keyword, and says so.
+      findByAttr(panel.numericRow("padding-top"), "data-property-row-unit",
+        "true").fireEvent("click")
+      check vm.stacks == (3, 1)
+      check panel.message("padding-top") ==
+        "Type a numeric value to replace this expression."
+      dispose()
+
+  test "width `auto` is shown as `auto`, and `0` typed over it is written":
+    createRoot proc(dispose: proc()) =
+      let r = MockRenderer()
+      let foundation = new(string)
+      foundation[] = DemoFoundationInitialSource
+      let vm = boxVm(foundation, alsoMapped = @["width"])
+      let panel = renderInspectorPanel[MockRenderer, MockNode](r, vm)
+      need(panel.input("width"))
+      # The shared class scope does not write this property family; the
+      # local instance does.
+      panel.chooseLocal("width")
+      vm.write()
+      let (undo0, _) = vm.stacks
+      r.typeRow(panel, "width", "auto")
+      check vm.value("width") == "auto"
+      check r.inputOf(panel.input("width")) == "auto"
+      check vm.stacks == (undo0 + 1, 0)
+      vm.write()
+      r.typeRow(panel, "width", "0")
+      check vm.value("width") == "0px"
+      check vm.stacks == (undo0 + 2, 0)
+      check r.inputOf(panel.input("width")) == "0"
+      vm.write()
+      check vm.runEditorCommand(eckUndo).status == ecsSucceeded
+      vm.write()
+      check r.inputOf(panel.input("width")) == "auto"
+      dispose()
+
+  test "an opacity that is not a number is shown as written, not as 100%":
+    createRoot proc(dispose: proc()) =
+      let r = MockRenderer()
+      let foundation = new(string)
+      foundation[] = DemoFoundationInitialSource
+      var element = boxElement()
+      element.properties.add cardProperty("opacity", "var(--fade)")
+      let vm = boxVm(foundation, element = element, alsoMapped = @["opacity"])
+      let panel = renderInspectorPanel[MockRenderer, MockNode](r, vm)
+      need(panel.input("opacity"))
+      check r.inputOf(panel.input("opacity")) == "var(--fade)"
+      # Choosing the local instance re-commits the value the row shows:
+      # the reference, not the number the section reads for it.
+      panel.chooseLocal("opacity")
+      check vm.value("opacity") == "var(--fade)"
+      vm.write()
+      let (undo0, _) = vm.stacks
+      r.typeRow(panel, "opacity", "50")
+      check vm.value("opacity") == "0.5"
+      check r.inputOf(panel.input("opacity")) == "50"
+      vm.write()
+      r.typeRow(panel, "opacity", "inherit")
+      check vm.value("opacity") == "inherit"
+      check r.inputOf(panel.input("opacity")) == "inherit"
+      check vm.stacks == (undo0 + 2, 0)
+      vm.write()
+      check vm.runEditorCommand(eckUndo).status == ecsSucceeded
+      vm.write()
+      check vm.runEditorCommand(eckUndo).status == ecsSucceeded
+      vm.write()
+      check vm.value("opacity") == "var(--fade)"
+      check r.inputOf(panel.input("opacity")) == "var(--fade)"
+      dispose()

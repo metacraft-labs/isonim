@@ -14,6 +14,7 @@ import isonim/core/computation
 import isonim/dsl/ui
 import isonim/editor/types
 import isonim/editor/numeric_precision
+import isonim/editor/numeric_expression
 import isonim/editor/viewmodels
 import isonim/editor/views/widgets/property_commit
 import isonim/editor/views/widgets/property_row
@@ -75,6 +76,9 @@ proc mountSectionAppearance*[R, E](r: R; parent: E; vm: EditorVM) =
     let authored = opacityAuthoredValue()
     if authored.len == 0: return ""
     if authored.strip().endsWith("%"): return authored.strip()
+    # A value that is not a number (`var(--a)`, `calc(0.5)`) is shown as
+    # written, as every numeric row shows one; only a ratio is a percentage.
+    if parseNumericDimension(authored.strip()).value.isNone: return authored.strip()
     formatExactNumber(opacityPercent(parseLeadingFloat(authored, 1.0))) & "%"
   discard r.mountPropertyRowPair(parent,
     propertyRowNumeric(
