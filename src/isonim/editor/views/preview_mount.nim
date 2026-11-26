@@ -19,7 +19,9 @@
 # stand-in natively, and everything DOM-shaped here happens inside `{.emit.}`.
 # Importing `std/dom` unconditionally broke every native test that reaches a
 # view, because that module refuses to compile off the JavaScript platform.
-import ../../core/owner
+import std/options
+import ../../core/[owner, signals, computation, batch]
+import ../../services/[async_value, streams]
 import ./view_lifecycle
 import ../types
 import ../preview_identity
@@ -33,10 +35,21 @@ type
     dispose*: proc()
     lastStory*: StoryRef
     documentGeneration*: int
-    readyDocumentGeneration*: int
+      ## The number of the document last requested. It is stamped into the
+      ## document, because a frame's `load` event does not say which srcdoc
+      ## loaded, and it makes a request of the same markup a new question.
     mountedDocumentGeneration*: int
     ownerDisposed*: bool
-    cancelLoad: proc()
+    requestedDocument: Signal[Option[int]]
+      ## The document whose load is awaited (`none`: no document).
+    documentLoad: AsyncValue[seq[int]]
+      ## The answer to "has the requested document loaded": `ready` once it
+      ## has. A new request replaces the wait for the previous document,
+      ## whose load listener the stream's cancellation removes, and the
+      ## view's disposal ends it, so a load of an earlier document is never
+      ## taken for the current one.
+    observeDocument: proc(revision: int; loaded: StreamEmitter[int])
+      ## Waits for the requested document in the frame of the last request.
     pendingMount: proc()
     generation*: int
       ## Bumped on every mount request. A pending mount that is waiting for a
@@ -51,35 +64,52 @@ proc cancelPendingPreviewMount*(state: PreviewMountState) =
   state.generation = state.generation + 1
   state.pendingMount = nil
 
+proc readyDocumentGeneration*(state: PreviewMountState): int =
+  ## The requested document's number once it has loaded, else 0 (untracked).
+  if state.ownerDisposed: return 0
+  if untrack(proc(): bool = state.documentLoad.ready): state.documentGeneration
+  else: 0
+
 proc newPreviewMountState*(): PreviewMountState =
-  result = PreviewMountState()
+  result = PreviewMountState(requestedDocument: createSignal(none(int)))
   let state = result
+  state.documentLoad = createAsyncStream(
+    proc(): Option[int] = state.requestedDocument.val,
+    proc(revision: Option[int]): ServiceStream[int] =
+      let observe = state.observeDocument
+      newServiceStream(proc(loaded: StreamEmitter[int]) =
+        observe(revision.get, loaded)))
+  # A mount that waits for its document runs once the document has loaded.
+  # In an effect rather than in the answer's completion hook, which runs
+  # inside a batch: the project's own writes during the mount must take
+  # effect before the mount re-applies the pending declarations, as they do
+  # when the document was already loaded.
+  createEffect proc() =
+    if state.documentLoad.ready:
+      untrack(proc() =
+        if state.pendingMount != nil: state.pendingMount())
   onCleanup proc() =
     state.ownerDisposed = true
     state.cancelPendingPreviewMount()
-    if state.cancelLoad != nil:
-      state.cancelLoad()
-      state.cancelLoad = nil
     if state.dispose != nil:
       state.dispose()
       state.dispose = nil
 
-proc observeRequestedDocument[E](frame: E; state: PreviewMountState;
-    revision: int): proc() =
+proc observeRequestedDocument[E](frame: E; revision: int;
+    loaded: StreamEmitter[int]) =
+  ## Finishes `loaded` when document `revision` has loaded in `frame`; its
+  ## cancellation removes the listener. A load after the stream has ended or
+  ## was cancelled finishes nothing (stream protocol).
   when isDomViewHost(E):
-    let ready = proc() =
-      if state.ownerDisposed or state.documentGeneration != revision: return
-      state.readyDocumentGeneration = revision
-      if state.pendingMount != nil: state.pendingMount()
-    {.emit: [result, " = ", """
+    let ready = proc() = loaded.finish()
+    var stop: proc()
+    {.emit: [stop, " = ", """
       (function (frame, revision, ready) {
-        let live = true;
         function onPreviewMountDocumentLoad() {
-          if (!live || frame.__isonimViewDisposed || !frame.isConnected) return;
+          if (frame.__isonimViewDisposed || !frame.isConnected) return;
           const doc = frame.contentDocument;
           if (!doc || doc.readyState !== 'complete' || !doc.body ||
               doc.querySelector('meta[name="isonim-mount-document"]')?.content !== String(revision)) return;
-          live = false;
           frame.removeEventListener('load', onPreviewMountDocumentLoad);
           ready();
         }
@@ -87,13 +117,15 @@ proc observeRequestedDocument[E](frame: E; state: PreviewMountState;
         // request. An earlier navigation's load cannot satisfy this revision.
         frame.addEventListener('load', onPreviewMountDocumentLoad);
         return function () {
-          live = false;
           frame.removeEventListener('load', onPreviewMountDocumentLoad);
         };
       })(""", frame, ", ", revision, ", ", ready, ");"].}
+    loaded.onCancel(stop)
   else:
+    # Logical renderer hosts have no load to wait for.
     discard frame
-    state.readyDocumentGeneration = revision
+    discard revision
+    loaded.finish()
 
 proc requestedPreviewMountDocument*[E](frame: E; state: PreviewMountState;
     html: string): string =
@@ -101,16 +133,19 @@ proc requestedPreviewMountDocument*[E](frame: E; state: PreviewMountState;
   ## per requested document, not the latest render effect's changed boolean.
   if state.ownerDisposed: return html
   state.cancelPendingPreviewMount()
-  if state.cancelLoad != nil:
-    state.cancelLoad()
-    state.cancelLoad = nil
   if state.dispose != nil:
     state.dispose()
     state.dispose = nil
   state.documentGeneration = state.documentGeneration + 1
-  state.readyDocumentGeneration = 0
+  state.observeDocument = proc(revision: int; loaded: StreamEmitter[int]) =
+    observeRequestedDocument(frame, revision, loaded)
+  # Asking about the new document replaces the wait for the previous one.
+  # Called as a procedure: in a generic, Nim 2.2 resolves the `.val =`
+  # setter sugar only in the instantiating module, which may not import it
+  # (https://github.com/nim-lang/Nim/issues/26402).
+  `val=`(state.requestedDocument,
+    if html.len == 0: none(int) else: some(state.documentGeneration))
   if html.len == 0: return ""
-  state.cancelLoad = observeRequestedDocument(frame, state, state.documentGeneration)
   stampedPreviewDocument(html, "<meta name=\"isonim-mount-document\" content=\"" &
     $state.documentGeneration & "\">")
 
@@ -220,10 +255,10 @@ proc mountPreviewInto*[E](frame: E; story: StoryRef; hook: PreviewMountHook;
   let mine = state.generation
   let revision = state.documentGeneration
   let current = stillCurrent
+  # Runs at once when the document has loaded, else from the effect in
+  # `newPreviewMountState` once it has; a new document request clears it.
   state.pendingMount = proc() =
-    if state.ownerDisposed or state.generation != mine or
-        state.documentGeneration != revision or
-        (current != nil and not current()): return
+    if state.generation != mine or (current != nil and not current()): return
     state.pendingMount = nil
     mountNow(frame, story, hook, state)
     state.mountedDocumentGeneration = revision
