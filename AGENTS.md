@@ -61,7 +61,23 @@ just test-browser-editor
 just core-bench        # reactive-core micro-benchmark (JS, node), one line per case
 just size-check        # benchmark app main.js raw/min/gzip vs benchmarks/baseline.json
 just core-gate-bench   # both; run with test-c and test-js when the core changes
+just bench-ab <rev-a> <rev-b> # browser suite (js-framework-benchmark), A/B interleaved
 ```
+
+`just bench-ab` (Linux; the dev shell provides `chromium`) builds the
+benchmark app at both revisions in throwaway worktrees, then runs the
+CPU, memory and size/first-paint benchmarks of the pinned
+js-framework-benchmark runner for both builds and `keyed/solid`, alternating
+on one host, and prints median, spread and a noise verdict per benchmark
+(rule in `benchmarks/bench_ab_report.py`). It exits 1 when B is slower beyond
+noise or its bundle is larger, and 2 when a selected benchmark has no result.
+`BENCH_AB_ROUNDS` (6) and `BENCH_AB_COUNT` (5) set the sample counts;
+`BENCH_AB_PATCH_B=<file>` measures an uncommitted change on top of B. Results
+go to `benchmarks/results/ab-*/` (ignored). Example:
+`repro exec -- just bench-ab 5a35eb01f8 origin/agents`. Chromium is launched
+with its sandbox (no `--no-sandbox`), so the host must let its zygote start;
+the report has been exercised on synthetic samples, not yet on a complete
+browser run.
 
 Focused editor checks used frequently:
 

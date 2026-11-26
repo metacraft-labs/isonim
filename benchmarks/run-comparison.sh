@@ -19,7 +19,11 @@ RESULTS_DIR="$SCRIPT_DIR/results"
 # comparison. Set BENCH_FRAMEWORKS to override.
 FRAMEWORKS_STR="${BENCH_FRAMEWORKS:-keyed/isonim keyed/isonim-hmr keyed/solid}"
 read -r -a FRAMEWORKS <<<"$FRAMEWORKS_STR"
-NUM_ITERATIONS="${BENCH_ITERATIONS:-5}"
+# Unset: the runner's own defaults (15 runs per CPU benchmark, 25 for select
+# row, 1 per memory benchmark). Set: passed as the runner's `--count`, which
+# sets the CPU, memory and startup run counts together (the runner at the
+# pinned tag has no separate per-kind flags).
+NUM_ITERATIONS="${BENCH_ITERATIONS:-}"
 
 # ---------------------------------------------------------------------------
 # Ensure chromium is available (from Nix dev shell)
@@ -41,9 +45,20 @@ export PUPPETEER_EXECUTABLE_PATH="$CHROME_BIN"
 # ---------------------------------------------------------------------------
 # Step 1: Clone the benchmark runner (one-time)
 # ---------------------------------------------------------------------------
+# The runner is pinned to a release tag of the upstream repository (one tag
+# per Chrome release it published results for). An unpinned clone of its
+# default branch is a moving target: since upstream commit 89c1c5c1 (merged
+# 2026-07-26) its root package.json requires eslint 10 next to an
+# eslint-plugin-react that accepts only eslint <= 9, so the `npm ci` below
+# fails with ERESOLVE (observed 2026-11-26). `chrome146` (2026-03-28) is the
+# newest tag before the first runs here (2026-04) and matches the Chromium 146
+# of the Nix dev shell. Override with BENCH_RUNNER_REV (a tag or branch name);
+# delete benchmarks/runner/ to re-clone after changing it.
+RUNNER_REV="${BENCH_RUNNER_REV:-chrome146}"
 if [ ! -d "$RUNNER_DIR" ]; then
-  echo "=== Cloning js-framework-benchmark ==="
-  git clone --depth 1 https://github.com/krausest/js-framework-benchmark.git "$RUNNER_DIR"
+  echo "=== Cloning js-framework-benchmark at $RUNNER_REV ==="
+  git clone --depth 1 --branch "$RUNNER_REV" \
+    https://github.com/krausest/js-framework-benchmark.git "$RUNNER_DIR"
 fi
 
 # ---------------------------------------------------------------------------
@@ -57,12 +72,6 @@ if [ ! -d "$RUNNER_DIR/node_modules" ]; then
   cd "$SCRIPT_DIR"
 fi
 
-# Early exit for setup-only mode
-if [ "${BENCH_SETUP_ONLY:-}" = "1" ]; then
-  echo "Setup complete. Runner installed at: $RUNNER_DIR"
-  exit 0
-fi
-
 # ---------------------------------------------------------------------------
 # Step 3: Build SolidJS entry (one-time)
 # ---------------------------------------------------------------------------
@@ -73,6 +82,13 @@ if [ ! -d "$SOLID_DIR/dist" ]; then
   npm ci
   npm run build-prod
   cd "$SCRIPT_DIR"
+fi
+
+# Early exit for setup-only mode (`just bench-setup`, and bench-ab.sh, which
+# needs the runner and the SolidJS reference entry but runs its own rounds).
+if [ "${BENCH_SETUP_ONLY:-}" = "1" ]; then
+  echo "Setup complete. Runner installed at: $RUNNER_DIR"
+  exit 0
 fi
 
 # ---------------------------------------------------------------------------
@@ -141,7 +157,12 @@ for fw in "${FRAMEWORKS[@]}"; do
   FRAMEWORK_ARGS+=("--framework" "$fw")
 done
 
-echo "=== Running benchmarks (${NUM_ITERATIONS} iterations) ==="
+COUNT_ARGS=()
+if [ -n "$NUM_ITERATIONS" ]; then
+  COUNT_ARGS=(--count "$NUM_ITERATIONS")
+fi
+
+echo "=== Running benchmarks (${NUM_ITERATIONS:-runner default} iterations) ==="
 echo "    Frameworks: ${FRAMEWORKS[*]}"
 echo "    Chrome: $CHROME_BIN"
 echo ""
@@ -151,9 +172,7 @@ npm run bench -- \
   "${FRAMEWORK_ARGS[@]}" \
   --headless \
   --chromeBinary "$CHROME_BIN" \
-  --numIterationsForCPUBenchmarks "$NUM_ITERATIONS" \
-  --numIterationsForMemBenchmarks 1 \
-  --numIterationsForStartupBenchmark 1
+  "${COUNT_ARGS[@]}"
 
 # ---------------------------------------------------------------------------
 # Step 8: Generate results

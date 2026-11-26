@@ -1395,7 +1395,7 @@ bench-test:
 # Set up the krausest benchmark runner (clone + install, one-time)
 bench-setup:
     @echo "Setting up benchmark runner..."
-    BENCH_SETUP_ONLY=1 bash benchmarks/run-comparison.sh || true
+    BENCH_SETUP_ONLY=1 bash benchmarks/run-comparison.sh
     @echo "Runner ready at benchmarks/runner/"
 
 # Run IsoNim vs SolidJS comparison benchmark. Builds both isonim
@@ -1407,6 +1407,14 @@ bench-compare: bench-build bench-build-hmr
 # Run comparison with fewer iterations (quick check)
 bench-compare-quick: bench-build bench-build-hmr
     BENCH_ITERATIONS=3 bash benchmarks/run-comparison.sh
+
+# Interleaved A/B run of the browser suite: two revisions (built in
+# throwaway worktrees) and SolidJS, alternating on one host, with median,
+# spread and a noise verdict per benchmark (rule in
+# benchmarks/bench_ab_report.py). Exits 1 when B is slower than A beyond
+# noise or its bundle is larger.
+bench-ab rev_a rev_b:
+    bash benchmarks/bench-ab.sh {{rev_a}} {{rev_b}}
 
 # View benchmark results (starts HTTP server)
 bench-results:
