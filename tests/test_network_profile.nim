@@ -106,6 +106,31 @@ suite "network profiles":
     check log.chunks == @["a", "b", "c"]
     check log.done == 1
 
+  test "a delivered chunk stays alive while the subscriber runs":
+    # The chunks are built at run time (string literals are never freed
+    # under ARC/ORC, so they would hide the defect), and the subscriber
+    # allocates a string of the same size before it reads each chunk. If
+    # the simulator released a chunk before handing it over, that
+    # allocation would reuse its memory and the chunk would read as it.
+    # Run under ORC, ARC and refc (the Justfile builds all three).
+    let ctx = newFakeAsyncContext()
+    ctx.install()
+    defer: ctx.uninstall()
+    let sim = newNetworkSimulator(InstantNetwork)
+    var got: seq[string]
+    let source = pacedStream(chunkText("abcdefghijkl", 4),
+      intervalMs = 50)
+    var sink: StreamSink[string]
+    sink.onChunk = proc(c: string) =
+      let noise = repeat("Z", 4)
+      got.add c
+      check noise == "ZZZZ"
+    sink.onDone = proc() = discard
+    sink.onError = proc(message: string) = discard
+    discard sim.simulateStream("s", source, textBytes)(sink)
+    ctx.step(200)
+    check got == @["abcd", "efgh", "ijkl"]
+
   test "cancelling a wrapped stream cancels the source":
     let ctx = newFakeAsyncContext()
     ctx.install()

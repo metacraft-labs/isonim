@@ -196,7 +196,15 @@ proc simulateStream*[T](sim: NetworkSimulator; opName: string;
       timer = scheduleAt(wait.int, proc() =
         timer = nil
         if queue.len == 0: return
-        let item = queue[0]
+        # Move the item out of the queue before removing its slot, so the
+        # local owns it. The obvious `let item = queue[0]` followed by
+        # `queue.delete(0)` is miscompiled by Nim 2.2 under ARC and ORC:
+        # cursor inference does not see that `queue`, a variable this
+        # closure captures, is changed through the closure's environment,
+        # so `item` becomes a borrowed view of the slot, the delete frees
+        # the chunk, and the subscriber is handed freed memory. A move
+        # does not depend on that inference.
+        let item = move(queue[0])
         queue.delete(0)
         deliver(item)
         pump())
