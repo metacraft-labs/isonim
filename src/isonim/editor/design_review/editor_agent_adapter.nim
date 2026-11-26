@@ -25,7 +25,8 @@
 import std/[json, jsonutils]
 
 import nim_agents
-import isonim/core/signals
+import isonim/core/[signals, batch]
+import isonim/services/streams
 import isonim/editor/agent_harbor
 import isonim/editor/types
 import isonim/editor/viewmodels
@@ -99,54 +100,67 @@ proc agentPromptContextJson*(context: AgentPromptContext): JsonNode =
   result["platform"] = %($context.platform)
   result["backend"] = %($context.backend)
 
+proc settleTurnEnd(chat: AgentChatVM; stopReason: string) =
+  ## The turn's terminal event: restore an unadmitted draft and record how
+  ## the turn ended.
+  if not chat.promptAdmitted and chat.inputText.val.len == 0:
+    chat.inputText.val = chat.pendingPromptText
+  if chat.promptAdmitted: chat.pendingPromptText = ""
+  chat.stopReason.val = stopReason
+  chat.sessionStatus.val = asReady
+  if stopReason == "cancelled":
+    chat.settleAgentReply(aekCancelled)
+    chat.connectionState.val = $acsCancelled
+  elif stopReason == "error":
+    chat.settleAgentReply(aekError)
+    chat.connectionState.val = $acsError
+    chat.sessionStatus.val = asError
+  else:
+    chat.settleAgentReply(aekCompleted)
+    chat.connectionState.val = $acsCompleted
+
 proc installAdapterCallbacks*(client: BrowserAgentClient; chat: AgentChatVM;
-    generation = -1) =
-  ## Wire ``client.onUpdate`` / ``onEnd`` / ``onError`` to push
-  ## :type:`AgentEvent` instances through ``applyAgentEvent``.  Exposed
-  ## so the VM tests can call this against a fake client.
+    turn: StreamEmitter[string] = nil) =
+  ## Wire ``client.onUpdate`` / ``onEnd`` / ``onInterrupted`` / ``onError``
+  ## to the chat.  With ``turn`` they belong to that turn's stream and fall
+  ## silent once it has ended or was cancelled, so a transport that
+  ## delivers late for an earlier turn changes nothing; without, they
+  ## report connection events outside a turn.  Exposed so the VM tests can
+  ## call this against a fake client.
   let capturedChat = chat
+  proc live(): bool = not client.closed and (turn == nil or turn.isActive)
   client.onUpdate = proc(payload: cstring) {.closure.} =
-    if client.closed or (generation >= 0 and capturedChat.promptGeneration != generation): return
-    let evt = agentEventFromSse($payload)
-    capturedChat.applyAgentEvent(evt)
+    if not live(): return
+    capturedChat.applyAgentEvent(agentEventFromSse($payload))
   client.onEnd = proc(stopReason: cstring) {.closure.} =
-    if client.closed or (generation >= 0 and capturedChat.promptGeneration != generation): return
-    capturedChat.promptInFlight = false
-    if not capturedChat.promptAdmitted and capturedChat.inputText.val.len == 0:
-      capturedChat.inputText.val = capturedChat.pendingPromptText
-    if capturedChat.promptAdmitted: capturedChat.pendingPromptText = ""
-    capturedChat.stopReason.val = $stopReason
-    capturedChat.sessionStatus.val = asReady
-    if $stopReason == "cancelled":
-      capturedChat.settleAgentReply(aekCancelled)
-      capturedChat.connectionState.val = $acsCancelled
-    elif $stopReason == "error":
-      capturedChat.settleAgentReply(aekError)
-      capturedChat.connectionState.val = $acsError
-      capturedChat.sessionStatus.val = asError
-    else:
-      capturedChat.settleAgentReply(aekCompleted)
-      capturedChat.connectionState.val = $acsCompleted
+    if not live(): return
+    # One frame: the chat shows the end and admits the next prompt together.
+    batch proc() =
+      capturedChat.settleTurnEnd($stopReason)
+      if turn != nil:
+        turn.emit($stopReason)
+        turn.finish()
   client.onInterrupted = proc(message: cstring) {.closure.} =
-    if client.closed or (generation >= 0 and capturedChat.promptGeneration != generation): return
-    # EOF is not evidence that the backend turn ended. Keep prompt admission
-    # blocked while allowing explicit chat closure through the normal adapter.
-    capturedChat.promptInFlight = true
+    if not live(): return
+    # EOF is not evidence that the backend turn ended: the turn's stream stays
+    # open, which keeps prompt admission blocked while allowing explicit chat
+    # closure through the normal adapter.
     capturedChat.connectionState.val = "interrupted"
     capturedChat.sessionStatus.val = asError
     capturedChat.messages.update proc(prev: seq[ChatMessage]): seq[ChatMessage] =
       result = prev
       result.add ChatMessage(kind: cmkError, text: $message, timestamp: 0.0)
   client.onError = proc(message: cstring) {.closure.} =
-    if client.closed or (generation >= 0 and capturedChat.promptGeneration != generation): return
-    capturedChat.promptInFlight = false
-    if not capturedChat.promptAdmitted and capturedChat.inputText.val.len == 0:
-      capturedChat.inputText.val = capturedChat.pendingPromptText
-    capturedChat.connectionState.val = "failed"
-    capturedChat.sessionStatus.val = asError
-    capturedChat.messages.update proc(prev: seq[ChatMessage]): seq[ChatMessage] =
-      result = prev
-      result.add ChatMessage(kind: cmkError, text: $message, timestamp: 0.0)
+    if not live(): return
+    batch proc() =
+      if not capturedChat.promptAdmitted and capturedChat.inputText.val.len == 0:
+        capturedChat.inputText.val = capturedChat.pendingPromptText
+      capturedChat.connectionState.val = "failed"
+      capturedChat.sessionStatus.val = asError
+      capturedChat.messages.update proc(prev: seq[ChatMessage]): seq[ChatMessage] =
+        result = prev
+        result.add ChatMessage(kind: cmkError, text: $message, timestamp: 0.0)
+      if turn != nil: turn.fail($message)
 
 proc configureAgentAdaptersWithClient*(chat: AgentChatVM;
     client: BrowserAgentClient;
@@ -170,30 +184,22 @@ proc configureAgentAdaptersWithClient*(chat: AgentChatVM;
         if not ok: operationError(message)
         done(ok))
 
-  let promptAdapter: AgentPromptAdapter =
-    proc(prompt: string; context: AgentPromptContext): bool {.closure.} =
-      ## Session-on-demand: mint a session on first prompt, then
-      ## reuse it for the rest of the editor's lifetime.  ``submitPrompt``
-      ## is non-blocking; ``true`` is returned the moment the request is
-      ## dispatched.
-      if capturedClient.closed or capturedChat.promptInFlight or
-          capturedChat.closingSession: return false
-      capturedChat.promptInFlight = true
-      let generation = capturedChat.promptGeneration
-      installAdapterCallbacks(capturedClient, capturedChat, generation)
-      var submitted: seq[EditRecord]
-      for edit in context.accumulatedEdits: submitted.add edit
+  proc turnStream(turn: AgentTurn): ServiceStream[string] =
+    ## One turn over the client's callbacks: session-on-demand (mint a
+    ## session on the first prompt, then reuse it for the rest of the
+    ## editor's lifetime) and a non-blocking ``submitPrompt``.
+    newServiceStream[string](proc(e: StreamEmitter[string]) =
+      installAdapterCallbacks(capturedClient, capturedChat, e)
+      let submitted = turn.context.accumulatedEdits
       capturedClient.onAdmitted = proc() =
-        if capturedClient.closed: return
-        capturedChat.acknowledgeAgentPrompt(generation, submitted)
+        if capturedClient.closed or not e.isActive: return
+        capturedChat.admitAgentTurn(submitted)
       if capturedClient.activeSessionId.len > 0:
         capturedChat.connectionState.val = $acsStreaming
-        capturedClient.submitPrompt(
-          capturedClient.activeSessionId, prompt, $context.agentPromptContextJson)
-        return true
+        capturedClient.submitPrompt(capturedClient.activeSessionId,
+          turn.prompt, $turn.context.agentPromptContextJson)
+        return
       capturedChat.connectionState.val = $acsConnecting
-      let promptCopy = prompt
-      let contextCopy = $context.agentPromptContextJson
       creating = true
       capturedClient.createSession(proc(sessionId: cstring) {.closure.} =
         creating = false
@@ -216,7 +222,7 @@ proc configureAgentAdaptersWithClient*(chat: AgentChatVM;
         capturedClient.activeSessionId = sid
         capturedChat.controlConversationId.val = sid
         if pendingClose != nil:
-          capturedChat.promptInFlight = false
+          capturedChat.endAgentTurn()
           let done = pendingClose
           pendingClose = nil
           closeBackend(done)
@@ -224,12 +230,20 @@ proc configureAgentAdaptersWithClient*(chat: AgentChatVM;
         capturedChat.connectionState.val = $acsStreaming
         # Session metadata is authoritative even on the first turn, whose
         # context was collected before the asynchronous creation response.
-        var delivered = parseJson(contextCopy)
+        var delivered = turn.context.agentPromptContextJson
         delivered["backend"] = %($capturedChat.backend.val)
-        capturedClient.submitPrompt(sid, promptCopy, $delivered))
+        capturedClient.submitPrompt(sid, turn.prompt, $delivered)))
+
+  let promptAdapter: AgentPromptAdapter =
+    proc(prompt: string; context: AgentPromptContext): bool {.closure.} =
+      ## ``true`` the moment the turn is asked; it runs asynchronously.
+      if capturedClient.closed or capturedChat.promptInFlight or
+          capturedChat.closingSession: return false
+      capturedChat.askAgentTurn(prompt, context)
       true
 
   chat.configureAgentAdapters(promptAdapter, nil, backend)
+  chat.configureAgentTurnSource(turnStream)
   chat.asyncAgentAdapter = true
   chat.cancelAsyncAdapter = proc() =
     if capturedClient.activeSessionId.len == 0:

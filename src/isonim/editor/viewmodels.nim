@@ -9,6 +9,7 @@ import std/[algorithm, hashes, json, math, options, sequtils, strutils, tables]
 from std/unicode import runeLen, runeSubStr
 import isonim/core/[signals, computation, batch]
 import isonim/viewmodel
+import isonim/services/[async_value, streams]
 import isonim/editor/types
 import isonim/editor/preview_zoom
 import isonim/editor/preview_fullscreen
@@ -371,6 +372,23 @@ type
     variantMatrix*: Memo[seq[ComponentVariantMatrixCell]]
     hasDiagnostics*: Memo[bool]
 
+  AgentTurn* = object
+    ## One prompt sent through a turn source: the question a turn answers.
+    ## `number` tells a turn from the one before it, so the same text sent
+    ## twice is two turns.
+    number*: int
+    prompt*: string
+    context*: AgentPromptContext
+
+  AgentTurnSource* = proc(turn: AgentTurn): ServiceStream[string] {.closure.}
+    ## Starts a turn. The stream yields the turn's stop reason and then
+    ## finishes; it fails when the transport fails, and stays open when
+    ## delivery ended without a terminal event (the backend may still be
+    ## running). Cancelling it silences the transport's callbacks.
+
+  AgentTurnCall = ref object
+    source: AgentTurnSource
+
   AgentChatVM* = ref object of ViewModel
     cancelSupported*: Signal[bool]
     activity*: Signal[ActivityTimeline]
@@ -401,6 +419,11 @@ type
     cancelAdapter*: AgentCancelAdapter
     asyncAgentAdapter*: bool
     promptInFlightState: Signal[bool]
+      ## Set by an adapter that tracks its own flight instead of a turn source.
+    turnQuestion: Signal[Option[AgentTurn]]
+    turnCall: AgentTurnCall
+    turn*: AsyncValue[seq[string]]
+      ## The current turn of a turn source (`configureAgentTurnSource`).
     closingSessionState: Signal[bool]
     cancelAsyncAdapter*: proc() {.closure.}
     closeAdapter*: proc(done: proc(ok: bool) {.closure.}) {.closure.}
@@ -744,10 +767,18 @@ proc setSectionExpanded*(inspector: InspectorVM; section: InspectorSection;
 proc recordEditorTiming*(editor: EditorVM; kind: EditorPerformanceBudgetKind;
     durationMs: int; detail: string)
 proc detachStyleClass*(editor: EditorVM; property: string): StyleOperationResult {.discardable.}
+proc agentTurnBusy(chat: AgentChatVM): bool =
+  ## A turn is asked and has neither finished nor failed (tracked).
+  if chat.turn == nil: return false
+  let status = chat.turn.status
+  status in {AsyncStatus.loading, AsyncStatus.pending} or
+    (status == AsyncStatus.ready and not chat.turn.done)
+
 proc promptInFlight*(chat: AgentChatVM): bool =
-  ## Preserve bool reads/writes while tracking every lifecycle transition.
+  ## The current turn is in flight, or an adapter without a turn source
+  ## says its prompt is.
   if chat.promptInFlightState == nil: chat.promptInFlightState = createSignal(false)
-  chat.promptInFlightState.val
+  chat.promptInFlightState.val or chat.agentTurnBusy()
 
 proc `promptInFlight=`*(chat: AgentChatVM; value: bool) =
   if chat.promptInFlightState == nil: chat.promptInFlightState = createSignal(false)
@@ -13535,15 +13566,37 @@ proc rebaseAgentProposedEdit*(editor: EditorVM; id: string): bool {.discardable.
       return editor.sendAgentPrompt()
   false
 
-proc acknowledgeAgentPrompt*(chat: AgentChatVM; generation: int;
-    submitted: seq[EditRecord]) =
-  ## Called only after this exact turn reaches the provider/durable input boundary.
-  if not chat.promptInFlight or chat.closingSession or
-      chat.promptGeneration != generation or chat.promptAdmitted: return
+proc admitAgentTurn*(chat: AgentChatVM; submitted: seq[EditRecord]) =
+  ## The current turn reached the provider/durable input boundary: the edits
+  ## it carried are consumed when they are still the queue's prefix.
+  if not chat.promptInFlight or chat.closingSession or chat.promptAdmitted: return
   chat.promptAdmitted = true
   let current = chat.accumulatedEdits.val
   if submitted.len <= current.len and current[0 ..< submitted.len] == submitted:
     chat.accumulatedEdits.val = current[submitted.len ..< current.len]
+
+proc acknowledgeAgentPrompt*(chat: AgentChatVM; generation: int;
+    submitted: seq[EditRecord]) =
+  ## `admitAgentTurn` for an adapter that tracks its own flight: the
+  ## admission counts only for the prompt numbered `generation`.
+  if chat.promptGeneration == generation: chat.admitAgentTurn(submitted)
+
+proc configureAgentTurnSource*(chat: AgentChatVM; source: AgentTurnSource) =
+  ## Turns asked with `askAgentTurn` are answered by `source`.
+  chat.turnCall.source = source
+
+proc askAgentTurn*(chat: AgentChatVM; prompt: string;
+    context: AgentPromptContext) =
+  ## Start a turn through the turn source; the one in flight is replaced.
+  let previous = untrack(proc(): Option[AgentTurn] = chat.turnQuestion.val)
+  let number = (if previous.isSome: previous.get.number else: 0) + 1
+  chat.turnQuestion.val = some(AgentTurn(number: number, prompt: prompt,
+    context: context))
+
+proc endAgentTurn*(chat: AgentChatVM) =
+  ## Stop waiting for the current turn: its stream is cancelled, and
+  ## nothing it delivers later reaches the chat.
+  chat.turnQuestion.val = none(AgentTurn)
 
 proc sendAgentPrompt*(editor: EditorVM): bool {.discardable.} =
   if editor.chat.inputText.val.strip.len > 0:
@@ -16196,9 +16249,18 @@ proc createAgentChatVM*(): AgentChatVM =
   let stopReason = createSignal("")
 
   let messageCount = createMemo[int](proc(): int = messages.val.len)
+  let turnQuestion = createSignal(none(AgentTurn))
+  let turnCall = AgentTurnCall()
+  let turn = createAsyncStream(proc(): Option[AgentTurn] = turnQuestion.val,
+    proc(question: Option[AgentTurn]): ServiceStream[string] =
+      if turnCall.source == nil: return nil
+      turnCall.source(question.get))
 
   AgentChatVM(
     promptInFlightState: createSignal(false),
+    turnQuestion: turnQuestion,
+    turnCall: turnCall,
+    turn: turn,
     closingSessionState: createSignal(false),
     cancelSupported: createSignal(false),
     activity: createSignal(ActivityTimeline()),

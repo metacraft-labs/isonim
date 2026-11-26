@@ -329,6 +329,47 @@ suite "EAC-M6 exact admission and complete project context":
       check not editor.chat.promptAdmitted
       dispose()
 
+  test "a turn ended while its transport is still open cannot change the next turn":
+    # An interrupted turn never delivers a terminal event, so only ending the
+    # turn (as closing the chat while its session is created does) releases
+    # admission. Its transport may still deliver afterwards; none of that may
+    # reach the next turn.
+    createRoot do (dispose: proc()):
+      let editor = createEditorVM()
+      let client = fakeClient()
+      client.activeSessionId = "persistent-session"
+      editor.chat.configureAgentAdaptersWithClient(client, absAgentHarbor)
+      editor.chat.inputText.val = "first"
+      check editor.sendAgentPrompt()
+      let oldEnd = client.onEnd
+      let oldError = client.onError
+      let oldInterrupted = client.onInterrupted
+      let oldUpdate = client.onUpdate
+      let oldAdmitted = client.onAdmitted
+      client.onInterrupted("Agent stream interrupted: EOF")
+      check editor.chat.promptInFlight
+      check editor.chat.connectionState.val == "interrupted"
+      editor.chat.inputText.val = "second"
+      check not editor.sendAgentPrompt()
+      editor.chat.endAgentTurn()
+      check not editor.chat.promptInFlight
+      check editor.sendAgentPrompt()
+      editor.chat.inputText.val = "newer unsent draft"
+      let before = editor.chat.messages.val
+      let beforeState = editor.chat.connectionState.val
+      oldUpdate("{\"sessionUpdate\":\"agent_message_chunk\",\"content\":{\"type\":\"text\",\"text\":\"late text\"}}")
+      oldAdmitted()
+      oldEnd("end_turn")
+      oldError("late HTTP failure")
+      oldInterrupted("late EOF")
+      check editor.chat.promptInFlight
+      check not editor.chat.promptAdmitted
+      check editor.chat.inputText.val == "newer unsent draft"
+      check editor.chat.messages.val == before
+      check editor.chat.connectionState.val == beforeState
+      check editor.chat.stopReason.val != "end_turn"
+      dispose()
+
   test "actual HTML class tokens exclude inactive markup and decode attributes before relevance":
     let html = """<!doctype html><!-- <i class='flex'> -->
       <script>const fake="<i class='flex'>";</script>
