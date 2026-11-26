@@ -25,13 +25,14 @@
 ## Test fixture: ``tests/test_editor_viewmodels.nim`` §"inspector
 ## section writeback".
 
-import std/[options, times, monotimes]
+import std/[options, strutils, times, monotimes]
 
 import isonim/core/signals
 import isonim/core/nondet
 import isonim/editor/types
 import isonim/editor/viewmodels
 import isonim/editor/editable_cells
+import isonim/editor/numeric_expression
 import isonim/editor/views/choice_row
 
 # --------------------------------------------------------------------------- #
@@ -806,7 +807,18 @@ proc inspectorRowWiring*(vm: EditorVM; property: string): InspectorRowWiring =
       # Existing synchronous adapters already provide authoring units in value.
       # Unitless display transforms (such as opacity percent) remain section-owned.
       let parsed = parseCssPropertyValue(capturedProperty, found.value)
-      if parsed.unit.len > 0: found.value else: "",
+      if parsed.unit.len > 0: return found.value
+      # A value that is not a number -- a reference or function
+      # (`var(--space)`, `calc(100% - 8px)`), a keyword (`auto`, `normal`,
+      # `inherit`) -- is shown as written by a numeric row, as a native
+      # project's authored value is and as a box field shows it (editor spec
+      # "Visual box model"): after the row commits it, after an undo or
+      # another write puts it back, and when the row is rebuilt. A number
+      # typed over it is then written. A unitless number stays
+      # section-owned (opacity's percentage, a line-height ratio).
+      let text = found.value.strip()
+      if text.len > 0 and parseNumericDimension(text).value.isNone: text
+      else: "",
     readOnlyReason: readOnlyReason,
     resetReason: proc(): string =
       let reason = readOnlyReason()

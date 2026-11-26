@@ -252,15 +252,37 @@ suite "property copy / paste / reset":
       cfg.clipboard = clipboard
       cfg.commitMessage = createSignal("")
       cfg.commitRejected = createSignal(0)
-      cfg.onCommitValue = proc(v: string) = commits.add v
+      # Stands for the inspector's commit as far as these cases reach it: the
+      # property's validation refuses what border-width cannot take, with
+      # the validator's reason.
+      var refused: seq[string]
+      cfg.onCommitValue = proc(v: string) =
+        let reasons = validateCssPropertyValue(PropertyInfo(name: "border-width",
+          directStyleAllowed: true), PropertyEditRequest(property: "border-width",
+          newValue: v, kind: pekCss), parseCssPropertyValue("border-width", v))
+        if reasons.len > 0:
+          refused.add v
+          cfg.commitMessage.val = reasons[0].message
+          cfg.commitRejected.val = cfg.commitRejected.val + 1
+        else:
+          cfg.commitMessage.val = ""
+          commits.add v
       let row = r.mountPropertyRow(host, cfg)
       row.fireEvent("contextmenu")
       let menu = findByAttr(row, "data-property-actions-menu", "true")
       need(menu)
+      # Pasted as if typed: text that is not a number goes to the row's
+      # commit, and the property's validation refuses it with its reason
+      # (editor spec "Property row pattern": "A value the target cannot take
+      # (a colour into a width) is refused with the reason, and nothing
+      # changes"; isonim-pm issue 2026-11-22).
       findByAttr(menu, "data-property-action", "paste").fireEvent("click")
       check commits.len == 0
+      check refused == @["#F8FAFC"]
       check cfg.numericValue.val == 1.0
-      check cfg.commitMessage.val == "Cannot paste #F8FAFC into Width."
+      check cfg.commitMessage.val ==
+        "`border-width` takes a width (a length, thin, medium or thick), not a colour."
+      check r.inputValue(findByAttr(row, "data-property-row-input", "true")) == "1"
       # A compatible value pastes through the same numeric commit.
       clipboard.val = PropertyClipboardEntry(property: "gap", value: "12px")
       row.fireEvent("contextmenu")
@@ -281,7 +303,16 @@ suite "property copy / paste / reset":
       row.fireEvent("contextmenu")
       findByAttr(menu, "data-property-action", "paste").fireEvent("click")
       check commits[^1] == "3PT"
-      check cfg.commitMessage.val == "Cannot paste 2deg into Width."
+      check refused[^1] == "2deg"
+      check cfg.commitMessage.val.len > 0
+      # A reference the property's validation accepts is written as typed,
+      # as a text row writes it.
+      clipboard.val = PropertyClipboardEntry(property: "width", value: "var(--stroke)")
+      row.fireEvent("contextmenu")
+      findByAttr(menu, "data-property-action", "paste").fireEvent("click")
+      check commits[^1] == "var(--stroke)"
+      check cfg.commitMessage.val == ""
+      check r.inputValue(findByAttr(row, "data-property-row-input", "true")) == "var(--stroke)"
       dispose()
 
   test "Reset is listed, disabled and says why; read-only rows refuse paste":

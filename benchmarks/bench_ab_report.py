@@ -18,14 +18,30 @@ plus the range of the per-round medians, which shows drift between rounds.
 
 Verdict rule (mechanical, applied to B against A on every metric):
   * ``slower`` / ``faster``: a two-sided Mann-Whitney U test of the pooled
-    samples gives p < ALPHA (0.01) AND the medians differ by at least
-    FLOOR (5 %) of A's median;
+    samples gives a raw p, the raw p values of all non-deterministic metrics
+    of the run are Holm-Bonferroni adjusted, and the metric's adjusted p is
+    < ALPHA (0.01) AND the medians differ by at least FLOOR (5 %) of A's
+    median;
   * ``noise`` otherwise.
 The test asks whether the two sample sets come from one distribution; the
 floor keeps a statistically clear but practically irrelevant shift (a few
 tenths of a millisecond, which a long run will detect) from being reported.
 Deterministic metrics (sizes) are compared exactly: any difference is
-reported as ``larger`` / ``smaller``.
+reported as ``larger`` / ``smaller``. They take no part in the adjustment.
+
+Why the adjustment: one run compares about thirteen timing and memory
+metrics, and the run fails when any one of them is flagged. Testing each at
+p < 0.01 on its own gives an identical pair of builds roughly a 1 - 0.99^13
+(about 12 %) chance of at least one false "slower" or "faster", more where
+the metrics are not independent of host load; a real A/A run of the suite
+did flag one (create many rows, +16 %, p 0.0081). Holm's step-down method
+keeps the probability of any false flag in the run (the familywise error
+rate) at or below ALPHA for any dependence between the metrics, and rejects
+at least as much as a plain Bonferroni correction. Both p values are
+reported. Holm, "A Simple Sequentially Rejective Multiple Test Procedure",
+Scandinavian Journal of Statistics 6 (2), 1979, 65-70,
+https://www.jstor.org/stable/4615733 ; summary:
+https://en.wikipedia.org/wiki/Holm%E2%80%93Bonferroni_method
 Exit status 1 when any metric is ``slower`` or ``larger``, else 0. Exit
 status 2 when the input cannot support a verdict: no results at all, or a
 metric selected by ``meta.txt``'s ``benchmarks`` with no samples for
@@ -179,18 +195,62 @@ def summarise(per_round: dict[int, list[float]]) -> dict:
     }
 
 
-def verdict(a: dict, b: dict, deterministic: bool) -> tuple[str, float, float]:
-    delta = (b["median"] - a["median"]) / a["median"] if a["median"] else 0.0
-    if deterministic:
-        if b["median"] > a["median"]:
-            return "larger", delta, 0.0
-        if b["median"] < a["median"]:
-            return "smaller", delta, 0.0
-        return "equal", delta, 1.0
-    p = mann_whitney_p(a["samples"], b["samples"])
-    if p < ALPHA and abs(delta) >= FLOOR:
-        return ("slower" if delta > 0 else "faster"), delta, p
-    return "noise", delta, p
+def holm_adjust(pvalues: list[float]) -> list[float]:
+    """Holm-Bonferroni adjusted p values, in the order given.
+
+    With the m raw p values sorted ascending, p(1) <= ... <= p(m), the
+    adjusted value of the k-th is max over j <= k of min(1, (m - j + 1) p(j)).
+    Rejecting every hypothesis whose adjusted p is below alpha is Holm's
+    step-down procedure at familywise level alpha (see the module docstring).
+    """
+    m = len(pvalues)
+    order = sorted(range(m), key=lambda i: pvalues[i])
+    adjusted = [1.0] * m
+    running = 0.0
+    for rank, i in enumerate(order):
+        running = max(running, min(1.0, (m - rank) * pvalues[i]))
+        adjusted[i] = running
+    return adjusted
+
+
+def delta_of(a: dict, b: dict) -> float:
+    return (b["median"] - a["median"]) / a["median"] if a["median"] else 0.0
+
+
+def size_verdict(a: dict, b: dict) -> str:
+    """Deterministic metrics: any difference counts."""
+    if b["median"] > a["median"]:
+        return "larger"
+    if b["median"] < a["median"]:
+        return "smaller"
+    return "equal"
+
+
+def timing_verdict(delta: float, p_adjusted: float) -> str:
+    if p_adjusted < ALPHA and abs(delta) >= FLOOR:
+        return "slower" if delta > 0 else "faster"
+    return "noise"
+
+
+def score(rows: list[dict]) -> None:
+    """Fill each row's ``delta``, ``p``, ``p_adjusted`` and ``verdict``.
+
+    The Holm family is every non-deterministic row of the run; sizes are
+    compared exactly and carry no p value (None).
+    """
+    tested = [r for r in rows if not r["deterministic"]]
+    for row in rows:
+        row["delta"] = delta_of(row["stats"]["isonim-a"], row["stats"]["isonim-b"])
+    raw = [mann_whitney_p(r["stats"]["isonim-a"]["samples"], r["stats"]["isonim-b"]["samples"]) for r in tested]
+    for row, p, p_adj in zip(tested, raw, holm_adjust(raw)):
+        row["p"] = p
+        row["p_adjusted"] = p_adj
+        row["verdict"] = timing_verdict(row["delta"], p_adj)
+    for row in rows:
+        if row["deterministic"]:
+            row["p"] = None
+            row["p_adjusted"] = None
+            row["verdict"] = size_verdict(row["stats"]["isonim-a"], row["stats"]["isonim-b"])
 
 
 def fmt(s: dict | None) -> str:
@@ -200,6 +260,10 @@ def fmt(s: dict | None) -> str:
         f"{s['median']:.1f} [IQR {s['q1']:.1f}-{s['q3']:.1f}; "
         f"{s['min']:.1f}-{s['max']:.1f}; n={s['n']}]"
     )
+
+
+def fmt_p(p: float | None) -> str:
+    return "-" if p is None else f"{p:.2g}"
 
 
 def main(argv: list[str]) -> int:
@@ -230,18 +294,16 @@ def main(argv: list[str]) -> int:
         stats = {side: summarise(samples[bench][side]) for side in SIDES if side in samples[bench]}
         if "isonim-a" not in stats or "isonim-b" not in stats:
             continue
-        word, delta, p = verdict(stats["isonim-a"], stats["isonim-b"], deterministic)
         rows.append(
             {
                 "benchmark": bench,
                 "label": label,
                 "unit": unit,
-                "verdict": word,
-                "delta": delta,
-                "p": p,
+                "deterministic": deterministic,
                 "stats": stats,
             }
         )
+    score(rows)
 
     header = (
         f"A = {meta.get('rev_a', '?')} ({meta.get('rev_a_arg', '')}), "
@@ -253,10 +315,12 @@ def main(argv: list[str]) -> int:
     )
     lines = [
         header,
-        f"rule: slower/faster when Mann-Whitney p < {ALPHA} and |delta| >= {FLOOR:.0%}; sizes exact",
+        f"rule: slower/faster when the Holm-adjusted Mann-Whitney p < {ALPHA} "
+        f"(familywise, over the {sum(1 for r in rows if not r['deterministic'])} timing and memory metrics) "
+        f"and |delta| >= {FLOOR:.0%}; sizes exact",
         "",
-        "| benchmark | unit | isonim-a median [IQR; min-max; n] | isonim-b | solid | delta B/A | p | round medians A / B | verdict |",
-        "|---|---|---|---|---|---|---|---|---|",
+        "| benchmark | unit | isonim-a median [IQR; min-max; n] | isonim-b | solid | delta B/A | p raw | p Holm | round medians A / B | verdict |",
+        "|---|---|---|---|---|---|---|---|---|---|",
     ]
     for row in rows:
         s = row["stats"]
@@ -266,7 +330,8 @@ def main(argv: list[str]) -> int:
         )
         lines.append(
             f"| {row['benchmark']} {row['label']} | {row['unit']} | {fmt(s['isonim-a'])} | "
-            f"{fmt(s['isonim-b'])} | {fmt(s.get('solid'))} | {row['delta']:+.1%} | {row['p']:.2g} | {rm} | "
+            f"{fmt(s['isonim-b'])} | {fmt(s.get('solid'))} | {row['delta']:+.1%} | "
+            f"{fmt_p(row['p'])} | {fmt_p(row['p_adjusted'])} | {rm} | "
             f"{row['verdict']} |"
         )
     text = "\n".join(lines) + "\n"
@@ -274,7 +339,11 @@ def main(argv: list[str]) -> int:
     with open(os.path.join(out_dir, "report.md"), "w", encoding="utf-8") as fh:
         fh.write(text)
     with open(os.path.join(out_dir, "report.json"), "w", encoding="utf-8") as fh:
-        json.dump({"meta": meta, "alpha": ALPHA, "floor": FLOOR, "rows": rows}, fh, indent=1)
+        json.dump(
+            {"meta": meta, "alpha": ALPHA, "floor": FLOOR, "correction": "holm", "rows": rows},
+            fh,
+            indent=1,
+        )
     return 1 if any(r["verdict"] in ("slower", "larger") for r in rows) else 0
 
 

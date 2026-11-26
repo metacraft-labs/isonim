@@ -69,15 +69,32 @@ benchmark app at both revisions in throwaway worktrees, then runs the
 CPU, memory and size/first-paint benchmarks of the pinned
 js-framework-benchmark runner for both builds and `keyed/solid`, alternating
 on one host, and prints median, spread and a noise verdict per benchmark
-(rule in `benchmarks/bench_ab_report.py`). It exits 1 when B is slower beyond
-noise or its bundle is larger, and 2 when a selected benchmark has no result.
-`BENCH_AB_ROUNDS` (6) and `BENCH_AB_COUNT` (5) set the sample counts;
-`BENCH_AB_PATCH_B=<file>` measures an uncommitted change on top of B. Results
-go to `benchmarks/results/ab-*/` (ignored). Example:
-`repro exec -- just bench-ab 5a35eb01f8 origin/agents`. Chromium is launched
-with its sandbox (no `--no-sandbox`), so the host must let its zygote start;
-the report has been exercised on synthetic samples, not yet on a complete
-browser run.
+(rule in `benchmarks/bench_ab_report.py`). A timing or memory metric reads
+slower or faster only when its Mann-Whitney p, Holm-Bonferroni adjusted over
+all the timing and memory metrics of the run, is below 0.01 and the medians
+differ by 5 % or more; the report prints the raw and the adjusted p. Sizes
+are compared exactly. It exits 1 when B is slower beyond noise or its bundle
+is larger, and 2 when a selected benchmark has no result.
+`BENCH_AB_ROUNDS` (6) and `BENCH_AB_COUNT` (5) set the sample counts (30 per
+build and metric, 90 for select row); `BENCH_AB_BENCHMARKS` narrows the set
+(for example `04_`); `BENCH_AB_PATCH_B=<file>` measures an uncommitted change
+on top of B. Results go to `benchmarks/results/ab-*/` (ignored). Example:
+`just bench-ab 5a35eb01f8 origin/agents`, or
+`repro exec -- just bench-ab 5a35eb01f8 origin/agents` when direnv has not
+loaded the dev shell (for example because `.envrc` is blocked). The full
+suite has run end to end this way: about 2 h 15 min for the default 6 rounds
+on a 32-CPU Linux host. A run of one revision against itself reads noise or
+equal on every row, and a busy loop added to select is flagged slower. Under
+host load the spreads are wide, so only large differences are detectable;
+read the IQRs before reading a "noise" verdict as "equal".
+
+Chromium is launched with its sandbox (no `--no-sandbox`). Start the run
+outside any `LD_PRELOAD` tracer that interposes `_exit`, such as a recorded
+agent session's command-trace shim: the sandbox's helper is a `clone` child
+without thread-local storage, so a hook that reads a thread-local in `_exit`
+crashes it, and the zygote aborts every launch
+(`zygote_host_impl_linux.cc` "Check failed"). `env -u LD_PRELOAD` does not
+help when the tracer re-adds itself to children; use a plain login shell.
 
 Focused editor checks used frequently:
 
