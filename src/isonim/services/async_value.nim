@@ -57,6 +57,29 @@
 ##   answer, a stream's done) records `<element>`. Marks are recorded once
 ##   per load; starting a load (`beginLoad`) stays with the caller, because
 ##   one recorder usually covers several elements of a screen.
+## - *Answers the ViewModel already has* (`known`). Before calling the
+##   service for a new question, the primitive asks `known(question)`; an
+##   answer it returns is shown at once, in the propagation that asked the
+##   question, with no call and no `loading` frame. For example the first
+##   conversation's transcript, which came with the first screen, or the
+##   empty transcript of a conversation just created. A refresh always
+##   calls the service.
+## - *Local writes* (`mutate`). The ViewModel can replace the value shown,
+##   as when it appends the user's own message to a transcript at once. It
+##   shows as the current question's answer (`ready`); a call in flight is
+##   not stopped, and the next real answer replaces it (a stream's further
+##   chunks are appended to it). Nothing reverts a local write: it is not
+##   an optimistic overlay.
+## - *Completion* (`onDone`). Called with the question and the answer when
+##   the current question's answer is complete (a future's answer, a
+##   stream's done, a `known` answer), inside the batch that shows it, so
+##   what the ViewModel writes there shows in the same frame. Not called
+##   for a local write, a failure, or a replaced question.
+## - *Asking again.* A question equal to the last one asks nothing; to ask
+##   the same question again use `refresh`. An event that must always be
+##   answered (a prompt sent twice) is a different question each time only
+##   if it says what makes it different, such as the place in the
+##   conversation it was sent at.
 ## - *Ownership.* The value lives in a reactive root created under the
 ##   current owner, so it ends with that owner: created in a ViewModel's
 ##   constructor (`withViewModel`), it ends with the ViewModel. Ending it
@@ -155,9 +178,11 @@ proc mark[T](av: AsyncValue[T]; complete: bool) =
   else: av.marks.markFirst(av.element)
 
 proc settleAnswer[T](av: AsyncValue[T]; f: Flight; value: T; done: bool;
-                     keepValue = false) =
+                     keepValue = false; after: proc() = nil) =
   ## `value` is the (new) answer to `f`'s question; with `keepValue` the
   ## answer held is already it (a stream that finishes after its chunks).
+  ## `after` (the completion hook) runs in the same batch, so what it
+  ## writes shows in the same frame as the answer.
   var o = av.outcome.value
   o.settled = f.serial
   o.answered = f.serial
@@ -165,13 +190,18 @@ proc settleAnswer[T](av: AsyncValue[T]; f: Flight; value: T; done: bool;
   o.error = ""
   o.done = done
   o.refreshing = false
-  if keepValue:
+  batch proc() =
+    if not keepValue: av.answer.val = value
     av.outcome.val = o
-  else:
-    batch proc() =
-      av.answer.val = value
-      av.outcome.val = o
-  av.mark(done)
+    av.mark(done)
+    if after != nil: after()
+
+proc doneHook[S, T](onDone: proc(question: S; value: T); question: S;
+                    value: T): proc() =
+  ## The completion hook for one answer, or nil. Captures only what it
+  ## passes on (not the flight, which would be a cycle under ARC).
+  if onDone == nil: return nil
+  result = proc() = onDone(question, value)
 
 proc settleError[T](av: AsyncValue[T]; f: Flight; message: string) =
   ## `f`'s question failed with `message`; the held answer stays.
@@ -190,6 +220,8 @@ proc isNoQuestion[S](question: S): bool =
 
 proc newAsyncValue[S, T](input: proc(): S; placeholder: Option[T];
                          marks: ReadinessMarks; element: string;
+                         known: proc(question: S): Option[T];
+                         onDone: proc(question: S; value: T);
                          launch: proc(av: AsyncValue[T]; question: S;
                                       f: Flight) {.closure.}): AsyncValue[T] =
   ## The machinery shared by futures and streams; `launch` calls the
@@ -205,8 +237,9 @@ proc newAsyncValue[S, T](input: proc(): S; placeholder: Option[T];
   var epoch = 0
   var asked = false
 
-  proc start(a: Ask; pending: bool) =
-    ## Replace the flight in progress with a call for the current question.
+  proc start(a: Ask; pending: bool; fresh: bool) =
+    ## Replace the flight in progress with a call for the current question
+    ## (`fresh`: a new question, which `known` may answer at once).
     let previous = av.current
     av.current = nil
     previous.stop()
@@ -217,6 +250,19 @@ proc newAsyncValue[S, T](input: proc(): S; placeholder: Option[T];
       av.outcome.val = o
     let f = Flight(serial: a.serial, live: true)
     av.current = f
+    if fresh and known != nil:
+      var answer: Option[T]
+      try:
+        answer = known(question)
+      except CatchableError as e:
+        av.settleError(f, e.msg)
+        return
+      if answer.isSome:
+        # Shown in this propagation: no call, no loading frame.
+        f.finish()
+        av.settleAnswer(f, answer.get, done = true,
+                        after = doneHook(onDone, question, answer.get))
+        return
     launch(av, question, f)
 
   createRoot proc(dispose: proc()) =
@@ -254,10 +300,10 @@ proc newAsyncValue[S, T](input: proc(): S; placeholder: Option[T];
       if av.statusMemo.val == AsyncStatus.failed: av.outcome.val.error
       else: "")
     av.restart = proc(pending: bool) =
-      start(untrack(proc(): Ask = av.ask.val), pending)
+      start(untrack(proc(): Ask = av.ask.val), pending, false)
     createEffect proc() =
       let a = av.ask.val
-      untrack(proc() = start(a, false))
+      untrack(proc() = start(a, false, true))
     onCleanup proc() =
       # The owner (or `dispose`) ends the value: the flight in progress
       # stops and nothing it started writes afterwards.
@@ -276,7 +322,10 @@ proc createAsync*[S, T](input: proc(): S;
                         call: proc(question: S): PlatformFuture[T];
                         placeholder = none(T);
                         marks: ReadinessMarks = nil; element = "";
-                        cancel: proc(question: S) = nil): AsyncValue[T] =
+                        cancel: proc(question: S) = nil;
+                        known: proc(question: S): Option[T] = nil;
+                        onDone: proc(question: S; value: T) = nil):
+    AsyncValue[T] =
   ## The answer of `call` to the question `input` yields, asked again
   ## whenever the question changes (see the module documentation).
   ## `placeholder` is shown, flagged `provisional`, until the first answer;
@@ -284,8 +333,11 @@ proc createAsync*[S, T](input: proc(): S;
   ## service can stop a call, is called with a question whose answer is no
   ## longer wanted (replaced, refreshed over or disposed). When `input`
   ## returns an `Option`, `none` asks nothing and `call` receives the
-  ## `some` value wrapped as it is. Not yet a stable API.
-  newAsyncValue[S, T](input, placeholder, marks, element,
+  ## `some` value wrapped as it is. `known` answers a new question at once
+  ## when it returns a value (no call); `onDone` is called when an answer
+  ## to the current question arrives, in the batch that shows it. Not yet
+  ## a stable API.
+  newAsyncValue[S, T](input, placeholder, marks, element, known, onDone,
     proc(av: AsyncValue[T]; question: S; f: Flight) =
       var future: PlatformFuture[T]
       try:
@@ -310,13 +362,16 @@ proc createAsync*[S, T](input: proc(): S;
         proc(value: T) =
           if not f.live: return
           f.finish()
-          av.settleAnswer(f, value, done = true),
+          av.settleAnswer(f, value, done = true,
+                          after = doneHook(onDone, question, value)),
         proc(message: string) = av.settleError(f, message)))
 
 proc createAsyncStream*[S, C](input: proc(): S;
                               call: proc(question: S): ServiceStream[C];
                               placeholder = none(seq[C]);
-                              marks: ReadinessMarks = nil; element = ""):
+                              marks: ReadinessMarks = nil; element = "";
+                              known: proc(question: S): Option[seq[C]] = nil;
+                              onDone: proc(question: S; chunks: seq[C]) = nil):
     AsyncValue[seq[C]] =
   ## The chunks of the stream `call` answers the question `input` yields
   ## with, re-subscribed whenever the question changes; the old stream is
@@ -324,8 +379,11 @@ proc createAsyncStream*[S, C](input: proc(): S;
   ## the previous question's chunks stay shown (`pending`) until the new
   ## stream's first chunk replaces them. `done` is set once the stream
   ## finishes. A stream that fails keeps its chunks so far and shows
-  ## `failed`. Not yet a stable API.
-  newAsyncValue[S, seq[C]](input, placeholder, marks, element,
+  ## `failed`. `known` answers a new question at once with chunks the
+  ## ViewModel already has (a finished stream, no call); `onDone` is called
+  ## with the chunks when the stream finishes, in the batch that shows it.
+  ## Not yet a stable API.
+  newAsyncValue[S, seq[C]](input, placeholder, marks, element, known, onDone,
     proc(av: AsyncValue[seq[C]]; question: S; f: Flight) =
       var stream: ServiceStream[C]
       try:
@@ -349,7 +407,9 @@ proc createAsyncStream*[S, C](input: proc(): S;
           f.finish()
           # Nothing to add: the chunks shown are the answer (or, when none
           # came, an empty one).
-          av.settleAnswer(f, newSeq[C](), done = true, keepValue = f.chunked),
+          let chunks = if f.chunked: av.answer.value else: newSeq[C]()
+          av.settleAnswer(f, chunks, done = true, keepValue = f.chunked,
+                          after = doneHook(onDone, question, chunks)),
         onError: proc(message: string) = av.settleError(f, message)))
       f.subscription = subscription
       # Replaced while subscribing (a producer that calls back into the
@@ -404,6 +464,36 @@ proc refresh*[T](av: AsyncValue[T]; pending = false) =
   ## no answer yet). Does nothing when nothing is asked or after dispose.
   if av.disposed: return
   av.restart(pending)
+
+proc mutate*[T](av: AsyncValue[T]; value: T) =
+  ## A local write: show `value` as the answer to the current question
+  ## (`ready`, no error), for example a transcript with the user's own
+  ## message appended at once. A call in flight is not stopped: a future's
+  ## answer replaces `value` when it arrives, and a stream's further chunks
+  ## are appended to it. Records no readiness mark and does not call
+  ## `onDone`. Not an optimistic overlay: nothing reverts it. Does nothing
+  ## when nothing is asked or after dispose. Not yet a stable API.
+  if av.disposed: return
+  let a = untrack(proc(): Ask = av.ask.val)
+  if a.idle: return
+  let f = av.current
+  # A stream still delivering continues from the local value. A flight for
+  # an older question (the input changed in this batch, and the effect that
+  # replaces the flight has not run yet) is about to stop: the local value
+  # is then complete, and the new question's call answers over it.
+  let streaming = f != nil and f.live and f.subscription != nil and
+    f.serial == a.serial
+  if streaming: f.chunked = true
+  var o = av.outcome.value
+  o.settled = a.serial
+  o.answered = a.serial
+  o.failed = false
+  o.error = ""
+  o.done = not streaming
+  o.refreshing = false
+  batch proc() =
+    av.answer.val = value
+    av.outcome.val = o
 
 proc isDisposed*[T](av: AsyncValue[T]): bool = av.disposed
 

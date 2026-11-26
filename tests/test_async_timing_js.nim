@@ -9,7 +9,11 @@
 ## an asynchronous procedure that advances fake time with `stepAsync`, which
 ## awaits after every millisecond so the promise callbacks run in between.
 ## The same checks run on C in `test_async_value.nim`,
-## `test_async_provisional.nim` and `test_async_fundamentals.nim`.
+## `test_async_stream.nim`, `test_async_provisional.nim` and
+## `test_async_fundamentals.nim`: among them a local write replaced by the
+## answer after its latency, completion inside the callback that delivers
+## the answer, a known answer replacing a call in flight, and a list
+## fetched page after page whose paging a new load stops mid-way.
 ##
 ## MOCK POLICY (workspace rule: every mock justified in the header). One
 ## recording service (`helpers/async_recording_service`, made with
@@ -229,6 +233,130 @@ proc replacedNeverChangesTheView(s: Scenario) {.async.} =
   stop()
   av.dispose()
 
+proc localWriteUntilAnswer(s: Scenario) {.async.} =
+  ## A local write during a load shows as the answer; the call goes on and
+  ## its answer replaces it after the latency.
+  let ctx = newFakeAsyncContext()
+  ctx.install()
+  defer: ctx.uninstall()
+  let svc = newRecordingService(timedFutures = true)
+  let q = createSignal("a")
+  let av = createAsync(proc(): string = q.val, svc.fetchOf)
+  let (frames, stopWatching) = watch(av)
+  await ctx.stepAsync(5)
+  av.mutate("local")
+  s.expect(av.ready and av.val == "local", "the local value is shown: " &
+           $av.status & " " & av.value)
+  await ctx.stepAsync(2)
+  s.expect(av.val == "local", "still local before the answer: " & av.value)
+  await ctx.stepAsync(3)
+  s.expect(av.ready and av.val == answerFor("a", 1),
+           "the answer replaced it at 10 ms: " & av.value)
+  s.expect(frames.shown == @["", "local", answerFor("a", 1)],
+           "frames " & $frames.shown)
+  s.expect(frames.status == @[AsyncStatus.loading, AsyncStatus.ready,
+                              AsyncStatus.ready], "statuses " & $frames.status)
+  stopWatching()
+  av.dispose()
+
+proc completionInTheAnswerFrame(s: Scenario) {.async.} =
+  ## Completion runs inside the promise callback that delivers the answer,
+  ## in the same batch: every frame showing an answer shows what it wrote.
+  let ctx = newFakeAsyncContext()
+  ctx.install()
+  defer: ctx.uninstall()
+  let svc = newRecordingService(timedFutures = true)
+  svc.latencies["b"] = 30
+  let seen = createSignal("")
+  var completed: seq[string]
+  let q = createSignal("a")
+  let av = createAsync(proc(): string = q.val, svc.fetchOf,
+    onDone = proc(question, value: string) =
+      completed.add question
+      seen.val = "seen " & value)
+  var frames: seq[(string, string)]
+  var stop: proc()
+  createRoot proc(d: proc()) =
+    stop = d
+    createEffect proc() = frames.add (av.val, seen.val)
+  await ctx.stepAsync(10)
+  q.val = "b"
+  await ctx.stepAsync(5)
+  q.val = "c"                          # b is replaced; its answer comes last
+  await ctx.stepAsync(40)
+  s.expect(answerFor("b", 1) in svc.answered, "b was answered, late")
+  s.expect(completed == @["a", "c"], "completed " & $completed)
+  for f in frames:
+    s.expect(f == ("", "") or f[1] == "seen " & f[0],
+             "a frame shows an answer without its completion: " & $f)
+  stop()
+  av.dispose()
+
+proc knownReplacesATimedCall(s: Scenario) {.async.} =
+  ## A known answer replaces a call in flight at once; that call's answer,
+  ## arriving later, never shows.
+  let ctx = newFakeAsyncContext()
+  ctx.install()
+  defer: ctx.uninstall()
+  let svc = newRecordingService(timedFutures = true)
+  let q = createSignal("a")
+  let av = createAsync(proc(): string = q.val, svc.fetchOf,
+    known = proc(question: string): Option[string] =
+      if question == "k": some("known:k") else: none(string))
+  let (frames, stopWatching) = watch(av)
+  await ctx.stepAsync(5)
+  q.val = "k"
+  s.expect(av.ready and av.val == "known:k", "known shown at once: " &
+           $av.status & " " & av.value)
+  await ctx.stepAsync(20)
+  s.expect(svc.answered == @[answerFor("a", 1)], "a was answered: " &
+           $svc.answered)
+  s.expect(svc.asks == @["a"], "nothing asked for k: " & $svc.asks)
+  s.expect(av.val == "known:k", "a's late answer never shows: " & av.value)
+  s.expect(frames.shown == @["", "known:k"], "frames " & $frames.shown)
+  stopWatching()
+  av.dispose()
+
+proc pages(svc: RecordingService; load: string; count: int):
+    ServiceStream[string] =
+  ## As in `test_async_stream.nim`: a list fetched page after page as one
+  ## stream, whose producer stops asking once cancelled.
+  newServiceStream[string](proc(e: StreamEmitter[string]) =
+    var n = 0
+    proc next() =
+      if n >= count:
+        e.finish()
+        return
+      inc n
+      svc.fetch(load & "/" & $n).onComplete(
+        proc(page: string) =
+          e.emit(page)
+          if e.isActive: next(),
+        proc(message: string) = e.fail(message))
+    next())
+
+proc pagingStopsWithItsLoad(s: Scenario) {.async.} =
+  ## A new load stops the old one's paging mid-way: no further page of it
+  ## is asked, and none of its pages shows.
+  let ctx = newFakeAsyncContext()
+  ctx.install()
+  defer: ctx.uninstall()
+  let svc = newRecordingService(timedFutures = true)
+  let load = createSignal("L1")
+  let av = createAsyncStream(proc(): string = load.val,
+    proc(l: string): ServiceStream[string] = pages(svc, l, 3))
+  await ctx.stepAsync(15)
+  s.expect(av.val == @[answerFor("L1/1", 1)], "one page of L1: " & $av.value)
+  load.val = "L2"
+  s.expect(av.pending, "the new load is pending: " & $av.status)
+  await ctx.stepAsync(40)
+  s.expect(svc.asks == @["L1/1", "L1/2", "L2/1", "L2/2", "L2/3"],
+           "asks " & $svc.asks)
+  s.expect(av.done and av.val == @[answerFor("L2/1", 1), answerFor("L2/2", 1),
+                                    answerFor("L2/3", 1)],
+           "L2's pages: " & $av.value)
+  av.dispose()
+
 {.emit: "process.exitCode = 1;".}
 
 proc main() {.async.} =
@@ -251,6 +379,14 @@ proc main() {.async.} =
     proc(s: Scenario): Future[void] = placeholderUntilAnswer(s))
   await run("a replaced question answered late never changes the View",
     proc(s: Scenario): Future[void] = replacedNeverChangesTheView(s))
+  await run("a local write shows until the answer replaces it",
+    proc(s: Scenario): Future[void] = localWriteUntilAnswer(s))
+  await run("completion runs in the frame that shows the answer",
+    proc(s: Scenario): Future[void] = completionInTheAnswerFrame(s))
+  await run("a known answer replaces a call in flight, whose answer never shows",
+    proc(s: Scenario): Future[void] = knownReplacesATimedCall(s))
+  await run("a new load stops the old one's paging mid-way",
+    proc(s: Scenario): Future[void] = pagingStopsWithItsLoad(s))
   if ok:
     {.emit: "process.exitCode = 0;".}
 

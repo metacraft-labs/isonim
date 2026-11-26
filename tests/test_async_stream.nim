@@ -3,7 +3,10 @@
 ## chunks accumulate in order; done is set once; a new question cancels the
 ## old stream at the producer and its chunks never show again; a stream
 ## that breaks off shows the error and keeps what arrived; disposing the
-## value (or the ViewModel that created it) cancels the stream.
+## value (or the ViewModel that created it) cancels the stream. Also:
+## completion passes the chunks and a known answer is a finished stream; a
+## local write is continued by the chunks still arriving; a list fetched
+## page after page is one stream, which a new load stops at the producer.
 ##
 ## MOCK POLICY (workspace rule: every mock justified in the header). One
 ## recording service (`helpers/async_recording_service`): its streams are
@@ -11,10 +14,15 @@
 ## driven by `FakeAsyncContext`); it also records every question asked,
 ## every cancel that reached the producer and its armed timers, which a
 ## real service would not report and which are what these tests assert.
-## The primitive, its signals, effects and owners are the real ones.
-## Streams behave the same on the C and JS backends.
+## The paging test builds its stream over the same service's futures,
+## because its point is a producer made of chained calls. The primitive,
+## its signals, effects and owners are the real ones. Streams behave the
+## same on the C and JS backends; the paging test's futures answer at the
+## next drain on JS (see the helper's header), so its check that the old
+## load was stopped mid-way is C-only here and made on JS in
+## `test_async_timing_js.nim`.
 
-import std/[options, tables, unittest]
+import std/[options, strutils, tables, unittest]
 
 import nim_everywhere
 import isonim/core/[signals, owner, computation]
@@ -204,3 +212,108 @@ suite "async value over a stream":
     check svc.armedTimers == 0
     ctx.step(50)
     check vm.reply.val == chunks("a", 1)
+
+proc pages(svc: RecordingService; load: string; count: int):
+    ServiceStream[string] =
+  ## A list fetched page after page (the recording service's futures, one
+  ## per page) as one stream: the shape of a backfill. The producer stops
+  ## asking for pages once the stream is cancelled.
+  newServiceStream[string](proc(e: StreamEmitter[string]) =
+    var n = 0
+    proc next() =
+      if n >= count:
+        e.finish()
+        return
+      inc n
+      svc.fetch(load & "/" & $n).onComplete(
+        proc(page: string) =
+          e.emit(page)          # ignored once cancelled
+          if e.isActive: next(),
+        proc(message: string) = e.fail(message))
+    next())
+
+suite "async value over a stream: known answers, local writes and completion":
+  test "completion passes the chunks; a known answer is a finished stream":
+    let ctx = newFakeAsyncContext()
+    ctx.install()
+    defer: ctx.uninstall()
+    let svc = newRecordingService(intervalMs = 10, chunkCount = 2)
+    var completed: seq[(string, seq[string])]
+    let q = createSignal("a")
+    let av = createAsyncStream(proc(): string = q.val, svc.streamOf,
+      known = proc(question: string): Option[seq[string]] =
+        if question == "k": some(@["k.cached"]) else: none(seq[string]),
+      onDone = proc(question: string; chunks: seq[string]) =
+        completed.add (question, chunks))
+    ctx.step(20)
+    check av.val == chunks("a", 2)
+    check completed.len == 0            # chunks are not the end
+    ctx.step(10)
+    check av.done
+    check completed == @[("a", chunks("a", 2))]
+    q.val = "k"
+    check av.ready
+    check av.done
+    check av.val == @["k.cached"]
+    check svc.asks == @["a"]            # no subscription for it
+    check completed[^1] == ("k", @["k.cached"])
+    # A stream replaced before it finished does not complete.
+    q.val = "b"
+    ctx.step(10)
+    q.val = "c"
+    ctx.step(30)
+    check completed.len == 3
+    check completed[^1] == ("c", chunks("c", 2))
+    av.dispose()
+
+  test "a local write to a stream still delivering is continued by its chunks":
+    let ctx = newFakeAsyncContext()
+    ctx.install()
+    defer: ctx.uninstall()
+    let svc = newRecordingService(intervalMs = 10, chunkCount = 3)
+    let q = createSignal("a")
+    let av = createAsyncStream(proc(): string = q.val, svc.streamOf)
+    ctx.step(10)
+    check av.val == chunks("a", 1)
+    av.mutate(@["local"])
+    check av.ready
+    check not av.done                   # the stream is still delivering
+    check av.val == @["local"]
+    ctx.step(10)
+    check av.val == @["local", chunkFor("a", 2)]
+    ctx.step(20)
+    check av.done
+    check av.val == @["local", chunkFor("a", 2), chunkFor("a", 3)]
+    # On a finished stream a local write is complete as it is.
+    av.mutate(@["edited"])
+    check av.done
+    check av.val == @["edited"]
+    check svc.cancels.len == 0
+    av.dispose()
+
+  test "pages fetched one after another are one stream; a new load stops it":
+    let ctx = newFakeAsyncContext()
+    ctx.install()
+    defer: ctx.uninstall()
+    let svc = newRecordingService(latencyMs = 10)
+    let load = createSignal("L1")
+    let av = createAsyncStream(proc(): string = load.val,
+      proc(l: string): ServiceStream[string] = pages(svc, l, 3))
+    ctx.step(10)
+    check av.val.len >= 1
+    check av.val[0] == answerFor("L1/1", 1)
+    load.val = "L2"                     # Retry: a new load
+    check av.pending
+    let askedBefore = svc.asks.len
+    ctx.step(40)
+    check av.done
+    check av.val == @[answerFor("L2/1", 1), answerFor("L2/2", 1),
+                      answerFor("L2/3", 1)]
+    # The old load's paging stopped with it: no page of it was asked
+    # after the new load began.
+    for q in svc.asks[askedBefore .. ^1]:
+      check q.startsWith("L2/")
+    when not defined(js):
+      # On C a page takes its latency, so the old load was mid-way.
+      check svc.asks == @["L1/1", "L1/2", "L2/1", "L2/2", "L2/3"]
+    av.dispose()

@@ -2,8 +2,11 @@
 ## a service that answers or fails while it is being subscribed to, input
 ## changes inside a batch, a refresh while a new question is in flight, an
 ## input that raises, a call that changes the question it was asked, a View
-## that disposes the value when it sees an answer, and a value created
-## inside a batch.
+## that disposes the value when it sees an answer, a value created inside
+## a batch, a completion that ends its own question and writes another
+## value, a completion that asks a new question or disposes the value, and
+## a local write in the batch that asks a new question or while a new
+## question is pending.
 ##
 ## MOCK POLICY (workspace rule: every mock justified in the header). One
 ## recording service (`helpers/async_recording_service`): its futures are
@@ -19,7 +22,7 @@
 ## (see the helper's header); the checks that need its latency are C-only
 ## and marked.
 
-import std/[strutils, unittest]
+import std/[options, strutils, unittest]
 
 import nim_everywhere
 import isonim/core/[signals, owner, computation, batch]
@@ -240,3 +243,173 @@ suite "async value edge cases":
     check bad == 0
     check av.val == answerFor("D", 1)
     av.dispose()
+
+suite "async value edge cases: local writes and completion":
+  test "a completion that ends the question and writes another value shows once":
+    # The shape of a chat reply: a streamed reply that, when done, joins
+    # the transcript (a local write to another value) and ends (its
+    # question becomes none). No frame shows the reply twice (in the
+    # transcript and as the reply) or not at all.
+    let ctx = newFakeAsyncContext()
+    ctx.install()
+    defer: ctx.uninstall()
+    let svc = newRecordingService(intervalMs = 10, chunkCount = 2)
+    let conversation = createSignal("c1")
+    let transcript = createAsync(proc(): string = conversation.val,
+      svc.fetchOf)
+    let prompt = createSignal(none(string))
+    let reply = createAsyncStream(proc(): Option[string] = prompt.val,
+      proc(p: Option[string]): ServiceStream[string] = svc.stream(p.get),
+      onDone = proc(p: Option[string]; chunks: seq[string]) =
+        transcript.mutate(transcript.value & "|" & chunks.join)
+        prompt.val = none(string))
+    ctx.step(10)
+    check transcript.ready
+    var frames: seq[(string, string, AsyncStatus)]
+    var stop: proc()
+    createRoot proc(d: proc()) =
+      stop = d
+      createEffect proc() =
+        frames.add (transcript.val, reply.val.join, reply.status)
+    prompt.val = some("p")
+    ctx.step(40)
+    let full = chunkFor("p", 1) & chunkFor("p", 2)
+    check transcript.val == answerFor("c1", 1) & "|" & full
+    check reply.status == AsyncStatus.idle
+    check reply.val.len == 0
+    for f in frames:
+      let inTranscript = f[0].endsWith(full)
+      let asReply = f[1] == full
+      check not (inTranscript and asReply)
+    check frames[^1] == (answerFor("c1", 1) & "|" & full, "",
+                         AsyncStatus.idle)
+    check frames[^2][1] == full and frames[^2][2] == AsyncStatus.ready
+    stop()
+    reply.dispose()
+    transcript.dispose()
+
+  test "a local write in the batch that asks a new question is that question's":
+    let ctx = newFakeAsyncContext()
+    ctx.install()
+    defer: ctx.uninstall()
+    let svc = newRecordingService()
+    let q = createSignal("a")
+    let av = createAsync(proc(): string = q.val, svc.fetchOf)
+    ctx.step(10)
+    batch proc() =
+      q.val = "b"
+      av.mutate("local:b")
+    # The write is read against the question the input yields now: "b",
+    # whose call goes on and whose answer replaces the local value.
+    check av.ready
+    check av.val == "local:b"
+    check svc.asks == @["a", "b"]
+    ctx.step(10)
+    check av.ready
+    check av.val == answerFor("b", 1)
+    av.dispose()
+
+  test "a local write to a stream in the batch that asks a new question":
+    # The flight in progress belongs to the old question and stops when the
+    # batch ends; the local value is the new question's whole answer until
+    # the new stream's first chunk replaces it.
+    let ctx = newFakeAsyncContext()
+    ctx.install()
+    defer: ctx.uninstall()
+    let svc = newRecordingService(intervalMs = 10, chunkCount = 3)
+    let q = createSignal("a")
+    let av = createAsyncStream(proc(): string = q.val, svc.streamOf)
+    ctx.step(10)
+    check av.val == @[chunkFor("a", 1)]
+    batch proc() =
+      q.val = "b"
+      av.mutate(@["local:b"])
+    check av.ready
+    check av.done
+    check av.val == @["local:b"]
+    check svc.cancels == @["a"]
+    ctx.step(10)
+    check av.val == @[chunkFor("b", 1)]
+    check not av.done
+    ctx.step(30)
+    check av.done
+    check av.val == @[chunkFor("b", 1), chunkFor("b", 2), chunkFor("b", 3)]
+    av.dispose()
+
+  test "a local write while a new question is pending, then a replacement":
+    let ctx = newFakeAsyncContext()
+    ctx.install()
+    defer: ctx.uninstall()
+    let svc = newRecordingService()
+    let q = createSignal("a")
+    let av = createAsync(proc(): string = q.val, svc.fetchOf)
+    ctx.step(10)
+    q.val = "b"
+    check av.pending
+    av.mutate("local:b")
+    check av.ready
+    check av.val == "local:b"
+    var frames: seq[(string, AsyncStatus)]
+    var stop: proc()
+    createRoot proc(d: proc()) =
+      stop = d
+      createEffect proc() = frames.add (av.val, av.status)
+    q.val = "c"                         # replaces "b", still in flight
+    check av.pending
+    check av.val == "local:b"
+    ctx.step(30)
+    check av.val == answerFor("c", 1)
+    # The answer to "b" never showed.
+    for f in frames: check f[0] != answerFor("b", 1)
+    check frames == @[("local:b", AsyncStatus.ready),
+                      ("local:b", AsyncStatus.pending),
+                      (answerFor("c", 1), AsyncStatus.ready)]
+    stop()
+    av.dispose()
+
+  test "a completion that asks a new question shows no frame of the old as ready":
+    let ctx = newFakeAsyncContext()
+    ctx.install()
+    defer: ctx.uninstall()
+    let svc = newRecordingService()
+    let q = createSignal("a")
+    var completed: seq[string]
+    let av = createAsync(proc(): string = q.val, svc.fetchOf,
+      onDone = proc(question, value: string) =
+        completed.add question
+        if question == "a": q.val = "b")
+    var frames: seq[(string, AsyncStatus)]
+    var stop: proc()
+    createRoot proc(d: proc()) =
+      stop = d
+      createEffect proc() = frames.add (av.val, av.status)
+    ctx.step(20)
+    check completed == @["a", "b"]
+    check frames == @[("", AsyncStatus.loading),
+                      (answerFor("a", 1), AsyncStatus.pending),
+                      (answerFor("b", 1), AsyncStatus.ready)]
+    stop()
+    av.dispose()
+
+  test "a completion that disposes the value":
+    let ctx = newFakeAsyncContext()
+    ctx.install()
+    defer: ctx.uninstall()
+    let svc = newRecordingService(intervalMs = 10, chunkCount = 2)
+    let q = createSignal("a")
+    var av: AsyncValue[seq[string]]
+    var completed = 0
+    av = createAsyncStream(proc(): string = q.val, svc.streamOf,
+      onDone = proc(question: string; chunks: seq[string]) =
+        inc completed
+        q.val = "b"                     # asked after dispose: nothing
+        av.dispose())
+    ctx.step(40)
+    check completed == 1
+    check av.isDisposed
+    check av.value == @[chunkFor("a", 1), chunkFor("a", 2)]
+    ctx.step(40)
+    check completed == 1
+    check svc.asks == @["a"]
+    when not defined(js):
+      check svc.armedTimers == 0

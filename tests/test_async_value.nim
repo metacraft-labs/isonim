@@ -4,7 +4,10 @@
 ## until its own arrives; an answer to a replaced question never shows, and
 ## its call is cancelled when the service can stop it; asking the same
 ## question again is quiet; an error shows as an error and a new question
-## recovers; the value ends with its owner.
+## recovers; the value ends with its owner. Also: an answer the ViewModel
+## already has (`known`) shows in the propagation that asked, with no call;
+## a local write (`mutate`) shows as the answer until the next real one;
+## completion (`onDone`) runs in the batch that shows the answer.
 ##
 ## MOCK POLICY (workspace rule: every mock justified in the header). One
 ## recording service (`helpers/async_recording_service`): its futures are
@@ -24,7 +27,7 @@ import std/[options, strutils, tables, unittest]
 
 import nim_everywhere
 import isonim/core/[signals, owner, computation]
-import isonim/services/async_value
+import isonim/services/[async_value, readiness]
 import isonim/viewmodel
 
 import helpers/async_recording_service
@@ -299,3 +302,192 @@ suite "async value over a future":
     when not defined(js):
       check svc.armedTimers == 0
     stopWatching()
+
+suite "async value: known answers, local writes and completion":
+  test "an answer the ViewModel already has shows at once, with no call":
+    let ctx = newFakeAsyncContext()
+    ctx.install()
+    defer: ctx.uninstall()
+    let svc = newRecordingService()
+    let knownAnswers = {"k": "known:k"}.toTable
+    var completed: seq[(string, string)]
+    let q = createSignal("k")
+    let av = createAsync(proc(): string = q.val, svc.fetchOf,
+      known = proc(question: string): Option[string] =
+        if question in knownAnswers: some(knownAnswers[question])
+        else: none(string),
+      onDone = proc(question, value: string) =
+        completed.add (question, value))
+    # Created over a question it knows: ready at once, nothing asked.
+    check av.ready
+    check av.done
+    check av.val == "known:k"
+    check svc.asks.len == 0
+    check completed == @[("k", "known:k")]
+    q.val = "a"
+    check av.pending
+    ctx.step(10)
+    check av.val == answerFor("a", 1)
+    let (frames, stopWatching) = watch(av)
+    q.val = "k"
+    # Shown in the propagation that asked it: no pending frame, no call.
+    check av.ready
+    check av.val == "known:k"
+    check svc.asks == @["a"]
+    check frames.shown == @[answerFor("a", 1), "known:k"]
+    check frames.status == @[AsyncStatus.ready, AsyncStatus.ready]
+    check completed == @[("k", "known:k"), ("a", answerFor("a", 1)),
+                         ("k", "known:k")]
+    # A refresh asks the service, quietly.
+    av.refresh()
+    check av.ready
+    check av.val == "known:k"
+    check svc.asks == @["a", "k"]
+    ctx.step(10)
+    check av.val == answerFor("k", 1)
+    stopWatching()
+    av.dispose()
+
+  test "a known answer replaces a question in flight, whose answer never shows":
+    let ctx = newFakeAsyncContext()
+    ctx.install()
+    defer: ctx.uninstall()
+    let svc = newRecordingService()
+    let q = createSignal("a")
+    let av = createAsync(proc(): string = q.val, svc.fetchOf,
+      cancel = proc(question: string) = svc.cancelFetch(question),
+      known = proc(question: string): Option[string] =
+        if question == "k": some("known:k") else: none(string))
+    let (frames, stopWatching) = watch(av)
+    q.val = "k"
+    check av.ready
+    check svc.cancels == @["a"]
+    ctx.step(20)
+    check av.val == "known:k"
+    check frames.shown == @["", "known:k"]
+    check frames.status == @[AsyncStatus.loading, AsyncStatus.ready]
+    stopWatching()
+    av.dispose()
+
+  test "a known answer that raises is a failed question":
+    let ctx = newFakeAsyncContext()
+    ctx.install()
+    defer: ctx.uninstall()
+    let svc = newRecordingService()
+    let q = createSignal("a")
+    let av = createAsync(proc(): string = q.val, svc.fetchOf,
+      known = proc(question: string): Option[string] =
+        if question == "x": raise newException(KeyError, "no cache for x")
+        none(string))
+    ctx.step(10)
+    q.val = "x"
+    check av.status == AsyncStatus.failed
+    check av.error == "no cache for x"
+    check av.val == answerFor("a", 1)
+    check svc.asks == @["a"]
+    av.dispose()
+
+  test "a local write shows as the answer until the next real answer":
+    let ctx = newFakeAsyncContext()
+    ctx.install()
+    defer: ctx.uninstall()
+    let svc = newRecordingService()
+    let marks = newReadinessMarks()
+    marks.beginLoad()
+    var completed: seq[string]
+    let q = createSignal("a")
+    let av = createAsync(proc(): string = q.val, svc.fetchOf,
+      placeholder = some("(loading)"), marks = marks, element = "item",
+      onDone = proc(question, value: string) = completed.add value)
+    # During the first load: shown as an answer, the call goes on.
+    av.mutate("local:1")
+    check av.ready
+    check av.done
+    check not av.provisional
+    check av.val == "local:1"
+    # A local value is not the service's answer: no mark, no completion.
+    check not marks.has("item:first")
+    check not marks.has("item")
+    check completed.len == 0
+    ctx.step(10)
+    check av.val == answerFor("a", 1)
+    check completed == @[answerFor("a", 1)]
+    check marks.has("item")
+    # After the answer: a quiet refresh keeps the local value until the
+    # new answer replaces it.
+    av.mutate("local:2")
+    check av.ready
+    check av.val == "local:2"
+    av.refresh()
+    check av.ready
+    check av.val == "local:2"
+    ctx.step(10)
+    check av.val == answerFor("a", 2)
+    # Over a failure: ready, with no error.
+    svc.failures["b"] = "offline"
+    q.val = "b"
+    ctx.step(10)
+    check av.status == AsyncStatus.failed
+    av.mutate("local:3")
+    check av.ready
+    check av.error == ""
+    check av.val == "local:3"
+    # After dispose it writes nothing.
+    av.dispose()
+    av.mutate("late")
+    check av.value == "local:3"
+
+  test "a local write while nothing is asked does nothing":
+    let ctx = newFakeAsyncContext()
+    ctx.install()
+    defer: ctx.uninstall()
+    let svc = newRecordingService()
+    let q = createSignal(none(string))
+    let av = createAsync(proc(): Option[string] = q.val,
+      proc(question: Option[string]): PlatformFuture[string] =
+        svc.fetch(question.get))
+    av.mutate("local")
+    check av.status == AsyncStatus.idle
+    check av.val == ""
+    q.val = some("a")
+    check av.loading
+    check av.val == ""
+    ctx.step(10)
+    check av.val == answerFor("a", 1)
+    av.dispose()
+
+  test "completion runs in the batch that shows the answer":
+    let ctx = newFakeAsyncContext()
+    ctx.install()
+    defer: ctx.uninstall()
+    let svc = newRecordingService()
+    svc.failures["c"] = "offline"
+    let seen = createSignal("")
+    var completed: seq[string]
+    let q = createSignal("a")
+    let av = createAsync(proc(): string = q.val, svc.fetchOf,
+      onDone = proc(question, value: string) =
+        completed.add question
+        seen.val = "seen " & value)
+    var frames: seq[(string, string)]
+    var stop: proc()
+    createRoot proc(d: proc()) =
+      stop = d
+      createEffect proc() = frames.add (av.val, seen.val)
+    ctx.step(10)
+    q.val = "b"
+    ctx.step(10)
+    check frames[^1] == (answerFor("b", 1), "seen " & answerFor("b", 1))
+    # Every frame that shows an answer shows what completion wrote for it.
+    for f in frames:
+      check f == ("", "") or f[1] == "seen " & f[0]
+    # Not called for a failure, nor for a replaced question.
+    q.val = "c"
+    ctx.step(10)
+    q.val = "d"
+    q.val = "e"
+    ctx.step(10)
+    check completed == @["a", "b", "e"]
+    check seen.value == "seen " & answerFor("e", 1)
+    stop()
+    av.dispose()
