@@ -549,6 +549,10 @@ type
       ## Pending transactions retain their mappings and operation identity.
     sourceProjectBuildInFlight*: bool
     sourceProjectOperationSerial*: int
+    sourceCatalogReadWithdraw*: proc() {.closure.}
+      ## Withdraws the installed source project's first catalog read; its
+      ## answer, should it still arrive, then writes nothing. Opening a
+      ## workspace calls it (``applyWorkspace``).
     inspectorSourceCommit*: proc(element: ElementRef; property, value: string;
       scope: SourceScopeChoiceKind; done: proc(ok: bool; diagnostic: string) {.closure.}) {.closure.}
       ## Optional asynchronous native source transaction. Completion is delivered
