@@ -1663,8 +1663,9 @@ bench-all: bench-build demo-build build-web-components
 
 # Check the actual native renderer, browser editor and review CLI entry graphs.
 # No test executable is built or run here. Browser checking needs the same real
-# generated Tailwind source input as the shipping browser build.
-lint: build-tailwind
+# generated Tailwind source input as the shipping browser build. The
+# doc-comment check of the reactive core runs first (`check-design-notes`).
+lint: build-tailwind check-design-notes
     nim check --styleCheck:usages --styleCheck:error --path:src --path:../nim-everywhere/src src/isonim/renderers/native.nim
     nim check --backend:js --styleCheck:usages --styleCheck:error --path:src --path:. --path:../nim-everywhere/src --path:../isonim-render-serve/src --path:../nim-acp/src --path:../nim-agent-harbor/src --path:../nim-agents/src src/isonim/editor/browser.nim
     nim check --styleCheck:usages --styleCheck:error --path:src --path:vendor/db_connector/src --path:vendor/chronicles --path:vendor/serialization --path:vendor/json_serialization --path:../isonim-render-serve/src --path:../nim-everywhere/src --path:../nim-faststreams --path:../nim-stew --path:../nim-acp/src --path:../nim-agent-harbor/src --path:../nim-agents/src -d:nimOldCaseObjects -d:chronicles_sinks=textlines[stderr] -d:chronicles_runtime_filtering=on -d:chronicles_log_level=TRACE tools/isonim_review/main.nim
@@ -2299,6 +2300,14 @@ test-editor-workspace-adapters-gui: editor-build
     cp build/editor/fabric.min.js build/editor-workspace-adapters/
     cp build/editor/paper-core.min.js build/editor/svgo.browser.js build/editor-workspace-adapters/
     PLAYWRIGHT_CHROMIUM_EXECUTABLE="${PLAYWRIGHT_CHROMIUM_EXECUTABLE:-$(command -v chromium)}" node tests/test_editor_workspace_adapters_gui.mjs
+
+# Doc comments of the reactive core's learn-first modules (async values,
+# streams, ViewModels, owners, error routing, the flush): every exported
+# symbol and field documented, nim doc clean on C and JS, and no internal
+# document named. The self-test shows each rule rejects a mutation.
+check-design-notes:
+    nim r --hints:off tools/check_design_notes.nim
+    nim r --hints:off tools/check_design_notes.nim --self-test
 
 # Include additional site src/ roots with tools/lint_nondet.py directly.
 lint-nondet:

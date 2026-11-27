@@ -224,6 +224,25 @@ proc errorBoundary*[R, N](
   ##
   ## When `body` itself raises there is no content to come back to: the
   ## fallback stays until the boundary is disposed.
+  ##
+  ## The boundary is an error handler for everything under `body`, so the
+  ## nearest handler wins: an effect's error arm or an `onError` inside
+  ## `body` takes an error before the boundary does, and only an error it
+  ## does not take, or raises again, reaches the boundary. A failure does not
+  ## stop the flush: the other computations still run. A service failure
+  ## inside an async value is that value's `failed` state, not an error the
+  ## boundary sees.
+  ##
+  ## Coming back needs a recovery: if the only failing computation is
+  ## disposed and replaced by one that succeeds, the fallback stays until
+  ## something under the boundary fails and recovers, or the boundary is
+  ## disposed.
+  ##
+  ## Only ordinary errors (`CatchableError`) are caught. A `Defect`, and on
+  ## the JS backend an exception that is not a Nim exception, never shows
+  ## the fallback: it abandons the rest of the flush and reaches the code
+  ## that wrote the signal, as the same object (see `owner.onError` for
+  ## why, and for what a host that must survive one does).
   when stableIdsEnabled:
     let renderStableScope = captureStableScope()
   let boundaryOwner = getOwner()

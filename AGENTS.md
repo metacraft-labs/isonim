@@ -61,6 +61,7 @@ just test-browser-editor
 just core-bench        # reactive-core micro-benchmark (JS, node), one line per case
 just size-check        # benchmark app main.js raw/min/gzip vs benchmarks/baseline.json
 just core-gate-bench   # both; run with test-c and test-js when the core changes
+just check-design-notes # core doc comments complete, nim doc clean (+ self-test)
 just bench-ab <rev-a> <rev-b> # browser suite (js-framework-benchmark), A/B interleaved
 ```
 

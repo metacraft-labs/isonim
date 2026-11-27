@@ -3,6 +3,13 @@
 ## Computation — a reactive observer that re-runs when its dependencies change.
 ## Implements createEffect, createRenderEffect, and createMemo.
 ##
+## Updates are glitch-free: after a write or a batch, a memo or effect runs
+## only once every memo it reads is current, so no effect ever sees some
+## derived values updated and others not, and an effect runs at most once
+## per write or batch. A computation that raises an ordinary error does not
+## stop the others: the error goes to the nearest handler on its owner
+## chain (see `owner.onError`).
+##
 ## Port of SolidJS signal.ts computation creation and update logic.
 
 import types, graph, batch
@@ -20,7 +27,11 @@ type
     ## A signal that is backed by a computation. When read, it ensures
     ## the computation is up-to-date, then returns the cached value.
     value*: T
+      ## The last value the memo produced (the last good one while it is
+      ## errored).
     comparator*: EqualityFn[T]
+      ## The memo's equality, or nil for `==`: a new value equal to the last
+      ## one does not notify the readers.
     error*: ref CatchableError
       ## Set while the memo's last run raised: reading the memo raises it
       ## again (the value is the last good one, or `default(T)`).
@@ -28,7 +39,9 @@ type
   Memo*[T] = object
     ## User-facing memo handle. Reads are tracked like signals.
     signal*: MemoSignalState[T]
+      ## The memo's value as a signal: what readers subscribe to.
     computation*: ComputationBase
+      ## The computation that produces the value.
 
 proc handleError*(source: ComputationBase; err: ref CatchableError) =
   ## Deliver `err`, raised by `source` (its run or a cleanup of its previous
@@ -77,6 +90,10 @@ proc updateComputation*(comp: ComputationBase) =
   ## still runs. A failing cleanup does not stop the run (every cleanup has
   ## run by then; `cleanNode` raises the first failure afterwards). A memo's
   ## own errors are its value, not a failure: see `createMemo`.
+  ##
+  ## A `Defect` (and, on JS, an exception that is not a Nim exception) is
+  ## not caught here: it leaves the computation and abandons the rest of the
+  ## flush (see `batch.flushUpdates`).
   if comp.fn == nil:
     return
   var err: ref CatchableError
@@ -169,6 +186,19 @@ proc createComputation(fn: proc(); pure: bool; initial: bool = true) =
 proc createEffect*(fn: proc()) =
   ## Creates an effect that tracks dependencies and re-runs on change.
   ## Effects are non-pure computations.
+  ##
+  ## It runs once immediately, then once per write or batch that changes
+  ## what it read, after every memo it reads is current: it never sees some
+  ## derived values updated and others not. The flush that runs it is synchronous,
+  ## at the end of the outermost write or batch. A signal written inside an
+  ## effect starts a nested flush, which re-runs readers of that signal that
+  ## already ran in the outer one; prefer deriving the value with a memo.
+  ## The order in which the effects of one flush run is not guaranteed, so
+  ## code must not depend on it.
+  ##
+  ## A `CatchableError` it raises goes to the nearest handler on its owner
+  ## chain (`owner.onError`, an error boundary), and the rest of the flush
+  ## still runs; a `Defect` is not routed (see `owner.onError`).
   createComputation(fn, pure = false, initial = true)
 
 proc createEffectWithErrorArm*(fn: proc(); onError: ErrorHandler) =
@@ -178,14 +208,21 @@ proc createEffectWithErrorArm*(fn: proc(); onError: ErrorHandler) =
   ## stays subscribed to what it read before it failed, so a later change
   ## runs it again.
   ##
-  ## A separate name, not an overload of `createEffect`: with an overload,
-  ## `createEffect do: ...` blocks that capture locals stop compiling (the
-  ## compiler reports "environment misses"), and a default parameter would
-  ## make every page carry the arm's code.
-  ##
-  ## The arm is registered on the effect at the start of its first run (the
-  ## effect is the current owner then), so `createComputation` stays as small
-  ## as before for every page that does not use it.
+  ## The arm is the nearest handler, so it gets the effect's errors before
+  ## any `onError` or error boundary above it; an error the arm raises goes
+  ## on to the handlers above. It also takes the errors of the computations
+  ## the effect owns. A nil `onError` makes it a plain `createEffect`. Only
+  ## ordinary errors reach it: a `Defect` is not routed (see
+  ## `owner.onError`).
+  #
+  # A separate name, not an overload of `createEffect`: with an overload,
+  # `createEffect do: ...` blocks that capture locals stop compiling (the
+  # compiler reports "environment misses"), and a default parameter would
+  # make every page carry the arm's code.
+  #
+  # The arm is registered on the effect at the start of its first run (the
+  # effect is the current owner then), so `createComputation` stays as small
+  # as before for every page that does not use it.
   if onError == nil:
     createEffect(fn)
     return
@@ -196,11 +233,12 @@ proc createEffectWithErrorArm*(fn: proc(); onError: ErrorHandler) =
 
 proc createRenderEffect*(fn: proc()) =
   ## Like createEffect but runs synchronously during render.
-  ## Same as createEffect for now (scheduling difference comes in M3).
+  ## Same as createEffect for now.
   createComputation(fn, pure = false, initial = true)
 
 proc createComputed*(fn: proc()) =
-  ## Creates a computation that runs immediately.
+  ## Creates a computation that runs immediately. It is pure: in a flush it
+  ## is queued with the memos and runs before the effects.
   createComputation(fn, pure = true, initial = true)
 
 proc createMemo*[T](fn: proc(): T; equals: EqualityFn[T] = nil): Memo[T] =
@@ -209,6 +247,19 @@ proc createMemo*[T](fn: proc(): T; equals: EqualityFn[T] = nil): Memo[T] =
   ## and a computation (has sources, re-runs when dependencies change).
   ## When `fn` raises a `CatchableError` (on the first run too), the memo
   ## keeps the error and reading it raises it (see `val`).
+  ##
+  ## `fn` runs once immediately. After that a memo never runs its readers
+  ## itself: when it produces a new value (not equal to the last one by
+  ## `equals`, or `==`), it marks them, and they run when the flush reaches
+  ## them, once every memo they read is current. So an effect that reads
+  ## several memos of one write runs once, on a consistent combination.
+  ##
+  ## An error is the memo's state, like a value: its readers are told it
+  ## changed, re-run, and raise the same error object when they read it, so
+  ## each reader's nearest handler sees it (one handler call per failing
+  ## reader). A later successful run clears it and tells the readers again,
+  ## even when the value equals the last good one. A `Defect` is not kept
+  ## and is not routed (see `owner.onError`).
   let memoSig = MemoSignalState[T](
     observers: @[],
     observerSlots: @[],

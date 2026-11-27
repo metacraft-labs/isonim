@@ -16,12 +16,17 @@
 ##   # The View reads vm.transcript.val, .loading, .pending, .error.
 ##
 ## The question is `input`, a tracked function: whenever it yields a new
-## value (compared with `==`), the primitive calls the service with it. The
-## answer, its status and its error are readable, tracked accessors:
+## value (compared with `==`), the primitive calls the service with it.
+## When `input` returns an `Option`, `none` asks nothing: the value becomes
+## `idle`, the flight in progress stops, and the next question is a first
+## load again (`loading`, not `pending`). The answer, its status and its
+## error are readable, tracked accessors:
 ##
 ## - `val` — what the View shows: the latest answer, held while the next
 ##   question is in flight; before the first answer the declared
-##   `placeholder` (flagged by `provisional`), or `default(T)`.
+##   `placeholder` (flagged by `provisional`), or `default(T)`. It is not
+##   necessarily the answer to the current question: `ready` says when it
+##   is.
 ## - `status` — one of `AsyncStatus`:
 ##   - `idle` — nothing is asked (the input is an `Option` and is `none`);
 ##   - `loading` — a question is in flight and there is no answer yet;
@@ -32,7 +37,10 @@
 ##   - `failed` — the current question failed; `error` says why.
 ##   `loading`, `pending` and `ready` are shorthands.
 ## - `done` — the shown answer is complete (a future's answer always is; a
-##   stream's once it has finished).
+##   stream's once it has finished). It describes the shown answer, not the
+##   current question: while a new question is `pending`, `done` stays true
+##   for the previous answer. Do not read it as "the current question is
+##   loaded"; that is `ready`.
 ##
 ## Semantics:
 ##
@@ -41,13 +49,20 @@
 ##   its answer is ignored when it arrives; when the service can stop the
 ##   work, pass `cancel`, which is called with the replaced question. No
 ##   answer to a replaced question ever reaches the value, so the ViewModel
-##   keeps no counters of its own.
+##   keeps no counters of its own. `cancel` is never called for a call that
+##   has already answered. Because a future cannot be cancelled, the work
+##   behind a replaced call runs to its end unless `cancel` stops it at the
+##   service: work that must stop is better served as a stream.
 ## - *Quiet refresh.* `refresh()` asks the current question again without
 ##   changing the status: the old answer stays shown, as `ready`, until the
 ##   new one replaces it. `refresh(pending = true)` shows the wait instead
 ##   (`pending`, or `loading` when there is no answer yet).
 ## - *Errors.* A failed question shows `failed` and its message; the last
-##   answer stays the value. A new question, or a refresh, recovers.
+##   answer stays the value. A new question, or a refresh, recovers. A
+##   service call (or `known`) that raises a `CatchableError` fails the
+##   question the same way. A failure is the value's state: it reaches no
+##   error handler and no error boundary. A `Defect` raised by the call is
+##   not a failure: it is a programming error and propagates.
 ## - *Placeholder.* An optional declared first value shown, flagged
 ##   `provisional`, while there is no answer. It is never reported as an
 ##   answer: it does not make the status `ready` and records no readiness
@@ -62,35 +77,43 @@
 ##   answer it returns is shown at once, in the propagation that asked the
 ##   question, with no call and no `loading` frame. For example the first
 ##   conversation's transcript, which came with the first screen, or the
-##   empty transcript of a conversation just created. A refresh always
-##   calls the service.
+##   empty transcript of a conversation just created. `known` is consulted
+##   only for a new question: a refresh always calls the service.
 ## - *Local writes* (`mutate`). The ViewModel can replace the value shown,
 ##   as when it appends the user's own message to a transcript at once. It
 ##   shows as the current question's answer (`ready`); a call in flight is
 ##   not stopped, and the next real answer replaces it (a stream's further
-##   chunks are appended to it). Nothing reverts a local write: it is not
-##   an optimistic overlay. `local` tells a value written so from the
-##   service's answer: true from the write until an answer replaces the
-##   value (for a stream, its next chunk) or the question changes.
+##   chunks are appended to it). The call is not stopped because its
+##   answer, when it comes, is the truth. Nothing reverts a local write: it
+##   is not an optimistic overlay, and not meant for a guess that must be
+##   undone if an action fails. A write made in the batch that changes the
+##   question belongs to the new question. `local` tells a value written so
+##   from the service's answer: true from the write until an answer
+##   replaces the value (for a stream, its next chunk) or the question
+##   changes.
 ## - *Completion* (`onDone`). Called with the question and the answer when
 ##   the current question's answer is complete (a future's answer, a
 ##   stream's done, a `known` answer), inside the batch that shows it, so
-##   what the ViewModel writes there shows in the same frame. Not called
-##   for a local write, a failure, or a replaced question.
+##   what the ViewModel writes there shows in the same frame. Called once
+##   per answer; not called for a local write, a failure, a stopped flight
+##   or a replaced question.
 ## - *Asking again.* A question equal to the last one asks nothing; to ask
 ##   the same question again use `refresh`. An event that must always be
 ##   answered (a prompt sent twice) is a different question each time only
 ##   if it says what makes it different, such as the place in the
 ##   conversation it was sent at.
+## - *Batches.* Inside a `batch`, the call for a new question starts when
+##   the batch ends.
 ## - *Ownership.* The value lives in a reactive root created under the
 ##   current owner, so it ends with that owner: created in a ViewModel's
 ##   constructor (`withViewModel`), it ends with the ViewModel. Ending it
 ##   cancels the flight in progress (a stream at the producer), and an
 ##   answer that arrives later writes nothing. `dispose` ends it earlier.
 ##
-## The status is derived from the question and the answers in the same
-## propagation, so a reader that sees a new question always sees it
-## `pending` or `loading`, never the old answer as `ready`.
+## Why the status is derived rather than written: it is computed from the
+## question and the answers in the same propagation as the question, so a
+## reader that sees a new question always sees it `pending` or `loading`,
+## never the old answer as `ready`.
 ##
 ## This module is not imported by the reactive core or the renderers: a
 ## page that does not use it carries none of its code. Not yet a stable
@@ -109,7 +132,10 @@ import ./readiness
 
 type
   AsyncStatus* {.pure.} = enum
-    ## What an `AsyncValue` shows (see the module documentation).
+    ## What an `AsyncValue` shows (see the module documentation): `idle`
+    ## (nothing asked), `loading` (asked, no answer yet), `pending` (a new
+    ## question asked, an older answer shown), `ready` (the current
+    ## question's answer shown) or `failed` (the current question failed).
     idle, loading, pending, ready, failed
 
   Ask = object
@@ -141,7 +167,9 @@ type
 
   AsyncValue*[T] = ref object
     ## A service's answer to a reactive question (see the module
-    ## documentation). Not yet a stable API.
+    ## documentation). Its accessors are tracked reads, each a separate
+    ## dependency, so a View that reads only `status` re-runs only when the
+    ## status changes. Not yet a stable API.
     answer: Signal[T]
     outcome: Signal[Outcome]
     ask: Memo[Ask]
@@ -343,6 +371,13 @@ proc createAsync*[S, T](input: proc(): S;
   ## when it returns a value (no call); `onDone` is called when an answer
   ## to the current question arrives, in the batch that shows it. Not yet
   ## a stable API.
+  ##
+  ## A question equal (`==`) to the last one asks nothing; `refresh` asks
+  ## it again. `cancel` is never called for a call that has answered. A
+  ## future cannot be cancelled, so without `cancel` the work behind a
+  ## replaced call runs to its end; for work that must stop, answer with a
+  ## stream (`createAsyncStream`). `call` raising a `CatchableError`, or
+  ## returning nil, fails the question; a `Defect` propagates.
   newAsyncValue[S, T](input, placeholder, marks, element, known, onDone,
     proc(av: AsyncValue[T]; question: S; f: Flight) =
       var future: PlatformFuture[T]
@@ -389,6 +424,9 @@ proc createAsyncStream*[S, C](input: proc(): S;
   ## ViewModel already has (a finished stream, no call); `onDone` is called
   ## with the chunks when the stream finishes, in the batch that shows it.
   ## Not yet a stable API.
+  ##
+  ## A replaced, refreshed-over or disposed stream is cancelled at the
+  ## producer, so its work stops. The value is copied on each chunk.
   newAsyncValue[S, seq[C]](input, placeholder, marks, element, known, onDone,
     proc(av: AsyncValue[seq[C]]; question: S; f: Flight) =
       var stream: ServiceStream[C]
@@ -424,7 +462,9 @@ proc createAsyncStream*[S, C](input: proc(): S;
       if not f.live: subscription.cancel())
 
 proc status*[T](av: AsyncValue[T]): AsyncStatus =
-  ## What `av` shows now (tracked).
+  ## What `av` shows now (tracked; see `AsyncStatus`). Derived in the same
+  ## propagation as the question, so a new question is never reported with
+  ## the old answer as `ready`.
   av.statusMemo.val
 
 proc loading*[T](av: AsyncValue[T]): bool =
@@ -445,7 +485,10 @@ proc error*[T](av: AsyncValue[T]): string =
 
 proc val*[T](av: AsyncValue[T]): T =
   ## What the View shows (tracked): the latest answer, else the
-  ## placeholder while a question is asked, else `default(T)`.
+  ## placeholder while a question is asked, else `default(T)`. The latest
+  ## answer is not necessarily the current question's (`pending` shows the
+  ## previous one, `failed` keeps it); `ready` says when it is. A replaced
+  ## question's late answer never shows here.
   if av.shown.val: av.answer.val
   elif av.placeholder.isSome and not av.ask.val.idle: av.placeholder.get
   else: default(T)
@@ -464,6 +507,10 @@ proc local*[T](av: AsyncValue[T]): bool =
   ## future's answer, a stream's next chunk, a `known` answer) or the
   ## question changes. A failure after the write leaves it true, because
   ## the value stays shown. Not yet a stable API.
+  ##
+  ## Always false while `idle` and when nothing was written. A refresh
+  ## leaves it true until the refresh's answer arrives; a stream that only
+  ## finishes after the write (no chunk since) leaves it true, with `done`.
   # Local only for the question it was written for: a new question's
   # number is past it, so the flag drops in the propagation that asks.
   let a = av.ask.val
@@ -472,7 +519,10 @@ proc local*[T](av: AsyncValue[T]): bool =
 
 proc done*[T](av: AsyncValue[T]): bool =
   ## The answer shown is complete (tracked): a future's answer, or a
-  ## stream that has finished.
+  ## stream that has finished. It describes the shown answer, not the
+  ## current question: it stays true for the previous answer while a new
+  ## question is `pending`. Use `ready` to know that the current question
+  ## is answered.
   av.doneMemo.val
 
 proc refresh*[T](av: AsyncValue[T]; pending = false) =
@@ -480,6 +530,8 @@ proc refresh*[T](av: AsyncValue[T]; pending = false) =
   ## Quiet by default: the status does not change until the answer
   ## arrives. With `pending`, the wait shows (`pending`, or `loading` with
   ## no answer yet). Does nothing when nothing is asked or after dispose.
+  ## This is how to ask an equal question again; `known` is not consulted,
+  ## and the replaced flight's late answer never shows.
   if av.disposed: return
   av.restart(pending)
 
@@ -492,6 +544,16 @@ proc mutate*[T](av: AsyncValue[T]; value: T) =
   ## `onDone`. Not an optimistic overlay: nothing reverts it; `local` is
   ## true until an answer replaces it. Does nothing when nothing is asked
   ## or after dispose. Not yet a stable API.
+  ##
+  ## Why a late answer is not cancelled: when it comes, it is the truth.
+  ## So a local write cannot hold the reply of a write against a read that
+  ## is still in flight (the read's answer replaces it); withdraw or change
+  ## the question instead. A write made in the batch that changes the input
+  ## belongs to the new question: it is that question's complete answer
+  ## (`done`) until the new call answers over it. The value is replaced
+  ## whole, so the caller builds it (the shown transcript plus one message,
+  ## say); on a stream still delivering, it must be a value the stream's
+  ## next chunks can extend.
   if av.disposed: return
   let a = untrack(proc(): Ask = av.ask.val)
   if a.idle: return
@@ -516,10 +578,12 @@ proc mutate*[T](av: AsyncValue[T]; value: T) =
     av.outcome.val = o
 
 proc isDisposed*[T](av: AsyncValue[T]): bool = av.disposed
+  ## True once `av` has ended, by `dispose` or with its owner.
 
 proc dispose*[T](av: AsyncValue[T]) =
-  ## End `av` before its owner does: the flight in progress stops and no
-  ## later answer is written. Calling it again does nothing.
+  ## End `av` before its owner does: the flight in progress stops (a
+  ## stream at the producer; `cancel` is asked to stop a future's call) and
+  ## no later answer is written. Calling it again does nothing.
   if av.disposeRoot != nil:
     # Call, then clear (a local copy could be freed by the clear first
     # under ARC/ORC).

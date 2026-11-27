@@ -10,6 +10,11 @@
 ## disposed, so nothing it started writes to it afterwards. `track` and
 ## `own` are not yet a stable API.
 ##
+## A future cannot be cancelled: the work behind a future the ViewModel
+## owns (a stand-in service's timer, a request) runs to its end, and only
+## its effect on the ViewModel is suppressed. Work that must really stop
+## when the ViewModel ends is a stream, whose cancel reaches the producer.
+##
 ## Works on both C and JS backends.
 
 import isonim/core/owner
@@ -28,6 +33,8 @@ type
     ## Base ViewModel: holds a reactive root dispose proc, and the async
     ## work registered with it (`track`, `own`).
     disposeProc*: proc()
+      ## Disposes the ViewModel's reactive root; set by `withViewModel`,
+      ## nil once `dispose` has run.
     disposed: bool
     tracked: TrackedStreams
       ## Nil until the first `track`. A ref rather than a seq field so that
@@ -58,6 +65,12 @@ proc dispose*(vm: ViewModel) =
   ## Disposes the reactive root owned by this ViewModel, cancels the
   ## streams it tracks and makes it ignore the futures it owns. Calling it
   ## again does nothing.
+  ##
+  ## Disposing the root disposes everything created in it: its effects and
+  ## memos, the nested roots created under it, and the async values its
+  ## constructor made (each stops its flight in progress). The streams it
+  ## tracks are cancelled at the producer. A future it owns cannot be
+  ## cancelled: its work runs to its end, but neither of its callbacks runs.
   if vm.disposeProc != nil:
     # Call, then clear: a local copy of the closure would be a cursor
     # under ARC/ORC and could be freed by the clear before the call.
@@ -104,6 +117,7 @@ proc withViewModel*[T: ViewModel](create: proc(dispose: proc()): T): T =
   ## proc is stored on the ViewModel for later cleanup. Created under an
   ## owner, the root is one of its children (see `createRoot`), so the
   ## ViewModel is disposed with that owner too, its streams cancelled.
+  ## Created with no current owner, it lives until its own `dispose`.
   var vm: T
   createRoot proc(dispose: proc()) =
     vm = create(dispose)

@@ -2,7 +2,12 @@
 ##
 ## Dependency tracking and topological update propagation.
 ## Manages the reactive graph edges between signals and computations.
-## Also defines the Owner tree for cleanup and disposal.
+## Also defines the Owner tree for cleanup and disposal, and the error
+## handler an owner can carry.
+##
+## These are the core's internal building blocks, exported for the other
+## core modules, the DSL and the renderers. Application code uses the
+## public API built on them (`signals`, `computation`, `owner`, `batch`).
 ##
 ## Port of SolidJS signal.ts dependency graph traversal.
 
@@ -11,6 +16,9 @@ when defined(isonimRecordable): import checkpoint_registry
 import platform
 
 type ContextTable* = HashMapRef[int, RootRef]
+  ## The context values set on an owner, keyed by context id. Nil until the
+  ## first value (or error handler) is set, so an owner without one pays
+  ## no allocation.
 
 type
   SignalStateBase* = ref object of RootObj
@@ -18,8 +26,13 @@ type
     ## Allows computations to track dependencies without knowing T.
     when defined(isonimRecordable):
       checkpointLease*: SignalLease
+        ## The signal's registration with the checkpoint registry (only in
+        ## builds with `-d:isonimRecordable`).
     observers*: seq[ComputationBase]
+      ## The computations that read this signal in their last run.
     observerSlots*: seq[int]
+      ## For each observer, the index of this signal in its `sources`, so
+      ## that an edge is removed in constant time.
     memoComputation*: ComputationBase
       ## For a memo's signal: the computation that produces its value, so a
       ## reader can bring it up to date before reading (pull). Nil for a
@@ -29,7 +42,9 @@ type
     ## Base of the disposal tree. Owner tracks child computations and cleanup callbacks.
     when defined(isonimRecordable):
       checkpointSignals*: seq[SignalRegistration]
-        ## Metadata only: the owner tree must never keep a signal alive.
+        ## The checkpoint registrations of the signals created under this
+        ## owner (only with `-d:isonimRecordable`), deactivated when it is
+        ## cleaned. Metadata only: the owner tree must never keep a signal alive.
     owned*: seq[OwnerBase]
       ## Children disposed with this node: the computations created under
       ## it, and the roots `owner.createRoot` made under it.
@@ -56,9 +71,15 @@ type
     ## Type-erased base for computations.
     ## Used by signals to reference their observers.
     sources*: seq[SignalStateBase]
+      ## The signals and memos read by the last run, in read order.
     sourceSlots*: seq[int]
+      ## For each source, the index of this computation in its `observers`.
     state*: ComputationState
+      ## Clean, pending (a memo it reads may have changed) or stale (it
+      ## must re-run).
     pure*: bool
+      ## True for memos and `createComputed` (queued and run before
+      ## effects), false for effects.
     fn*: proc()                       ## The computation function (type-erased)
     memoSignal*: SignalStateBase      ## When non-nil, this computation acts as a memo
     errored*: bool
@@ -68,7 +89,8 @@ type
 
   ErrorHandler* = proc(err: ref CatchableError)
     ## Receives an error raised by a computation (or one of its cleanups)
-    ## under the owner the handler is registered on.
+    ## under the owner the handler is registered on. Only a
+    ## `CatchableError` is ever passed; a `Defect` is not routed.
 
   ErrorBox* = ref object of RootObj
     ## The error handling registered on an owner, kept in its context table
@@ -102,6 +124,7 @@ var Owner* {.threadvar.}: OwnerBase
 
 var ExecCount* {.threadvar.}: int
   ## Monotonically increasing execution counter for update cycle detection.
+  ## Incremented once per flush.
 
 proc trackRead*(signal: SignalStateBase) =
   ## Called when a signal is read. If Listener is set,
@@ -155,6 +178,12 @@ proc cleanNode*(node: OwnerBase; dispose: bool = false) =
   ## Removes a node from the reactive graph.
   ## For computations: unlinks from sources' observer lists.
   ## For all owners: runs cleanup callbacks and recursively cleans owned nodes.
+  ## With `dispose`, a computation is also made inert (it never runs again).
+  ##
+  ## The unwind order: the owned children first, from the last one (each
+  ## exactly once), then this node's own cleanups in registration order.
+  ## Every child and every cleanup runs even when one of them raises; the
+  ## first exception is raised once all have run.
   if isComputationNode(node):
     let comp = asComputation(node)
     for i in 0 ..< comp.sources.len:
