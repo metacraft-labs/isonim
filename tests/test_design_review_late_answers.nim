@@ -298,3 +298,38 @@ suite "Design-review answers for a gallery closed since":
         "11111111-1111-1111-1111-111111111111"
       st.galleryHostState.val = ghsClosed
       dispose()
+
+suite "Design-review story change while the gallery shows tiles":
+
+  test "a story change while the gallery shows tiles shows the new story's tiles":
+    createRoot proc(dispose: proc()) =
+      let m = newState()
+      let st = m.st
+      m.mountGalleryHost()
+      st.briefId.val = "render.first"
+      st.galleryHostState.val = ghsOpen
+      answer("list-history?briefId=render.first",
+             "[{\"run_id\":\"run-first\"}]")
+      answer("fetch-run?runId=run-first",
+             runReply("run-first", "cap-first", "p/render.first#0@web"))
+      answer("list-layouts?briefId=render.first", "[]")
+      check st.galleryVm.tiles.val.len == 1
+      check st.galleryVm.tiles.val[0].captureId == "cap-first"
+      # The user moves to another story with the gallery open.
+      st.briefId.val = "render.second"
+      check requestCount("list-history?briefId=render.second") == 1
+      check requestCount("list-layouts?briefId=render.second") == 1
+      if requestCount("list-history?briefId=render.second") == 1:
+        answer("list-history?briefId=render.second",
+               "[{\"run_id\":\"run-second\"}]")
+        answer("fetch-run?runId=run-second",
+               runReply("run-second", "cap-second", "p/render.second#0@web"))
+      if requestCount("list-layouts?briefId=render.second") == 1:
+        answer("list-layouts?briefId=render.second",
+               layoutRow("22222222-2222-2222-2222-222222222222", "cap-second"))
+      check st.galleryVm.tiles.val.len == 1
+      check st.galleryVm.tiles.val[0].captureId == "cap-second"
+      check st.galleryVm.activeLayoutId.val ==
+        "22222222-2222-2222-2222-222222222222"
+      st.galleryHostState.val = ghsClosed
+      dispose()

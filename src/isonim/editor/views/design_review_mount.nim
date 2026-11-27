@@ -769,22 +769,28 @@ proc loadGalleryLayout*(st: DesignReviewState) =
     let (llo, lhi) = findBalancedObject(row, layoutIdx)
     if llo < 0 or lhi <= llo: return
     # ``applyLayoutJson`` clears ``isDirty`` — the restored arrangement
-    # is what the daemon already holds, so there is nothing to save.
+    # is what the daemon already holds, so there is nothing to save. An
+    # arrangement the user has not saved yet is kept instead.
+    if capturedVm.isDirty.val: return
     capturedVm.applyLayoutJson(row[llo .. lhi])
     capturedVm.activeLayoutId.val = jsonStringField(row, "layout_id")
     capturedVm.activeLayoutVersion.val = jsonIntField(row, "version")
   fetchListLayouts(st.httpClient, bid, galleryOwnerUserId(st), onLayouts)
 
 proc startGalleryFetchOnOpen*(st: DesignReviewState) =
-  ## Reactive effect: whenever ``galleryHostState`` flips to ``ghsOpen``
-  ## with an empty ``tiles`` cache, kick off the two-step fetch and then
+  ## Reactive effect: whenever the gallery host is open on a brief it has
+  ## not asked for since it opened, kick off the two-step fetch and then
   ## restore any layout the user previously saved for this brief.
   let capturedState = st
+  # The brief this open has asked for: a story change while the gallery is
+  # open asks for the new brief's tiles and layout; a close forgets it.
+  var askedFor = ""
   createRenderEffect proc() =
     let open = capturedState.galleryHostState.val == ghsOpen
     if not open: return
-    if capturedState.galleryVm.tiles.val.len > 0: return
-    if capturedState.briefId.val.len == 0: return
+    let bid = capturedState.briefId.val
+    if bid.len == 0 or bid == askedFor: return
+    askedFor = bid
     fetchGalleryTiles(capturedState)
     loadGalleryLayout(capturedState)
 
@@ -795,6 +801,7 @@ proc startGalleryFetchOnOpen*(st: DesignReviewState) =
     discard bid
     if capturedState.galleryHostState.val == ghsClosed:
       inc capturedState.galleryCloses
+      askedFor = ""
       capturedState.galleryVm.tiles.val = @[]
 
 proc pollBriefHasHistory*(st: DesignReviewState) =
