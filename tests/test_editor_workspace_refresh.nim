@@ -372,6 +372,20 @@ when defined(js):
         vm.sourceProjectMappingDispose()
         dispose()
 
+    test "attaching again leaves the replaced attach's catalog unapplied":
+      createRoot proc(dispose: proc()) =
+        let base = sourceProject()
+        let vm = createEditorVM(base)
+        let reloads = vm.livePreviewReloadGeneration.val
+        vm.attachSourceProject(base, catalog = catalogReply("Stale"))
+        vm.attachSourceProject(base, catalog = catalogReply("Compiled"))
+        drainCallbacks()
+        check vm.sourceAdapterReady.val
+        check "Compiled" in vm.storyNames
+        check vm.livePreviewReloadGeneration.val == reloads + 1
+        vm.sourceProjectMappingDispose()
+        dispose()
+
     test "opening another workspace before the first catalog arrives keeps it out":
       createRoot proc(dispose: proc()) =
         let base = sourceProject()

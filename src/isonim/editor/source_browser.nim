@@ -210,11 +210,17 @@ proc attachSourceProject*(vm: EditorVM; base: EditorWorkspace; inspectorEditing 
     vm.controlSourceFixtures = sourceFixtures(manifest)
     if reply{"editableStyles"} != nil: editableStyles.val = reply["editableStyles"]
     vm.sourceAdapterReady.val = true
+  # A later attach ends this one through `sourceProjectMappingDispose`; the
+  # first catalog of a replaced attach is then not applied.
+  var replaced = false
+  vm.sourceProjectMappingDispose = proc() = replaced = true
   if inspectorEditing:
     # Detached: the mapping lives as long as the installed source project
     # (`sourceProjectMappingDispose`), not as long as the caller's owner.
     createDetachedRoot proc(dispose: proc()) =
-      vm.sourceProjectMappingDispose = dispose
+      vm.sourceProjectMappingDispose = proc() =
+        replaced = true
+        dispose()
       # Bumped shortly after the preview changes width, so the conditions a
       # declaration depends on are asked again once the frame has its size.
       let answersTick = createSignal(0)
@@ -597,7 +603,7 @@ proc attachSourceProject*(vm: EditorVM; base: EditorWorkspace; inspectorEditing 
   proc receiveInitial(raw: cstring) =
     try:
       let reply = parseJson($raw)
-      if initialOperationSerial != vm.sourceProjectOperationSerial or initialBindingRevision != vm.inspector.bindingRevision:
+      if replaced or initialOperationSerial != vm.sourceProjectOperationSerial or initialBindingRevision != vm.inspector.bindingRevision:
         return # A newer live mutation owns the catalog and metadata revision.
       if reply{"diagnostic"} != nil: raise newException(ValueError, reply["diagnostic"].getStr())
       applyCatalog(reply)
