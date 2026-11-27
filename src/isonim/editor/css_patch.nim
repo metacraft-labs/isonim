@@ -614,6 +614,58 @@ const shorthandsFor: seq[(string, seq[string])] = @[
   ("animation-name", @["animation"]),
 ]
 
+func declarationMaySet*(name, property: string): bool =
+  ## Whether a declaration of ``name`` (another property than ``property``)
+  ## may set ``property`` or part of it, or be set by it: a shorthand and its
+  ## longhands (`font` and `line-height`, `flex-flow` and `flex-direction`),
+  ## a logical property and its physical one (`inline-size` and `width`),
+  ## `all`. Erring towards yes: a yes only withholds an authored value
+  ## (`viewmodels.withSourceAuthoredValues`).
+  const together = [
+    ("flex-flow", "flex-direction"), ("flex-flow", "flex-wrap"),
+    ("gap", "row-gap"), ("gap", "column-gap"), ("grid-gap", "row-gap"),
+    ("grid-gap", "column-gap"), ("font", "line-height"),
+    ("place-content", "align-content"), ("place-content", "justify-content"),
+    ("place-items", "align-items"), ("place-items", "justify-items"),
+    ("place-self", "align-self"), ("place-self", "justify-self"),
+    ("columns", "column-width"), ("columns", "column-count"),
+    ("white-space", "text-wrap"), ("white-space", "text-wrap-mode"),
+    ("white-space", "white-space-collapse"), ("width", "inline-size"),
+    ("height", "block-size"), ("min-width", "min-inline-size"),
+    ("max-width", "max-inline-size"), ("min-height", "min-block-size"),
+    ("max-height", "max-block-size"),
+    # `vertical-align` is a shorthand of these (CSS Inline 3).
+    ("vertical-align", "baseline-shift"), ("vertical-align", "alignment-baseline"),
+    ("vertical-align", "baseline-source")]
+  if name == "all": return true
+  for (a, b) in together:
+    if (name == a and property == b) or (name == b and property == a):
+      return true
+  # The inset family, the logical sides and corners: physical and logical
+  # forms of one box edge.
+  for family in ["margin", "padding", "border", "inset", "scroll-margin",
+      "scroll-padding"]:
+    if (name.startsWith(family & "-block") or
+        name.startsWith(family & "-inline")) and
+        (property.startsWith(family) or (family == "inset" and
+          property in ["top", "right", "bottom", "left"])):
+      return true
+  if name.startsWith("inset") and property in ["top", "right", "bottom", "left"]:
+    return true
+  # A corner radius is set by `border-radius` and the logical corners, not by
+  # `border` or a border side; the other border properties overlap
+  # (`border-width` and `border-top-width`), as the grid placements do
+  # (`grid-area` and `grid-row-start`).
+  let radius = property.endsWith("radius")
+  if radius != name.endsWith("radius"): return false
+  if radius: return true
+  if property.startsWith("border") and name.startsWith("border"): return true
+  if property.startsWith("grid-") and name.startsWith("grid-"): return true
+  # `contain-intrinsic-size` and its width/height and logical longhands.
+  if property.startsWith("contain-intrinsic-") and
+      name.startsWith("contain-intrinsic-"): return true
+  name.startsWith(property & "-") or property.startsWith(name & "-")
+
 func resettersOf(property: string): seq[string] =
   ## Every declaration whose presence overrides `property`: the property
   ## itself, plus any shorthand that sets it.

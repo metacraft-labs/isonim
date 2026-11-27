@@ -1157,6 +1157,58 @@ try {
   await refusedElsewhere('Padding, all sides','20',/`\.destination-card\.hover\\:p-4` decides padding for this element ahead of `\.destination-card`/,'.destination-card { padding: 18px; }',['10px','10px','10px','10px']);
   cases.push('a class that spells a state in an escape is a class: its deciding rule refuses the edit, naming it');
 
+  // 65. A source declaration is shown as authored only where the preview
+  // renders it (isonim-pm issue 2026-11-24-an-authored-number-reaches-the-
+  // inspector-as-its-computed-value-in-the-shorthand-host, review r1): the
+  // field shows `1.50em` as written, and the rendered value wherever
+  // another matching rule sets the side through a logical property or
+  // `all` (which the preview's cascade resolver does not rank) or the
+  // preview's rule block holds another value than the source.
+  await open('padding: 18px; padding-top: 1.50em;');
+  assert.equal(await field('Padding top').inputValue(),'1.50em');
+  cases.push('a source declaration the preview renders is shown as authored');
+  const rvx='[...document.styleSheets].flatMap(s=>{try{return [...s.cssRules];}catch(e){return [];}}).find(r=>r.selectorText===\'.destination-card\'&&!r.parentRule)';
+  for(const [extra,cls,script,what] of [
+    ['.destination-card.rvx { padding-block: 3px; }\n','rvx','','a logical property in another rule'],
+    ['.destination-card.rvx { all: initial; }\n','rvx','','`all` in another rule'],
+    ['','','('+rvx+').style.setProperty(\'padding-top\',\'3em\');','the rule changed in place by a script']]){
+    await open('padding: 18px; padding-top: 1.50em;',extra,false,false,'','',script,'',cls);
+    const px=await computed('padding-top');
+    assert.notEqual(px,'21px',what+': the case renders something else than 1.50em');
+    await assertPoll(()=>field('Padding top').inputValue(),String(parseFloat(px)),what);
+    cases.push('the rendered value is shown where '+what+' decides padding-top');
+  }
+  // 66. An animation or a transition overrides every normal declaration
+  // (review r2: n-anim-own, n-anim-other, n-anim-width, y-anim-running):
+  // the selection's authored value stays empty and the field shows what
+  // renders; an animation of another property (opacity) does not stop the
+  // declaration being shown.
+  const authoredOf=(name)=>p.evaluate((name)=>{const el=window.__isonimEditorVm.inspector.selectedElement.value;
+    const str=v=>typeof v==='string'?v:(Array.isArray(v)?new TextDecoder().decode(new Uint8Array(v)):v);
+    for(const x of Array.from(el.properties||[]))if(str(x.name)===name)return str(x.authoredValue);return null;},name);
+  // A script animation (Web Animations) of a logical property reports it as
+  // written (`padding-block-start`), unlike CSS keyframes, which report the
+  // physical side; the capture must still see that it sets padding-top
+  // (review r3, fault m2).
+  const logicalScript='document.addEventListener(\'DOMContentLoaded\',function(){document.querySelector(\'.destination-card\').animate([{paddingBlockStart:\'3px\'},{paddingBlockStart:\'3px\'}],{duration:1e9});});';
+  for(const [start,extra,cls,prop,expected,what,moving,script=''] of [
+    ['padding: 18px; padding-top: 1.50em; animation: rvgrow 1ms forwards;','@keyframes rvgrow { to { padding-top: 3px; } }\n','','padding-top','','an animation the rule sets',false],
+    ['padding: 18px; padding-top: 1.50em;','@keyframes rvgrow { to { padding-top: 3px; } }\n.destination-card.rvx { animation: rvgrow 1ms forwards; }\n','rvx','padding-top','','an animation another rule sets',false],
+    ['padding: 18px; width: 50.0%;','@keyframes rvw { to { width: 300px; } }\n.destination-card.rvx { animation: rvw 1ms forwards; }\n','rvx','width','','an animation of the width',false],
+    ['padding: 18px; padding-top: 1.50em; animation: rvp 2s linear infinite alternate;','@keyframes rvp { from { padding-top: 3px; } to { padding-top: 30px; } }\n','','padding-top','','a running animation',true],
+    ['padding: 18px; padding-top: 1.50em; animation: rvo 1ms forwards;','@keyframes rvo { to { opacity: 0.5; } }\n','','padding-top','1.50em','an animation of opacity only',false],
+    ['padding: 18px; padding-top: 1.50em;','','','padding-top','','a script animation of padding-block-start',false,logicalScript]]){
+    await open(start,extra,false,false,'','',script,'',cls,{hover:moving});
+    if(script)assert.equal(await computed('padding-top'),'3px',what+': the script animation renders');
+    await assertPoll(()=>authoredOf(prop),expected,what);
+    if(prop==='padding-top'&&expected===''){
+      const value=await field('Padding top').inputValue();
+      assert.ok(/^-?[\d.]+$/.test(value),what+': the field shows the rendered pixels, not '+value);
+    }
+    if(expected)assert.equal(await field('Padding top').inputValue(),expected,what);
+    cases.push((expected?'the declaration is shown under ':'the rendered value is shown under ')+what);
+  }
+
   assert.deepEqual(errors,[]);
   console.log('Shorthand order GUI passed:',pub,cases.length);
 } finally {

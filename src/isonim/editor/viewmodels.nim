@@ -3563,6 +3563,11 @@ proc seedStyleProvenanceBindings(editor: EditorVM; element: ElementRef)
   ## ``sameTokenKey``, both defined further down this module, and the call
   ## site is selection, which is defined here.
 
+proc withSourceAuthoredValues(editor: EditorVM; element: ElementRef): ElementRef
+  ## Forward-declared: the body drafts the pending journal
+  ## (`draftedDeclarationFile`), defined further down this module, and the
+  ## call site is selection, which is defined here.
+
 proc selectInspectorElement*(editor: EditorVM; element: ElementRef;
     origin = soExternal): bool {.discardable.} =
   ## Selecting an element also publishes its *authored* style provenance:
@@ -3594,6 +3599,11 @@ proc selectInspectorElement*(editor: EditorVM; element: ElementRef;
   # rendered element and used to say so nowhere. It says so here, on the same
   # signal the inspector already renders edit diagnostics from, at the moment
   # the user looks at the element.
+  # A value the capture read off the rendered preview is the computed one
+  # (`1.5px` for an authored `1.50px`); where the project's writer reads the
+  # declaration that decides it from source, its authored text is shown and
+  # kept instead (`withSourceAuthoredValues`).
+  next = editor.withSourceAuthoredValues(next)
   editor.inspector.publishStyleProvenance(next)
   editor.inspector.selectedElement.val = next
   editor.seedStyleProvenanceBindings(next)
@@ -3791,6 +3801,18 @@ proc previewDomElementRef*(metadata: StoryRenderMetadata; tag, testId,
           prop.cascadeHomes = @[]
           for home in answer[3].split('\x1f'):
             if home.len > 0: prop.cascadeHomes.add home
+      continue
+    # `@declared<TAB>property<TAB>rule<TAB>text`: what the deciding rule's
+    # block holds for the property in the preview's stylesheet
+    # (`previewDeclared`).
+    if side == "@declared":
+      let declared = line[tab + 1 .. ^1].split('\t')
+      if declared.len < 3 or declared[0].len == 0 or declared[1].len == 0:
+        continue
+      for prop in result.properties.mitems:
+        if prop.name == declared[0]:
+          prop.previewDeclaredRule = declared[1]
+          prop.previewDeclared = declared[2 .. ^1].join("\t")
       continue
     # `side<TAB>rule[<TAB>specified]`: the deciding block's own text for the
     # side when it is not a plain length becomes its authored value, so a
@@ -5825,6 +5847,10 @@ proc preparePropertyEdit*(inspector: InspectorVM;
   var updated = element
   if propIndex >= 0:
     updated.properties[propIndex].value = normalized.canonical
+    # An authored value shown for the row is the edit's text now
+    # (`withSourceAuthoredValues`), until the next capture reads it again.
+    if updated.properties[propIndex].authoredValue.len > 0:
+      updated.properties[propIndex].authoredValue = normalized.canonical
   else:
     var added = prop
     added.value = normalized.canonical
@@ -9193,6 +9219,8 @@ proc commitResponsiveOverride*(editor: EditorVM; property, value,
     for i, prop in afterElement.properties:
       if prop.name == property:
         afterElement.properties[i].value = plan.newValue
+        if prop.authoredValue.len > 0:
+          afterElement.properties[i].authoredValue = plan.newValue
         break
     afterElement = afterElement.withShorthandSides(property, plan.newValue)
   let record = EditRecord(file: plan.file, line: plan.line,
@@ -9309,6 +9337,8 @@ proc editSharedDesignProperty*(editor: EditorVM; property, newValue: string;
   for i, prop in afterElement.properties:
     if prop.name == property:
       afterElement.properties[i].value = plan.newValue
+      if prop.authoredValue.len > 0:
+        afterElement.properties[i].authoredValue = plan.newValue
       # A property keyed by its element (`<element key>.<property>`, the
       # preview capture's key) keeps its identity, location and origin --
       # its token too, which the schema resolution also keys on --
@@ -12203,6 +12233,257 @@ proc draftedDeclarationFile(editor: EditorVM; adapter: WorkspaceEditAdapter;
   if not read.ok:
     return
   (true, read.content, resolved.entry)
+
+func sameDeclaredValue(property, source, declared: string): bool =
+  ## Whether ``source``, a declaration's text in the project's source, is
+  ## the value ``declared`` -- the preview stylesheet's serialisation of the
+  ## same declaration -- holds: the same keywords and functions (case
+  ## aside), and each number the same number with the same unit (`1.50em`
+  ## and `1.5em`, `2PX` and `2px`, `1e-2px` and `0.01px`, `+2px` and `2px`,
+  ## but not `0` and `0px`). A simple shorthand is compared side by side, as
+  ## the stylesheet may shorten it (`1.50px 1.50px` reads back as `1.5px`).
+  func number(token: string): tuple[ok: bool; value: float; unit: string] =
+    var i = 0
+    if i < token.len and token[i] in {'+', '-'}: inc i
+    var digits = false
+    while i < token.len and token[i] in Digits:
+      inc i
+      digits = true
+    if i < token.len and token[i] == '.':
+      inc i
+      while i < token.len and token[i] in Digits:
+        inc i
+        digits = true
+    if not digits: return
+    if i + 1 < token.len and token[i] in {'e', 'E'} and
+        (token[i + 1] in Digits or (i + 2 < token.len and
+          token[i + 1] in {'+', '-'} and token[i + 2] in Digits)):
+      inc i, 2
+      while i < token.len and token[i] in Digits: inc i
+    try: (true, parseFloat(token[0 ..< i]), token[i .. ^1].toLowerAscii())
+    except ValueError: (false, 0.0, "")
+  func same(a, b: string): bool =
+    let x = a.strip()
+    let y = b.strip()
+    if x.toLowerAscii() == y.toLowerAscii(): return true
+    let p = number(x)
+    let q = number(y)
+    p.ok and q.ok and p.unit == q.unit and
+      abs(p.value - q.value) <= 1e-9 * max(1.0, abs(p.value))
+  func tokens(text: string): seq[string] =
+    ## Numbers (with their exponent and unit), identifiers and single
+    ## punctuation characters, whitespace dropped: `calc(10% + 1.50px)` is
+    ## `calc ( 10% + 1.50px )`.
+    let t = text.strip()
+    var i = 0
+    while i < t.len:
+      let c = t[i]
+      if c in Whitespace:
+        inc i
+        continue
+      let signed = c in {'+', '-'} and i + 1 < t.len and
+        (t[i + 1] in Digits or (t[i + 1] == '.' and i + 2 < t.len and
+          t[i + 2] in Digits)) and
+        (result.len == 0 or i == 0 or t[i - 1] in Whitespace + {'(', ','})
+      if c in Digits or signed or (c == '.' and i + 1 < t.len and
+          t[i + 1] in Digits):
+        var j = i + 1
+        while j < t.len and t[j] in Digits + {'.'}: inc j
+        if j + 1 < t.len and t[j] in {'e', 'E'} and (t[j + 1] in Digits or
+            (j + 2 < t.len and t[j + 1] in {'+', '-'} and t[j + 2] in Digits)):
+          inc j, 2
+          while j < t.len and t[j] in Digits: inc j
+        while j < t.len and (t[j] in Letters or t[j] == '%'): inc j
+        result.add t[i ..< j]
+        i = j
+      elif c in Letters + {'-', '_'} or ord(c) >= 128:
+        var j = i + 1
+        while j < t.len and (t[j] in Letters + Digits + {'-', '_'} or
+            ord(t[j]) >= 128):
+          inc j
+        result.add t[i ..< j]
+        i = j
+      else:
+        result.add $c
+        inc i
+  func sameTokens(x, y: string): bool =
+    let a = tokens(x)
+    let b = tokens(y)
+    if a.len == 0 or a.len != b.len: return false
+    for i in 0 ..< a.len:
+      if not same(a[i], b[i]): return false
+    true
+  if declared.strip().len == 0 or source.strip().len == 0: return false
+  let group = shorthandGroup(property)
+  if group.found and property == group.shorthand:
+    let a = shorthandSidesAsWritten(source)
+    let b = shorthandSidesAsWritten(declared)
+    if a.len != 4 or b.len != 4: return false
+    for i in 0 ..< 4:
+      if not sameTokens(a[i], b[i]): return false
+    return true
+  sameTokens(source, declared)
+
+proc withSourceAuthoredValues(editor: EditorVM; element: ElementRef): ElementRef =
+  ## ``element`` with the authored text of each declaration the project's
+  ## writer reads from source as its ``authoredValue`` (editor spec "Numeric
+  ## Inputs": "A number typed without arithmetic is kept exactly as
+  ## authored"; "Visual box model": "Typed and shown values keep their
+  ## authored precision").
+  ##
+  ## The preview's capture reads computed values (`computed:`,
+  ## `iframe-dom:`), and the CSSOM serialises a declaration the same way:
+  ## `padding-top: 1.50px` reads back as `1.5px`, `+2px` as `2px`, `1e-2px`
+  ## as `0.01px`, `2PX` as `2px`, and `width: 50%` as the used pixels. A row
+  ## shown that value rewrites the author's spelling on its next edit (a unit
+  ## chip click wrote `1.5em` over `1.50px`). A native project's catalog
+  ## states each declaration's source text (`source_browser`); this is the
+  ## same statement for a project whose writer reads its rules
+  ## (`WorkspaceEditAdapter.ruleDeclarations`).
+  ##
+  ## Taken only where the source and the capture agree on which declaration
+  ## it is, so a value is never shown from a declaration that does not
+  ## render:
+  ##
+  ## - the property was captured without provenance (a DSL binding, a native
+  ##   catalog or another source already says what was written, and is kept);
+  ## - the preview measured which rule decides it (`cascadeDecider`, or for a
+  ##   shorthand side `decidingRule`), that rule is the one matching rule of
+  ##   that name, and it is the rule the writer reads for the property's own
+  ##   schema entry (or, for a side of a simple shorthand, the shorthand's);
+  ## - within that rule, the declaration is the cascade's within one block
+  ##   (`ruleSideWinner`; a side through a simple shorthand as written,
+  ##   `renderedRuleSides`), each name involved is declared once (a repeated
+  ##   one may be an invalid declaration the browser dropped), no other
+  ##   longhand or shorthand of it is declared there (`padding-block`,
+  ##   `border` over `border-width`), and a pixel length agrees with the
+  ##   captured one (`sameRenderedValue`: a preview that has not yet
+  ##   rendered the source is not read as the source).
+  ##
+  ## - and the preview's stylesheet holds that same declaration in that rule
+  ##   (`previewDeclared`, compared number for number and unit for unit by
+  ##   `sameDeclaredValue`): a block changed in place by a script, a source
+  ##   the preview has not rendered yet, an authored unitless `0` (held as
+  ##   `0px`), or another rule setting the property through `all` or a
+  ##   logical property (the capture then reads nothing) all keep the
+  ##   rendered value.
+  ##
+  ## A value through a substitution function is left to the capture, which
+  ## reads one only where it measures the side depends on that name.
+  ##
+  ## The pending journal is drafted first (`draftedDeclarationFile`), so a
+  ## selection captured after an accepted, unwritten edit reads what the
+  ## write will leave. Nothing is read in an async (native) source project,
+  ## or without a writer that reads its rules.
+  result = element
+  if editor.hasAsyncSourceProject: return
+  let adapter = editor.workspaceEditAdapter
+  if adapter.isNil or adapter.ruleDeclarations.isNil or
+      adapter.readFile.isNil:
+    return
+  let journal = untrack(proc(): seq[SourceEditPlan] =
+    editor.inspector.pendingSourceEdits.val)
+  # One read of each entry's rule per selection.
+  var read = initTable[string, WorkspaceRuleDeclarations]()
+  for prop in result.properties.mitems:
+    if prop.authoredValue.len > 0 and not prop.authoredFromCapture: continue
+    if not prop.originDetail.capturedWithoutProvenance: continue
+    if prop.variantKey.len > 0 or prop.schemaKey.len == 0: continue
+    let group = shorthandGroup(prop.name)
+    let side = group.found and prop.name != group.shorthand
+    let decider =
+      if prop.cascadeDecider.len > 0: prop.cascadeDecider
+      elif side: prop.decidingRule
+      else: ""
+    if decider.len == 0 or decider in ["style", "none"] or
+        element.matchedRules.count(decider) != 1:
+      continue
+    # The property's own entry, then (for a side) its shorthand's: the
+    # writer reads the same rule for either.
+    let suffix = "." & prop.name
+    if not prop.schemaKey.endsWith(suffix): continue
+    let stem = prop.schemaKey[0 ..< prop.schemaKey.len - suffix.len]
+    var keys = @[prop.schemaKey]
+    if side: keys.add stem & "." & group.shorthand
+    var rule = WorkspaceRuleDeclarations()
+    for key in keys:
+      let plan = SourceEditPlan(file: prop.sourceFile, line: prop.sourceLine,
+        property: key[stem.len + 1 .. ^1], schemaKey: key,
+        sourceScope: sskSharedClass, scope: pesShared)
+      let resolved = adapter.resolveWorkspaceSchema(plan)
+      if not resolved.ok or resolved.entry.key != key: continue
+      if key notin read:
+        let drafted = editor.draftedDeclarationFile(adapter, journal, plan)
+        read[key] =
+          if drafted.ok: adapter.ruleDeclarations(plan, drafted.content,
+            drafted.schema)
+          else: WorkspaceRuleDeclarations()
+      if read[key].ok:
+        rule = read[key]
+        break
+    if not rule.ok or rule.rule != decider: continue
+    var declarations = rule.declarations
+    for declaration in declarations.mitems:
+      declaration.property = declaration.property.strip().toLowerAscii()
+    # The names that set this property in the rule, and the ones that may
+    # set it in a way this reading does not follow.
+    let names = if side: @[prop.name, group.shorthand]
+                elif group.found: @[prop.name] & @(group.sides)
+                else: @[prop.name]
+    var clear = true
+    for i, declaration in declarations:
+      let name = declaration.property
+      if name in names:
+        for j in i + 1 ..< declarations.len:
+          if declarations[j].property == name: clear = false
+      elif group.found and name in group.sides:
+        # Another side of the same shorthand sets only itself.
+        discard
+      elif declarationMaySet(name, prop.name) or
+          (group.found and declarationMaySet(name, group.shorthand)):
+        clear = false
+    if not clear: continue
+    var value = ""
+    if side:
+      let at = group.sides.find(prop.name)
+      let rendered = renderedRuleSides(declarations, group.shorthand,
+        group.sides)
+      if at < 0 or rendered.values[at].len == 0 or
+          rendered.values[at] == UnknownSide:
+        continue
+      value = rendered.values[at].withoutPriority().strip()
+    else:
+      let winner = ruleSideWinner(declarations, prop.name, prop.name)
+      if winner < 0: continue
+      # A simple shorthand is its own value only while no side declared
+      # after it (or `!important` over it) overrides part of it.
+      if group.found and group.sides.anyIt(
+          ruleSideWinner(declarations, prop.name, it) != winner):
+        continue
+      value = declarations[winner].value.strip()
+    if value.len == 0 or not sameRenderedValue(prop.value, value): continue
+    # The preview's stylesheet must hold the same declaration in that rule:
+    # otherwise the source is not what renders (a script changed the block
+    # in place, the source changed and the preview has not rendered it, or
+    # another rule sets the property through `all` or a logical property,
+    # which the capture reports by reading nothing). An authored unitless
+    # zero differs from the `0px` the stylesheet holds and is left to the
+    # rendered value, which a row steps and cycles as pixels.
+    if prop.previewDeclaredRule != decider or
+        not sameDeclaredValue(prop.name, value, prop.previewDeclared):
+      continue
+    # A substitution (`var()`, `env()`, `attr()`) renders through a name the
+    # preview's CSSOM may since have been given another way (a page script
+    # changing the rule in place, an alias of the same value): the capture
+    # reads one only where it measures that the side depends on that very
+    # name (`sourceSpecified` in the preview runtime), and that reading is
+    # kept, here and where it withholds one.
+    if substitutionFunctions.anyIt(it in value.toLowerAscii()): continue
+    prop.authoredValue = value
+    # Shown and kept as written, like the capture's own reading of a
+    # variable; whether a side is its own declaration for a shorthand edit
+    # stays the writer's rule order to settle (`settleRuleSides`).
+    prop.authoredFromCapture = true
 
 proc settleHistoryCommand(editor: EditorVM; redo: bool;
     journalBefore: seq[SourceEditPlan]; modelBefore: ElementRef) =

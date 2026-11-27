@@ -613,10 +613,13 @@ type
     authoredValue*: string ## Optional exact declared value, kept distinct from geometry.
     authoredFromCapture*: bool
       ## ``authoredValue`` is what the preview's capture read off the deciding
-      ## block (a variable or function a computed value would hide), shown and
-      ## used to refuse a canvas drag, but no statement that the side is its
-      ## own declaration: a shorthand edit still moves the side where nothing
-      ## else says which declaration decides it.
+      ## block (a variable or function a computed value would hide), or what
+      ## the project's writer reads for that block's declaration from source
+      ## (`viewmodels.withSourceAuthoredValues`: `1.50px` where the capture
+      ## reads `1.5px`), shown and used to refuse a canvas drag, but no
+      ## statement that the side is its own declaration: a shorthand edit
+      ## still moves the side where nothing else says which declaration
+      ## decides it.
     decidingRule*: string
       ## For a side of a simple shorthand (`padding-top`, a corner radius):
       ## which declaration block decides the rendered value, as the preview's
@@ -638,6 +641,17 @@ type
       ## The at-rule conditions ``cascadeDecider`` applies under (`@media
       ## (max-width: 640px)`), "" for a rule that applies wherever its
       ## selector matches.
+    previewDeclared*: string
+      ## What the block of ``previewDeclaredRule`` holds for this property in
+      ## the preview's stylesheet, as the CSSOM serialises it (`1.5px` for a
+      ## source `1.50px`), "" when the capture did not read one (no rule
+      ## decides it, the name is ambiguous, or another matching rule declares
+      ## `all` or a logical property that can set it). The editor shows a
+      ## source declaration as authored only where it is this same value
+      ## (`viewmodels.withSourceAuthoredValues`).
+    previewDeclaredRule*: string
+      ## The rule ``previewDeclared`` was read from, named as
+      ## ``cascadeDecider`` names one.
     cascadeHomes*: seq[string]
       ## The matching rules where a normal declaration of this property
       ## would outrank ``cascadeDecider``, by name. An edit that inserts the

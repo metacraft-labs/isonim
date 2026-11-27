@@ -33,7 +33,7 @@
 ## consumer's disclosure by metacraft-web-editor's
 ## `e2e_inspector_sections_are_keyboard_and_pointer_operable`.
 
-import std/[options, strutils, tables, unittest]
+import std/[options, sequtils, strutils, tables, unittest]
 
 import isonim/core/[computation, owner, signals]
 import isonim/testing/mock_dom
@@ -70,7 +70,7 @@ const MappedSides = ["padding-top", "padding-right", "padding-bottom",
 
 proc boxVm(foundation: ref string; writable = true; mapSides = true;
     element = boxElement(); alsoMapped: seq[string] = @[];
-    orderless = false): EditorVM =
+    orderless = false; responsive = false): EditorVM =
   let vector = new(string)
   vector[] = "<svg/>"
   let story = StoryRef(group: "DestinationCard", name: "Default",
@@ -105,6 +105,9 @@ proc boxVm(foundation: ref string; writable = true; mapSides = true;
     designSystemSchema = schema,
     permissions = EditorWorkspacePermissions(readSource: true,
       writeSource: writable),
+    # The example's breakpoints, for a case about a responsive override.
+    responsiveBreakpoints =
+      if responsive: demoResponsiveBreakpoints(foundation[]) else: @[],
     editAdapter = adapter))
   check result.selectInspectorElement(element)
 
@@ -2990,4 +2993,431 @@ suite "a numeric row shows a value that is not a number as written":
       vm.write()
       check vm.value("opacity") == "var(--fade)"
       check r.inputOf(panel.input("opacity")) == "var(--fade)"
+      dispose()
+
+suite "a source class declaration reaches the inspector as authored":
+  # isonim-pm issue 2026-11-24-an-authored-number-reaches-the-inspector-as-
+  # its-computed-value-in-the-shorthand-host. The preview's capture reads a
+  # declaration back as the browser serialises it (`padding-top: 1.50px` as
+  # `1.5px`, `width: 50.0%` as the used pixels); where the example's
+  # production writer reads the rule the preview measures as deciding the
+  # property (`WorkspaceEditAdapter.ruleDeclarations`), and the preview's
+  # stylesheet holds that same declaration there (`previewDeclared`), the
+  # inspector shows and keeps the declaration as authored (editor spec
+  # "Numeric Inputs": "A number typed without arithmetic is kept exactly as
+  # authored"; "Visual box model": "Typed and shown values keep their
+  # authored precision").
+  const NoDeclared = "-"
+  proc measured(values: openArray[(string, string)];
+      decider = BaseCard; matched = @[BaseCard, MediaCard];
+      declared: openArray[(string, string)] = []): ElementRef =
+    ## The card as the preview bridge captures it: computed values, the
+    ## rule its cascade resolver and side probe measure as deciding each
+    ## listed property, what that rule's block holds for it in the preview's
+    ## stylesheet (``declared``, by default the captured value; `NoDeclared`
+    ## where the capture reads nothing: another rule sets the property
+    ## through `all` or a logical property), and every other property
+    ## decided by nothing.
+    result = boxElement()
+    result.matchedRules = matched
+    for (name, value) in values:
+      if not result.properties.anyIt(it.name == name):
+        result.properties.add cardProperty(name, value)
+    for prop in result.properties.mitems:
+      prop.originDetail = "computed:" & prop.name
+      for (name, value) in values:
+        if prop.name == name:
+          prop.value = value
+          prop.cascadeDecider = decider
+          if name.startsWith("padding-") or name.startsWith("margin-") or
+              name.endsWith("-radius"):
+            prop.decidingRule = decider
+          var text = value
+          for (other, held) in declared:
+            if other == name: text = held
+          if text != NoDeclared and decider notin ["", "style", "none"]:
+            prop.previewDeclaredRule = decider
+            prop.previewDeclared = text
+  proc authored(vm: EditorVM; name: string): string =
+    for prop in vm.inspector.selectedElement.val.properties:
+      if prop.name == name: return prop.authoredValue
+  proc rowInput(panel: MockNode; property: string): MockNode =
+    findByAttr(panel.numericRow(property), "data-property-row-input", "true")
+  proc chip(panel: MockNode; property: string): MockNode =
+    findByAttr(panel.numericRow(property), "data-property-row-unit", "true")
+  const Mapped = @["width", "height", "border-top-left-radius"]
+
+  test "an authored number is shown as written, and a unit chip click keeps it":
+    createRoot proc(dispose: proc()) =
+      let r = MockRenderer()
+      let foundation = new(string)
+      foundation[] = withCardRule("padding: 18px; padding-top: 1.50px;")
+      let vm = boxVm(foundation,
+        element = measured([("padding-top", "1.5px")]))
+      check vm.authored("padding-top") == "1.50px"
+      check vm.value("padding-top") == "1.5px"
+      let panel = renderInspectorPanel[MockRenderer, MockNode](r, vm)
+      need(panel.rowInput("padding-top"))
+      check r.inputOf(panel.rowInput("padding-top")) == "1.50"
+      check r.inputOf(panel.field("Padding top")) == "1.50"
+      panel.chip("padding-top").fireEvent("click")
+      check vm.value("padding-top") == "1.50em"
+      check vm.authored("padding-top") == "1.50em"
+      check r.inputOf(panel.rowInput("padding-top")) == "1.50"
+      vm.write()
+      check foundation[] == withCardRule("padding: 18px; padding-top: 1.50em;")
+      # The capture after the write reads the written declaration.
+      discard vm.selectInspectorElement(ElementRef())
+      check vm.selectInspectorElement(measured([("padding-top", "24px")],
+        declared = [("padding-top", "1.5em")]))
+      check vm.authored("padding-top") == "1.50em"
+      check r.inputOf(panel.rowInput("padding-top")) == "1.50"
+      # Undo puts the authored spelling back.
+      check vm.runEditorCommand(eckUndo).status == ecsSucceeded
+      vm.write()
+      check foundation[] == withCardRule("padding: 18px; padding-top: 1.50px;")
+      check r.inputOf(panel.rowInput("padding-top")) == "1.50"
+      dispose()
+
+  # Templates, so a failed check fails the test that runs them.
+  template spelling(body0, name0, captured0, held0, expected0: string) =
+    let (body, name, captured, held, expected) =
+      (body0, name0, captured0, held0, expected0)
+    createRoot proc(dispose: proc()) =
+        let foundation = new(string)
+        foundation[] = withCardRule(body)
+        let vm = boxVm(foundation, alsoMapped = Mapped,
+          element = measured([(name, captured)], declared = [(name, held)]))
+        check vm.authored(name) == expected
+        # Only the measured property: nothing else is read for it.
+        for prop in vm.inspector.selectedElement.val.properties:
+          if prop.name != name: check prop.authoredValue == ""
+        dispose()
+
+  test "every authored spelling of a side, a shorthand and a non-box property":
+    # body, property, captured value, the preview stylesheet's text, shown.
+    for (body, name, captured, held, expected) in [
+        ("padding-top: +2px;", "padding-top", "2px", "2px", "+2px"),
+        ("padding-top: 1e-2px;", "padding-top", "0.01px", "0.01px", "1e-2px"),
+        ("padding-top: 2PX;", "padding-top", "2px", "2px", "2PX"),
+        ("padding-top: 1.50em;", "padding-top", "24px", "1.5em", "1.50em"),
+        ("padding-top: 0px;", "padding-top", "0px", "0px", "0px"),
+        ("padding-top: -0px;", "padding-top", "0px", "0px", "-0px"),
+        ("padding: 1.50px;", "padding-left", "1.5px", "1.5px", "1.50px"),
+        ("padding: 1.50px;", "padding", "1.5px", "1.5px", "1.50px"),
+        ("padding: 1.50px 2px;", "padding", "1.5px 2px", "1.5px 2px",
+          "1.50px 2px"),
+        ("padding: 4px; padding-left: 2.50px;", "padding-left", "2.5px",
+          "2.5px", "2.50px"),
+        ("padding-left: 2.50px; padding: 4px;", "padding-left", "4px", "4px",
+          "4px"),
+        ("padding-top: 1.50px !important; padding: 4px;", "padding-top",
+          "1.5px", "1.5px", "1.50px"),
+        ("padding: 18px; margin-top: auto;", "margin-top", "0px", "auto",
+          "auto"),
+        ("padding: 18px; margin-bottom: 1.50px;", "margin-bottom", "1.5px",
+          "1.5px", "1.50px"),
+        ("padding: 18px; margin: 1e-2px;", "margin-right", "0.01px", "0.01px",
+          "1e-2px"),
+        ("padding: 18px; margin-top: 0px;", "margin-top", "0px", "0px", "0px"),
+        ("padding: 18px; border-top-left-radius: 4.50PX;",
+          "border-top-left-radius", "4.5px", "4.5px", "4.50PX"),
+        ("padding: 18px; width: 50.0%;", "width", "210px", "50%", "50.0%"),
+        ("padding: 18px; width: 200.50PX;", "width", "200.5px", "200.5px",
+          "200.50PX"),
+        ("padding: 18px; width: auto;", "width", "420px", "auto", "auto"),
+        ("padding: 18px; width: calc(10% + 1.50px);", "width", "43.5px",
+          "calc(10% + 1.5px)", "calc(10% + 1.50px)")]:
+      checkpoint body & " -> " & name
+      block:
+        spelling(body, name, captured, held, expected)
+
+  template withheld(body0, name0, captured0, held0, decider0: string;
+      matched0: seq[string]) =
+    let (body, name, captured, held, decider, matched) =
+      (body0, name0, captured0, held0, decider0, matched0)
+    createRoot proc(dispose: proc()) =
+        let foundation = new(string)
+        foundation[] = withCardRule(body)
+        let vm = boxVm(foundation, alsoMapped = Mapped,
+          element = measured([(name, captured)], decider, matched,
+            declared = [(name, held)]))
+        check vm.authored(name) == ""
+        check vm.value(name) == captured
+        dispose()
+
+  test "nothing is read where the source and the capture do not agree":
+    # body, property, captured value, the preview stylesheet's text, the
+    # rule the preview measures as deciding it, the matching rules.
+    for (body, name, captured, held, decider, matched) in [
+        # A declaration nothing measured as deciding the property.
+        ("padding-top: 1.50px;", "padding-top", "1.5px", "1.5px", "",
+          @[BaseCard]),
+        # Another rule decides it.
+        ("padding-top: 1.50px;", "padding-top", "3px", "3px", MediaCard,
+          @[BaseCard, MediaCard]),
+        ("padding-top: 1.50em;", "padding-top", "24px", "24px", MediaCard,
+          @[BaseCard, MediaCard]),
+        # ... even where that rule holds the same value as the writer's.
+        ("padding-top: 1.50em;", "padding-top", "24px", "1.5em", MediaCard,
+          @[BaseCard, MediaCard]),
+        # The inline style decides it.
+        ("padding-top: 1.50px;", "padding-top", "3px", "3px", "style",
+          @[BaseCard]),
+        ("padding: 18px; width: 50%;", "width", "300px", "300px", "style",
+          @[BaseCard]),
+        # Two matching rules share the writer's rule's name.
+        ("padding-top: 1.50px;", "padding-top", "1.5px", "1.5px", BaseCard,
+          @[BaseCard, BaseCard]),
+        # Declared twice: the browser may have dropped either one.
+        ("padding-top: 1.50px; padding-top: 2.50px;", "padding-top", "2.5px",
+          "2.5px", BaseCard, @[BaseCard]),
+        # A logical property in the same rule also sets it.
+        ("padding-top: 1.50px; padding-block: 3px;", "padding-top", "3px",
+          "3px", BaseCard, @[BaseCard]),
+        ("padding: 18px; width: 200.50px; inline-size: 300px;", "width",
+          "300px", "300px", BaseCard, @[BaseCard]),
+        # Another matching rule sets it through a logical property or `all`,
+        # which the preview's cascade resolver does not rank: the capture
+        # reads no declaration for it (review r1: `.destination-card.rvx
+        # { padding-block: 3px }`, `inline-size: 300px`,
+        # `border-start-start-radius: 3px`, `all: initial`).
+        ("padding-top: 1.50em;", "padding-top", "3px", NoDeclared, BaseCard,
+          @[BaseCard, ".destination-card.rvx"]),
+        ("padding: 18px; width: 50%;", "width", "300px", NoDeclared, BaseCard,
+          @[BaseCard, ".destination-card.rvx"]),
+        ("padding: 18px; border-top-left-radius: 1.50em;",
+          "border-top-left-radius", "3px", NoDeclared, BaseCard,
+          @[BaseCard, ".destination-card.rvx"]),
+        ("padding-top: 1.50em;", "padding-top", "0px", NoDeclared, BaseCard,
+          @[BaseCard, ".destination-card.rvx"]),
+        # The preview's block holds another value than the source: a script
+        # changed it in place, or the source changed and the preview has not
+        # rendered it (review r1: 3em, 30%, U2).
+        ("padding-top: 1.50em;", "padding-top", "42px", "3em", BaseCard,
+          @[BaseCard]),
+        ("padding: 18px; width: 50.0%;", "width", "417.594px", "30%",
+          BaseCard, @[BaseCard]),
+        ("padding-top: 2.50em;", "padding-top", "24px", "1.5em", BaseCard,
+          @[BaseCard]),
+        # Every token of a value and every side of a shorthand is compared,
+        # not the first only (review r2, q1 and q3).
+        ("padding-top: calc(1.50em + 2px);", "padding-top", "23px",
+          "calc(1.5em + 3px)", BaseCard, @[BaseCard]),
+        ("padding: 1.50em 2.50em;", "padding", "21px 35px", "1.5em 3em",
+          BaseCard, @[BaseCard]),
+        ("padding: 1.50em 2.50em 1.50em 2.50em;", "padding",
+          "21px 35px 21px 35px", "1.5em 2.5em 1.5em 3em", BaseCard,
+          @[BaseCard]),
+        # An animation or a transition on the element sets the property: the
+        # capture reads no declaration for it, whichever rule sets the
+        # animation (review r2: n-anim-own, n-anim-other, n-anim-width,
+        # y-anim-running; the browser half is the shorthand-order GUI).
+        ("padding-top: 1.50em; animation: grow 1ms forwards;", "padding-top",
+          "3px", NoDeclared, BaseCard, @[BaseCard]),
+        ("padding: 18px; width: 50.0%;", "width", "300px", NoDeclared,
+          BaseCard, @[BaseCard, ".destination-card.rvx"]),
+        # The preview's block names another unit for the same number.
+        ("padding-top: 1.50em;", "padding-top", "24px", "1.5rem", BaseCard,
+          @[BaseCard]),
+        # An authored unitless zero: the stylesheet holds `0px`, and the row
+        # keeps the rendered pixels, which it steps and cycles (review r2).
+        ("padding-top: 0;", "padding-top", "0px", "0px", BaseCard, @[BaseCard]),
+        ("padding-top: -0;", "padding-top", "0px", "0px", BaseCard, @[BaseCard]),
+        ("padding: 0;", "padding-left", "0px", "0px", BaseCard, @[BaseCard]),
+        ("padding: 18px; margin-top: 0;", "margin-top", "0px", "0px", BaseCard,
+          @[BaseCard]),
+        ("padding: 18px; margin: 0;", "margin-bottom", "0px", "0px", BaseCard,
+          @[BaseCard]),
+        # A side declared after the shorthand overrides part of it.
+        ("padding: 4px; padding-left: 2.50px;", "padding", "4px 4px 4px 2.5px",
+          "4px 4px 4px 2.5px", BaseCard, @[BaseCard]),
+        # ... also where the preview still renders the shorthand alone (the
+        # side was written outside the editor): the source's `padding: 4px`
+        # no longer gives every side.
+        ("padding: 4px; padding-left: 2.50px;", "padding", "4px", "4px",
+          BaseCard, @[BaseCard]),
+        # A substitution is the capture's to read: it measures that the
+        # side depends on that very name (an alias or an in-place change of
+        # the rule renders the same).
+        ("--a: 3px; padding-top: var(--a);", "padding-top", "3px", "var(--a)",
+          BaseCard, @[BaseCard]),
+        ("--w: 210px; padding: 18px; width: var(--w);", "width", "210px",
+          "var(--w)", BaseCard, @[BaseCard]),
+        # The preview has not rendered what the source holds.
+        ("padding-top: 3px;", "padding-top", "1.5px", "1.5px", BaseCard,
+          @[BaseCard]),
+        # The block holds it, but the element renders other pixels (a
+        # declaration the capture cannot see, such as a running transition).
+        ("padding-top: 3px;", "padding-top", "1.5px", "3px", BaseCard,
+          @[BaseCard]),
+        # A property the rule does not declare: computed only.
+        ("padding: 18px;", "margin-top", "0px", "0px", "none", @[BaseCard]),
+        ("padding: 18px;", "height", "53px", "53px", BaseCard, @[BaseCard])]:
+      checkpoint body & " -> " & name & " decided by " & decider & " held " & held
+      block:
+        withheld(body, name, captured, held, decider, matched)
+
+  template stepsZero(body0, name0, after0: string) =
+    # The box field shares the row's wiring and steps natively (the row's
+    # own arrow keys are a browser listener, covered by the shorthand-order
+    # GUI).
+    let (body, name, after) = (body0, name0, after0)
+    createRoot proc(dispose: proc()) =
+        let r = MockRenderer()
+        let foundation = new(string)
+        foundation[] = withCardRule(body)
+        let vm = boxVm(foundation,
+          element = measured([(name, "0px")], matched = @[BaseCard]))
+        let panel = renderInspectorPanel[MockRenderer, MockNode](r, vm)
+        let label = (if name.startsWith("margin"): "Margin " else: "Padding ") &
+          name.split('-')[1]
+        let input = panel.field(label)
+        check input != nil
+        if input == nil:
+          dispose()
+          return
+        check r.inputOf(input) == "0"
+        check r.inputOf(panel.rowInput(name)) == "0"
+        check textOf(panel.chip(name)) == "px"
+        input.press("ArrowUp")
+        check vm.value(name) == after
+        check vm.inspector.pendingSourceEdits.val.len == 1
+        dispose()
+
+  test "the stylesheet's report counts only for the rule that decides":
+    # Review r2, q2: the capture names the rule it read the stylesheet's
+    # text from; a report from another rule (one the side probe named while
+    # the cascade resolver names the writer's) is not that rule's block.
+    createRoot proc(dispose: proc()) =
+      let foundation = new(string)
+      foundation[] = withCardRule("padding: 18px; padding-top: 1.50em;")
+      var element = measured([("padding-top", "24px")],
+        declared = [("padding-top", "1.5em")])
+      for prop in element.properties.mitems:
+        if prop.name == "padding-top": prop.previewDeclaredRule = MediaCard
+      let vm = boxVm(foundation, element = element)
+      check vm.authored("padding-top") == ""
+      # The same report from the deciding rule is shown (control).
+      let control = boxVm(foundation, element = measured([("padding-top", "24px")],
+        declared = [("padding-top", "1.5em")]))
+      check control.authored("padding-top") == "1.50em"
+      dispose()
+
+  test "an authored zero is stepped and its unit cycled as pixels":
+    # Review r2: an authored `padding-top: 0` showed no unit chip and ArrowUp
+    # was refused ("Unsupported keyword '1'"); the rendered `0px` steps to
+    # `1px` and the chip offers `em`, as at base, and so does `0px` and `-0`.
+    for (body, name, after) in [
+        ("padding-top: 0;", "padding-top", "1px"),
+        ("padding-top: 0px;", "padding-top", "1px"),
+        ("padding-top: -0;", "padding-top", "1px"),
+        ("padding: 0;", "padding-top", "1px"),
+        ("padding: 18px; margin-top: 0;", "margin-top", "1px"),
+        ("padding: 18px; margin-top: 0px;", "margin-top", "1px"),
+        ("padding: 18px; margin: 0;", "margin-top", "1px")]:
+      checkpoint body & " -> " & name
+      block:
+        stepsZero(body, name, after)
+
+  test "a value with provenance, a variant, an async source project, a writer that does not read rules, and an unmapped property":
+    createRoot proc(dispose: proc()) =
+      let foundation = new(string)
+      foundation[] = withCardRule("padding: 18px; padding-top: 1.50px;")
+      # A value another source states is kept.
+      var element = measured([("padding-top", "1.5px")])
+      for prop in element.properties.mitems:
+        if prop.name == "padding-top":
+          prop.originDetail = "class:destination-card"
+          prop.authoredValue = "1.5px"
+      let stated = boxVm(foundation, element = element)
+      check stated.authored("padding-top") == "1.5px"
+      # A variant's (a state or mode's) value is not the base declaration.
+      var variant = measured([("padding-top", "1.5px")])
+      for prop in variant.properties.mitems:
+        if prop.name == "padding-top": prop.variantKey = "hover"
+      check boxVm(foundation, element = variant).authored("padding-top") == ""
+      # A native (async) source project states its own authored values; the
+      # editor reads nothing for it.
+      let native = boxVm(foundation, element = measured([("padding-top", "1.5px")]))
+      check native.authored("padding-top") == "1.50px"
+      native.hasAsyncSourceProject = true
+      discard native.selectInspectorElement(ElementRef())
+      check native.selectInspectorElement(measured([("padding-top", "1.5px")]))
+      check native.authored("padding-top") == ""
+      # The capture's own reading of a variable is kept as it read it.
+      foundation[] = withCardRule("--a: 3px; padding: 18px; padding-top: var(--a);")
+      var read = measured([("padding-top", "3px")])
+      for prop in read.properties.mitems:
+        if prop.name == "padding-top":
+          prop.authoredValue = "var(--a)"
+          prop.authoredFromCapture = true
+      check boxVm(foundation, element = read).authored("padding-top") == "var(--a)"
+      foundation[] = withCardRule("padding: 18px; padding-top: 1.50px;")
+      # No `ruleDeclarations`: nothing to read.
+      let orderless = boxVm(foundation, orderless = true,
+        element = measured([("padding-top", "1.5px")]))
+      check orderless.authored("padding-top") == ""
+      # The example maps only the card's `padding` shorthand: its writer
+      # reads the rule for a side through the shorthand's entry. A side with
+      # no entry for itself or its shorthand (margin, there) is not read.
+      foundation[] = withCardRule("padding: 1.50px; margin-top: 2.50px;")
+      let shorthandOnly = boxVm(foundation, mapSides = false,
+        element = measured([("padding-top", "1.5px"),
+          ("margin-top", "2.5px")]))
+      check shorthandOnly.authored("padding-top") == "1.50px"
+      check shorthandOnly.authored("margin-top") == ""
+      dispose()
+
+  test "a capture after an accepted, unwritten edit reads what the write will leave":
+    createRoot proc(dispose: proc()) =
+      let r = MockRenderer()
+      let foundation = new(string)
+      foundation[] = withCardRule("padding: 18px; width: 200.50px;")
+      let vm = boxVm(foundation, alsoMapped = @["width"],
+        element = measured([("width", "200.5px")]))
+      check vm.authored("width") == "200.50px"
+      let panel = renderInspectorPanel[MockRenderer, MockNode](r, vm)
+      need(panel.rowInput("width"))
+      check r.inputOf(panel.rowInput("width")) == "200.50"
+      check vm.commitInspectorValue("width", "300.0px", sskLocalInstance).ok
+      check vm.value("width") == "300.0px"
+      check vm.authored("width") == "300.0px"
+      check r.inputOf(panel.rowInput("width")) == "300.0"
+      check vm.inspector.pendingSourceEdits.val.len == 1
+      discard vm.selectInspectorElement(ElementRef())
+      check vm.selectInspectorElement(measured([("width", "300px")],
+        declared = [("width", "300.0px")]))
+      check vm.authored("width") == "300.0px"
+      dispose()
+
+  test "a shared and a responsive edit of a shown authored value show the edit":
+    # Review r4: a shared-scope commit (`editSharedDesignProperty`) and an
+    # override the preview shows (`commitResponsiveOverride`) set the
+    # property's authored value to the edit's text, not only its value.
+    createRoot proc(dispose: proc()) =
+      let foundation = new(string)
+      foundation[] = withCardRule("padding: 18px; margin: 1.50px;")
+      let vm = boxVm(foundation, element = measured([("margin", "1.5px")]))
+      check vm.authored("margin") == "1.50px"
+      check vm.commitInspectorValue("margin", "3.0px", sskSharedClass).ok
+      check vm.value("margin") == "3.0px"
+      check vm.authored("margin") == "3.0px"
+      vm.write()
+      check foundation[] == withCardRule("padding: 18px; margin: 3.0px;")
+      dispose()
+    createRoot proc(dispose: proc()) =
+      let foundation = new(string)
+      # The example's `padding` entry takes breakpoint overrides.
+      foundation[] = withCardRule("padding: 1.50px;")
+      let vm = boxVm(foundation, element = measured([("padding", "1.5px")]),
+        responsive = true)
+      vm.viewport.val = makeBuiltinViewport(pvkPhone)
+      check vm.activeBreakpoint.val.condition.len > 0
+      check vm.authored("padding") == "1.50px"
+      let outcome = commitResponsiveOverrideValue(vm, "padding", "6.0px", "mobile")
+      checkpoint outcome.message
+      check outcome.ok
+      check vm.value("padding") == "6.0px"
+      check vm.authored("padding") == "6.0px"
       dispose()

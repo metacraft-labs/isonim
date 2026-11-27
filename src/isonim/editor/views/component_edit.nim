@@ -2059,18 +2059,96 @@ __ISONIM_SCENE_GRAPH_WALK__
       return value;
     } catch (e) { return ''; }
   }
+  // The family a property sets part of, for telling whether a logical
+  // property can set a physical one: the logical side, corner or size maps
+  // to a physical one by the writing mode and direction, so any member of
+  // the family counts.
+  function propertyFamily(name) {
+    if (/radius$/.test(name)) return 'radius';
+    const size = name.match(/^(min-|max-)?(width|height|inline-size|block-size)$/);
+    if (size) return (size[1] || '') + 'size';
+    if (/^(top|right|bottom|left)$/.test(name) || name.indexOf('inset') === 0) return 'inset';
+    if (name.indexOf('scroll-') === 0) return name.split('-').slice(0, 2).join('-');
+    if (name.indexOf('contain-intrinsic') === 0) return 'contain-intrinsic';
+    if (name.indexOf('overscroll-behavior') === 0) return 'overscroll-behavior';
+    return name.split('-')[0];
+  }
+  function logicalProperty(name) {
+    return /(^|-)(block|inline)(-|$)/.test(name) ||
+      /-(start|end)-(start|end)-radius$/.test(name);
+  }
+  // Whether any of ``styles`` declares `all`, or a logical property of the
+  // family of any of ``physical``.
+  function reachedLogically(physical, styles) {
+    const families = physical.map(propertyFamily);
+    for (const style of styles) {
+      if (!style) continue;
+      if (style.getPropertyValue('all') !== '') return true;
+      for (let i = 0; i < style.length; i++) {
+        const name = style[i];
+        if (name === 'all') return true;
+        if (logicalProperty(name) && families.indexOf(propertyFamily(name)) >= 0) return true;
+      }
+    }
+    return false;
+  }
+  // The properties an animation or a transition on ``el`` sets now (CSS
+  // animations, CSS transitions, script animations), as CSS names: they
+  // override every normal declaration, so no declaration is what renders
+  // them. `null` when the browser cannot say (no `getAnimations`).
+  function animatedProperties(el) {
+    if (typeof el.getAnimations !== 'function') return null;
+    const names = [];
+    const kebab = (name) => name === 'cssFloat' ? 'float' :
+      name.replace(/[A-Z]/g, (c) => '-' + c.toLowerCase());
+    try {
+      for (const animation of el.getAnimations()) {
+        if (animation.transitionProperty) names.push(animation.transitionProperty);
+        const effect = animation.effect;
+        if (!effect || typeof effect.getKeyframes !== 'function') { names.push('all'); continue; }
+        for (const frame of effect.getKeyframes()) {
+          for (const key of Object.keys(frame)) {
+            if (key === 'offset' || key === 'computedOffset' || key === 'easing' ||
+                key === 'composite') continue;
+            names.push(key.indexOf('--') === 0 ? key : kebab(key));
+          }
+        }
+      }
+    } catch (e) { return null; }
+    return names;
+  }
+  // Whether an animated property can set any of ``physical``: the same
+  // property, a shorthand of it or a longhand of it, a logical property of
+  // its family, or `all`.
+  function animatedAny(physical, animated) {
+    for (const name of animated) {
+      if (name === 'all') return true;
+      for (const property of physical) {
+        if (name === property || property.indexOf(name + '-') === 0 ||
+            name.indexOf(property + '-') === 0) return true;
+        if (logicalProperty(name) && propertyFamily(name) === propertyFamily(property)) return true;
+      }
+    }
+    return false;
+  }
   function decidingSideRules(el) {
     const lines = [];
     let calm = null;
     aliasMemo = new Map();
+    // Read before the transition-free sheet below is adopted, which would
+    // cancel a running transition.
+    const animated = animatedProperties(el);
     // Which declaration decides each property the inspector shows, by the
     // preview runtime's own resolver (`__isonimCascadeAnswers`), asked before
     // anything below adopts a sheet: one `@cascade<TAB>answer` line each.
+    const deciders = {};
     try {
       const answers = window.__isonimCascadeAnswers ?
         window.__isonimCascadeAnswers(el, ISONIM_EDITABLE_PROPS) : '';
       for (const answer of answers.split('\n')) {
         if (answer) lines.push('@cascade\t' + answer);
+        const fields = answer.split('\t');
+        if (fields.length > 1 && fields[0] && fields[1]) deciders[fields[0]] = fields[1];
       }
     } catch (e) {}
     try {
@@ -2156,7 +2234,33 @@ __ISONIM_SCENE_GRAPH_WALK__
             }
           }
           if (decided) lines.push(side + '\t' + decided + (specified ? '\t' + specified : ''));
+          if (decided && !deciders[side]) deciders[side] = decided;
         }
+      }
+      // What the deciding rule's own block holds for each property, as the
+      // CSSOM serialises it: one `@declared<TAB>property<TAB>rule<TAB>text`
+      // line, read by `previewDomElementRef`. The editor shows a source
+      // declaration as authored only where this is the same value
+      // (`viewmodels.withSourceAuthoredValues`), so a block a script changed
+      // in place, or a source the preview has not rendered yet, is never
+      // shown as what renders. Left out wherever a matching rule or the
+      // inline style declares `all` or a logical property that can set the
+      // same physical one (`padding-block` for `padding-top`, `inline-size`
+      // for `width`): the cascade resolver ranks only physical declarations,
+      // so its decider cannot be trusted there; and wherever an animation or
+      // a transition on the element sets it (`animatedProperties`), which
+      // overrides every normal declaration.
+      for (const property of Object.keys(deciders)) {
+        const name = deciders[property];
+        if (name === 'style' || name === 'none') continue;
+        const owners = rules.filter((rule) => ruleIdentity(rule) === name);
+        if (owners.length !== 1) continue;
+        const physical = [property].concat(ISONIM_SHORTHAND_SIDES[property] || []);
+        if (reachedLogically(physical, rules.map((rule) => rule.style).concat([el.style]))) continue;
+        // An animation or a transition that sets it overrides the rule.
+        if (animated === null || animatedAny(physical, animated)) continue;
+        const text = owners[0].style.getPropertyValue(property).trim();
+        if (text) lines.push('@declared\t' + property + '\t' + name + '\t' + text);
       }
       // Read back with transitions still off, so the next style change is
       // computed from the restored values, not from a probe value.
@@ -2847,10 +2951,23 @@ proc editablePreviewDocument*(documentHtml: string;
       .replace("\n", "\\n")
       .replace("\r", "\\r")
 
+  func spliced(text, marker, by: string): string =
+    ## ``text`` with each ``marker`` replaced by ``by``, joined with `&`:
+    ## `strutils.replace` appends each piece with `push.apply` on the JS
+    ## backend (see below), and the bridge after its last marker is longer
+    ## than the engine's argument limit.
+    var at = 0
+    while true:
+      let found = text.find(marker, at)
+      if found < 0:
+        return result & text[at .. ^1]
+      result = result & text[at ..< found] & by
+      at = found + marker.len
+
   let injected = editablePreviewBridgeTemplate
-    .replace("__ISONIM_SOURCE__", metadata.sourceFile.jsString)
-    .replace("__ISONIM_LINE__", $max(metadata.sourceLine, 1))
-    .replace("__ISONIM_MODE__", (case mode
+    .spliced("__ISONIM_SOURCE__", metadata.sourceFile.jsString)
+    .spliced("__ISONIM_LINE__", $max(metadata.sourceLine, 1))
+    .spliced("__ISONIM_MODE__", (case mode
       of emSpec: "spec"
       of emView: "view"
       of emComment: "comment"
