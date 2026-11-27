@@ -222,6 +222,9 @@ test-c:
     nim c -r tests/test_effects.nim
     nim c -r tests/test_glitch_free.nim
     nim c -r tests/test_error_routing.nim
+    # A Defect must stay unrouted under every memory manager, not only ORC.
+    nim c -r --mm:arc --out:build/tests/test_error_routing_arc tests/test_error_routing.nim
+    nim c -r --mm:refc --out:build/tests/test_error_routing_refc tests/test_error_routing.nim
     nim c -r tests/test_owned_roots.nim
     nim c -r tests/test_viewmodel_dispose.nim
     nim c -r --mm:refc --out:build/tests/test_viewmodel_dispose_refc tests/test_viewmodel_dispose.nim

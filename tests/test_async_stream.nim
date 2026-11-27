@@ -5,7 +5,8 @@
 ## that breaks off shows the error and keeps what arrived; disposing the
 ## value (or the ViewModel that created it) cancels the stream. Also:
 ## completion passes the chunks and a known answer is a finished stream; a
-## local write is continued by the chunks still arriving; a list fetched
+## local write is continued by the chunks still arriving, and its `local`
+## flag ends with the next chunk; a list fetched
 ## page after page is one stream, which a new load stops at the producer.
 ##
 ## MOCK POLICY (workspace rule: every mock justified in the header). One
@@ -289,6 +290,43 @@ suite "async value over a stream: known answers, local writes and completion":
     check av.done
     check av.val == @["edited"]
     check svc.cancels.len == 0
+    av.dispose()
+
+  test "local ends with the next chunk, and stays when the stream only finishes":
+    let ctx = newFakeAsyncContext()
+    ctx.install()
+    defer: ctx.uninstall()
+    let svc = newRecordingService(intervalMs = 10, chunkCount = 3)
+    let q = createSignal("a")
+    let av = createAsyncStream(proc(): string = q.val, svc.streamOf)
+    check not av.local
+    ctx.step(10)
+    check av.val == chunks("a", 1)
+    check not av.local
+    av.mutate(@["local"])
+    check av.local
+    ctx.step(10)
+    # The first chunk after the write is the service's again.
+    check av.val == @["local", chunkFor("a", 2)]
+    check not av.local
+    ctx.step(10)
+    check av.val == @["local", chunkFor("a", 2), chunkFor("a", 3)]
+    # Written after the last chunk: the stream's end adds nothing, so the
+    # value shown is still the local one.
+    av.mutate(@["edited"])
+    check av.local
+    check not av.done
+    ctx.step(10)
+    check av.done
+    check av.val == @["edited"]
+    check av.local
+    # A new question ends it; its first chunk replaces the value.
+    q.val = "b"
+    check not av.local
+    check av.pending
+    ctx.step(10)
+    check av.val == chunks("b", 1)
+    check not av.local
     av.dispose()
 
   test "pages fetched one after another are one stream; a new load stops it":

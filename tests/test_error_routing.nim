@@ -9,11 +9,24 @@
 ## repository's in-memory renderer backend, because what they check is which
 ## node the boundary shows, which needs a renderer but no real display
 ## (the same backend `test_dsl` uses for the other control-flow components).
+##
+## A programming defect (a `Defect`) is the exception: it reaches no handler
+## and no boundary and propagates as the same object, from a memo, an effect
+## or an async value's service call, while an ordinary error raised in the
+## same places is routed (for the service call, to the value's own failed
+## state). The async cases use the real async value with a service call
+## written inline and the nim-everywhere fake clock (`FakeAsyncContext`,
+## stepped by the async tests' helper), so no real timer runs; nothing else
+## is replaced.
 
-import unittest
+import std/[strutils, unittest]
+import nim_everywhere
 import isonim/core/[signals, owner, computation, batch]
+import isonim/services/async_value
 import isonim/testing/mock_dom
 import isonim/dsl/components
+
+import helpers/async_recording_service  # `step`: the fake clock, one ms at a time
 
 proc shownText(n: MockNode): string = n.textContent
 
@@ -569,3 +582,119 @@ suite "Handler registration":
     s.val = 2
     check calls == @["2:child"]
     dispose()
+
+type
+  Place = enum
+    ## Where the exception is raised.
+    inMemo = "a memo", inEffect = "an effect",
+    inAsyncCall = "an async value's service call"
+  Catcher = enum
+    ## What would catch it if it were routed.
+    byOnError = "an onError handler", byBoundary = "an error boundary"
+
+suite "Defects are not routed":
+  # The trigger `s` selects what is raised: 1 an ordinary error, 2 the
+  # defect; any other value is a plain answer. Each case checks that the
+  # ordinary error is routed, then recovers, then that the defect is not
+  # routed and surfaces as the object that was raised, and that the graph
+  # still answers afterwards.
+  for place in Place:
+    for catcher in Catcher:
+      test "a Defect in " & $place & " does not reach " & $catcher &
+          "; an ordinary error there is routed":
+        let ctx = newFakeAsyncContext()
+        ctx.install()
+        defer: ctx.uninstall()
+        let s = createSignal(0)
+        let defect = newException(AssertionDefect, "programming error")
+        var handled: seq[string]       # what onError or the fallback got
+        var shownValues: seq[string]   # what the reading effect showed
+        var av: AsyncValue[string]
+        proc compute(n: int): string =
+          if n == 1: raise newException(ValueError, "ordinary " & $n)
+          if n == 2: raise defect
+          "value " & $n
+        proc build() =
+          # The place, built under the current owner (the root with the
+          # handler, or the boundary's body).
+          case place
+          of inMemo:
+            let m = createMemo(proc(): string = compute(s.val))
+            createEffect proc() = shownValues.add m.val
+          of inEffect:
+            createEffect proc() = shownValues.add compute(s.val)
+          of inAsyncCall:
+            av = createAsync(proc(): int = s.val,
+              proc(n: int): PlatformFuture[string] =
+                newCompletedFuture(compute(n)))
+            createEffect proc() = shownValues.add av.val
+        let r = MockRenderer()
+        let parent = r.createElement("div")
+        var dispose: proc()
+        createRoot proc(stop: proc()) =
+          dispose = stop
+          case catcher
+          of byOnError:
+            onError proc(err: ref CatchableError) = handled.add err.msg
+            build()
+          of byBoundary:
+            proc body(): MockNode =
+              build()
+              r.createTextNode("content")
+            proc fallback(err: ref CatchableError): MockNode =
+              handled.add err.msg
+              r.createTextNode("fallback: " & err.msg)
+            errorBoundary(r, parent, body, fallback)
+        proc showsFallback(): bool =
+          catcher == byBoundary and parent.children.len == 1 and
+            parent.children[0].shownText.startsWith("fallback")
+        ctx.step(1)
+        check handled.len == 0
+        check shownValues[^1] == "value 0"
+
+        # An ordinary error is routed and the flush completes.
+        var escaped: ref Exception
+        try:
+          s.val = 1
+          ctx.step(1)
+        except Exception as e:
+          escaped = e
+        check escaped == nil
+        if place == inAsyncCall:
+          # The primitive takes a failing call as the question's answer: a
+          # failed state the View reads, not an error of the graph.
+          check av.status == AsyncStatus.failed
+          check av.error == "ordinary 1"
+          check handled.len == 0
+          check not showsFallback()
+        else:
+          check handled == @["ordinary 1"]
+          check showsFallback() == (catcher == byBoundary)
+        s.val = 0
+        ctx.step(1)
+        check shownValues[^1] == "value 0"
+        check not showsFallback()
+        let handledBefore = handled.len
+
+        # A Defect is not routed: it leaves the write as the same object.
+        var caught: ref Exception
+        try:
+          s.val = 2
+          ctx.step(1)
+        except AssertionDefect as e:
+          caught = e
+        check caught == defect
+        check handled.len == handledBefore
+        check not showsFallback()
+        if place == inAsyncCall:
+          # Nor is it taken as the question's failed answer.
+          check av.status != AsyncStatus.failed
+          check av.error == ""
+
+        # The graph still answers the next change.
+        s.val = 3
+        ctx.step(1)
+        check shownValues[^1] == "value 3"
+        check handled.len == handledBefore
+        check not showsFallback()
+        dispose()

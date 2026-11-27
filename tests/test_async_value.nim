@@ -7,7 +7,8 @@
 ## recovers; the value ends with its owner. Also: an answer the ViewModel
 ## already has (`known`) shows in the propagation that asked, with no call;
 ## a local write (`mutate`) shows as the answer until the next real one;
-## completion (`onDone`) runs in the batch that shows the answer.
+## completion (`onDone`) runs in the batch that shows the answer; `local`
+## tells a local write from the service's answer.
 ##
 ## MOCK POLICY (workspace rule: every mock justified in the header). One
 ## recording service (`helpers/async_recording_service`): its futures are
@@ -490,4 +491,107 @@ suite "async value: known answers, local writes and completion":
     check completed == @["a", "b", "e"]
     check seen.value == "seen " & answerFor("e", 1)
     stop()
+    av.dispose()
+
+  test "local is true from a local write until an answer or a new question":
+    let ctx = newFakeAsyncContext()
+    ctx.install()
+    defer: ctx.uninstall()
+    let svc = newRecordingService()
+    let q = createSignal("a")
+    let av = createAsync(proc(): string = q.val, svc.fetchOf,
+      known = proc(question: string): Option[string] =
+        if question == "k": some("known:k") else: none(string))
+    # What a View reading the value and the flag saw, one entry per run.
+    var frames: seq[(string, bool)]
+    var stop: proc()
+    createRoot proc(d: proc()) =
+      stop = d
+      createEffect proc() = frames.add (av.val, av.local)
+    # Never written: not local, neither loading nor answered.
+    check not av.local
+    ctx.step(10)
+    check av.val == answerFor("a", 1)
+    check not av.local
+    # Written during a load: local until the answer replaces it.
+    av.refresh()
+    av.mutate("local:1")
+    check av.local
+    check av.ready
+    ctx.step(10)
+    check av.val == answerFor("a", 2)
+    check not av.local
+    # A quiet refresh, and one that shows the wait, keep it local until
+    # their answer arrives.
+    av.mutate("local:2")
+    check av.local
+    av.refresh()
+    check av.local
+    av.refresh(pending = true)
+    check av.pending
+    check av.local
+    check av.val == "local:2"
+    ctx.step(10)
+    check av.val == answerFor("a", 4)
+    check not av.local
+    # A failure leaves the local value shown, and so still local.
+    av.mutate("local:3")
+    svc.failures["a"] = "offline"
+    av.refresh()
+    ctx.step(10)
+    check av.status == AsyncStatus.failed
+    check av.val == "local:3"
+    check av.local
+    svc.failures.del "a"
+    # A new question ends it in the propagation that asks, while the local
+    # value is still shown under pending.
+    q.val = "b"
+    check av.pending
+    check av.val == "local:3"
+    check not av.local
+    ctx.step(10)
+    check av.val == answerFor("b", 1)
+    check not av.local
+    # A known answer is an answer.
+    av.mutate("local:4")
+    check av.local
+    q.val = "k"
+    check av.val == "known:k"
+    check not av.local
+    # Every frame that showed the flag showed a value written locally.
+    for f in frames:
+      if f[1]: check f[0].startsWith("local:")
+    check ("local:1", true) in frames
+    check ("local:3", false) in frames
+    # After dispose a write changes nothing.
+    av.dispose()
+    av.mutate("late")
+    check av.value == "known:k"
+    check not av.local
+    stop()
+
+  test "local stays false while nothing is asked":
+    let ctx = newFakeAsyncContext()
+    ctx.install()
+    defer: ctx.uninstall()
+    let svc = newRecordingService()
+    let q = createSignal(none(string))
+    let av = createAsync(proc(): Option[string] = q.val,
+      proc(question: Option[string]): PlatformFuture[string] =
+        svc.fetch(question.get))
+    av.mutate("local")
+    check not av.local
+    q.val = some("a")
+    check not av.local
+    av.mutate("local")
+    check av.local
+    # Back to nothing asked: no longer local, and the next question starts
+    # without it.
+    q.val = none(string)
+    check not av.local
+    q.val = some("a")
+    check av.loading
+    check not av.local
+    ctx.step(10)
+    check not av.local
     av.dispose()

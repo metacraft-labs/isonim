@@ -69,7 +69,9 @@
 ##   shows as the current question's answer (`ready`); a call in flight is
 ##   not stopped, and the next real answer replaces it (a stream's further
 ##   chunks are appended to it). Nothing reverts a local write: it is not
-##   an optimistic overlay.
+##   an optimistic overlay. `local` tells a value written so from the
+##   service's answer: true from the write until an answer replaces the
+##   value (for a stream, its next chunk) or the question changes.
 ## - *Completion* (`onDone`). Called with the question and the answer when
 ##   the current question's answer is complete (a future's answer, a
 ##   stream's done, a `known` answer), inside the batch that shows it, so
@@ -125,6 +127,7 @@ type
     failed: bool      ## `settled` failed with `error`.
     error: string
     done: bool        ## `answer` is complete.
+    local: bool       ## `answer` was written by `mutate`, not by an answer.
     refreshing: bool  ## A refresh that shows the wait is in flight.
 
   Flight = ref object
@@ -182,8 +185,11 @@ proc settleAnswer[T](av: AsyncValue[T]; f: Flight; value: T; done: bool;
   ## `value` is the (new) answer to `f`'s question; with `keepValue` the
   ## answer held is already it (a stream that finishes after its chunks).
   ## `after` (the completion hook) runs in the same batch, so what it
-  ## writes shows in the same frame as the answer.
+  ## writes shows in the same frame as the answer. An answer that writes
+  ## the value replaces a local write; one that keeps it (a stream that
+  ## finishes with no chunk since a local write) leaves it local.
   var o = av.outcome.value
+  if not keepValue: o.local = false
   o.settled = f.serial
   o.answered = f.serial
   o.failed = false
@@ -452,6 +458,18 @@ proc provisional*[T](av: AsyncValue[T]): bool =
   ## The value shown is the declared placeholder, not an answer (tracked).
   av.placeholder.isSome and not av.shown.val and not av.ask.val.idle
 
+proc local*[T](av: AsyncValue[T]): bool =
+  ## The value shown was written by `mutate`, not answered by the service
+  ## (tracked): true from the write until an answer replaces the value (a
+  ## future's answer, a stream's next chunk, a `known` answer) or the
+  ## question changes. A failure after the write leaves it true, because
+  ## the value stays shown. Not yet a stable API.
+  # Local only for the question it was written for: a new question's
+  # number is past it, so the flag drops in the propagation that asks.
+  let a = av.ask.val
+  let o = av.outcome.val
+  not a.idle and o.local and o.answered == a.serial
+
 proc done*[T](av: AsyncValue[T]): bool =
   ## The answer shown is complete (tracked): a future's answer, or a
   ## stream that has finished.
@@ -471,8 +489,9 @@ proc mutate*[T](av: AsyncValue[T]; value: T) =
   ## message appended at once. A call in flight is not stopped: a future's
   ## answer replaces `value` when it arrives, and a stream's further chunks
   ## are appended to it. Records no readiness mark and does not call
-  ## `onDone`. Not an optimistic overlay: nothing reverts it. Does nothing
-  ## when nothing is asked or after dispose. Not yet a stable API.
+  ## `onDone`. Not an optimistic overlay: nothing reverts it; `local` is
+  ## true until an answer replaces it. Does nothing when nothing is asked
+  ## or after dispose. Not yet a stable API.
   if av.disposed: return
   let a = untrack(proc(): Ask = av.ask.val)
   if a.idle: return
@@ -491,6 +510,7 @@ proc mutate*[T](av: AsyncValue[T]; value: T) =
   o.error = ""
   o.done = not streaming
   o.refreshing = false
+  o.local = true
   batch proc() =
     av.answer.val = value
     av.outcome.val = o
