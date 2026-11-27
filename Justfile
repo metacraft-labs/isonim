@@ -1121,6 +1121,13 @@ test-design-review-gallery-production: isonim-review-build editor-build
     nim c -r --path:src --path:. --path:../nim-everywhere/src \
         --path:../isonim-render-serve/src --hints:off \
         tests/test_design_review_brief_has_history_signal.nim
+    # Daemon answers that arrive for a brief the user has moved on from
+    # change nothing (history button, tiles, saved layout), and a saved
+    # layout does not replace an arrangement not saved yet.
+    nim js -d:nodejs --path:src --path:. --path:../nim-everywhere/src --hints:off \
+        --out:build/test_design_review_late_answers.js \
+        tests/test_design_review_late_answers.nim
+    python3 tools/run_nim_js_test.py build/test_design_review_late_answers.js
     node --test tests/e2e_design_review_history_button_in_real_editor.mjs
 
 # Build and serve the editor

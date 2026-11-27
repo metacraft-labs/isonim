@@ -793,6 +793,8 @@ proc pollBriefHasHistory*(st: DesignReviewState) =
     return
   let capturedState = st
   proc cb(res: HttpCallbackResult) =
+    # An answer for a brief the user has moved on from is not this one's.
+    if capturedState.briefId.val != bid: return
     if res.kind != hcOk:
       capturedState.briefHasHistory.val = false
       return
