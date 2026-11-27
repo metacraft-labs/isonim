@@ -399,3 +399,49 @@ when defined(js):
         check vm.controlAsyncCommandAdapter == nil
         vm.sourceProjectMappingDispose()
         dispose()
+
+    test "a catalog-only attach keeps its first catalog after a binding change":
+      # Without inspector editing the reply touches no bindings, so a
+      # binding made before it arrives does not make it stale.
+      createRoot proc(dispose: proc()) =
+        let base = sourceProject()
+        let vm = createEditorVM(base)
+        vm.attachSourceProject(base, inspectorEditing = false, catalog = catalogReply("Compiled"))
+        let key = PropertyBindingKey(elementId: "action", propertyName: "background-color")
+        vm.bindPropertyToVariable(key, "color/surface")
+        drainCallbacks()
+        check vm.sourceAdapterReady.val
+        check "Compiled" in vm.storyNames
+        check vm.controlAsyncCommandAdapter != nil
+        check vm.propertyBindingFor(key).isSome
+        if vm.sourceProjectMappingDispose != nil: vm.sourceProjectMappingDispose()
+        dispose()
+
+    test "a catalog-only attach keeps its first catalog out when another workspace opens":
+      createRoot proc(dispose: proc()) =
+        let base = sourceProject()
+        let vm = createEditorVM(base)
+        vm.attachSourceProject(base, inspectorEditing = false, catalog = catalogReply("Stale"))
+        vm.applyWorkspace(newEditorWorkspace("Other", @[], id = "other"))
+        drainCallbacks()
+        check vm.workspaceEditStage.val != wesFailed
+        check vm.workspaceEditDiagnostics.val.len == 0
+        check "Stale" notin vm.storyNames
+        check vm.controlAsyncCommandAdapter == nil
+        if vm.sourceProjectMappingDispose != nil: vm.sourceProjectMappingDispose()
+        dispose()
+
+    test "a catalog-only attach keeps its first catalog out when its workspace opens again":
+      # Opening a workspace resets the session, whichever workspace it is:
+      # the read sent before is not the reopened session's.
+      createRoot proc(dispose: proc()) =
+        let base = sourceProject()
+        let vm = createEditorVM(base)
+        vm.attachSourceProject(base, inspectorEditing = false, catalog = catalogReply("Stale"))
+        vm.applyWorkspace(sourceProject())
+        drainCallbacks()
+        check not vm.sourceAdapterReady.val
+        check "Stale" notin vm.storyNames
+        check vm.controlAsyncCommandAdapter == nil
+        if vm.sourceProjectMappingDispose != nil: vm.sourceProjectMappingDispose()
+        dispose()

@@ -103,6 +103,7 @@ proc attachSourceProject*(vm: EditorVM; base: EditorWorkspace; inspectorEditing 
     if (!Object.prototype.hasOwnProperty.call(""", vm, """, 'sourceProjectMappings')) """, vm, """.sourceProjectMappings = null;
     if (!Object.prototype.hasOwnProperty.call(""", vm, """, 'sourceProjectMappingDispose')) """, vm, """.sourceProjectMappingDispose = null;
     if (!Object.prototype.hasOwnProperty.call(""", vm, """, 'sourceProjectOperationSerial')) """, vm, """.sourceProjectOperationSerial = 0;
+    if (!Object.prototype.hasOwnProperty.call(""", vm, """, 'sourceCatalogReadWithdraw')) """, vm, """.sourceCatalogReadWithdraw = null;
     if (!Object.prototype.hasOwnProperty.call(""", vm, """, 'sourceProjectBuildInFlight')) """, vm, """.sourceProjectBuildInFlight = false;
     if (!Object.prototype.hasOwnProperty.call(""", vm, """, 'sourceBindingMetadataDirty')) """, vm, """.sourceBindingMetadataDirty = null;
     if (!Object.prototype.hasOwnProperty.call(""", vm, """, 'sourceBindingMetadataHash')) """, vm, """.sourceBindingMetadataHash = [];
@@ -600,10 +601,15 @@ proc attachSourceProject*(vm: EditorVM; base: EditorWorkspace; inspectorEditing 
 
   let initialOperationSerial = vm.sourceProjectOperationSerial
   let initialBindingRevision = vm.inspector.bindingRevision
+  # Opening a workspace, the same one or another, withdraws the read too.
+  vm.sourceCatalogReadWithdraw = proc() = replaced = true
   proc receiveInitial(raw: cstring) =
     try:
       let reply = parseJson($raw)
-      if replaced or initialOperationSerial != vm.sourceProjectOperationSerial or initialBindingRevision != vm.inspector.bindingRevision:
+      # In catalog-only mode the reply touches no bindings, so a binding
+      # change does not make it stale.
+      if replaced or initialOperationSerial != vm.sourceProjectOperationSerial or
+          (inspectorEditing and initialBindingRevision != vm.inspector.bindingRevision):
         return # A newer live mutation owns the catalog and metadata revision.
       if reply{"diagnostic"} != nil: raise newException(ValueError, reply["diagnostic"].getStr())
       applyCatalog(reply)

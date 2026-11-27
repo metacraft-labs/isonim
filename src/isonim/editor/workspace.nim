@@ -393,6 +393,9 @@ proc applyWorkspace*(vm: EditorVM; workspace: EditorWorkspace) =
           "Close active agent conversations before switching projects.")
   vm.controlSourceFixtures = @[]
   vm.controlAsyncCommandAdapter = nil
+  # A source project's first catalog still on its way would install the
+  # fixtures and build adapter just cleared, for a session being left.
+  if vm.sourceCatalogReadWithdraw != nil: vm.sourceCatalogReadWithdraw()
   vm.workspaceId = workspace.id
   vm.loadProjectData(workspace)
   vm.configureWorkspaceChat = nil

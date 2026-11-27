@@ -524,6 +524,9 @@ type
     sourceProjectMappingDispose*: proc() {.closure.}
       ## One model-owned mapping subscription, replaced during hot reload.
       ## Pending transactions retain their mappings and operation identity.
+    sourceCatalogReadWithdraw*: proc() {.closure.}
+      ## Set while a source project's first catalog read may still answer;
+      ## opening a workspace calls it so that answer is not applied.
     sourceProjectBuildInFlight*: bool
     sourceProjectOperationSerial*: int
     inspectorSourceCommit*: proc(element: ElementRef; property, value: string;
