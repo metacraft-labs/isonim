@@ -258,3 +258,43 @@ suite "Design-review saved layouts and an unsaved arrangement":
       check st.galleryVm.pendingLayout.val[0].rowIndex == 2
       st.galleryHostState.val = ghsClosed
       dispose()
+
+suite "Design-review answers for a gallery closed since":
+
+  test "a gallery closed while its tiles load fetches again on the next open":
+    createRoot proc(dispose: proc()) =
+      let m = newState()
+      let st = m.st
+      m.mountGalleryHost()
+      st.briefId.val = "render.first"
+      st.galleryHostState.val = ghsOpen
+      check requestCount("list-history?briefId=render.first") == 1
+      check requestCount("list-layouts?briefId=render.first") == 1
+      # The user closes the gallery before its answers arrive.
+      st.galleryHostState.val = ghsClosed
+      answer("list-history?briefId=render.first",
+             "[{\"run_id\":\"run-first\"}]")
+      if requestCount("fetch-run?runId=run-first") > 0:
+        answer("fetch-run?runId=run-first",
+               runReply("run-first", "cap-first", "p/render.first#0@web"))
+      answer("list-layouts?briefId=render.first",
+             layoutRow("11111111-1111-1111-1111-111111111111", "cap-first"))
+      check st.galleryVm.tiles.val.len == 0
+      check st.galleryVm.activeLayoutId.val == ""
+      # The next open asks again, and its answers are shown.
+      st.galleryHostState.val = ghsOpen
+      check requestCount("list-history?briefId=render.first") == 2
+      check requestCount("list-layouts?briefId=render.first") == 2
+      if requestCount("list-history?briefId=render.first") == 2:
+        answer("list-history?briefId=render.first",
+               "[{\"run_id\":\"run-first\"}]")
+        answer("fetch-run?runId=run-first",
+               runReply("run-first", "cap-first", "p/render.first#0@web"))
+      if requestCount("list-layouts?briefId=render.first") == 2:
+        answer("list-layouts?briefId=render.first",
+               layoutRow("11111111-1111-1111-1111-111111111111", "cap-first"))
+      check st.galleryVm.tiles.val.len == 1
+      check st.galleryVm.activeLayoutId.val ==
+        "11111111-1111-1111-1111-111111111111"
+      st.galleryHostState.val = ghsClosed
+      dispose()

@@ -65,6 +65,9 @@ type
     # "fixed full-viewport drawer" so the gallery stays reachable on
     # touch / phone widths.
     narrow*: Signal[bool]
+    galleryCloses: int
+      ## Times the gallery host has been seen closed: a tile or layout
+      ## answer asked for before a close belongs to a gallery no longer shown.
 
 var states {.threadvar.}: seq[(EditorVM, DesignReviewState)]
 
@@ -582,8 +585,9 @@ proc fetchGalleryTiles*(st: DesignReviewState) =
     return
   let capturedState = st
   let capturedBriefId = bid
+  let closes = st.galleryCloses
   proc onHistory(res: HttpCallbackResult) =
-    if res.kind != hcOk: return
+    if res.kind != hcOk or capturedState.galleryCloses != closes: return
     # Snapshot the briefId we started with; if the user switched
     # stories before fetch-run completes, abandon the in-flight work.
     if capturedState.briefId.val != capturedBriefId: return
@@ -602,7 +606,8 @@ proc fetchGalleryTiles*(st: DesignReviewState) =
     # Per-callback closure: append + decrement, commit when last lands.
     proc finish() =
       if pending != 0: return
-      if capturedState.briefId.val != capturedBriefId: return
+      if capturedState.briefId.val != capturedBriefId or
+          capturedState.galleryCloses != closes: return
       capturedState.galleryVm.tiles.val = collected
     let capturedBaseUrl =
       if capturedState.httpClient != nil:
@@ -728,9 +733,11 @@ proc loadGalleryLayout*(st: DesignReviewState) =
     if vm.layoutName.val.len > 0: vm.layoutName.val else: "default"
   let capturedVm = vm
   let capturedState = st
+  let closes = st.galleryCloses
   proc onLayouts(res: HttpCallbackResult) =
-    # A layout for a brief the user has moved on from is not this one's.
-    if capturedState.briefId.val != bid: return
+    # A layout for a brief the user has moved on from, or for a gallery
+    # closed since, is not this one's.
+    if capturedState.briefId.val != bid or capturedState.galleryCloses != closes: return
     if res.kind != hcOk: return
     # The body is a JSON array of layout rows.  Walk the top-level
     # objects and take the first whose ``name`` matches; fall back to
@@ -787,6 +794,7 @@ proc startGalleryFetchOnOpen*(st: DesignReviewState) =
     let bid = capturedState.briefId.val
     discard bid
     if capturedState.galleryHostState.val == ghsClosed:
+      inc capturedState.galleryCloses
       capturedState.galleryVm.tiles.val = @[]
 
 proc pollBriefHasHistory*(st: DesignReviewState) =
