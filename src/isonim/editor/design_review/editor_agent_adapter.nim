@@ -105,12 +105,20 @@ proc installAdapterCallbacks*(client: BrowserAgentClient; chat: AgentChatVM;
   ## :type:`AgentEvent` instances through ``applyAgentEvent``.  Exposed
   ## so the VM tests can call this against a fake client.
   let capturedChat = chat
+  # A turn's terminal event (end or error) settles it. The transport may
+  # still deliver for it afterwards, before the next prompt changes the
+  # generation; none of that may reopen or rewrite the finished turn.
+  var settled = false
+  proc stale(): bool =
+    client.closed or (generation >= 0 and
+      (settled or capturedChat.promptGeneration != generation))
   client.onUpdate = proc(payload: cstring) {.closure.} =
-    if client.closed or (generation >= 0 and capturedChat.promptGeneration != generation): return
+    if stale(): return
     let evt = agentEventFromSse($payload)
     capturedChat.applyAgentEvent(evt)
   client.onEnd = proc(stopReason: cstring) {.closure.} =
-    if client.closed or (generation >= 0 and capturedChat.promptGeneration != generation): return
+    if stale(): return
+    settled = true
     capturedChat.promptInFlight = false
     if not capturedChat.promptAdmitted and capturedChat.inputText.val.len == 0:
       capturedChat.inputText.val = capturedChat.pendingPromptText
@@ -128,7 +136,7 @@ proc installAdapterCallbacks*(client: BrowserAgentClient; chat: AgentChatVM;
       capturedChat.settleAgentReply(aekCompleted)
       capturedChat.connectionState.val = $acsCompleted
   client.onInterrupted = proc(message: cstring) {.closure.} =
-    if client.closed or (generation >= 0 and capturedChat.promptGeneration != generation): return
+    if stale(): return
     # EOF is not evidence that the backend turn ended. Keep prompt admission
     # blocked while allowing explicit chat closure through the normal adapter.
     capturedChat.promptInFlight = true
@@ -138,7 +146,8 @@ proc installAdapterCallbacks*(client: BrowserAgentClient; chat: AgentChatVM;
       result = prev
       result.add ChatMessage(kind: cmkError, text: $message, timestamp: 0.0)
   client.onError = proc(message: cstring) {.closure.} =
-    if client.closed or (generation >= 0 and capturedChat.promptGeneration != generation): return
+    if stale(): return
+    settled = true
     capturedChat.promptInFlight = false
     if not capturedChat.promptAdmitted and capturedChat.inputText.val.len == 0:
       capturedChat.inputText.val = capturedChat.pendingPromptText

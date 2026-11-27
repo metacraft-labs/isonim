@@ -329,6 +329,85 @@ suite "EAC-M6 exact admission and complete project context":
       check not editor.chat.promptAdmitted
       dispose()
 
+  test "a turn ended while its transport is still open cannot change the next turn":
+    # An interrupted turn never delivers a terminal event, so only ending the
+    # turn (as closing the chat while its session is created does) releases
+    # admission. Its transport may still deliver afterwards; none of that may
+    # reach the next turn.
+    createRoot do (dispose: proc()):
+      let editor = createEditorVM()
+      let client = fakeClient()
+      client.activeSessionId = "persistent-session"
+      editor.chat.configureAgentAdaptersWithClient(client, absAgentHarbor)
+      editor.chat.inputText.val = "first"
+      check editor.sendAgentPrompt()
+      let oldEnd = client.onEnd
+      let oldError = client.onError
+      let oldInterrupted = client.onInterrupted
+      let oldUpdate = client.onUpdate
+      let oldAdmitted = client.onAdmitted
+      client.onInterrupted("Agent stream interrupted: EOF")
+      check editor.chat.promptInFlight
+      check editor.chat.connectionState.val == "interrupted"
+      editor.chat.inputText.val = "second"
+      check not editor.sendAgentPrompt()
+      editor.chat.promptInFlight = false
+      check not editor.chat.promptInFlight
+      check editor.sendAgentPrompt()
+      editor.chat.inputText.val = "newer unsent draft"
+      let before = editor.chat.messages.val
+      let beforeState = editor.chat.connectionState.val
+      oldUpdate("{\"sessionUpdate\":\"agent_message_chunk\",\"content\":{\"type\":\"text\",\"text\":\"late text\"}}")
+      oldAdmitted()
+      oldEnd("end_turn")
+      oldError("late HTTP failure")
+      oldInterrupted("late EOF")
+      check editor.chat.promptInFlight
+      check not editor.chat.promptAdmitted
+      check editor.chat.inputText.val == "newer unsent draft"
+      check editor.chat.messages.val == before
+      check editor.chat.connectionState.val == beforeState
+      check editor.chat.stopReason.val != "end_turn"
+      dispose()
+
+  test "events after a turn has ended change nothing until the next prompt":
+    # A transport can still deliver for a turn after its terminal event: a
+    # second end, an error, an update or an interruption of the same turn.
+    # The turn is over; only the next prompt's events may change the chat.
+    createRoot do (dispose: proc()):
+      let editor = createEditorVM()
+      let client = fakeClient()
+      client.activeSessionId = "persistent-session"
+      editor.chat.configureAgentAdaptersWithClient(client, absAgentHarbor)
+      editor.chat.inputText.val = "first"
+      check editor.sendAgentPrompt()
+      client.onAdmitted()
+      emitSessionUpdate(client, "first reply", "persistent-session")
+      emitEnd(client, "end_turn")
+      check not editor.chat.promptInFlight
+      check editor.chat.connectionState.val == $acsCompleted
+      editor.chat.inputText.val = "unsent draft"
+      let before = editor.chat.messages.val
+      emitSessionUpdate(client, "late text", "persistent-session")
+      client.onAdmitted()
+      emitEnd(client, "error")
+      emitError(client, "late HTTP failure")
+      client.onInterrupted("late EOF")
+      check not editor.chat.promptInFlight
+      check editor.chat.inputText.val == "unsent draft"
+      check editor.chat.messages.val == before
+      check editor.chat.connectionState.val == $acsCompleted
+      check editor.chat.sessionStatus.val == asReady
+      check editor.chat.stopReason.val == "end_turn"
+      # The next prompt's own events still apply.
+      check editor.sendAgentPrompt()
+      emitSessionUpdate(client, "second reply", "persistent-session")
+      emitEnd(client, "end_turn")
+      check not editor.chat.promptInFlight
+      check editor.chat.connectionState.val == $acsCompleted
+      check editor.chat.messages.val.anyIt(it.kind == cmkAgent and "second reply" in it.text)
+      dispose()
+
   test "actual HTML class tokens exclude inactive markup and decode attributes before relevance":
     let html = """<!doctype html><!-- <i class='flex'> -->
       <script>const fake="<i class='flex'>";</script>
