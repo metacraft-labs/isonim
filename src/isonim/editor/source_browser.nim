@@ -3,8 +3,21 @@
 ## replace preview data; build-start acknowledgement is never completion.
 when not defined(js): {.error: "Source browser bridge requires JS".}
 import std/[json, options, strutils]
+import nim_everywhere/async_compat
 import isonim/core/[signals, computation, owner, batch]
 import isonim/editor/[viewmodels, workspace, source_catalog, control]
+
+type SourceCatalogService* = proc(): PlatformFuture[cstring] {.closure.}
+  ## Reads the project's compiled catalog: the reply's JSON text; nil when
+  ## the page has no source project; a reply with a `diagnostic` when the
+  ## connection fails. It does not reject: a failure is a reply.
+
+proc fetchSourceCatalog*(): PlatformFuture[cstring] =
+  ## The browser's catalog service: the editor server's catalog endpoint
+  ## (404 when the page was not opened on a source project).
+  {.emit: [result, """ = fetch('/api/editor/source/catalog',{credentials:'omit'}).then(r=>{
+      if(r.status===404) return null; return r.text();
+    }).catch(()=>'{"diagnostic":"Source catalog connection failed."}');"""].}
 
 proc previewAnswers(elementId: string; conditions: JsonNode): JsonNode =
   ## The preview's own answers for a declaration's conditions (the worker's
@@ -76,10 +89,12 @@ proc editCase(mapping: JsonNode; property: string; answers: JsonNode;
       "Which rule decides " & property & " at this preview width is not described; " &
         "edit the stylesheet directly."
 
-proc attachSourceProject*(vm: EditorVM; base: EditorWorkspace; inspectorEditing = true) =
+proc attachSourceProject*(vm: EditorVM; base: EditorWorkspace; inspectorEditing = true;
+    catalog: SourceCatalogService = nil) =
   ## Native inspector writes are the default. Catalog-only consumers retain
   ## preview edits and native agent commands without claiming source persistence.
   ## An installed native inspector cannot be downgraded during its VM lifetime.
+  ## ``catalog`` reads the first catalog (default: `fetchSourceCatalog`).
   if not inspectorEditing and vm.hasAsyncSourceProject:
     raise newException(ValueError, "Native inspector editing is already installed.")
   # Retained models can predate these fields. Check their stable JS slots
@@ -632,10 +647,10 @@ proc attachSourceProject*(vm: EditorVM; base: EditorWorkspace; inspectorEditing 
       vm.workspaceEditStage.val = wesFailed
       vm.workspaceEditDiagnostics.val = @[WorkspaceEditDiagnostic(kind: wedMissingAdapter,
         message: "Source project unavailable: " & error.msg)]
-  let initialCallback = receiveInitial
-  {.emit: ["""
-    fetch('/api/editor/source/catalog',{credentials:'omit'}).then(r=>{
-      if(r.status===404) return null; return r.text();
-    }).then(raw=>{if(raw!==null) """, initialCallback, """(raw);})
-      .catch(()=>""", initialCallback, """('{"diagnostic":"Source catalog connection failed."}'));
-  """].}
+  let readCatalog = if catalog != nil: catalog else: SourceCatalogService(fetchSourceCatalog)
+  # The service answers a failure with a `diagnostic` reply, so its future
+  # does not reject; nil means no source project.
+  readCatalog().onComplete(
+    proc(raw: cstring) =
+      if not raw.isNil: receiveInitial(raw),
+    proc(message: string) = discard)

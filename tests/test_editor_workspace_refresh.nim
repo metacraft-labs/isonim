@@ -6,10 +6,20 @@
 ## invocation only: this isolates replacement by the production hot-reload/data
 ## API without launching a model. Actual REST/CLI/source compiler boundaries stay
 ## covered by registered native and mounted Harbor scenario integration tests.
+## The source project's first catalog read (JS only) is given a catalog
+## service that answers with a fixed reply, and a source transport that
+## records requests and never answers: the tests decide when the read's
+## answer arrives relative to the editor's own writes, which a real server
+## cannot be made to order. The mounted source GUI tests cover the real
+## endpoint and transport.
 import std/[unittest, json, strutils]
 import isonim/core/[owner, signals, computation]
 import isonim/editor
 import isonim/editor/[workspace, control, source_catalog, preview_identity]
+when defined(js):
+  import std/options
+  import nim_everywhere/async_compat
+  import isonim/editor/source_browser
 
 suite "Workspace catalog refresh":
   test "same workspace preserves conversations drafts journals selection and viewport":
@@ -287,3 +297,91 @@ suite "Authored preview identity boundaries":
   test "leading text-html processing comment preserves doctype and explicit head":
     let input = "<?xml version=\"1.0\"?><!doctype html><html><head data-value='1 > 0'></head><body>Ready</body></html>"
     check stamped(input) == input.replace("<head data-value='1 > 0'>", "<head data-value='1 > 0'>" & identity)
+
+when defined(js):
+  proc sourceProject(): EditorWorkspace =
+    newEditorWorkspace("Project", @[
+      StoryGroup(name: "Card", kind: skComponent, items: @[
+        StoryItem(group: "Card", name: "Ready", kind: skComponent)])], id = "project",
+      permissions = EditorWorkspacePermissions(readSource: true, writeSource: true))
+
+  proc catalogReply(story: string): SourceCatalogService =
+    ## A catalog service whose answer is already there: it is delivered
+    ## when the test drains the platform callbacks.
+    let raw = $(%* {"manifest": {"workspace": "project", "fixtures": []},
+      "catalog": {"stories": [{"group": "Card", "name": story, "kind": "component",
+        "documentHtml": "<p>" & story & "</p>"}]},
+      "bindingSidecar": "", "bindingHash": repeat('a', 40)})
+    result = proc(): PlatformFuture[cstring] = newCompletedFuture(raw.cstring)
+
+  proc storyNames(vm: EditorVM): seq[string] =
+    for group in vm.sidebar.groups.val:
+      for item in group.items: result.add item.name
+
+  suite "Source project first catalog read":
+    test "the first catalog is applied when it arrives":
+      createRoot proc(dispose: proc()) =
+        let base = sourceProject()
+        let vm = createEditorVM(base)
+        let reloads = vm.livePreviewReloadGeneration.val
+        vm.attachSourceProject(base, catalog = catalogReply("Compiled"))
+        check not vm.sourceAdapterReady.val
+        drainCallbacks()
+        check vm.sourceAdapterReady.val
+        check "Compiled" in vm.storyNames
+        check vm.sourceBindingMetadataHash == repeat('a', 40)
+        check vm.controlAsyncCommandAdapter != nil
+        check vm.livePreviewReloadGeneration.val == reloads + 1
+        vm.sourceProjectMappingDispose()
+        dispose()
+
+    test "a binding changed before the first catalog arrives keeps it out":
+      createRoot proc(dispose: proc()) =
+        let base = sourceProject()
+        let vm = createEditorVM(base)
+        vm.attachSourceProject(base, catalog = catalogReply("Stale"))
+        let key = PropertyBindingKey(elementId: "action", propertyName: "background-color")
+        vm.bindPropertyToVariable(key, "color/surface")
+        drainCallbacks()
+        check not vm.sourceAdapterReady.val
+        check "Stale" notin vm.storyNames
+        check vm.sourceBindingMetadataHash.len == 0
+        check vm.controlAsyncCommandAdapter == nil
+        check vm.propertyBindingFor(key).isSome
+        vm.sourceProjectMappingDispose()
+        dispose()
+
+    test "a metadata save sent before the first catalog arrives keeps it out":
+      createRoot proc(dispose: proc()) =
+        let base = sourceProject()
+        let vm = createEditorVM(base)
+        var requests: seq[JsonNode] = @[]
+        vm.controlSourceTransport = proc(request: JsonNode; done: proc(data: JsonNode) {.closure.}) =
+          requests.add request
+        let saved = repeat('b', 40)
+        vm.sourceBindingMetadataHash = saved
+        vm.attachSourceProject(base, catalog = catalogReply("Stale"))
+        vm.sourceBindingMetadataSave(nil)
+        check requests.len == 1
+        check requests[0]{"command"}.getStr() == "bindings-save"
+        drainCallbacks()
+        check not vm.sourceAdapterReady.val
+        check "Stale" notin vm.storyNames
+        check vm.sourceBindingMetadataHash == saved
+        check vm.controlAsyncCommandAdapter == nil
+        vm.sourceProjectMappingDispose()
+        dispose()
+
+    test "opening another workspace before the first catalog arrives keeps it out":
+      createRoot proc(dispose: proc()) =
+        let base = sourceProject()
+        let vm = createEditorVM(base)
+        vm.attachSourceProject(base, catalog = catalogReply("Stale"))
+        vm.applyWorkspace(newEditorWorkspace("Other", @[], id = "other"))
+        drainCallbacks()
+        check vm.workspaceEditStage.val != wesFailed
+        check vm.workspaceEditDiagnostics.val.len == 0
+        check "Stale" notin vm.storyNames
+        check vm.controlAsyncCommandAdapter == nil
+        vm.sourceProjectMappingDispose()
+        dispose()
