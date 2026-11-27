@@ -163,6 +163,31 @@ suite "Design-review answers for an earlier brief":
       check st.historyVm.briefHasHistory.val == true
       dispose()
 
+  test "a late saved layout for an earlier brief is not restored":
+    createRoot proc(dispose: proc()) =
+      let m = newState()
+      let st = m.st
+      m.mountGalleryHost()
+      st.briefId.val = "render.first"
+      st.galleryHostState.val = ghsOpen
+      check requestCount("list-layouts?briefId=render.first") == 1
+      # The user moves to another story while the gallery is open.
+      st.briefId.val = "render.second"
+      check requestCount("list-layouts?briefId=render.second") == 1
+      answer("list-layouts?briefId=render.second",
+             layoutRow("22222222-2222-2222-2222-222222222222", "cap-second"))
+      check st.galleryVm.activeLayoutId.val ==
+        "22222222-2222-2222-2222-222222222222"
+      # The first brief's layout arrives last.
+      answer("list-layouts?briefId=render.first",
+             layoutRow("11111111-1111-1111-1111-111111111111", "cap-first"))
+      check st.galleryVm.activeLayoutId.val ==
+        "22222222-2222-2222-2222-222222222222"
+      check st.galleryVm.pendingLayout.val.len == 1
+      check st.galleryVm.pendingLayout.val[0].captureId == "cap-second"
+      st.galleryHostState.val = ghsClosed
+      dispose()
+
   test "late tiles for an earlier brief are not shown":
     createRoot proc(dispose: proc()) =
       let m = newState()

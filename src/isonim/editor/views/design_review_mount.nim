@@ -727,7 +727,10 @@ proc loadGalleryLayout*(st: DesignReviewState) =
   let wantName =
     if vm.layoutName.val.len > 0: vm.layoutName.val else: "default"
   let capturedVm = vm
+  let capturedState = st
   proc onLayouts(res: HttpCallbackResult) =
+    # A layout for a brief the user has moved on from is not this one's.
+    if capturedState.briefId.val != bid: return
     if res.kind != hcOk: return
     # The body is a JSON array of layout rows.  Walk the top-level
     # objects and take the first whose ``name`` matches; fall back to
