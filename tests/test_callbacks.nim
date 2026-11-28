@@ -10,13 +10,16 @@
 ## `Uninstall` puts back the previous set, including when the completion
 ## hook starts the next flight; a flight that settles while `install` runs
 ## is undone when `install` returns; a producer that ends twice, or after a
-## cancel, is undone once; `install` raising fails the question.
+## cancel, is undone once; `install` raising fails the question, and a
+## callback it wrapped before raising reaches nothing; `Uninstall` runs
+## before the value hears an end or a failure.
 ##
 ## `createAsyncFromCallback` (one answer): the value is the answer itself,
 ## not a sequence of one chunk; the same three stop paths drop late
 ## callbacks and run `Uninstall` once; a failure shows `failed`; a second
 ## answer is dropped and undoes nothing again; `install` raising fails the
-## question and leaves no flight behind. Its answer
+## question and leaves no flight behind: a callback it wrapped before
+## raising reaches nothing. Its answer
 ## travels through a platform future, which on JS is a promise whose
 ## callbacks run on a microtask a synchronous `unittest` case cannot wait
 ## for, so these cases are asynchronous scenarios on both backends (see
@@ -359,17 +362,60 @@ suite "fromCallbacks":
     av.dispose()
     check undone == @["a", "b", "c"]
 
-  test "install raising fails the question":
+  test "install raising fails the question; what it wrapped first reaches nothing":
     let ctx = newFakeAsyncContext()
     ctx.install()
     defer: ctx.uninstall()
+    var lateCalls = 0
+    var kept: proc(text: string)
+    var sink0: Sink[string]
     let q = createSignal("a")
     let av = createAsyncStream(proc(): string = q.val,
       proc(question: string): ServiceStream[string] =
         fromCallbacks(proc(sink: Sink[string]): Uninstall =
+          # A callback handed to the service before install fails. Nothing
+          # undoes the hand-over, so the wrap is what must drop it.
+          sink0 = sink
+          kept = sink.wrap(proc(text: string) =
+            inc lateCalls
+            sink.emit(text))
           raise newException(IOError, "no connection")))
     check av.status == AsyncStatus.failed
     check av.error == "no connection"
+    check not sink0.isCurrent
+    kept("late")
+    check lateCalls == 0
+    check av.status == AsyncStatus.failed
+    av.dispose()
+
+  test "Uninstall runs before the value hears the end or the failure":
+    # The Uninstall of each flight records what the value showed when it
+    # ran, which must be what it showed just before the end: the end and
+    # the failure are heard only after it.
+    let ctx = newFakeAsyncContext()
+    ctx.install()
+    defer: ctx.uninstall()
+    var sinks: seq[Sink[string]]
+    var seen, beforeEnd: seq[string]
+    var av: AsyncValue[seq[string]]
+    proc shown(question: string): string =
+      question & ":" & $av.status & ":" & $av.done & ":" & av.error
+    let q = createSignal("a")
+    av = createAsyncStream(proc(): string = q.val,
+      proc(question: string): ServiceStream[string] =
+        fromCallbacks(proc(sink: Sink[string]): Uninstall =
+          sinks.add sink
+          result = proc() = seen.add shown(question)))
+    sinks[0].emit("a1")
+    beforeEnd.add shown("a")
+    sinks[0].finish()
+    check av.done
+    q.val = "b"
+    beforeEnd.add shown("b")
+    sinks[1].fail("gone")
+    check av.status == AsyncStatus.failed
+    check beforeEnd == @["a:ready:false:", "b:pending:true:"]
+    check seen == beforeEnd
     av.dispose()
 
   test "wrap passes calls through while current, with two and three parameters":
@@ -588,16 +634,31 @@ proc oneAnswerInstallRaises(s: Scenario) {.async.} =
   var installs = 0
   var undone: seq[string]
   var sinks: seq[AnswerSink[string]]
+  var raisedSink: AnswerSink[string]
+  var kept: proc(text: string)
+  var lateCalls = 0
   let q = createSignal("a")
   let av = createAsyncFromCallback(proc(): string = q.val,
     proc(question: string; sink: AnswerSink[string]): Uninstall =
       inc installs
-      if question == "a": raise newException(IOError, "no connection")
+      if question == "a":
+        # A callback handed to the service before install fails: nothing
+        # undoes the hand-over, so the wrap is what must drop it.
+        raisedSink = sink
+        kept = sink.wrap(proc(text: string) =
+          inc lateCalls
+          sink.answer(text))
+        raise newException(IOError, "no connection")
       sinks.add sink
       result = proc() = undone.add question)
   await ctx.stepAsync(5)
   s.expect(av.status == AsyncStatus.failed, "failed: " & $av.status)
   s.expect(av.error == "no connection", "its message: " & av.error)
+  s.expect(not raisedSink.isCurrent, "the raised flight is not current")
+  kept("late")
+  await ctx.stepAsync(5)
+  s.expect(lateCalls == 0, "its wrapped callback reaches nothing: " & $lateCalls)
+  s.expect(av.status == AsyncStatus.failed, "still failed: " & $av.status)
   q.val = "b"
   s.expect(installs == 2, "b installed: " & $installs)
   s.expect(undone.len == 0, "nothing undone yet: " & $undone)
