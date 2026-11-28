@@ -26,7 +26,7 @@ import std/[json, jsonutils]
 
 import nim_agents
 import isonim/core/[signals, batch]
-import isonim/services/streams
+import isonim/services/[streams, callbacks]
 import isonim/editor/agent_harbor
 import isonim/editor/types
 import isonim/editor/viewmodels
@@ -120,28 +120,30 @@ proc settleTurnEnd(chat: AgentChatVM; stopReason: string) =
     chat.connectionState.val = $acsCompleted
 
 proc installAdapterCallbacks*(client: BrowserAgentClient; chat: AgentChatVM;
-    turn: StreamEmitter[string] = nil) =
+    turn: Sink[string] = nil) =
   ## Wire ``client.onUpdate`` / ``onEnd`` / ``onInterrupted`` / ``onError``
-  ## to the chat.  With ``turn`` they belong to that turn's stream and fall
-  ## silent once it has ended or was cancelled, so a transport that
-  ## delivers late for an earlier turn changes nothing; without, they
-  ## report connection events outside a turn.  Exposed so the VM tests can
-  ## call this against a fake client.
+  ## to the chat.  With ``turn`` they belong to that turn's stream: each is
+  ## wrapped by its sink, so it falls silent once the turn has ended or was
+  ## replaced, and a transport that delivers late for an earlier turn
+  ## changes nothing; without, they report connection events outside a
+  ## turn.  Exposed so the VM tests can call this against a fake client.
   let capturedChat = chat
-  proc live(): bool = not client.closed and (turn == nil or turn.isActive)
-  client.onUpdate = proc(payload: cstring) {.closure.} =
-    if not live(): return
+  proc through(callback: proc(text: cstring) {.closure.}):
+      proc(text: cstring) {.closure.} =
+    if turn == nil: callback else: turn.wrap(callback)
+  client.onUpdate = through proc(payload: cstring) {.closure.} =
+    if client.closed: return
     capturedChat.applyAgentEvent(agentEventFromSse($payload))
-  client.onEnd = proc(stopReason: cstring) {.closure.} =
-    if not live(): return
+  client.onEnd = through proc(stopReason: cstring) {.closure.} =
+    if client.closed: return
     # One frame: the chat shows the end and admits the next prompt together.
     batch proc() =
       capturedChat.settleTurnEnd($stopReason)
       if turn != nil:
         turn.emit($stopReason)
         turn.finish()
-  client.onInterrupted = proc(message: cstring) {.closure.} =
-    if not live(): return
+  client.onInterrupted = through proc(message: cstring) {.closure.} =
+    if client.closed: return
     # EOF is not evidence that the backend turn ended: the turn's stream stays
     # open, which keeps prompt admission blocked while allowing explicit chat
     # closure through the normal adapter.
@@ -150,8 +152,8 @@ proc installAdapterCallbacks*(client: BrowserAgentClient; chat: AgentChatVM;
     capturedChat.messages.update proc(prev: seq[ChatMessage]): seq[ChatMessage] =
       result = prev
       result.add ChatMessage(kind: cmkError, text: $message, timestamp: 0.0)
-  client.onError = proc(message: cstring) {.closure.} =
-    if not live(): return
+  client.onError = through proc(message: cstring) {.closure.} =
+    if client.closed: return
     batch proc() =
       if not capturedChat.promptAdmitted and capturedChat.inputText.val.len == 0:
         capturedChat.inputText.val = capturedChat.pendingPromptText
@@ -187,13 +189,21 @@ proc configureAgentAdaptersWithClient*(chat: AgentChatVM;
   proc turnStream(turn: AgentTurn): ServiceStream[string] =
     ## One turn over the client's callbacks: session-on-demand (mint a
     ## session on the first prompt, then reuse it for the rest of the
-    ## editor's lifetime) and a non-blocking ``submitPrompt``.
-    newServiceStream[string](proc(e: StreamEmitter[string]) =
-      installAdapterCallbacks(capturedClient, capturedChat, e)
+    ## editor's lifetime) and a non-blocking ``submitPrompt``.  When the
+    ## turn stops (ended, failed, replaced or disposed) the callbacks the
+    ## client had before it are put back.
+    fromCallbacks(proc(sink: Sink[string]): Uninstall =
+      let previous = (capturedClient.onUpdate, capturedClient.onEnd,
+        capturedClient.onInterrupted, capturedClient.onError,
+        capturedClient.onAdmitted)
+      result = proc() =
+        (capturedClient.onUpdate, capturedClient.onEnd,
+          capturedClient.onInterrupted, capturedClient.onError,
+          capturedClient.onAdmitted) = previous
+      installAdapterCallbacks(capturedClient, capturedChat, sink)
       let submitted = turn.context.accumulatedEdits
-      capturedClient.onAdmitted = proc() =
-        if capturedClient.closed or not e.isActive: return
-        capturedChat.admitAgentTurn(submitted)
+      capturedClient.onAdmitted = sink.wrap(proc() =
+        if not capturedClient.closed: capturedChat.admitAgentTurn(submitted))
       if capturedClient.activeSessionId.len > 0:
         capturedChat.connectionState.val = $acsStreaming
         capturedClient.submitPrompt(capturedClient.activeSessionId,

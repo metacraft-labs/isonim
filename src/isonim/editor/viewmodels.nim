@@ -771,18 +771,11 @@ proc setSectionExpanded*(inspector: InspectorVM; section: InspectorSection;
 proc recordEditorTiming*(editor: EditorVM; kind: EditorPerformanceBudgetKind;
     durationMs: int; detail: string)
 proc detachStyleClass*(editor: EditorVM; property: string): StyleOperationResult {.discardable.}
-proc agentTurnBusy(chat: AgentChatVM): bool =
-  ## A turn is asked and has neither finished nor failed (tracked).
-  if chat.turn == nil: return false
-  let status = chat.turn.status
-  status in {AsyncStatus.loading, AsyncStatus.pending} or
-    (status == AsyncStatus.ready and not chat.turn.done)
-
 proc promptInFlight*(chat: AgentChatVM): bool =
-  ## The current turn is in flight, or an adapter without a turn source
-  ## says its prompt is.
+  ## The current turn is in flight (asked, and neither finished nor
+  ## failed), or an adapter without a turn source says its prompt is.
   if chat.promptInFlightState == nil: chat.promptInFlightState = createSignal(false)
-  chat.promptInFlightState.val or chat.agentTurnBusy()
+  chat.promptInFlightState.val or (chat.turn != nil and chat.turn.inFlight)
 
 proc `promptInFlight=`*(chat: AgentChatVM; value: bool) =
   if chat.promptInFlightState == nil: chat.promptInFlightState = createSignal(false)
