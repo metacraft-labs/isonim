@@ -237,7 +237,8 @@ type
     ## status changes. Not yet a stable API.
     answer: Signal[T]
     outcome: Signal[Arrival]
-    ask: Memo[Ask]
+    askMemo: Memo[Ask]
+    ask: Signal[Ask]  # backport probe: the question the status shows
     statusMemo: Memo[AsyncStatus]
     shown: Memo[bool]
     doneMemo: Memo[bool]
@@ -413,7 +414,7 @@ proc newAsyncValue[S, T](input: proc(): S; placeholder: Option[T];
 
   createRoot proc(dispose: proc()) =
     av.disposeRoot = dispose
-    av.ask = createMemo(proc(): Ask =
+    av.askMemo = createMemo(proc(): Ask =
       # A new question is numbered here, in the propagation that changed
       # the input, so the status below sees it at once.
       let q = input()
@@ -426,6 +427,7 @@ proc newAsyncValue[S, T](input: proc(): S; placeholder: Option[T];
         asked = true
         question = q
       Ask(serial: serial, epoch: epoch))
+    av.ask = createSignal(av.askMemo.val)
     av.statusMemo = createMemo(proc(): AsyncStatus =
       let a = av.ask.val
       let o = av.outcome.val
@@ -451,7 +453,7 @@ proc newAsyncValue[S, T](input: proc(): S; placeholder: Option[T];
       let a = av.ask.val
       not a.idle and av.outcome.val.closed != a.serial)
     av.restart = proc(pending: bool) =
-      start(untrack(proc(): Ask = av.ask.val), pending, false)
+      start(untrack(proc(): Ask = av.askMemo.val), pending, false)
     # The value's own computation, which starts the call for each new
     # question. It is pure, so in a flush it runs with the memos, before
     # any effect: an answer it writes at once (a known answer, a service
@@ -463,8 +465,13 @@ proc newAsyncValue[S, T](input: proc(): S; placeholder: Option[T];
     # known answer.
     createComputed proc() =
       if av.source == nil: av.source = ComputationBase(getOwner())
-      let a = av.ask.val
-      untrack(proc() = start(a, false, true))
+      let a = av.askMemo.val
+      # Backport probe: the old core runs a memo's readers as soon as it
+      # changes (a later core change made propagation glitch-free), so the status sees
+      # the new question only after the call (or known answer) has started.
+      batch proc() =
+        try: untrack(proc() = start(a, false, true))
+        finally: av.ask.val = a
     onCleanup proc() =
       # The owner (or `dispose`) ends the value: the flight in progress
       # stops and nothing it started writes or settles afterwards.
@@ -840,7 +847,7 @@ proc mutate*[T](av: AsyncValue[T]; value: T) =
   ## say); on a stream still delivering, it must be a value the stream's
   ## next chunks can extend.
   if av.disposed: return
-  let a = untrack(proc(): Ask = av.ask.val)
+  let a = untrack(proc(): Ask = av.askMemo.val)
   if a.idle: return
   let f = av.current
   # A stream still delivering continues from the local value. A flight for
