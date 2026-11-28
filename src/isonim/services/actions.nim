@@ -323,6 +323,9 @@ proc createAction*[A, R](run: proc(arg: A): PlatformFuture[R];
     createComputed proc() =
       if action.source == nil: action.source = ComputationBase(getOwner())
     onCleanup proc() = action.endAction()
+  # Backport probe: the old core does not dispose a nested root with its
+  # creator (a later core change added that), so register the disposal by hand.
+  onCleanup proc() = action.disposeRoot()
   action
 
 proc call*[A, R](action: Action[A, R]; arg: A): PlatformFuture[Outcome[R]] =

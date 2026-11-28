@@ -473,6 +473,9 @@ proc newAsyncValue[S, T](input: proc(): S; placeholder: Option[T];
       let f = av.current
       av.current = nil
       f.stop()
+  # Backport probe: the old core does not dispose a nested root with its
+  # creator (a later core change added that), so register the disposal by hand.
+  onCleanup proc() = av.disposeRoot()
   av
 
 proc cancelHookFor[S](cancel: proc(question: S); question: S): proc() =
