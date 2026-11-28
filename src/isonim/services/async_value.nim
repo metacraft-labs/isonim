@@ -36,11 +36,16 @@
 ##     its chunks so far; `done` says whether more follow);
 ##   - `failed` — the current question failed; `error` says why.
 ##   `loading`, `pending` and `ready` are shorthands.
-## - `done` — the shown answer is complete (a future's answer always is; a
-##   stream's once it has finished). It describes the shown answer, not the
-##   current question: while a new question is `pending`, `done` stays true
-##   for the previous answer. Do not read it as "the current question is
-##   loaded"; that is `ready`.
+## - `done` — the current question's answer is shown and complete (a
+##   future's answer always is; a stream's once it has finished). It is
+##   false while `pending`: the answer shown then is an older question's.
+## - `inFlight` — a call for the current question is running: true from the
+##   propagation that asks the question until the call settles, whatever
+##   the status (under `loading` and `pending`, and under `ready` during a
+##   quiet refresh or while a stream is still delivering); false while
+##   `idle`. It answers "is work running", which is a different question
+##   from "what is shown": do not draw a spinner from `inFlight` alone,
+##   because a quiet refresh runs a call while the answer stays `ready`.
 ##
 ## Semantics:
 ##
@@ -60,8 +65,9 @@
 ## - *Errors.* A failed question shows `failed` and its message; the last
 ##   answer stays the value. A new question, or a refresh, recovers. A
 ##   service call (or `known`) that raises a `CatchableError` fails the
-##   question the same way. A failure is the value's state: it reaches no
-##   error handler and no error boundary. A `Defect` raised by the call is
+##   question the same way. A failure is the value's state (and the settle
+##   hook's `failed` outcome): it reaches no error handler and no error
+##   boundary. A `Defect` raised by the call is
 ##   not a failure: it is a programming error and propagates.
 ## - *Placeholder.* An optional declared first value shown, flagged
 ##   `provisional`, while there is no answer. It is never reported as an
@@ -91,12 +97,24 @@
 ##   from the service's answer: true from the write until an answer
 ##   replaces the value (for a stream, its next chunk) or the question
 ##   changes.
-## - *Completion* (`onDone`). Called with the question and the answer when
-##   the current question's answer is complete (a future's answer, a
-##   stream's done, a `known` answer), inside the batch that shows it, so
-##   what the ViewModel writes there shows in the same frame. Called once
-##   per answer; not called for a local write, a failure, a stopped flight
-##   or a replaced question.
+## - *Settling* (`onSettled`, `Outcome`). Called with the question and how
+##   its call settled: `answered` with the whole answer (a future's answer,
+##   a stream's chunks when it finishes, a `known` answer) or `failed` with
+##   the message. Called once each time the current question is asked (a
+##   new question, or a refresh), inside the batch that writes the outcome,
+##   so what the ViewModel writes there (a reply joining a transcript, a
+##   draft restored after a failure) shows in the same frame. Called only
+##   for the current question of a live value: a call stopped because the
+##   question changed, a refresh replaced it or the value ended settles
+##   nothing, so the hook needs no check of its own that its answer is
+##   still wanted. A local write settles nothing. `onDone` is the
+##   `answered` case alone, called before `onSettled` when both are given.
+##   A failure is the value's state and the hook's argument; it is never
+##   raised. A hook that raises an ordinary error raises an error of the
+##   reactive graph: it goes to the nearest error handler above the value
+##   (`onError`), and with none it is raised to the code whose write or
+##   batch settled the question, as for any computation. A `Defect` it
+##   raises propagates.
 ## - *Asking again.* A question equal to the last one asks nothing; to ask
 ##   the same question again use `refresh`. An event that must always be
 ##   answered (a prompt sent twice) is a different question each time only
@@ -126,7 +144,7 @@ import std/options
 
 import nim_everywhere/async_compat
 
-import isonim/core/[signals, computation, owner, batch]
+import isonim/core/[signals, computation, owner, batch, graph]
 import ./streams
 import ./readiness
 
@@ -138,6 +156,32 @@ type
     ## question's answer shown) or `failed` (the current question failed).
     idle, loading, pending, ready, failed
 
+  OutcomeKind* {.pure.} = enum
+    ## How a call settled: `answered` (it gave its whole answer), `failed`
+    ## (it failed, or the service could not be called), `interrupted` or
+    ## `refused`. An `AsyncValue` settles only as `answered` or `failed`:
+    ## a call it stops because the question changed, a refresh replaced it
+    ## or the value ended settles nothing. `interrupted` and `refused` are
+    ## for work that runs under a policy for being asked again while busy.
+    answered, failed, interrupted, refused
+
+  Outcome*[T] = object
+    ## How one call settled, given to the settle hook (`onSettled`).
+    case kind*: OutcomeKind
+      ## Which way it settled.
+    of OutcomeKind.answered:
+      value*: T
+        ## The whole answer: a future's answer, a stream's chunks when it
+        ## finished, or a known answer.
+    of OutcomeKind.failed:
+      error*: string
+        ## Why it failed: the service's message, or the message of the
+        ## error the call raised.
+    of OutcomeKind.interrupted, OutcomeKind.refused:
+      discard
+
+  SettleHook[S, T] = proc(question: S; outcome: Outcome[T])
+
   Ask = object
     ## The current question, by number. `serial` grows with every new
     ## question; `epoch` is the serial of the first question since nothing
@@ -146,7 +190,7 @@ type
     epoch: int
     idle: bool
 
-  Outcome = object
+  Arrival = object
     ## What has arrived, by question number (0: nothing yet).
     settled: int      ## The question whose answer or error is shown.
     answered: int     ## The question whose answer `answer` holds.
@@ -155,6 +199,8 @@ type
     done: bool        ## `answer` is complete.
     local: bool       ## `answer` was written by `mutate`, not by an answer.
     refreshing: bool  ## A refresh that shows the wait is in flight.
+    closed: int       ## The question whose call has settled (answered
+                      ## whole or failed) with no call asked since.
 
   Flight = ref object
     ## One call of the service. Its callbacks write only while it is live:
@@ -171,11 +217,12 @@ type
     ## dependency, so a View that reads only `status` re-runs only when the
     ## status changes. Not yet a stable API.
     answer: Signal[T]
-    outcome: Signal[Outcome]
+    outcome: Signal[Arrival]
     ask: Memo[Ask]
     statusMemo: Memo[AsyncStatus]
     shown: Memo[bool]
     doneMemo: Memo[bool]
+    inFlightMemo: Memo[bool]
     errorMemo: Memo[string]
     placeholder: Option[T]
     marks: ReadinessMarks
@@ -184,6 +231,9 @@ type
     restart: proc(pending: bool) {.closure.}
     disposeRoot: proc() {.closure.}
     disposed: bool
+    source: ComputationBase
+      ## The value's own computation: a settle hook's error is reported as
+      ## its error, so it reaches the handlers above the value.
 
 proc never[T](a, b: T): bool = false
 
@@ -224,21 +274,56 @@ proc settleAnswer[T](av: AsyncValue[T]; f: Flight; value: T; done: bool;
   o.error = ""
   o.done = done
   o.refreshing = false
+  if done: o.closed = f.serial
   batch proc() =
     if not keepValue: av.answer.val = value
     av.outcome.val = o
     av.mark(done)
     if after != nil: after()
 
-proc doneHook[S, T](onDone: proc(question: S; value: T); question: S;
-                    value: T): proc() =
-  ## The completion hook for one answer, or nil. Captures only what it
-  ## passes on (not the flight, which would be a cycle under ARC).
-  if onDone == nil: return nil
-  result = proc() = onDone(question, value)
+proc runHook[S, T](av: AsyncValue[T]; hook: SettleHook[S, T]; question: S;
+                   outcome: Outcome[T]) =
+  ## Run the settle hook. An ordinary error it raises is an error of the
+  ## graph, reported as the error of the value's own computation: it goes to the
+  ## nearest handler above the value (with none, it is raised, as for any
+  ## computation). A `Defect` is not caught.
+  try:
+    hook(question, outcome)
+  except CatchableError as e:
+    if av.source != nil: handleError(av.source, e)
+    else: raise e
 
-proc settleError[T](av: AsyncValue[T]; f: Flight; message: string) =
-  ## `f`'s question failed with `message`; the held answer stays.
+proc answeredHook[S, T](av: AsyncValue[T]; hook: SettleHook[S, T];
+                        question: S; value: T): proc() =
+  ## The settle hook for one answer, or nil. Captures the value, the hook
+  ## and what it passes on, not the flight (which would be a cycle under
+  ## ARC); nothing stores it beyond the batch that runs it.
+  if hook == nil: return nil
+  result = proc() =
+    av.runHook(hook, question, Outcome[T](kind: OutcomeKind.answered,
+                                          value: value))
+
+proc failedHook[S, T](av: AsyncValue[T]; hook: SettleHook[S, T];
+                      question: S; message: string): proc() =
+  ## The settle hook for one failure, or nil.
+  if hook == nil: return nil
+  result = proc() =
+    av.runHook(hook, question, Outcome[T](kind: OutcomeKind.failed,
+                                          error: message))
+
+proc settleHookOf[S, T](onDone: proc(question: S; value: T);
+                        onSettled: SettleHook[S, T]): SettleHook[S, T] =
+  ## One hook for both parameters: `onDone` is the answered case, called
+  ## first.
+  if onDone == nil: return onSettled
+  result = proc(question: S; outcome: Outcome[T]) =
+    if outcome.kind == OutcomeKind.answered: onDone(question, outcome.value)
+    if onSettled != nil: onSettled(question, outcome)
+
+proc settleError[T](av: AsyncValue[T]; f: Flight; message: string;
+                    after: proc() = nil) =
+  ## `f`'s question failed with `message`; the held answer stays. `after`
+  ## (the settle hook) runs in the same batch.
   if not f.live: return
   f.finish()
   var o = av.outcome.value
@@ -246,7 +331,10 @@ proc settleError[T](av: AsyncValue[T]; f: Flight; message: string) =
   o.failed = true
   o.error = message
   o.refreshing = false
-  av.outcome.val = o
+  o.closed = f.serial
+  batch proc() =
+    av.outcome.val = o
+    if after != nil: after()
 
 proc isNoQuestion[S](question: S): bool =
   when S is Option: question.isNone
@@ -255,7 +343,7 @@ proc isNoQuestion[S](question: S): bool =
 proc newAsyncValue[S, T](input: proc(): S; placeholder: Option[T];
                          marks: ReadinessMarks; element: string;
                          known: proc(question: S): Option[T];
-                         onDone: proc(question: S; value: T);
+                         hook: SettleHook[S, T];
                          launch: proc(av: AsyncValue[T]; question: S;
                                       f: Flight) {.closure.}): AsyncValue[T] =
   ## The machinery shared by futures and streams; `launch` calls the
@@ -265,7 +353,7 @@ proc newAsyncValue[S, T](input: proc(): S; placeholder: Option[T];
   # Answers are written only when they arrive, so no comparison is needed
   # (and `T` need not have one).
   av.answer = createSignal(default(T), never[T])
-  av.outcome = createSignal(Outcome())
+  av.outcome = createSignal(Arrival())
   var question: S
   var serial = 0
   var epoch = 0
@@ -278,9 +366,11 @@ proc newAsyncValue[S, T](input: proc(): S; placeholder: Option[T];
     av.current = nil
     previous.stop()
     if a.idle or av.disposed: return
-    if pending:
+    if not fresh:
+      # The question is asked again: in flight until this call settles.
       var o = av.outcome.value
-      o.refreshing = true
+      o.closed = 0
+      if pending: o.refreshing = true
       av.outcome.val = o
     let f = Flight(serial: a.serial, live: true)
     av.current = f
@@ -289,13 +379,13 @@ proc newAsyncValue[S, T](input: proc(): S; placeholder: Option[T];
       try:
         answer = known(question)
       except CatchableError as e:
-        av.settleError(f, e.msg)
+        av.settleError(f, e.msg, av.failedHook(hook, question, e.msg))
         return
       if answer.isSome:
         # Shown in this propagation: no call, no loading frame.
         f.finish()
         av.settleAnswer(f, answer.get, done = true,
-                        after = doneHook(onDone, question, answer.get))
+                        after = av.answeredHook(hook, question, answer.get))
         return
     launch(av, question, f)
 
@@ -329,19 +419,35 @@ proc newAsyncValue[S, T](input: proc(): S; placeholder: Option[T];
     # Separate memos, so a View that reads only one of these re-runs only
     # when it changes.
     av.doneMemo = createMemo(proc(): bool =
-      av.shown.val and av.outcome.val.done)
+      # The current question's answer, complete: never while pending.
+      av.statusMemo.val == AsyncStatus.ready and av.outcome.val.done)
     av.errorMemo = createMemo(proc(): string =
       if av.statusMemo.val == AsyncStatus.failed: av.outcome.val.error
       else: "")
+    av.inFlightMemo = createMemo(proc(): bool =
+      # The call has settled when its question is the one last closed.
+      let a = av.ask.val
+      not a.idle and av.outcome.val.closed != a.serial)
     av.restart = proc(pending: bool) =
       start(untrack(proc(): Ask = av.ask.val), pending, false)
-    createEffect proc() =
+    # The value's own computation, which starts the call for each new
+    # question. It is pure, so in a flush it runs with the memos, before
+    # any effect: an answer it writes at once (a known answer, a service
+    # that answers while it is called) is in place before a View's effect
+    # reads the value, whatever order the effects were queued in. As an
+    # effect, it ran before or after the View's effect depending on the
+    # order in which the value's memos last subscribed to the question, so
+    # a View could see a frame of the new question `pending` before its
+    # known answer.
+    createComputed proc() =
+      if av.source == nil: av.source = ComputationBase(getOwner())
       let a = av.ask.val
       untrack(proc() = start(a, false, true))
     onCleanup proc() =
       # The owner (or `dispose`) ends the value: the flight in progress
-      # stops and nothing it started writes afterwards.
+      # stops and nothing it started writes or settles afterwards.
       av.disposed = true
+      av.source = nil
       let f = av.current
       av.current = nil
       f.stop()
@@ -358,7 +464,9 @@ proc createAsync*[S, T](input: proc(): S;
                         marks: ReadinessMarks = nil; element = "";
                         cancel: proc(question: S) = nil;
                         known: proc(question: S): Option[T] = nil;
-                        onDone: proc(question: S; value: T) = nil):
+                        onDone: proc(question: S; value: T) = nil;
+                        onSettled: proc(question: S;
+                                        outcome: Outcome[T]) = nil):
     AsyncValue[T] =
   ## The answer of `call` to the question `input` yields, asked again
   ## whenever the question changes (see the module documentation).
@@ -368,9 +476,10 @@ proc createAsync*[S, T](input: proc(): S;
   ## longer wanted (replaced, refreshed over or disposed). When `input`
   ## returns an `Option`, `none` asks nothing and `call` receives the
   ## `some` value wrapped as it is. `known` answers a new question at once
-  ## when it returns a value (no call); `onDone` is called when an answer
-  ## to the current question arrives, in the batch that shows it. Not yet
-  ## a stable API.
+  ## when it returns a value (no call); `onSettled` is called when the call
+  ## for the current question settles (`answered` or `failed`), in the
+  ## batch that writes the outcome, and `onDone` when it is answered. Not
+  ## yet a stable API.
   ##
   ## A question equal (`==`) to the last one asks nothing; `refresh` asks
   ## it again. `cancel` is never called for a call that has answered. A
@@ -378,16 +487,18 @@ proc createAsync*[S, T](input: proc(): S;
   ## replaced call runs to its end; for work that must stop, answer with a
   ## stream (`createAsyncStream`). `call` raising a `CatchableError`, or
   ## returning nil, fails the question; a `Defect` propagates.
-  newAsyncValue[S, T](input, placeholder, marks, element, known, onDone,
+  let hook = settleHookOf(onDone, onSettled)
+  newAsyncValue[S, T](input, placeholder, marks, element, known, hook,
     proc(av: AsyncValue[T]; question: S; f: Flight) =
       var future: PlatformFuture[T]
       try:
         future = call(question)
       except CatchableError as e:
-        av.settleError(f, e.msg)
+        av.settleError(f, e.msg, av.failedHook(hook, question, e.msg))
         return
       if future.isNil:
-        av.settleError(f, "the service returned no future")
+        const message = "the service returned no future"
+        av.settleError(f, message, av.failedHook(hook, question, message))
         return
       if cancel != nil:
         if not f.live:
@@ -404,15 +515,19 @@ proc createAsync*[S, T](input: proc(): S;
           if not f.live: return
           f.finish()
           av.settleAnswer(f, value, done = true,
-                          after = doneHook(onDone, question, value)),
-        proc(message: string) = av.settleError(f, message)))
+                          after = av.answeredHook(hook, question, value)),
+        proc(message: string) =
+          if not f.live: return
+          av.settleError(f, message, av.failedHook(hook, question, message))))
 
 proc createAsyncStream*[S, C](input: proc(): S;
                               call: proc(question: S): ServiceStream[C];
                               placeholder = none(seq[C]);
                               marks: ReadinessMarks = nil; element = "";
                               known: proc(question: S): Option[seq[C]] = nil;
-                              onDone: proc(question: S; chunks: seq[C]) = nil):
+                              onDone: proc(question: S; chunks: seq[C]) = nil;
+                              onSettled: proc(question: S;
+                                  outcome: Outcome[seq[C]]) = nil):
     AsyncValue[seq[C]] =
   ## The chunks of the stream `call` answers the question `input` yields
   ## with, re-subscribed whenever the question changes; the old stream is
@@ -421,22 +536,25 @@ proc createAsyncStream*[S, C](input: proc(): S;
   ## stream's first chunk replaces them. `done` is set once the stream
   ## finishes. A stream that fails keeps its chunks so far and shows
   ## `failed`. `known` answers a new question at once with chunks the
-  ## ViewModel already has (a finished stream, no call); `onDone` is called
-  ## with the chunks when the stream finishes, in the batch that shows it.
-  ## Not yet a stable API.
+  ## ViewModel already has (a finished stream, no call); `onSettled` is
+  ## called once when the stream finishes (`answered` with the chunks) or
+  ## breaks off (`failed`), never per chunk, in the batch that writes it,
+  ## and `onDone` when it finishes. Not yet a stable API.
   ##
   ## A replaced, refreshed-over or disposed stream is cancelled at the
   ## producer, so its work stops. The value is copied on each chunk.
-  newAsyncValue[S, seq[C]](input, placeholder, marks, element, known, onDone,
+  let hook = settleHookOf(onDone, onSettled)
+  newAsyncValue[S, seq[C]](input, placeholder, marks, element, known, hook,
     proc(av: AsyncValue[seq[C]]; question: S; f: Flight) =
       var stream: ServiceStream[C]
       try:
         stream = call(question)
       except CatchableError as e:
-        av.settleError(f, e.msg)
+        av.settleError(f, e.msg, av.failedHook(hook, question, e.msg))
         return
       if stream.isNil:
-        av.settleError(f, "the service returned no stream")
+        const message = "the service returned no stream"
+        av.settleError(f, message, av.failedHook(hook, question, message))
         return
       let subscription = stream(StreamSink[C](
         onChunk: proc(chunk: C) =
@@ -453,8 +571,10 @@ proc createAsyncStream*[S, C](input: proc(): S;
           # came, an empty one).
           let chunks = if f.chunked: av.answer.value else: newSeq[C]()
           av.settleAnswer(f, chunks, done = true, keepValue = f.chunked,
-                          after = doneHook(onDone, question, chunks)),
-        onError: proc(message: string) = av.settleError(f, message)))
+                          after = av.answeredHook(hook, question, chunks)),
+        onError: proc(message: string) =
+          if not f.live: return
+          av.settleError(f, message, av.failedHook(hook, question, message))))
       f.subscription = subscription
       # Replaced while subscribing (a producer that calls back into the
       # ViewModel): the subscription is not wanted. A finished one ignores
@@ -518,12 +638,29 @@ proc local*[T](av: AsyncValue[T]): bool =
   not a.idle and o.local and o.answered == a.serial
 
 proc done*[T](av: AsyncValue[T]): bool =
-  ## The answer shown is complete (tracked): a future's answer, or a
-  ## stream that has finished. It describes the shown answer, not the
-  ## current question: it stays true for the previous answer while a new
-  ## question is `pending`. Use `ready` to know that the current question
-  ## is answered.
+  ## The current question's answer is shown and complete (tracked): a
+  ## future's answer, a stream that has finished, a known answer, or a
+  ## local write that no stream is continuing. Never true while `pending`,
+  ## `loading`, `failed` or `idle`, so it can be read as "the current
+  ## question is loaded". A quiet refresh leaves it true: the answer shown
+  ## is still the current question's, complete, while it is asked again
+  ## (`inFlight` tells that a call is running). For a stream, `ready` with
+  ## `done` false means chunks are still arriving. Not yet a stable API.
   av.doneMemo.val
+
+proc inFlight*[T](av: AsyncValue[T]): bool =
+  ## A call for the current question is running (tracked): true from the
+  ## propagation that asks the question (or `refresh` asks it again) until
+  ## that call settles, by its whole answer or a failure, whatever the
+  ## status. So it is true while `loading` and `pending`, and while
+  ## `ready` during a quiet refresh or while a stream is still delivering;
+  ## false while `idle`, after `failed`, and after a known answer. A local
+  ## write does not change it. Not yet a stable API.
+  ##
+  ## It is a different question from what is shown (`status`, `val`): a
+  ## quiet refresh runs a call while the answer stays `ready`, so do not
+  ## draw a spinner from `inFlight` alone.
+  av.inFlightMemo.val
 
 proc refresh*[T](av: AsyncValue[T]; pending = false) =
   ## Ask the current question again, replacing the flight in progress.
@@ -540,10 +677,10 @@ proc mutate*[T](av: AsyncValue[T]; value: T) =
   ## (`ready`, no error), for example a transcript with the user's own
   ## message appended at once. A call in flight is not stopped: a future's
   ## answer replaces `value` when it arrives, and a stream's further chunks
-  ## are appended to it. Records no readiness mark and does not call
-  ## `onDone`. Not an optimistic overlay: nothing reverts it; `local` is
-  ## true until an answer replaces it. Does nothing when nothing is asked
-  ## or after dispose. Not yet a stable API.
+  ## are appended to it. Records no readiness mark and settles nothing
+  ## (no `onSettled` or `onDone` call). Not an optimistic overlay: nothing
+  ## reverts it; `local` is true until an answer replaces it. Does nothing
+  ## when nothing is asked or after dispose. Not yet a stable API.
   ##
   ## Why a late answer is not cancelled: when it comes, it is the truth.
   ## So a local write cannot hold the reply of a write against a read that
@@ -559,8 +696,8 @@ proc mutate*[T](av: AsyncValue[T]; value: T) =
   if a.idle: return
   let f = av.current
   # A stream still delivering continues from the local value. A flight for
-  # an older question (the input changed in this batch, and the effect that
-  # replaces the flight has not run yet) is about to stop: the local value
+  # an older question (the input changed in this batch, and the computation
+  # that replaces the flight has not run yet) is about to stop: the local value
   # is then complete, and the new question's call answers over it.
   let streaming = f != nil and f.live and f.subscription != nil and
     f.serial == a.serial

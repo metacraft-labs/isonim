@@ -8,7 +8,9 @@
 ## already has (`known`) shows in the propagation that asked, with no call;
 ## a local write (`mutate`) shows as the answer until the next real one;
 ## completion (`onDone`) runs in the batch that shows the answer; `local`
-## tells a local write from the service's answer.
+## tells a local write from the service's answer; `inFlight` and `done` in
+## every status (`done` is false while a new question is pending, and a
+## View never sees a question asked without `inFlight`).
 ##
 ## MOCK POLICY (workspace rule: every mock justified in the header). One
 ## recording service (`helpers/async_recording_service`): its futures are
@@ -594,4 +596,129 @@ suite "async value: known answers, local writes and completion":
     check not av.local
     ctx.step(10)
     check not av.local
+    av.dispose()
+
+suite "async value: inFlight and done":
+  test "inFlight and done in every status of a future":
+    let ctx = newFakeAsyncContext()
+    ctx.install()
+    defer: ctx.uninstall()
+    let svc = newRecordingService()
+    svc.failures["bad"] = "boom"
+    let q = createSignal(none(string))
+    let av = createAsync(proc(): Option[string] = q.val,
+      proc(question: Option[string]): PlatformFuture[string] =
+        svc.fetch(question.get))
+    # idle: nothing is asked.
+    check av.status == AsyncStatus.idle
+    check not av.inFlight
+    check not av.done
+    # loading: asked, no answer yet.
+    q.val = some("a")
+    check av.loading
+    check av.inFlight
+    check not av.done
+    ctx.step(10)
+    # ready: answered, nothing running.
+    check av.ready
+    check not av.inFlight
+    check av.done
+    # pending: the old answer is complete, but it is not the current
+    # question's, so done is false.
+    q.val = some("b")
+    check av.pending
+    check av.inFlight
+    check not av.done
+    check av.val == answerFor("a", 1)
+    ctx.step(10)
+    check av.ready
+    check not av.inFlight
+    check av.done
+    # A quiet refresh: still ready with the current question's answer, and
+    # a call is running.
+    av.refresh()
+    check av.ready
+    check av.inFlight
+    check av.done
+    check av.val == answerFor("b", 1)
+    ctx.step(10)
+    check av.val == answerFor("b", 2)
+    check not av.inFlight
+    check av.done
+    # A refresh that shows the wait.
+    av.refresh(pending = true)
+    check av.pending
+    check av.inFlight
+    check not av.done
+    ctx.step(10)
+    check av.ready
+    check not av.inFlight
+    # failed: settled, nothing running, no complete answer to the question.
+    q.val = some("bad")
+    check av.pending
+    check av.inFlight
+    ctx.step(10)
+    check av.status == AsyncStatus.failed
+    check not av.inFlight
+    check not av.done
+    check av.val == answerFor("b", 3)
+    # Back to idle.
+    q.val = none(string)
+    check not av.inFlight
+    check not av.done
+    av.dispose()
+
+  test "a View never sees a new question without inFlight, or done while pending":
+    let ctx = newFakeAsyncContext()
+    ctx.install()
+    defer: ctx.uninstall()
+    let svc = newRecordingService()
+    let q = createSignal("a")
+    let av = createAsync(proc(): string = q.val, svc.fetchOf)
+    var frames: seq[(AsyncStatus, bool, bool)]
+    var stop: proc()
+    createRoot proc(d: proc()) =
+      stop = d
+      createEffect proc() = frames.add (av.status, av.inFlight, av.done)
+    ctx.step(10)
+    q.val = "b"
+    ctx.step(10)
+    q.val = "c"
+    q.val = "d"
+    ctx.step(10)
+    check frames[0] == (AsyncStatus.loading, true, false)
+    check frames[^1] == (AsyncStatus.ready, false, true)
+    var sawPending = false
+    for f in frames:
+      if f[0] in {AsyncStatus.loading, AsyncStatus.pending}:
+        check f[1]
+        check not f[2]
+      if f[0] == AsyncStatus.pending: sawPending = true
+      if f[2]: check f[0] == AsyncStatus.ready
+    check sawPending
+    stop()
+    av.dispose()
+
+  test "a local write leaves the call in flight; a known answer is not in flight":
+    let ctx = newFakeAsyncContext()
+    ctx.install()
+    defer: ctx.uninstall()
+    let svc = newRecordingService()
+    let q = createSignal("a")
+    let av = createAsync(proc(): string = q.val, svc.fetchOf,
+      known = proc(question: string): Option[string] =
+        if question == "k": some("known:k") else: none(string))
+    av.mutate("local:a")
+    check av.ready
+    check av.inFlight                 # the call for "a" is still running
+    ctx.step(10)
+    check av.val == answerFor("a", 1)
+    check not av.inFlight
+    av.mutate("local:a2")
+    check not av.inFlight             # nothing was asked by the write
+    q.val = "k"
+    check av.ready
+    check not av.inFlight
+    check av.done
+    check svc.asks == @["a"]
     av.dispose()

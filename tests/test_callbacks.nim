@@ -20,8 +20,9 @@
 ## answer is dropped and undoes nothing again; a refresh asked while
 ## `install` runs undoes the flight being installed, not the one the
 ## refresh started; `install` raising fails the question and leaves no
-## flight behind: a callback it wrapped before raising reaches nothing.
-## Its answer
+## flight behind: a callback it wrapped before raising reaches nothing;
+## `onSettled` is passed on (one outcome per question, none for a late
+## callback). Its answer
 ## travels through a platform future, which on JS is a promise whose
 ## callbacks run on a microtask a synchronous `unittest` case cannot wait
 ## for, so these cases are asynchronous scenarios on both backends (see
@@ -416,7 +417,8 @@ suite "fromCallbacks":
     beforeEnd.add shown("b")
     sinks[1].fail("gone")
     check av.status == AsyncStatus.failed
-    check beforeEnd == @["a:ready:false:", "b:pending:true:"]
+    # `done` is false while pending: the shown answer is an older question's.
+    check beforeEnd == @["a:ready:false:", "b:pending:false:"]
     check seen == beforeEnd
     av.dispose()
 
@@ -584,6 +586,32 @@ proc oneAnswerFails(s: Scenario) {.async.} =
   av.dispose()
   s.expect(c.uninstalls == @["a"], "dispose undoes nothing again: " & $c.uninstalls)
 
+proc oneAnswerSettles(s: Scenario) {.async.} =
+  # `onSettled` is passed on to the async value: an answer and a failure
+  # each settle once, and a late callback settles nothing.
+  let ctx = newFakeAsyncContext()
+  ctx.install()
+  defer: ctx.uninstall()
+  let c = AnswerClient()
+  var settled: seq[string]
+  let q = createSignal("a")
+  let av = createAsyncFromCallback(proc(): string = q.val, c.answerInstall,
+    onSettled = proc(question: string; outcome: Outcome[string]) =
+      settled.add question & ":" & $outcome.kind &
+        (if outcome.kind == OutcomeKind.answered: ":" & outcome.value
+         else: ":" & outcome.error))
+  c.carried[0]("a answer")
+  await ctx.stepAsync(5)
+  s.expect(settled == @["a:answered:a answer"], "a answered: " & $settled)
+  q.val = "b"
+  c.failCarried[1]("refused")
+  await ctx.stepAsync(5)
+  c.carried[1]("late")
+  await ctx.stepAsync(5)
+  s.expect(settled == @["a:answered:a answer", "b:failed:refused"],
+           "b failed, once: " & $settled)
+  av.dispose()
+
 proc oneAnswerRefreshed(s: Scenario) {.async.} =
   let ctx = newFakeAsyncContext()
   ctx.install()
@@ -725,6 +753,8 @@ proc main() {.async.} =
     proc(s: Scenario): Future[void] = oneAnswerDisposed(s))
   await run("a failure shows failed and undoes the flight once",
     proc(s: Scenario): Future[void] = oneAnswerFails(s))
+  await run("the settle hook is passed on: one outcome per question",
+    proc(s: Scenario): Future[void] = oneAnswerSettles(s))
   await run("a refresh undoes the flight it replaces",
     proc(s: Scenario): Future[void] = oneAnswerRefreshed(s))
   await run("a refresh asked while install runs undoes the flight being installed",

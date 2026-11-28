@@ -6,7 +6,8 @@
 ## a batch, a completion that ends its own question and writes another
 ## value, a completion that asks a new question or disposes the value, and
 ## a local write in the batch that asks a new question or while a new
-## question is pending.
+## question is pending, and a known answer with no pending frame whatever
+## the order in which the View subscribed.
 ##
 ## MOCK POLICY (workspace rule: every mock justified in the header). One
 ## recording service (`helpers/async_recording_service`): its futures are
@@ -59,8 +60,10 @@ suite "async value edge cases":
     check av.done
     check av.val == @["b.1", "b.2"]
     # The answer arrived during the subscription, in the same propagation
-    # as the question: no View frame showed it loading.
-    check statuses == @[AsyncStatus.ready, AsyncStatus.ready]
+    # as the question, before the View's effect ran: the status never left
+    # `ready`, so no View frame showed it loading and the View did not run
+    # again.
+    check statuses == @[AsyncStatus.ready]
     av.dispose()
 
   test "a stream that fails while it is subscribed to":
@@ -413,3 +416,64 @@ suite "async value edge cases: local writes and completion":
     check svc.asks == @["a"]
     when not defined(js):
       check svc.armedTimers == 0
+
+  test "a known answer shows with no pending frame, whatever the subscription order":
+    # The View's effect is queued before or after the value's own
+    # computation depending on when it subscribed and on which questions
+    # were asked before; vary both, then ask a question the ViewModel
+    # already knows the answer to.
+    for setup in 0 ..< 4:
+      for action in 0 ..< 4:
+        checkpoint "setup " & $setup & ", action " & $action
+        let ctx = newFakeAsyncContext()
+        ctx.install()
+        let svc = newRecordingService()
+        let q = createSignal("a")
+        let av = createAsync(proc(): string = q.val, svc.fetchOf,
+          known = proc(question: string): Option[string] =
+            if question == "k": some("known:k") else: none(string))
+        var frames: seq[(string, AsyncStatus)]
+        var stop: proc()
+        proc watchNow() =
+          createRoot proc(d: proc()) =
+            stop = d
+            createEffect proc() = frames.add (av.val, av.status)
+        case setup
+        of 0:                           # before the first answer
+          watchNow()
+          ctx.step(10)
+        of 1:                           # after it
+          ctx.step(10)
+          watchNow()
+        of 2:                           # after an intermediate question
+          ctx.step(10)
+          q.val = "b"
+          ctx.step(10)
+          watchNow()
+        else:                           # before an intermediate question
+          watchNow()
+          ctx.step(10)
+          q.val = "b"
+          ctx.step(10)
+        case action
+        of 0:
+          av.refresh()
+          ctx.step(10)
+        of 1:
+          av.mutate("local")
+        of 2:
+          q.val = "c"
+          q.val = "d"
+          ctx.step(10)
+        else:
+          av.refresh(pending = true)
+          ctx.step(10)
+        check av.ready
+        let before = frames.len
+        q.val = "k"
+        check av.ready
+        check av.val == "known:k"
+        check frames[before .. ^1] == @[("known:k", AsyncStatus.ready)]
+        stop()
+        av.dispose()
+        ctx.uninstall()

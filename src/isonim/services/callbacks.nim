@@ -252,7 +252,8 @@ proc createAsyncFromCallback*[S, T](
     placeholder = none(T);
     marks: ReadinessMarks = nil; element = "";
     known: proc(question: S): Option[T] = nil;
-    onDone: proc(question: S; value: T) = nil): AsyncValue[T] =
+    onDone: proc(question: S; value: T) = nil;
+    onSettled: proc(question: S; outcome: Outcome[T]) = nil): AsyncValue[T] =
   ## An async value over a service that answers once through a callback:
   ## `createAsync`, with `install` in place of a call that returns a
   ## future. For each question, `install` runs with the question and a
@@ -261,8 +262,9 @@ proc createAsyncFromCallback*[S, T](
   ## callbacks end the flight with `sink.answer` or `sink.fail`. The flight
   ## stops when it settles, when the question is replaced or refreshed
   ## over, or when the value is disposed, and its `Uninstall` then runs,
-  ## exactly once. `placeholder`, `marks`, `element`, `known` and `onDone`
-  ## are as for `createAsync`. Not yet a stable API.
+  ## exactly once. `placeholder`, `marks`, `element`, `known`, `onDone` and
+  ## `onSettled` are as for `createAsync` (`sink.fail` settles `failed`).
+  ## Not yet a stable API.
   ##
   ## The answer is shown one future step after `sink.answer` (on JS a
   ## microtask, on C the next poll of the dispatcher). `install` raising a
@@ -307,4 +309,4 @@ proc createAsyncFromCallback*[S, T](
         return
 
   createAsync[S, T](input, call, placeholder, marks, element, cancel,
-                    known, onDone)
+                    known, onDone, onSettled)
