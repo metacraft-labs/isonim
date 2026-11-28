@@ -239,7 +239,7 @@ type
     outcome: Signal[Arrival]
     askMemo: Memo[Ask]
     ask: Signal[Ask]  # backport probe: the question the status shows
-    statusMemo: Memo[AsyncStatus]
+    statusMemo: Signal[AsyncStatus]
     shown: Memo[bool]
     doneMemo: Memo[bool]
     inFlightMemo: Memo[bool]
@@ -278,6 +278,22 @@ proc mark[T](av: AsyncValue[T]; complete: bool) =
   if complete: av.marks.markComplete(av.element)
   else: av.marks.markFirst(av.element)
 
+proc statusOf(a: Ask; o: Arrival): AsyncStatus =
+  if a.idle: AsyncStatus.idle
+  elif o.settled == a.serial and not o.refreshing:
+    (if o.failed: AsyncStatus.failed else: AsyncStatus.ready)
+  elif o.answered >= a.epoch and o.answered > 0: AsyncStatus.pending
+  else: AsyncStatus.loading
+
+proc setOutcome[T](av: AsyncValue[T]; o: Arrival) =
+  ## Backport probe (refc): the status is a signal written with the outcome,
+  ## in one batch, not a memo: the old core runs a changed memo's readers
+  ## from its live reader list, which refc does not copy, so one reader runs
+  ## twice and another never.
+  batch proc() =
+    av.outcome.val = o
+    av.statusMemo.val = statusOf(av.ask.value, o)
+
 proc settleAnswer[T](av: AsyncValue[T]; f: Flight; value: T; done: bool;
                      keepValue = false; after: proc() = nil) =
   ## `value` is the (new) answer to `f`'s question; with `keepValue` the
@@ -297,7 +313,7 @@ proc settleAnswer[T](av: AsyncValue[T]; f: Flight; value: T; done: bool;
   if done: o.closed = f.serial
   batch proc() =
     if not keepValue: av.answer.val = value
-    av.outcome.val = o
+    av.setOutcome(o)
     av.mark(done)
     if after != nil: after()
 
@@ -356,7 +372,7 @@ proc settleError[T](av: AsyncValue[T]; f: Flight; message: string;
   o.closed = f.serial
   batch proc() =
     if changed: av.answer.notifyChanged()
-    av.outcome.val = o
+    av.setOutcome(o)
     if after != nil: after()
 
 proc isNoQuestion[S](question: S): bool =
@@ -394,7 +410,7 @@ proc newAsyncValue[S, T](input: proc(): S; placeholder: Option[T];
       var o = av.outcome.value
       o.closed = 0
       if pending: o.refreshing = true
-      av.outcome.val = o
+      av.setOutcome(o)
     let f = Flight(serial: a.serial, live: true)
     av.current = f
     if fresh and known != nil:
@@ -428,14 +444,7 @@ proc newAsyncValue[S, T](input: proc(): S; placeholder: Option[T];
         question = q
       Ask(serial: serial, epoch: epoch))
     av.ask = createSignal(av.askMemo.val)
-    av.statusMemo = createMemo(proc(): AsyncStatus =
-      let a = av.ask.val
-      let o = av.outcome.val
-      if a.idle: AsyncStatus.idle
-      elif o.settled == a.serial and not o.refreshing:
-        (if o.failed: AsyncStatus.failed else: AsyncStatus.ready)
-      elif o.answered >= a.epoch and o.answered > 0: AsyncStatus.pending
-      else: AsyncStatus.loading)
+    av.statusMemo = createSignal(statusOf(av.ask.value, av.outcome.value))
     av.shown = createMemo(proc(): bool =
       let a = av.ask.val
       let o = av.outcome.val
@@ -471,7 +480,9 @@ proc newAsyncValue[S, T](input: proc(): S; placeholder: Option[T];
       # the new question only after the call (or known answer) has started.
       batch proc() =
         try: untrack(proc() = start(a, false, true))
-        finally: av.ask.val = a
+        finally:
+          av.ask.val = a
+          av.statusMemo.val = statusOf(a, av.outcome.value)
     onCleanup proc() =
       # The owner (or `dispose`) ends the value: the flight in progress
       # stops and nothing it started writes or settles afterwards.
@@ -595,7 +606,7 @@ proc foldChunk[S, C, A](av: AsyncValue[A]; f: Flight; question: S; chunk: C;
   batch proc() =
     if first: av.answer.val = fresh
     else: av.answer.notifyChanged()
-    av.outcome.val = o
+    av.setOutcome(o)
     av.mark(false)
 
 proc createAsyncStream*[S, C, A](input: proc(): S;
@@ -867,7 +878,7 @@ proc mutate*[T](av: AsyncValue[T]; value: T) =
   o.local = true
   batch proc() =
     av.answer.val = value
-    av.outcome.val = o
+    av.setOutcome(o)
 
 proc isDisposed*[T](av: AsyncValue[T]): bool = av.disposed
   ## True once `av` has ended, by `dispose` or with its owner.
