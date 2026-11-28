@@ -268,6 +268,12 @@ test-c:
     nim c -r tests/test_actions.nim
     nim c -r --mm:arc --out:build/tests/test_actions_arc tests/test_actions.nim
     nim c -r --mm:refc --out:build/tests/test_actions_refc tests/test_actions.nim
+    # One answer built from many service calls: each outcome a chunk in
+    # settle order with its item's index, failures as chunks, one finish,
+    # cancel, empty input, and the concurrency limit.
+    nim c -r tests/test_fan_out.nim
+    nim c -r --mm:arc --out:build/tests/test_fan_out_arc tests/test_fan_out.nim
+    nim c -r --mm:refc --out:build/tests/test_fan_out_refc tests/test_fan_out.nim
     # The private flush observation leaf, enabled: real graphs, nested
     # flushes and flushes that end in an error (`just test-internal-flush-observation` adds the
     # omission proof and the semantic inverses).
@@ -448,6 +454,8 @@ test-js: build-tailwind
     python3 tools/run_nim_js_test.py build/test_callbacks_editor_example.js
     nim js -d:nodejs --out:build/test_actions.js tests/test_actions.nim
     python3 tools/run_nim_js_test.py build/test_actions.js
+    nim js -d:nodejs --out:build/test_fan_out.js tests/test_fan_out.nim
+    python3 tools/run_nim_js_test.py build/test_fan_out.js
     # The timing checks with futures that answer after their latency
     # (asynchronous: promise callbacks run between fake-clock steps).
     nim js -d:nodejs --out:build/test_async_timing_js.js tests/test_async_timing_js.nim
