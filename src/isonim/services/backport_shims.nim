@@ -3,18 +3,39 @@
 ## pre-campaign core (5a35eb01f8) does not have. Each keeps the old core's
 ## behaviour; none adds a guarantee the campaign's core stages add.
 
-import isonim/core/[graph, signals]
+import isonim/core/[graph, signals, owner, platform]
 
-type ErrorHandler* = proc(err: ref CatchableError)
+type
+  ErrorHandler* = proc(err: ref CatchableError)
+  ErrorBox = ref object of RootObj
+    handler: ErrorHandler
+
+const errorHandlerKey = 0  # context ids start at 1
 
 proc onError*(handler: ErrorHandler) =
-  ## The old core routes no errors (a later core change added routing): compile shim only,
-  ## the handler is never called.
-  discard
+  ## Step 2 (stands in for the later core's error routing, only for the errors these modules report):
+  ## keep the handler on the current owner.
+  if Owner != nil and handler != nil:
+    if Owner.contextTable.isNil:
+      Owner.contextTable = newHashMapRef[int, RootRef]()
+    Owner.contextTable[errorHandlerKey] = ErrorBox(handler: handler)
 
 proc handleError*(source: ComputationBase; err: ref CatchableError) =
-  ## The old core's behaviour for an error a computation raises: it escapes
-  ## to whoever wrote the signal or settled the future.
+  ## Deliver `err` to the nearest handler on `source` or its owners; a
+  ## handler that raises passes its error upwards; with none it is raised to
+  ## whoever settled the future, as the old core does.
+  var err = err
+  var o: OwnerBase = source
+  while o != nil:
+    if not o.contextTable.isNil and errorHandlerKey in o.contextTable:
+      let box = ErrorBox(o.contextTable[errorHandlerKey])
+      try:
+        let e = err
+        runWithOwner(o, proc() = box.handler(e))
+        return
+      except CatchableError as x:
+        err = x
+    o = o.owner
   raise err
 
 proc notifyChanged*[T](s: Signal[T]) =
