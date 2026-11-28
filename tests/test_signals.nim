@@ -1,5 +1,5 @@
 import unittest
-import isonim/core/[types, graph, signals, computation, owner]
+import isonim/core/[types, graph, signals, computation, owner, batch]
 
 suite "Signal Creation and Basic Operations":
   test "createSignal returns typed signal with initial value":
@@ -138,6 +138,35 @@ suite "Write Notification":
     s.val = 1
     check comp1.state == csStale
     check comp2.state == csStale
+
+suite "A value changed in place":
+  test "notifyChanged tells the readers, whatever the comparator":
+    # A comparator that calls every write equal, so only notifyChanged
+    # can reach the readers.
+    let s = createSignal(@[1], proc(a, b: seq[int]): bool = true)
+    var seen: seq[int]
+    var disposeRoot: proc()
+    createRoot proc(d: proc()) =
+      disposeRoot = d
+      createEffect proc() = seen.add s.val.len
+    s.val = @[1, 2]
+    check seen == @[1]
+    check s.value == @[1]
+    s.value.add 2
+    s.notifyChanged()
+    check seen == @[1, 2]
+    # Inside a batch, the readers run once, when it ends.
+    batch proc() =
+      s.value.add 3
+      s.notifyChanged()
+      s.value.add 4
+      s.notifyChanged()
+    check seen == @[1, 2, 4]
+    disposeRoot()
+    # With no reader it does nothing.
+    s.value.add 5
+    s.notifyChanged()
+    check seen == @[1, 2, 4]
 
 suite "Signal compiles on both targets":
   test "basic operations work":

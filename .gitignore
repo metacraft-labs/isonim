@@ -317,6 +317,7 @@ tests/test_async_provisional
 tests/test_async_fundamentals
 tests/test_async_edges
 tests/test_async_outcome
+tests/test_async_fold
 tests/test_callbacks
 tests/test_callbacks_editor_example
 tests/test_dsl_stylesheet_classes

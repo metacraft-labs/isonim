@@ -249,6 +249,11 @@ test-c:
     nim c -r tests/test_async_outcome.nim
     nim c -r --mm:arc --out:build/tests/test_async_outcome_arc tests/test_async_outcome.nim
     nim c -r --mm:refc --out:build/tests/test_async_outcome_refc tests/test_async_outcome.nim
+    # A stream folded into an accumulator in place, and the linear cost of
+    # a long stream.
+    nim c -r tests/test_async_fold.nim
+    nim c -r --mm:arc --out:build/tests/test_async_fold_arc tests/test_async_fold.nim
+    nim c -r --mm:refc --out:build/tests/test_async_fold_refc tests/test_async_fold.nim
     # Callback services adapted to async values (late callbacks dropped,
     # Uninstall once, the previous callback set restored), and the editor's
     # agent-turn callbacks expressed through the adapter.
@@ -430,6 +435,8 @@ test-js: build-tailwind
     python3 tools/run_nim_js_test.py build/test_async_edges.js
     nim js -d:nodejs --out:build/test_async_outcome.js tests/test_async_outcome.nim
     python3 tools/run_nim_js_test.py build/test_async_outcome.js
+    nim js -d:nodejs --out:build/test_async_fold.js tests/test_async_fold.nim
+    python3 tools/run_nim_js_test.py build/test_async_fold.js
     nim js -d:nodejs --out:build/test_callbacks.js tests/test_callbacks.nim
     python3 tools/run_nim_js_test.py build/test_callbacks.js
     nim js -d:nodejs --out:build/test_callbacks_editor_example.js tests/test_callbacks_editor_example.nim

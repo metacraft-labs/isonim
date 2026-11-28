@@ -46,6 +46,10 @@
 ##   `idle`. It answers "is work running", which is a different question
 ##   from "what is shown": do not draw a spinner from `inFlight` alone,
 ##   because a quiet refresh runs a call while the answer stays `ready`.
+## - `withVal(read)` — `val` without a copy: `read` is called with the
+##   value shown and its result returned. `val` returns a copy, which costs
+##   as much as the value is large; a stream's accumulator grows with every
+##   chunk, so its View reads it with `withVal`.
 ##
 ## Semantics:
 ##
@@ -62,6 +66,19 @@
 ##   changing the status: the old answer stays shown, as `ready`, until the
 ##   new one replaces it. `refresh(pending = true)` shows the wait instead
 ##   (`pending`, or `loading` when there is no answer yet).
+## - *Streams fold into an accumulator.* The value of a stream is an
+##   accumulator: `init(question)` builds a fresh one at the first chunk of
+##   each stream (a new question's, or a refresh's), and `fold(acc, chunk)`
+##   folds every chunk into it in place, so a long stream costs time linear
+##   in its chunks, with no copy per chunk. The readers hear each chunk
+##   once. Without `init` and `fold`, the accumulator is the sequence of
+##   the chunks. A fact about the call (the request was admitted) is a
+##   chunk the fold stores, and a stream that ends without its terminal
+##   chunk is `done` with an accumulator that lacks it, from which the
+##   ViewModel derives that it was interrupted. Because the accumulator
+##   changes in place, a reader must not keep what it read expecting it to
+##   stay unchanged or to follow the stream: it reads the value again when
+##   it changes.
 ## - *Errors.* A failed question shows `failed` and its message; the last
 ##   answer stays the value. A new question, or a refresh, recovers. A
 ##   service call (or `known`) that raises a `CatchableError` fails the
@@ -321,9 +338,11 @@ proc settleHookOf[S, T](onDone: proc(question: S; value: T);
     if onSettled != nil: onSettled(question, outcome)
 
 proc settleError[T](av: AsyncValue[T]; f: Flight; message: string;
-                    after: proc() = nil) =
+                    after: proc() = nil; changed = false) =
   ## `f`'s question failed with `message`; the held answer stays. `after`
-  ## (the settle hook) runs in the same batch.
+  ## (the settle hook) runs in the same batch. With `changed`, the held
+  ## answer was changed in place (a stream's fold that raised): its readers
+  ## are told in the same batch.
   if not f.live: return
   f.finish()
   var o = av.outcome.value
@@ -333,6 +352,7 @@ proc settleError[T](av: AsyncValue[T]; f: Flight; message: string;
   o.refreshing = false
   o.closed = f.serial
   batch proc() =
+    if changed: av.answer.notifyChanged()
     av.outcome.val = o
     if after != nil: after()
 
@@ -520,32 +540,102 @@ proc createAsync*[S, T](input: proc(): S;
           if not f.live: return
           av.settleError(f, message, av.failedHook(hook, question, message))))
 
-proc createAsyncStream*[S, C](input: proc(): S;
-                              call: proc(question: S): ServiceStream[C];
-                              placeholder = none(seq[C]);
-                              marks: ReadinessMarks = nil; element = "";
-                              known: proc(question: S): Option[seq[C]] = nil;
-                              onDone: proc(question: S; chunks: seq[C]) = nil;
-                              onSettled: proc(question: S;
-                                  outcome: Outcome[seq[C]]) = nil):
-    AsyncValue[seq[C]] =
-  ## The chunks of the stream `call` answers the question `input` yields
-  ## with, re-subscribed whenever the question changes; the old stream is
-  ## cancelled at the producer. The value is the chunks so far, in order;
-  ## the previous question's chunks stay shown (`pending`) until the new
-  ## stream's first chunk replaces them. `done` is set once the stream
-  ## finishes. A stream that fails keeps its chunks so far and shows
-  ## `failed`. `known` answers a new question at once with chunks the
-  ## ViewModel already has (a finished stream, no call); `onSettled` is
-  ## called once when the stream finishes (`answered` with the chunks) or
-  ## breaks off (`failed`), never per chunk, in the batch that writes it,
-  ## and `onDone` when it finishes. Not yet a stable API.
+proc foldChunk[S, C, A](av: AsyncValue[A]; f: Flight; question: S; chunk: C;
+                        init: proc(question: S): A;
+                        fold: proc(acc: var A; chunk: C);
+                        hook: SettleHook[S, A]) =
+  ## Fold one chunk of `f`'s stream into the value. The first chunk of a
+  ## flight folds into a fresh accumulator from `init`, written as the new
+  ## answer (replacing what an earlier flight left shown); every later chunk
+  ## folds in place into the accumulator held, and the readers are told
+  ## with `notifyChanged`, so no chunk copies what came before it. Either
+  ## way the readers hear the chunk once. An `init` or `fold` that raises a
+  ## `CatchableError` fails the question, and the stream is stopped at the
+  ## producer; what a fold changed in place before it raised stays shown,
+  ## and the readers hear it with the failure.
+  var o = av.outcome.value
+  o.local = false
+  o.settled = f.serial
+  o.answered = f.serial
+  o.failed = false
+  o.error = ""
+  o.done = false
+  o.refreshing = false
+  let first = not f.chunked
+  var fresh: A
+  try:
+    if first:
+      fresh = init(question)
+      fold(fresh, chunk)
+    else:
+      fold(av.answer.value, chunk)
+  except CatchableError as e:
+    # A fold into the held accumulator may have changed it before raising:
+    # that change stays shown, so its readers hear it with the failure. A
+    # fresh accumulator is dropped, and nothing shown has changed.
+    av.settleError(f, e.msg, av.failedHook(hook, question, e.msg),
+                   changed = not first)
+    # Nil while the producer emits during the subscription; the caller
+    # cancels it once the subscription returns.
+    if f.subscription != nil: f.subscription.cancel()
+    return
+  f.chunked = true
+  batch proc() =
+    if first: av.answer.val = fresh
+    else: av.answer.notifyChanged()
+    av.outcome.val = o
+    av.mark(false)
+
+proc createAsyncStream*[S, C, A](input: proc(): S;
+                                 call: proc(question: S): ServiceStream[C];
+                                 init: proc(question: S): A;
+                                 fold: proc(acc: var A; chunk: C);
+                                 placeholder = none(A);
+                                 marks: ReadinessMarks = nil; element = "";
+                                 known: proc(question: S): Option[A] = nil;
+                                 onDone: proc(question: S; acc: A) = nil;
+                                 onSettled: proc(question: S;
+                                     outcome: Outcome[A]) = nil):
+    AsyncValue[A] =
+  ## The stream `call` answers the question `input` yields with, folded
+  ## into an accumulator: `init(question)` builds a fresh one when the
+  ## stream's first chunk arrives, and `fold(acc, chunk)` folds each chunk
+  ## into it in place. The value is the accumulator. Its readers are told
+  ## once per chunk. The stream is re-subscribed whenever the question
+  ## changes, and the old one is cancelled at the producer; the previous
+  ## accumulator stays shown (`pending`) until the new stream's first
+  ## chunk, and a refresh's stream likewise starts a fresh accumulator at
+  ## its first chunk. A stream that finishes with no chunk answers with a
+  ## fresh `init(question)`. A stopped stream (replaced, refreshed over,
+  ## finished or ended with the value) folds nothing, even from a producer
+  ## that keeps calling. `done` is set once the stream finishes; a stream
+  ## that fails keeps its accumulator so far and shows `failed`. An `init`
+  ## or `fold` that raises a `CatchableError` fails the question and stops
+  ## the stream; what the fold changed before it raised stays shown, and
+  ## the readers hear it with the failure. Not yet a stable API.
   ##
-  ## A replaced, refreshed-over or disposed stream is cancelled at the
-  ## producer, so its work stops. The value is copied on each chunk.
+  ## Everything a View shows about the call belongs in the accumulator: a
+  ## fact about the call (the request was admitted, a tool ran) is a chunk
+  ## the fold stores, like the content. A stream that ends without the
+  ## terminal chunk its protocol defines (one that says why the producer
+  ## stopped) is `done` with an accumulator that lacks it, so the ViewModel
+  ## derives "interrupted" from the accumulator; the value keeps no state
+  ## of its own for it.
+  ##
+  ## The accumulator is changed in place, so `val` returns a copy of it
+  ## each time it is read: read a long one with `withVal`, which does not
+  ## copy. A reader must not keep what it read and expect it to stay
+  ## unchanged, or to follow the stream: read the value again when it
+  ## changes. `known` answers a new question at once with an accumulator
+  ## the ViewModel already has (a finished stream, no call); a local write
+  ## (`mutate`) replaces the accumulator, and a stream still delivering
+  ## folds its further chunks into what was written. `onSettled` is called
+  ## once when the stream finishes (`answered`, with a copy of the
+  ## accumulator) or breaks off (`failed`), never per chunk, in the batch
+  ## that writes it, and `onDone` when it finishes.
   let hook = settleHookOf(onDone, onSettled)
-  newAsyncValue[S, seq[C]](input, placeholder, marks, element, known, hook,
-    proc(av: AsyncValue[seq[C]]; question: S; f: Flight) =
+  newAsyncValue[S, A](input, placeholder, marks, element, known, hook,
+    proc(av: AsyncValue[A]; question: S; f: Flight) =
       var stream: ServiceStream[C]
       try:
         stream = call(question)
@@ -559,27 +649,66 @@ proc createAsyncStream*[S, C](input: proc(): S;
       let subscription = stream(StreamSink[C](
         onChunk: proc(chunk: C) =
           if not f.live: return
-          var chunks: seq[C]
-          if f.chunked: chunks = av.answer.value
-          f.chunked = true
-          chunks.add chunk
-          av.settleAnswer(f, chunks, done = false),
+          av.foldChunk(f, question, chunk, init, fold, hook),
         onDone: proc() =
           if not f.live: return
+          if f.chunked:
+            # Nothing to add: the accumulator shown is the answer.
+            f.finish()
+            av.settleAnswer(f, av.answer.value, done = true, keepValue = true,
+                            after = av.answeredHook(hook, question,
+                                                    av.answer.value))
+            return
+          # No chunk came: the answer is a fresh accumulator.
+          var empty: A
+          try:
+            empty = init(question)
+          except CatchableError as e:
+            av.settleError(f, e.msg, av.failedHook(hook, question, e.msg))
+            return
           f.finish()
-          # Nothing to add: the chunks shown are the answer (or, when none
-          # came, an empty one).
-          let chunks = if f.chunked: av.answer.value else: newSeq[C]()
-          av.settleAnswer(f, chunks, done = true, keepValue = f.chunked,
-                          after = av.answeredHook(hook, question, chunks)),
+          av.settleAnswer(f, empty, done = true,
+                          after = av.answeredHook(hook, question, empty)),
         onError: proc(message: string) =
           if not f.live: return
           av.settleError(f, message, av.failedHook(hook, question, message))))
       f.subscription = subscription
       # Replaced while subscribing (a producer that calls back into the
-      # ViewModel): the subscription is not wanted. A finished one ignores
-      # the cancel.
+      # ViewModel), or failed by a fold while the producer emitted during
+      # the subscription: the subscription is not wanted. A finished one
+      # ignores the cancel.
       if not f.live: subscription.cancel())
+
+proc createAsyncStream*[S, C](input: proc(): S;
+                              call: proc(question: S): ServiceStream[C];
+                              placeholder = none(seq[C]);
+                              marks: ReadinessMarks = nil; element = "";
+                              known: proc(question: S): Option[seq[C]] = nil;
+                              onDone: proc(question: S; chunks: seq[C]) = nil;
+                              onSettled: proc(question: S;
+                                  outcome: Outcome[seq[C]]) = nil):
+    AsyncValue[seq[C]] =
+  ## The chunks of the stream `call` answers the question `input` yields
+  ## with, re-subscribed whenever the question changes; the old stream is
+  ## cancelled at the producer. The value is the chunks so far, in order:
+  ## the fold form above with an empty sequence as the accumulator and
+  ## `add` as the fold, so each chunk is appended in place. The previous
+  ## question's chunks stay shown (`pending`) until the new stream's first
+  ## chunk replaces them. `done` is set once the stream finishes. A stream
+  ## that fails keeps its chunks so far and shows `failed`. `known` answers
+  ## a new question at once with chunks the ViewModel already has (a
+  ## finished stream, no call); `onSettled` is called once when the stream
+  ## finishes (`answered` with the chunks) or breaks off (`failed`), never
+  ## per chunk, in the batch that writes it, and `onDone` when it finishes.
+  ## Not yet a stable API.
+  ##
+  ## A replaced, refreshed-over or disposed stream is cancelled at the
+  ## producer, so its work stops. `val` copies the chunks on each read;
+  ## `withVal` reads them without a copy.
+  createAsyncStream[S, C, seq[C]](input, call,
+    proc(question: S): seq[C] = newSeq[C](),
+    proc(acc: var seq[C]; chunk: C) = acc.add(chunk),
+    placeholder, marks, element, known, onDone, onSettled)
 
 proc status*[T](av: AsyncValue[T]): AsyncStatus =
   ## What `av` shows now (tracked; see `AsyncStatus`). Derived in the same
@@ -612,6 +741,20 @@ proc val*[T](av: AsyncValue[T]): T =
   if av.shown.val: av.answer.val
   elif av.placeholder.isSome and not av.ask.val.idle: av.placeholder.get
   else: default(T)
+
+proc withVal*[T, R](av: AsyncValue[T]; read: proc(value: T): R): R =
+  ## Calls `read` with what `val` would return, without copying it, and
+  ## returns what `read` returns; tracked like `val`. For a value that is
+  ## large and changes in place, such as a stream's accumulator, where
+  ## `val` would copy it on every read. `read` must not hold on to the
+  ## value beyond the call (its address, or a reference inside it): the
+  ## next chunk changes it in place. A copy that `read` keeps is a
+  ## snapshot: it does not follow the stream. Not yet a stable API.
+  if av.shown.val:
+    trackRead(av.answer)
+    read(av.answer.value)
+  elif av.placeholder.isSome and not av.ask.val.idle: read(av.placeholder.get)
+  else: read(default(T))
 
 proc value*[T](av: AsyncValue[T]): T =
   ## `val`, untracked.

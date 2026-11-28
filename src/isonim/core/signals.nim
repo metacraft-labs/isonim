@@ -106,3 +106,17 @@ proc `val=`*[T](s: Signal[T]; newVal: T) {.inline.} =
 proc update*[T](s: Signal[T]; fn: proc(prev: T): T) =
   ## Functional update: applies fn to the current value and writes the result.
   writeSignal(s, fn(s.value))
+
+proc notifyChanged*[T](s: Signal[T]) =
+  ## Tells the readers of `s` that its value changed in place, through its
+  ## `value` field, as when an element is added to a large sequence without
+  ## copying it: they re-run as after a write, whatever the comparator says
+  ## (it is not consulted, since there is no previous value to compare
+  ## with). Inside a `batch`, they run once, when it ends. The caller makes
+  ## the change and then calls this, with no reactive read in between.
+  ##
+  ## A reader that kept the value from an earlier read sees the change only
+  ## if the value is a reference; a copy it kept stays as it was.
+  when defined(isonimRecordable):
+    inc s.checkpointLease.registration.writes
+  notifySignalWrite(s)
