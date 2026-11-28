@@ -251,6 +251,7 @@ type
     restart: proc(pending: bool) {.closure.}
     disposeRoot: proc() {.closure.}
     disposed: bool
+    starting: bool  # backport probe: the value's computation is starting a call
     source: ComputationBase
       ## The value's own computation: a settle hook's error is reported as
       ## its error, so it reaches the handlers above the value.
@@ -292,7 +293,11 @@ proc setOutcome[T](av: AsyncValue[T]; o: Arrival) =
   ## twice and another never.
   batch proc() =
     av.outcome.val = o
-    av.statusMemo.val = statusOf(av.ask.value, o)
+    # While the value's computation starts a call, the question is not yet
+    # shown: it writes the status itself when the start is done, so an
+    # answer that arrives during the start writes no intermediate status.
+    if not av.starting:
+      av.statusMemo.val = statusOf(av.ask.value, o)
 
 proc settleAnswer[T](av: AsyncValue[T]; f: Flight; value: T; done: bool;
                      keepValue = false; after: proc() = nil) =
@@ -479,8 +484,10 @@ proc newAsyncValue[S, T](input: proc(): S; placeholder: Option[T];
       # changes (a later core change made propagation glitch-free), so the status sees
       # the new question only after the call (or known answer) has started.
       batch proc() =
+        av.starting = true
         try: untrack(proc() = start(a, false, true))
         finally:
+          av.starting = false
           av.ask.val = a
           av.statusMemo.val = statusOf(a, av.outcome.value)
     onCleanup proc() =
