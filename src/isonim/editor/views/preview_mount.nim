@@ -21,7 +21,7 @@
 # view, because that module refuses to compile off the JavaScript platform.
 import std/options
 import ../../core/[owner, signals, computation, batch]
-import ../../services/[async_value, streams]
+import ../../services/[async_value, streams, callbacks]
 import ./view_lifecycle
 import ../types
 import ../preview_identity
@@ -45,10 +45,10 @@ type
     documentLoad: AsyncValue[seq[int]]
       ## The answer to "has the requested document loaded": `ready` once it
       ## has. A new request replaces the wait for the previous document,
-      ## whose load listener the stream's cancellation removes, and the
+      ## whose load listener the end of its wait removes, and the
       ## view's disposal ends it, so a load of an earlier document is never
       ## taken for the current one.
-    observeDocument: proc(revision: int; loaded: StreamEmitter[int])
+    observeDocument: proc(revision: int; loaded: Sink[int]): Uninstall
       ## Waits for the requested document in the frame of the last request.
     pendingMount: proc()
     generation*: int
@@ -77,7 +77,7 @@ proc newPreviewMountState*(): PreviewMountState =
     proc(): Option[int] = state.requestedDocument.val,
     proc(revision: Option[int]): ServiceStream[int] =
       let observe = state.observeDocument
-      newServiceStream(proc(loaded: StreamEmitter[int]) =
+      fromCallbacks(proc(loaded: Sink[int]): Uninstall =
         observe(revision.get, loaded)))
   # A mount that waits for its document runs once the document has loaded.
   # In an effect rather than in the answer's completion hook, which runs
@@ -96,10 +96,10 @@ proc newPreviewMountState*(): PreviewMountState =
       state.dispose = nil
 
 proc observeRequestedDocument[E](frame: E; revision: int;
-    loaded: StreamEmitter[int]) =
-  ## Finishes `loaded` when document `revision` has loaded in `frame`; its
-  ## cancellation removes the listener. A load after the stream has ended or
-  ## was cancelled finishes nothing (stream protocol).
+    loaded: Sink[int]): Uninstall =
+  ## Finishes `loaded` when document `revision` has loaded in `frame`, and
+  ## returns what removes the listener: it runs when the wait ends, however
+  ## it ends. A load after that finishes nothing.
   when isDomViewHost(E):
     let ready = proc() = loaded.finish()
     var stop: proc()
@@ -110,7 +110,6 @@ proc observeRequestedDocument[E](frame: E; revision: int;
           const doc = frame.contentDocument;
           if (!doc || doc.readyState !== 'complete' || !doc.body ||
               doc.querySelector('meta[name="isonim-mount-document"]')?.content !== String(revision)) return;
-          frame.removeEventListener('load', onPreviewMountDocumentLoad);
           ready();
         }
         // Registered BEFORE srcdoc is assigned, including a hidden view's
@@ -120,7 +119,7 @@ proc observeRequestedDocument[E](frame: E; revision: int;
           frame.removeEventListener('load', onPreviewMountDocumentLoad);
         };
       })(""", frame, ", ", revision, ", ", ready, ");"].}
-    loaded.onCancel(stop)
+    result = stop
   else:
     # Logical renderer hosts have no load to wait for.
     discard frame
@@ -137,7 +136,7 @@ proc requestedPreviewMountDocument*[E](frame: E; state: PreviewMountState;
     state.dispose()
     state.dispose = nil
   state.documentGeneration = state.documentGeneration + 1
-  state.observeDocument = proc(revision: int; loaded: StreamEmitter[int]) =
+  state.observeDocument = proc(revision: int; loaded: Sink[int]): Uninstall =
     observeRequestedDocument(frame, revision, loaded)
   # Asking about the new document replaces the wait for the previous one.
   # Called as a procedure: in a generic, Nim 2.2 resolves the `.val =`
