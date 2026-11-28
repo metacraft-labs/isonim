@@ -29,6 +29,9 @@
 ## `pacedStream` turns fixture data into a stream delivered at a chosen
 ## pacing, which is what a stand-in service needs; `tee` lets a service
 ## observe the chunks it forwards (to persist the complete reply, say).
+##
+## A stream is the shape for work that must really stop when its answer is
+## no longer wanted: unlike a future, its cancel reaches the producer.
 
 import std/unicode
 
@@ -38,8 +41,11 @@ type
   StreamSink*[T] = object
     ## What a subscriber receives. Any field may be nil.
     onChunk*: proc(chunk: T) {.closure.}
+      ## Called with each chunk, in order.
     onDone*: proc() {.closure.}
+      ## Called once when the stream finishes successfully.
     onError*: proc(message: string) {.closure.}
+      ## Called once when the stream fails, with the reason.
 
   StreamSubscription* = ref object
     ## The subscriber's handle on a running stream.
@@ -54,13 +60,16 @@ type
     ## The producer's side of one subscription.
     sink: StreamSink[T]
     subscription*: StreamSubscription
+      ## The subscription the subscriber holds for this emitter.
 
 proc isActive*(s: StreamSubscription): bool =
   ## True until the stream ends or is cancelled.
   not s.ended and not s.cancelled
 
 proc isCancelled*(s: StreamSubscription): bool = s.cancelled
+  ## True once the subscriber has cancelled the stream.
 proc isEnded*(s: StreamSubscription): bool = s.ended
+  ## True once the producer has finished or failed the stream.
 
 proc onCancel*(s: StreamSubscription; hook: proc() {.closure.}) =
   ## Register producer clean-up to run when the subscriber cancels.
@@ -78,11 +87,17 @@ proc cancel*(s: StreamSubscription) =
   for hook in hooks: hook()
 
 proc newStreamEmitter*[T](sink: StreamSink[T]): StreamEmitter[T] =
+  ## An emitter that delivers to `sink`, with a fresh subscription. A
+  ## producer normally gets one from `newServiceStream` instead.
   StreamEmitter[T](sink: sink, subscription: StreamSubscription())
 
 proc isActive*[T](e: StreamEmitter[T]): bool = e.subscription.isActive
+  ## True until the stream ends or the subscriber cancels it. A producer
+  ## that emits later (on a timer, say) checks it before doing more work.
 
 proc onCancel*[T](e: StreamEmitter[T]; hook: proc() {.closure.}) =
+  ## Register producer clean-up to run when the subscriber cancels (see
+  ## `onCancel` on the subscription).
   e.subscription.onCancel(hook)
 
 proc emit*[T](e: StreamEmitter[T]; chunk: T) =
