@@ -263,6 +263,11 @@ test-c:
     nim c -r tests/test_callbacks_editor_example.nim
     nim c -r --mm:arc --out:build/tests/test_callbacks_editor_example_arc tests/test_callbacks_editor_example.nim
     nim c -r --mm:refc --out:build/tests/test_callbacks_editor_example_refc tests/test_callbacks_editor_example.nim
+    # Actions on lanes: queue, coalesce and refuse, a failure cancelling
+    # nothing, disposal dropping waiting runs, lane busy.
+    nim c -r tests/test_actions.nim
+    nim c -r --mm:arc --out:build/tests/test_actions_arc tests/test_actions.nim
+    nim c -r --mm:refc --out:build/tests/test_actions_refc tests/test_actions.nim
     # The private flush observation leaf, enabled: real graphs, nested
     # flushes and flushes that end in an error (`just test-internal-flush-observation` adds the
     # omission proof and the semantic inverses).
@@ -441,6 +446,8 @@ test-js: build-tailwind
     python3 tools/run_nim_js_test.py build/test_callbacks.js
     nim js -d:nodejs --out:build/test_callbacks_editor_example.js tests/test_callbacks_editor_example.nim
     python3 tools/run_nim_js_test.py build/test_callbacks_editor_example.js
+    nim js -d:nodejs --out:build/test_actions.js tests/test_actions.nim
+    python3 tools/run_nim_js_test.py build/test_actions.js
     # The timing checks with futures that answer after their latency
     # (asynchronous: promise callbacks run between fake-clock steps).
     nim js -d:nodejs --out:build/test_async_timing_js.js tests/test_async_timing_js.nim

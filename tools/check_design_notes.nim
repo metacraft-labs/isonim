@@ -1,8 +1,8 @@
 ## tools/check_design_notes.nim
 ##
 ## Checks the doc comments of the modules a user of the reactive core learns
-## first (the async value, stream and callback services, the ViewModel base,
-## and the owner, error-routing and flush code of the core):
+## first (the async value, stream, callback and action services, the
+## ViewModel base, and the owner, error-routing and flush code of the core):
 ##
 ## 1. every exported symbol of each listed module has a doc comment, and so
 ##    has every exported field of its exported object types;
@@ -44,6 +44,7 @@ const
     "src/isonim/services/async_value.nim",
     "src/isonim/services/streams.nim",
     "src/isonim/services/callbacks.nim",
+    "src/isonim/services/actions.nim",
     "src/isonim/viewmodel.nim",
     "src/isonim/core/owner.nim",
     "src/isonim/core/graph.nim",
