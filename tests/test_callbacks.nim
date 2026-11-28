@@ -17,9 +17,11 @@
 ## `createAsyncFromCallback` (one answer): the value is the answer itself,
 ## not a sequence of one chunk; the same three stop paths drop late
 ## callbacks and run `Uninstall` once; a failure shows `failed`; a second
-## answer is dropped and undoes nothing again; `install` raising fails the
-## question and leaves no flight behind: a callback it wrapped before
-## raising reaches nothing. Its answer
+## answer is dropped and undoes nothing again; a refresh asked while
+## `install` runs undoes the flight being installed, not the one the
+## refresh started; `install` raising fails the question and leaves no
+## flight behind: a callback it wrapped before raising reaches nothing.
+## Its answer
 ## travels through a platform future, which on JS is a promise whose
 ## callbacks run on a microtask a synchronous `unittest` case cannot wait
 ## for, so these cases are asynchronous scenarios on both backends (see
@@ -603,6 +605,42 @@ proc oneAnswerRefreshed(s: Scenario) {.async.} =
   s.expect(c.uninstalls == @["a", "a"], "each undone once: " & $c.uninstalls)
   av.dispose()
 
+proc oneAnswerRefreshedWhileInstalling(s: Scenario) {.async.} =
+  # The second install asks the same question again before it returns.
+  # When it returns, two flights for that question are current: the one
+  # being installed, which the refresh replaced, and the one the refresh
+  # started. The replaced one is the older, so it is the one undone; the
+  # newer one stays current and its answer is shown.
+  let ctx = newFakeAsyncContext()
+  ctx.install()
+  defer: ctx.uninstall()
+  var installs = 0
+  var undone: seq[int]
+  var sinks: seq[AnswerSink[string]]
+  var av: AsyncValue[string]
+  let q = createSignal("a")
+  av = createAsyncFromCallback(proc(): string = q.val,
+    proc(question: string; sink: AnswerSink[string]): Uninstall =
+      let n = installs
+      inc installs
+      sinks.add sink
+      if n == 1: av.refresh()
+      result = proc() = undone.add n)
+  av.refresh()
+  s.expect(installs == 3, "installed three times: " & $installs)
+  s.expect(undone == @[0, 1],
+    "the first flight and the one being installed are undone: " & $undone)
+  if sinks.len == 3:
+    s.expect(not sinks[1].isCurrent, "the replaced flight is not current")
+    s.expect(sinks[2].isCurrent, "the refresh's flight is current")
+    sinks[1].answer("stale")
+    sinks[2].answer("fresh")
+  await ctx.stepAsync(5)
+  s.expect(av.ready and av.val == "fresh", "the refresh's answer: " & av.value)
+  s.expect(undone == @[0, 1, 2], "each undone once: " & $undone)
+  av.dispose()
+  s.expect(undone == @[0, 1, 2], "dispose undoes nothing again: " & $undone)
+
 proc oneAnswerGivenTwice(s: Scenario) {.async.} =
   # The sink is used directly, not through a wrapped callback.
   let ctx = newFakeAsyncContext()
@@ -689,6 +727,8 @@ proc main() {.async.} =
     proc(s: Scenario): Future[void] = oneAnswerFails(s))
   await run("a refresh undoes the flight it replaces",
     proc(s: Scenario): Future[void] = oneAnswerRefreshed(s))
+  await run("a refresh asked while install runs undoes the flight being installed",
+    proc(s: Scenario): Future[void] = oneAnswerRefreshedWhileInstalling(s))
   await run("an answer given twice by the producer is undone once",
     proc(s: Scenario): Future[void] = oneAnswerGivenTwice(s))
   await run("install raising fails the question; the next one installs",
