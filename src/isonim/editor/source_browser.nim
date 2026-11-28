@@ -3,8 +3,22 @@
 ## replace preview data; build-start acknowledgement is never completion.
 when not defined(js): {.error: "Source browser bridge requires JS".}
 import std/[json, options, strutils]
+import nim_everywhere/async_compat
 import isonim/core/[signals, computation, owner, batch]
+import isonim/services/async_value
 import isonim/editor/[viewmodels, workspace, source_catalog, control]
+
+type SourceCatalogService* = proc(): PlatformFuture[cstring] {.closure.}
+  ## Reads the project's compiled catalog: the reply's JSON text; nil when
+  ## the page has no source project; a reply with a `diagnostic` when the
+  ## connection fails. It does not reject: a failure is a reply.
+
+proc fetchSourceCatalog*(): PlatformFuture[cstring] =
+  ## The browser's catalog service: the editor server's catalog endpoint
+  ## (404 when the page was not opened on a source project).
+  {.emit: [result, """ = fetch('/api/editor/source/catalog',{credentials:'omit'}).then(r=>{
+      if(r.status===404) return null; return r.text();
+    }).catch(()=>'{"diagnostic":"Source catalog connection failed."}');"""].}
 
 proc previewAnswers(elementId: string; conditions: JsonNode): JsonNode =
   ## The preview's own answers for a declaration's conditions (the worker's
@@ -76,10 +90,12 @@ proc editCase(mapping: JsonNode; property: string; answers: JsonNode;
       "Which rule decides " & property & " at this preview width is not described; " &
         "edit the stylesheet directly."
 
-proc attachSourceProject*(vm: EditorVM; base: EditorWorkspace; inspectorEditing = true) =
+proc attachSourceProject*(vm: EditorVM; base: EditorWorkspace; inspectorEditing = true;
+    catalog: SourceCatalogService = nil) =
   ## Native inspector writes are the default. Catalog-only consumers retain
   ## preview edits and native agent commands without claiming source persistence.
   ## An installed native inspector cannot be downgraded during its VM lifetime.
+  ## ``catalog`` reads the first catalog (default: `fetchSourceCatalog`).
   if not inspectorEditing and vm.hasAsyncSourceProject:
     raise newException(ValueError, "Native inspector editing is already installed.")
   # Retained models can predate these fields. Check their stable JS slots
@@ -88,6 +104,7 @@ proc attachSourceProject*(vm: EditorVM; base: EditorWorkspace; inspectorEditing 
     if (!Object.prototype.hasOwnProperty.call(""", vm, """, 'sourceProjectMappings')) """, vm, """.sourceProjectMappings = null;
     if (!Object.prototype.hasOwnProperty.call(""", vm, """, 'sourceProjectMappingDispose')) """, vm, """.sourceProjectMappingDispose = null;
     if (!Object.prototype.hasOwnProperty.call(""", vm, """, 'sourceProjectOperationSerial')) """, vm, """.sourceProjectOperationSerial = 0;
+    if (!Object.prototype.hasOwnProperty.call(""", vm, """, 'sourceCatalogReadWithdraw')) """, vm, """.sourceCatalogReadWithdraw = null;
     if (!Object.prototype.hasOwnProperty.call(""", vm, """, 'sourceProjectBuildInFlight')) """, vm, """.sourceProjectBuildInFlight = false;
     if (!Object.prototype.hasOwnProperty.call(""", vm, """, 'sourceBindingMetadataDirty')) """, vm, """.sourceBindingMetadataDirty = null;
     if (!Object.prototype.hasOwnProperty.call(""", vm, """, 'sourceBindingMetadataHash')) """, vm, """.sourceBindingMetadataHash = [];
@@ -107,6 +124,14 @@ proc attachSourceProject*(vm: EditorVM; base: EditorWorkspace; inspectorEditing 
     vm.sourceProjectMappingDispose = nil
   if inspectorEditing and vm.sourceBindingMetadataDirty == nil:
     vm.sourceBindingMetadataDirty = createSignal(false)
+  # The first catalog read asks for this workspace's catalog until the
+  # editor changes the project or its bindings itself, or opens a
+  # workspace: from then on the replies of its own writes are newer, and
+  # the read's answer, should it still arrive, is not wanted (`none` asks
+  # nothing).
+  let catalogQuestion = createSignal(some(vm.workspaceId))
+  proc withdrawCatalogRead() = catalogQuestion.val = none(string)
+  vm.sourceCatalogReadWithdraw = withdrawCatalogRead
   proc bindingFailure(message: string; metadata = false) =
     vm.workspaceEditStage.val = wesFailed
     var diagnostics: seq[WorkspaceEditDiagnostic] = @[]
@@ -154,6 +179,7 @@ proc attachSourceProject*(vm: EditorVM; base: EditorWorkspace; inspectorEditing 
     vm.sourceBindingMetadataSaving = true
     vm.sourceBindingMetadataSaveAgain = false
     vm.workspaceEditStage.val = wesApplying
+    withdrawCatalogRead()
     inc vm.sourceProjectOperationSerial
     let selected = vm.inspector.selectedElement.val
     let request = %* {"command": "bindings-save",
@@ -185,7 +211,9 @@ proc attachSourceProject*(vm: EditorVM; base: EditorWorkspace; inspectorEditing 
           if not reply{"ok"}.getBool(): reply{"diagnostic"}.getStr("Binding metadata was not saved.") else: ""))
   if inspectorEditing:
     vm.sourceBindingMetadataSave = saveMetadata
-    vm.inspector.onBindingsChanged = proc() = saveMetadata(nil)
+    vm.inspector.onBindingsChanged = proc() =
+      withdrawCatalogRead()
+      saveMetadata(nil)
   proc applyCatalog(reply: JsonNode) =
     let manifest = reply{"manifest"}
     if manifest == nil or manifest{"workspace"}.getStr() != vm.workspaceId:
@@ -195,11 +223,19 @@ proc attachSourceProject*(vm: EditorVM; base: EditorWorkspace; inspectorEditing 
     vm.controlSourceFixtures = sourceFixtures(manifest)
     if reply{"editableStyles"} != nil: editableStyles.val = reply["editableStyles"]
     vm.sourceAdapterReady.val = true
-  if inspectorEditing:
-    # Detached: the mapping lives as long as the installed source project
-    # (`sourceProjectMappingDispose`), not as long as the caller's owner.
-    createDetachedRoot proc(dispose: proc()) =
-      vm.sourceProjectMappingDispose = dispose
+  proc receiveInitial(raw: cstring)
+  let readCatalog = if catalog != nil: catalog else: SourceCatalogService(fetchSourceCatalog)
+  # Detached: the first catalog read and, with inspector editing, the
+  # mapping live as long as the installed source project
+  # (`sourceProjectMappingDispose`), not as long as the caller's owner. A
+  # later attach ends them, so the read of a replaced attach writes nothing.
+  createDetachedRoot proc(dispose: proc()) =
+    vm.sourceProjectMappingDispose = dispose
+    discard createAsync(proc(): Option[string] = catalogQuestion.val,
+      proc(workspace: Option[string]): PlatformFuture[cstring] = readCatalog(),
+      onDone = proc(workspace: Option[string]; raw: cstring) =
+        if not raw.isNil: receiveInitial(raw))
+    if inspectorEditing:
       # Bumped shortly after the preview changes width, so the conditions a
       # declaration depends on are asked again once the frame has its size.
       let answersTick = createSignal(0)
@@ -351,6 +387,7 @@ proc attachSourceProject*(vm: EditorVM; base: EditorWorkspace; inspectorEditing 
       answers = previewAnswers(element.id, mapping{"conditions", property})
       expected = mapping.editCase(property, answers, vm.viewport.val.width).value
     vm.sourceProjectBuildInFlight = true
+    withdrawCatalogRead()
     inc vm.sourceProjectOperationSerial
     vm.workspaceEditStage.val = wesCompiling
     let request = %* {"command": "inspector-edit",
@@ -577,13 +614,9 @@ proc attachSourceProject*(vm: EditorVM; base: EditorWorkspace; inspectorEditing 
         restoreWrite = (if removal and not redo: receiptJson(transaction.lastWrite) else: nil))
       true
 
-  let initialOperationSerial = vm.sourceProjectOperationSerial
-  let initialBindingRevision = vm.inspector.bindingRevision
   proc receiveInitial(raw: cstring) =
     try:
       let reply = parseJson($raw)
-      if initialOperationSerial != vm.sourceProjectOperationSerial or initialBindingRevision != vm.inspector.bindingRevision:
-        return # A newer live mutation owns the catalog and metadata revision.
       if reply{"diagnostic"} != nil: raise newException(ValueError, reply["diagnostic"].getStr())
       applyCatalog(reply)
       if inspectorEditing:
@@ -632,10 +665,3 @@ proc attachSourceProject*(vm: EditorVM; base: EditorWorkspace; inspectorEditing 
       vm.workspaceEditStage.val = wesFailed
       vm.workspaceEditDiagnostics.val = @[WorkspaceEditDiagnostic(kind: wedMissingAdapter,
         message: "Source project unavailable: " & error.msg)]
-  let initialCallback = receiveInitial
-  {.emit: ["""
-    fetch('/api/editor/source/catalog',{credentials:'omit'}).then(r=>{
-      if(r.status===404) return null; return r.text();
-    }).then(raw=>{if(raw!==null) """, initialCallback, """(raw);})
-      .catch(()=>""", initialCallback, """('{"diagnostic":"Source catalog connection failed."}'));
-  """].}

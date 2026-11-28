@@ -14,10 +14,11 @@ import isonim/core/owner
 ##     ``briefHasHistory`` signal, keyed by VM ref identity.
 ##   * ``ensureDesignReviewState`` — lazy constructor.  Called by the
 ##     chrome-bar and editor-shell mounts.
-##   * ``pollBriefHasHistory`` — drives a single poll round against
+##   * ``pollBriefHasHistory`` — polls
 ##     ``$ISONIM_REVIEW_API/api/design-review/brief-has-history?briefId=...``
-##     for the active preview.  No-ops gracefully when the daemon URL
-##     could not be resolved (the 🕘 button stays hidden).
+##     for the active preview, again whenever it changes.  Records
+##     ``false`` when the daemon URL could not be resolved (the 🕘
+##     button stays hidden).
 ##   * ``mountHistoryButtonForEditor`` — wraps
 ##     ``preview_chrome.mountHistoryButton`` and routes the activate
 ##     handler to the gallery-host show/hide signal.
@@ -28,6 +29,7 @@ import isonim/core/owner
 import std/[options, strutils, tables]
 
 import isonim/core/[signals, computation]
+import isonim/services/[async_value, streams]
 import isonim/dsl/ui
 import isonim/editor/views/icons  # historySvg
 
@@ -177,12 +179,6 @@ proc ensureDesignReviewState*(vm: EditorVM): DesignReviewState =
     if capturedState.galleryHostState.val == ghsClosed:
       capturedState.galleryVm.selectedDetailCaptureId.val = ""
   st
-
-# ---------------------------------------------------------------------------
-# Poll briefHasHistory.  Called from a reactive effect whenever
-# ``briefId`` changes; the daemon URL might be unreachable in which
-# case we just record ``false`` (the button stays hidden).
-# ---------------------------------------------------------------------------
 
 # ---------------------------------------------------------------------------
 # Minimal helpers for extracting fields out of the daemon's JSON
@@ -567,58 +563,85 @@ proc galleryTilesFromRun(runBody: string; baseUrl: string = ""): seq[GalleryTile
     )
 
 # ---------------------------------------------------------------------------
-# Fetch-on-open: when the gallery host first toggles to ``ghsOpen``, run
-# ``list-history`` → ``fetch-run`` per run → assemble ``GalleryTile`` rows
-# and write them into ``st.galleryVm.tiles``.  Subsequent opens are no-ops
-# (the tile cache lives on the VM until the brief id changes).
+# The daemon's answers.  The editor's HTTP client answers each request
+# once, through a callback; each service below wraps one question as a
+# stream that delivers its answer as one chunk.  The async values below
+# ask them, so an answer to a question the user has moved on from (an
+# earlier brief, a closed gallery) is dropped by the primitive rather
+# than by a comparison here.  A stream and not a future: the native
+# client calls back before it returns, and a future's callbacks would
+# wait for the native dispatcher, while a stream delivers when the
+# client does, on both backends.
 # ---------------------------------------------------------------------------
 
+proc briefHasHistoryAnswer(client: EditorHttpClient;
+                           briefId: string): ServiceStream[bool] =
+  ## Whether ``briefId`` has recorded runs.  ``false`` when there is no
+  ## brief, no daemon, or the request fails: the history button stays
+  ## hidden.
+  newServiceStream[bool](proc(e: StreamEmitter[bool]) =
+    proc answer(hasHistory: bool) =
+      e.emit(hasHistory)
+      e.finish()
+    if briefId.len == 0 or client == nil:
+      answer(false)
+    else:
+      # Minimal "hasHistory" parser — we don't pull in std/json here so
+      # the JS bundle stays compact.  The body shape is
+      # ``{"hasHistory":bool,"runCount":int}``.
+      fetchBriefHasHistory(client, briefId, proc(res: HttpCallbackResult) =
+        answer(res.kind == hcOk and res.body.contains("\"hasHistory\":true"))))
+
+proc galleryTilesAnswer(client: EditorHttpClient;
+                        briefId: string): ServiceStream[seq[GalleryTile]] =
+  ## The two-step fetch: ``list-history`` → ``fetch-run`` per run →
+  ## the tiles of every run that answered, delivered once the last run
+  ## has.  Fails when ``list-history`` fails.
+  newServiceStream[seq[GalleryTile]](proc(e: StreamEmitter[seq[GalleryTile]]) =
+    proc onHistory(res: HttpCallbackResult) =
+      if res.kind != hcOk:
+        e.fail("list-history failed: " & res.body)
+        return
+      # No longer asked (cancelled): do not fan out to the runs.
+      if not e.isActive: return
+      var runIds: seq[string] = @[]
+      for runId in jsonRunIdsFromListHistory(res.body):
+        runIds.add(runId)
+      # Bound the chase so a long history doesn't fan out into 100+
+      # parallel requests.  20 most-recent runs is plenty for the
+      # initial render; the gallery can paginate later.
+      let toFetch = min(runIds.len, 20)
+      var pending = toFetch
+      var collected: seq[GalleryTile] = @[]
+      if toFetch == 0:
+        e.emit(collected)
+        e.finish()
+        return
+      # Per-run callback: append + decrement, answer when the last lands.
+      for i in 0 ..< toFetch:
+        fetchRun(client, runIds[i], proc(rr: HttpCallbackResult) =
+          if rr.kind == hcOk:
+            for tile in galleryTilesFromRun(rr.body, client.baseUrl):
+              collected.add(tile)
+          dec pending
+          if pending == 0:
+            e.emit(collected)
+            e.finish())
+    fetchListHistory(client, briefId, 50, 0, onHistory))
+
 proc fetchGalleryTiles*(st: DesignReviewState) =
-  ## Drive the two-step fetch.  No-ops gracefully when the daemon URL
+  ## One round of the tile fetch for the active brief, outside the open
+  ## gallery (which asks through ``startGalleryFetchOnOpen``): writes
+  ## the tiles once every run has answered, whatever the brief is by
+  ## then.  No-ops gracefully when there is no brief or the daemon URL
   ## was not resolved (the gallery stays empty + the "No captures yet"
   ## placeholder is shown).
   let bid = st.briefId.val
   if bid.len == 0 or st.httpClient == nil:
     return
   let capturedState = st
-  let capturedBriefId = bid
-  proc onHistory(res: HttpCallbackResult) =
-    if res.kind != hcOk: return
-    # Snapshot the briefId we started with; if the user switched
-    # stories before fetch-run completes, abandon the in-flight work.
-    if capturedState.briefId.val != capturedBriefId: return
-    var runIds: seq[string] = @[]
-    for runId in jsonRunIdsFromListHistory(res.body):
-      runIds.add(runId)
-    if runIds.len == 0:
-      capturedState.galleryVm.tiles.val = @[]
-      return
-    # Bound the chase so a long history doesn't fan out into 100+
-    # parallel requests.  20 most-recent runs is plenty for the
-    # initial render; the gallery can paginate later.
-    let toFetch = min(runIds.len, 20)
-    var pending = toFetch
-    var collected: seq[GalleryTile] = @[]
-    # Per-callback closure: append + decrement, commit when last lands.
-    proc finish() =
-      if pending != 0: return
-      if capturedState.briefId.val != capturedBriefId: return
-      capturedState.galleryVm.tiles.val = collected
-    let capturedBaseUrl =
-      if capturedState.httpClient != nil:
-        capturedState.httpClient.baseUrl
-      else:
-        ""
-    for i in 0 ..< toFetch:
-      let rid = runIds[i]
-      proc onRun(rr: HttpCallbackResult) =
-        if rr.kind == hcOk:
-          for tile in galleryTilesFromRun(rr.body, capturedBaseUrl):
-            collected.add(tile)
-        dec pending
-        finish()
-      fetchRun(capturedState.httpClient, rid, onRun)
-  fetchListHistory(st.httpClient, bid, 50, 0, onHistory)
+  discard galleryTilesAnswer(st.httpClient, bid).subscribe(
+    proc(tiles: seq[GalleryTile]) = capturedState.galleryVm.tiles.val = tiles)
 
 # ---------------------------------------------------------------------------
 # Layout persistence.  REV-M8 built the whole stack — migration 004, the
@@ -630,11 +653,10 @@ proc fetchGalleryTiles*(st: DesignReviewState) =
 # (``vm.markSaved("", 0)``), which clears the dirty flag WITHOUT
 # persisting, so a drag-rearrange was silently discarded on reload.
 #
-# ``saveGalleryLayout`` and ``loadGalleryLayout`` below are the two
+# ``saveGalleryLayout`` and ``savedLayoutAnswer`` below are the two
 # halves of the round trip.  ``mountGalleryHostForEditor`` passes the
-# former as ``onSave``; ``startGalleryFetchOnOpen`` calls the latter
-# right after the tile fetch so a saved arrangement is restored on the
-# first open.
+# former as ``onSave``; ``startGalleryFetchOnOpen`` asks the latter
+# next to the tile fetch, so a saved arrangement is restored on open.
 #
 # Covered by ``tests/test_design_review_gallery_save_layout_wired.nim``,
 # which mounts the production host and asserts on the bytes that reach
@@ -715,68 +737,95 @@ proc saveGalleryLayout*(st: DesignReviewState) =
       discard
   postSaveLayout(st.httpClient, body, onSaved)
 
-proc loadGalleryLayout*(st: DesignReviewState) =
-  ## GET the saved layouts for the active brief and re-hydrate
-  ## ``pendingLayout`` from the row matching the VM's layout name.
-  ## Without this the save round trip is write-only: the daemon has the
-  ## arrangement but the user still sees the default order on reload.
-  if st.httpClient == nil: return
-  let bid = st.briefId.val
-  if bid.len == 0: return
-  let vm = st.galleryVm
+proc savedLayoutRow(body, wantName: string): string =
+  ## The row of a ``list-layouts`` reply to restore, or "".  The body is
+  ## a JSON array of layout rows: take the first whose ``name`` is
+  ## ``wantName``; fall back to the first row so a layout saved under
+  ## another name still shows.
+  var chosenLo = -1
+  var chosenHi = -1
+  var firstLo = -1
+  var firstHi = -1
+  var cursor = 0
+  while cursor < body.len:
+    let (lo, hi) = findBalancedObject(body, cursor)
+    if lo < 0 or hi <= lo: break
+    let row = body[lo .. hi]
+    if firstLo < 0:
+      firstLo = lo
+      firstHi = hi
+    if jsonStringField(row, "name") == wantName:
+      chosenLo = lo
+      chosenHi = hi
+      break
+    cursor = hi + 1
+  if chosenLo < 0:
+    chosenLo = firstLo
+    chosenHi = firstHi
+  if chosenLo < 0: "" else: body[chosenLo .. chosenHi]
+
+proc savedLayoutAnswer(st: DesignReviewState;
+                       briefId: string): ServiceStream[string] =
+  ## GET the saved layouts for ``briefId``: the row to restore (see
+  ## ``savedLayoutRow``), "" when there is none.  Fails when the request
+  ## does.
+  let client = st.httpClient
   let wantName =
-    if vm.layoutName.val.len > 0: vm.layoutName.val else: "default"
-  let capturedVm = vm
-  proc onLayouts(res: HttpCallbackResult) =
-    if res.kind != hcOk: return
-    # The body is a JSON array of layout rows.  Walk the top-level
-    # objects and take the first whose ``name`` matches; fall back to
-    # the first row so a layout saved under another name still shows.
-    var chosenLo = -1
-    var chosenHi = -1
-    var firstLo = -1
-    var firstHi = -1
-    var cursor = 0
-    while cursor < res.body.len:
-      let (lo, hi) = findBalancedObject(res.body, cursor)
-      if lo < 0 or hi <= lo: break
-      let row = res.body[lo .. hi]
-      if firstLo < 0:
-        firstLo = lo
-        firstHi = hi
-      if jsonStringField(row, "name") == wantName:
-        chosenLo = lo
-        chosenHi = hi
-        break
-      cursor = hi + 1
-    if chosenLo < 0:
-      chosenLo = firstLo
-      chosenHi = firstHi
-    if chosenLo < 0: return
-    let row = res.body[chosenLo .. chosenHi]
-    let layoutIdx = row.find("\"layout\"")
-    if layoutIdx < 0: return
-    let (llo, lhi) = findBalancedObject(row, layoutIdx)
-    if llo < 0 or lhi <= llo: return
-    # ``applyLayoutJson`` clears ``isDirty`` — the restored arrangement
-    # is what the daemon already holds, so there is nothing to save.
-    capturedVm.applyLayoutJson(row[llo .. lhi])
-    capturedVm.activeLayoutId.val = jsonStringField(row, "layout_id")
-    capturedVm.activeLayoutVersion.val = jsonIntField(row, "version")
-  fetchListLayouts(st.httpClient, bid, galleryOwnerUserId(st), onLayouts)
+    if st.galleryVm.layoutName.val.len > 0: st.galleryVm.layoutName.val
+    else: "default"
+  let owner = galleryOwnerUserId(st)
+  newServiceStream[string](proc(e: StreamEmitter[string]) =
+    fetchListLayouts(client, briefId, owner, proc(res: HttpCallbackResult) =
+      if res.kind != hcOk:
+        e.fail("list-layouts failed: " & res.body)
+      else:
+        e.emit(savedLayoutRow(res.body, wantName))
+        e.finish()))
+
+proc restoreGalleryLayout(vm: GalleryVM; row: string) =
+  ## Re-hydrate ``pendingLayout`` from a saved layout row.  Without this
+  ## the save round trip is write-only: the daemon has the arrangement
+  ## but the user still sees the default order on reload.
+  let layoutIdx = row.find("\"layout\"")
+  if layoutIdx < 0: return
+  let (llo, lhi) = findBalancedObject(row, layoutIdx)
+  if llo < 0 or lhi <= llo: return
+  # ``applyLayoutJson`` clears ``isDirty`` — the restored arrangement
+  # is what the daemon already holds, so there is nothing to save.
+  vm.applyLayoutJson(row[llo .. lhi])
+  vm.activeLayoutId.val = jsonStringField(row, "layout_id")
+  vm.activeLayoutVersion.val = jsonIntField(row, "version")
+
+proc openGalleryBrief(st: DesignReviewState): Option[string] =
+  ## The question the open gallery asks the daemon: the active brief
+  ## while the host is open and a daemon URL was resolved, else none.
+  if st.galleryHostState.val != ghsOpen: return none(string)
+  let bid = st.briefId.val
+  if bid.len == 0 or st.httpClient == nil: none(string) else: some(bid)
 
 proc startGalleryFetchOnOpen*(st: DesignReviewState) =
-  ## Reactive effect: whenever ``galleryHostState`` flips to ``ghsOpen``
-  ## with an empty ``tiles`` cache, kick off the two-step fetch and then
-  ## restore any layout the user previously saved for this brief.
+  ## While the gallery host is open, fetch the active brief's tiles and
+  ## restore the layout the user saved for it, unless an unsaved
+  ## arrangement is on screen; ask again when the host reopens or the
+  ## brief changes.  An answer for a brief that is no longer the one
+  ## shown, or that arrives after the host closed, is dropped.
   let capturedState = st
-  createRenderEffect proc() =
-    let open = capturedState.galleryHostState.val == ghsOpen
-    if not open: return
-    if capturedState.galleryVm.tiles.val.len > 0: return
-    if capturedState.briefId.val.len == 0: return
-    fetchGalleryTiles(capturedState)
-    loadGalleryLayout(capturedState)
+  let question = proc(): Option[string] = openGalleryBrief(capturedState)
+  # Created in this order, so the tile fetch is sent before the layouts.
+  discard createAsyncStream(question,
+    proc(bid: Option[string]): ServiceStream[seq[GalleryTile]] =
+      galleryTilesAnswer(capturedState.httpClient, bid.get),
+    onDone = proc(bid: Option[string]; answer: seq[seq[GalleryTile]]) =
+      if answer.len > 0: capturedState.galleryVm.tiles.val = answer[^1])
+  discard createAsyncStream(question,
+    proc(bid: Option[string]): ServiceStream[string] =
+      savedLayoutAnswer(capturedState, bid.get),
+    onDone = proc(bid: Option[string]; answer: seq[string]) =
+      # A saved layout never replaces an arrangement the user has not
+      # saved yet (one made before a look at another story, say).
+      if answer.len > 0 and answer[^1].len > 0 and
+          not capturedState.galleryVm.isDirty.val:
+        restoreGalleryLayout(capturedState.galleryVm, answer[^1]))
 
   # When the briefId changes while the host is closed, drop any
   # stale tiles so the next open re-fetches against the new brief.
@@ -787,31 +836,17 @@ proc startGalleryFetchOnOpen*(st: DesignReviewState) =
       capturedState.galleryVm.tiles.val = @[]
 
 proc pollBriefHasHistory*(st: DesignReviewState) =
-  let bid = st.briefId.val
-  if bid.len == 0 or st.httpClient == nil:
-    st.briefHasHistory.val = false
-    return
+  ## Poll ``briefHasHistory`` for the active brief, and again whenever
+  ## ``briefId`` changes, for as long as the caller's owner lives.  The
+  ## daemon URL might be unreachable, in which case we just record
+  ## ``false`` (the button stays hidden); an answer for a brief that is
+  ## no longer active is dropped.
   let capturedState = st
-  proc cb(res: HttpCallbackResult) =
-    if res.kind != hcOk:
-      capturedState.briefHasHistory.val = false
-      return
-    # Minimal "hasHistory" parser — we don't pull in std/json here so
-    # the JS bundle stays compact.  The body shape is
-    # ``{"hasHistory":bool,"runCount":int}``.
-    if res.body.contains("\"hasHistory\":true"):
-      capturedState.briefHasHistory.val = true
-    else:
-      capturedState.briefHasHistory.val = false
-  fetchBriefHasHistory(st.httpClient, bid, cb)
-
-proc startBriefHasHistoryPolling*(st: DesignReviewState) =
-  ## Reactively re-poll whenever the active brief id changes.
-  let capturedState = st
-  createRenderEffect proc() =
-    let bid = capturedState.briefId.val
-    discard bid
-    pollBriefHasHistory(capturedState)
+  discard createAsyncStream(proc(): string = capturedState.briefId.val,
+    proc(bid: string): ServiceStream[bool] =
+      briefHasHistoryAnswer(capturedState.httpClient, bid),
+    onDone = proc(bid: string; answer: seq[bool]) =
+      capturedState.briefHasHistory.val = answer.len > 0 and answer[^1])
 
 # ---------------------------------------------------------------------------
 # Mount helpers.
@@ -823,7 +858,7 @@ proc mountHistoryButtonForEditor*[R, E](r: R; parent: E; vm: EditorVM) =
   ## ``data-history-visible`` attr stays "false") so a fresh / offline
   ## editor doesn't sprout a useless control.
   let st = ensureDesignReviewState(vm)
-  startBriefHasHistoryPolling(st)
+  pollBriefHasHistory(st)
   let capturedState = st
   proc onActivate() =
     capturedState.galleryHostState.val =
@@ -849,7 +884,7 @@ proc mountSidebarHistoryButtonForEditor*[R, E](r: R; parent: E; vm: EditorVM) =
   ## or the dedicated ``data-design-review-history-button-sidebar``
   ## attribute the CHRM-M7 e2e test asserts against.
   let st = ensureDesignReviewState(vm)
-  startBriefHasHistoryPolling(st)
+  pollBriefHasHistory(st)
   let capturedState = st
   let capturedVm = st.historyVm
   # CHRM-M7 polish — 44 × 44 px minimum hit area per iOS HIG / Android

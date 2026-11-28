@@ -1164,6 +1164,13 @@ test-design-review-gallery-production: isonim-review-build editor-build
     nim c -r --path:src --path:. --path:../nim-everywhere/src \
         --path:../isonim-render-serve/src --hints:off \
         tests/test_design_review_brief_has_history_signal.nim
+    # Daemon answers that arrive for a brief the user has moved on from
+    # change nothing (history button, tiles, saved layout), and a saved
+    # layout does not replace an arrangement not saved yet.
+    nim js -d:nodejs --path:src --path:. --path:../nim-everywhere/src --hints:off \
+        --out:build/test_design_review_late_answers.js \
+        tests/test_design_review_late_answers.nim
+    python3 tools/run_nim_js_test.py build/test_design_review_late_answers.js
     node --test tests/e2e_design_review_history_button_in_real_editor.mjs
 
 # Build and serve the editor
@@ -2247,12 +2254,15 @@ test-editor-preview-mount-gui: editor-preview-mount-build
     timeout --signal=TERM --kill-after=15s 180s "${ISONIM_SCENARIO_NODE:-node}" tests/test_editor_page_preview_mount_gui.mjs
 
 # Requested-document ownership on real reactive roots; strict Node execution.
+# The late-load test drives a stand-in frame's load events in Node.
 test-editor-preview-mount: build-tailwind
     #!/usr/bin/env bash
     set -euo pipefail
     nim c -r --path:src --path:. --path:../nim-everywhere/src --path:../isonim-render-serve/src --path:../nim-acp/src --path:../nim-agent-harbor/src --path:../nim-agents/src -o:build/test_editor_preview_mount tests/test_editor_preview_mount.nim
     nim js -d:nodejs --path:src --path:. --path:../nim-everywhere/src --path:../isonim-render-serve/src --path:../nim-acp/src --path:../nim-agent-harbor/src --path:../nim-agents/src -o:build/test_editor_preview_mount.js tests/test_editor_preview_mount.nim
     python3 tools/run_nim_js_test.py build/test_editor_preview_mount.js
+    nim js -d:nodejs --path:src --path:. --path:../nim-everywhere/src --path:../isonim-render-serve/src --path:../nim-acp/src --path:../nim-agent-harbor/src --path:../nim-agents/src -o:build/test_editor_preview_mount_late_load.js tests/test_editor_preview_mount_late_load.nim
+    python3 tools/run_nim_js_test.py build/test_editor_preview_mount_late_load.js
 
 # Full committed inspector closure; every prerequisite owning entry remains.
 test-editor-inspector: test-editor-shell-current test-editor-inspector-native-source test-editor-c2 test-editor-c3 test-editor-c4a test-editor-flex-metadata test-editor-source-labels test-editor-source-labels-gui test-editor-chat-lifetime-headless test-editor-chat-lifetime-gui test-editor-renderer-boundaries test-editor-renderer-boundaries-gui test-editor-preview-mount test-editor-preview-mount-gui test-editor-source-metadata
