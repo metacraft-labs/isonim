@@ -246,6 +246,15 @@ test-c:
     nim c -r tests/test_async_edges.nim
     nim c -r --mm:arc --out:build/tests/test_async_edges_arc tests/test_async_edges.nim
     nim c -r --mm:refc --out:build/tests/test_async_edges_refc tests/test_async_edges.nim
+    # Callback services adapted to async values (late callbacks dropped,
+    # Uninstall once, the previous callback set restored), and the editor's
+    # agent-turn callbacks expressed through the adapter.
+    nim c -r tests/test_callbacks.nim
+    nim c -r --mm:arc --out:build/tests/test_callbacks_arc tests/test_callbacks.nim
+    nim c -r --mm:refc --out:build/tests/test_callbacks_refc tests/test_callbacks.nim
+    nim c -r tests/test_callbacks_editor_example.nim
+    nim c -r --mm:arc --out:build/tests/test_callbacks_editor_example_arc tests/test_callbacks_editor_example.nim
+    nim c -r --mm:refc --out:build/tests/test_callbacks_editor_example_refc tests/test_callbacks_editor_example.nim
     # The private flush observation leaf, enabled: real graphs, nested
     # flushes and flushes that end in an error (`just test-internal-flush-observation` adds the
     # omission proof and the semantic inverses).
@@ -416,6 +425,10 @@ test-js: build-tailwind
     python3 tools/run_nim_js_test.py build/test_async_fundamentals.js
     nim js -d:nodejs --out:build/test_async_edges.js tests/test_async_edges.nim
     python3 tools/run_nim_js_test.py build/test_async_edges.js
+    nim js -d:nodejs --out:build/test_callbacks.js tests/test_callbacks.nim
+    python3 tools/run_nim_js_test.py build/test_callbacks.js
+    nim js -d:nodejs --out:build/test_callbacks_editor_example.js tests/test_callbacks_editor_example.nim
+    python3 tools/run_nim_js_test.py build/test_callbacks_editor_example.js
     # The timing checks with futures that answer after their latency
     # (asynchronous: promise callbacks run between fake-clock steps).
     nim js -d:nodejs --out:build/test_async_timing_js.js tests/test_async_timing_js.nim
