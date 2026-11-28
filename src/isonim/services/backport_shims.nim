@@ -1,7 +1,8 @@
 ## BACKPORT PROBE ONLY (scratch branch rxc-backport-probe, never to be merged): the three core
 ## entry points the ported `async_value` and `actions` call that the
-## pre-campaign core (5a35eb01f8) does not have. Each keeps the old core's
-## behaviour; none adds a guarantee the campaign's core stages add.
+## pre-campaign core (5a35eb01f8) does not have. In the port step each kept
+## the old core's behaviour (`onError` a no-op, `handleError` a raise); the
+## fix for error routing (step 2) made them route these modules' own errors.
 
 import isonim/core/[graph, signals, owner, platform]
 
