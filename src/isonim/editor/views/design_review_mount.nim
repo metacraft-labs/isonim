@@ -577,8 +577,7 @@ proc galleryTilesFromRun(runBody: string; baseUrl: string = ""): seq[GalleryTile
 proc briefHasHistoryAnswer(client: EditorHttpClient;
                            briefId: string): ServiceStream[bool] =
   ## Whether ``briefId`` has recorded runs.  ``false`` when there is no
-  ## brief, no daemon, or the request fails: the history button stays
-  ## hidden.
+  ## brief or no daemon; fails when the request does.
   newServiceStream[bool](proc(e: StreamEmitter[bool]) =
     proc answer(hasHistory: bool) =
       e.emit(hasHistory)
@@ -590,7 +589,8 @@ proc briefHasHistoryAnswer(client: EditorHttpClient;
       # the JS bundle stays compact.  The body shape is
       # ``{"hasHistory":bool,"runCount":int}``.
       fetchBriefHasHistory(client, briefId, proc(res: HttpCallbackResult) =
-        answer(res.kind == hcOk and res.body.contains("\"hasHistory\":true"))))
+        if res.kind != hcOk: e.fail("brief-has-history failed: " & res.body)
+        else: answer(res.body.contains("\"hasHistory\":true"))))
 
 proc galleryTilesAnswer(client: EditorHttpClient;
                         briefId: string): ServiceStream[seq[GalleryTile]] =
@@ -618,6 +618,8 @@ proc galleryTilesAnswer(client: EditorHttpClient;
         e.finish()
         return
       # Per-run callback: append + decrement, answer when the last lands.
+      # Not `fanOut`: it joins futures, which deliver one step after the
+      # client calls back, while this stream delivers when the client does.
       for i in 0 ..< toFetch:
         fetchRun(client, runIds[i], proc(rr: HttpCallbackResult) =
           if rr.kind == hcOk:
@@ -838,15 +840,16 @@ proc startGalleryFetchOnOpen*(st: DesignReviewState) =
 proc pollBriefHasHistory*(st: DesignReviewState) =
   ## Poll ``briefHasHistory`` for the active brief, and again whenever
   ## ``briefId`` changes, for as long as the caller's owner lives.  The
-  ## daemon URL might be unreachable, in which case we just record
-  ## ``false`` (the button stays hidden); an answer for a brief that is
-  ## no longer active is dropped.
+  ## daemon URL might be unreachable or the request fail, in which case
+  ## we just record ``false`` (the button stays hidden); an answer for a
+  ## brief that is no longer active is dropped.
   let capturedState = st
   discard createAsyncStream(proc(): string = capturedState.briefId.val,
     proc(bid: string): ServiceStream[bool] =
       briefHasHistoryAnswer(capturedState.httpClient, bid),
-    onDone = proc(bid: string; answer: seq[bool]) =
-      capturedState.briefHasHistory.val = answer.len > 0 and answer[^1])
+    onSettled = proc(bid: string; outcome: Outcome[seq[bool]]) =
+      capturedState.briefHasHistory.val =
+        outcome.kind == OutcomeKind.answered and outcome.value == @[true])
 
 # ---------------------------------------------------------------------------
 # Mount helpers.
